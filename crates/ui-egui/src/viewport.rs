@@ -43,7 +43,7 @@ pub struct ViewportState {
     pub mouse: Option<Pos2>,
     /// Box selection being dragged.
     pub boxsel: Option<BoxSel>,
-    /// Timeline item under the cursor: its bodies are highlighted.
+    /// Timeline item under the cursor: its bodies or resulting faces are highlighted.
     pub hover_feature: Option<u64>,
     /// Bodies whose browser row is under the cursor: highlighted the same way.
     pub hover_bodies: Vec<String>,
@@ -862,13 +862,55 @@ pub fn section_plane(app: &SolveApp) -> Option<(Vec3, Vec3)> {
     app.session.section
 }
 
+/// Visible geometry belonging to a timeline feature. Body creators retain their whole-body
+/// feedback; modifiers use persistent face names, which survive later edits and placement.
+/// Do not expand these faces into surface patches: neighbouring faces can belong to another
+/// feature even when they share a surface.
+fn feature_geometry(app: &SolveApp, id: u64) -> Vec<Sel> {
+    if !app.session.model.result(id).is_some_and(|r| !r.skipped && r.error.is_none()) {
+        return Vec::new();
+    }
+    let st = app.session.world_state();
+    let prefix = format!("F{id}:");
+    let mut out = Vec::new();
+    for b in &st.bodies {
+        if app.session.visibility.hidden_bodies.contains(&b.name) || app.preview.replaced.contains(&b.name) {
+            continue;
+        }
+        if b.feature == id {
+            out.push(Sel::Body { name: b.name.clone() });
+            continue;
+        }
+        let names = solvecraft_engine::doc::naming::face_names(b);
+        let m = b.mesh();
+        for (index, _) in names.iter().enumerate().filter(|(_, n)| n.starts_with(&prefix)) {
+            if let Some(point) = m.triangles.iter().zip(&m.tri_face).find_map(|(t, f)| {
+                if *f as usize != index {
+                    return None;
+                }
+                m.tri(t).map(|[a, b, c]| (a + b + c) / 3.0)
+            }) {
+                out.push(Sel::Face { body: b.name.clone(), index, point });
+            }
+        }
+    }
+    out
+}
+
+fn displayed_selection(app: &SolveApp, item: &Sel) -> Vec<Sel> {
+    match item {
+        Sel::Feature { id } => feature_geometry(app, *id),
+        _ => grouped_selection(&app.session, item),
+    }
+}
+
 /// The box around what is selected (bodies, faces, edges, vertices, sketch curves and the
 /// bodies of selected features), where it is shown.
 pub fn selection_bounds(app: &SolveApp) -> Option<solvecraft_engine::geom::Aabb3> {
     let st = app.session.world_state();
     let mut b = solvecraft_engine::geom::Aabb3::EMPTY;
-    for s in &app.session.selection {
-        match s {
+    for s in app.session.selection.iter().flat_map(|item| displayed_selection(app, item)) {
+        match &s {
             Sel::Body { name } => {
                 if let Some(x) = st.body(name) {
                     b = b.union(&x.mesh().bounds());
@@ -894,11 +936,6 @@ pub fn selection_bounds(app: &SolveApp) -> Option<solvecraft_engine::geom::Aabb3
                 }
             }
             Sel::Vertex { point, .. } => b.add(*point),
-            Sel::Feature { id } => {
-                for x in st.bodies.iter().filter(|x| x.feature == *id) {
-                    b = b.union(&x.mesh().bounds());
-                }
-            }
             Sel::SketchCurve { id } => {
                 for ss in &st.sketches {
                     if let Some(i) = ss.sketch.curve_index(id) {
@@ -1095,7 +1132,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
     let st = app.session.world_state();
     let mut sel = Vec::new();
     for item in app.highlighted() {
-        for piece in grouped_selection(&app.session, &item) {
+        for piece in displayed_selection(app, &item) {
             if !sel.iter().any(|x| crate::selection::same_item(x, &piece)) {
                 sel.push(piece);
             }
@@ -1213,21 +1250,40 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
             _ => {}
         }
     }
-    // Bodies made by the timeline item under the cursor, or whose browser row is.
-    if app.viewport.hover_feature.is_some() || !app.viewport.hover_bodies.is_empty() {
+    // Timeline modifiers light only their resulting faces; browser rows light whole bodies.
+    let mut hovered = app.viewport.hover_feature.map(|id| feature_geometry(app, id)).unwrap_or_default();
+    hovered.extend(app.viewport.hover_bodies.iter().map(|name| Sel::Body { name: name.clone() }));
+    for b in st.bodies.iter().filter(|b| !app.session.visibility.hidden_bodies.contains(&b.name) && !app.preview.replaced.contains(&b.name)) {
+        let whole = hovered.iter().any(|x| matches!(x, Sel::Body { name } if name == &b.name));
+        let faces: Vec<_> = if whole {
+            (0..b.body.face_count()).collect()
+        } else {
+            hovered
+                .iter()
+                .filter_map(|x| match x {
+                    Sel::Face { body, index, .. } if body == &b.name => Some(*index),
+                    _ => None,
+                })
+                .collect()
+        };
+        if faces.is_empty() {
+            continue;
+        }
         let k = t.hover_face_lift;
-        let lit =
-            |b: &solvecraft_engine::doc::ModelBody| Some(b.feature) == app.viewport.hover_feature || app.viewport.hover_bodies.contains(&b.name);
-        for b in st.bodies.iter().filter(|b| lit(b) && !app.session.visibility.hidden_bodies.contains(&b.name)) {
-            let c = body_rgb(app, &b.name);
-            let m = b.mesh();
-            for f in 0..b.body.face_count() {
+        let c = body_rgb(app, &b.name);
+        let m = b.mesh();
+        for &f in &faces {
+            if !sel.iter().any(|x| {
+                matches!(x, Sel::Face { body, index, .. } if body == &b.name && *index == f) || matches!(x, Sel::Body { name } if name == &b.name)
+            }) {
                 face_tris(&mut sc, &m, f, [c.0.saturating_add(k), c.1.saturating_add(k), c.2.saturating_add(k), 255], true);
             }
-            for (ei, e) in m.edges.iter().enumerate() {
-                if !m.seams.get(ei).copied().unwrap_or(false) {
-                    edge_lines(&mut sc, e, t.hover_edge, t.hover_edge_halo, 1.5);
-                }
+        }
+        for (ei, e) in m.edges.iter().enumerate() {
+            if !m.seams.get(ei).copied().unwrap_or(false)
+                && (whole || m.edge_faces.get(ei).is_some_and(|fs| fs.iter().any(|f| faces.contains(&(*f as usize)))))
+            {
+                edge_lines(&mut sc, e, t.hover_edge, t.hover_edge_halo, 1.5);
             }
         }
     }
@@ -2479,6 +2535,80 @@ fn view_menu(app: &mut SolveApp, ui: &mut egui::Ui, button: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn timeline_modifiers_highlight_on_hover_and_click() {
+        for command in ["solid.fillet", "solid.chamfer"] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.ui.show_origin = false;
+            let base = h.app.run("solid.box", json!({"length":20,"width":20,"height":20})).unwrap()["feature"].as_u64().unwrap();
+            let id = h.app.run(command, json!({"edges":[[0,0,10]],"radius":2,"distance":2,"name":"Blend"})).unwrap()["feature"].as_u64().unwrap();
+            h.app.run("solid.box", json!({"length":5,"width":5,"height":5,"corner":[40,0,0]})).unwrap();
+            h.frames(2);
+            let geometry = feature_geometry(&h.app, id);
+            assert_eq!(geometry.len(), 1, "{command}: {geometry:?}");
+            let Sel::Face { body, index, .. } = &geometry[0] else { panic!("a modifier must highlight its face") };
+            let st = h.app.session.world_state();
+            let m = st.body(body).unwrap().mesh();
+            let triangles = m.tri_face.iter().filter(|f| **f as usize == *index).count();
+            assert!(triangles > 0 && triangles < m.triangles.len());
+            let p = crate::scenario::handle_at("timeline:Blend").unwrap();
+            h.step(&json!({"move":[p.x,p.y]})).unwrap();
+            assert_eq!(h.app.viewport.hover_feature, Some(id));
+            assert_eq!(build_highlight(&h.app).tris.len(), triangles * 3 * crate::gpu::TRI_SIZE);
+            assert!(!build_highlight(&h.app).lines.is_empty());
+            h.step(&json!({"click":[p.x,p.y]})).unwrap();
+            assert_eq!(h.app.session.selection, vec![Sel::Feature { id }]);
+            // Moving away removes hover but leaves the selected blend highlighted.
+            h.step(&json!({"move":[5,5]})).unwrap();
+            assert_eq!(h.app.viewport.hover_feature, None);
+            assert_eq!(build_highlight(&h.app).tris.len(), triangles * 3 * crate::gpu::TRI_SIZE);
+            let bounds = selection_bounds(&h.app).unwrap();
+            assert!(bounds.max.x <= 2.01 && bounds.max.y <= 2.01 && bounds.max.z > 19.99, "{bounds:?}");
+            // Creator features retain whole-body feedback, while hidden bodies stay hidden.
+            assert_eq!(feature_geometry(&h.app, base), vec![Sel::Body { name: body.clone() }]);
+            h.app.session.visibility.hidden_bodies.push(body.clone());
+            assert!(feature_geometry(&h.app, id).is_empty());
+            assert!(selection_bounds(&h.app).is_none());
+            assert!(build_highlight(&h.app).tris.is_empty());
+        }
+    }
+
+    #[test]
+    fn timeline_modifier_highlight_follows_edits_and_rollback() {
+        let mut app = SolveApp::new(solvecraft_engine::Session::default(), crate::Services::default());
+        app.run("solid.box", json!({"length":20,"width":20,"height":20})).unwrap();
+        let id = app.run("solid.fillet", json!({"edges":[[0,0,10]],"radius":2})).unwrap()["feature"].as_u64().unwrap();
+        // A later chamfer changes the same body without consuming the fillet.
+        app.run("solid.chamfer", json!({"edges":[[20,20,10]],"distance":1})).unwrap();
+        app.run("solid.move", json!({"bodies":["Body1"],"translate":[30,0,0]})).unwrap();
+        app.run("body.rename", json!({"body":"Body1","name":"Moved"})).unwrap();
+        app.session.selection = vec![Sel::Feature { id }];
+        let bounds = selection_bounds(&app).unwrap();
+        assert!(bounds.min.x >= 29.99 && bounds.max.x <= 32.01, "{bounds:?}");
+        assert!(feature_geometry(&app, id).iter().all(|x| matches!(x, Sel::Face { body, .. } if body == "Moved")));
+        app.run("timeline.roll_to", json!({"position":1})).unwrap();
+        assert!(feature_geometry(&app, id).is_empty());
+        app.run("timeline.roll_to", json!({})).unwrap();
+        assert!(!feature_geometry(&app, id).is_empty());
+        app.run("timeline.suppress", json!({"feature":id})).unwrap();
+        assert!(feature_geometry(&app, id).is_empty());
+    }
+
+    #[test]
+    fn timeline_modifier_highlight_follows_component_instances() {
+        let mut app = SolveApp::new(solvecraft_engine::Session::default(), crate::Services::default());
+        app.run("component.create", json!({"name":"Part"})).unwrap();
+        app.run("solid.box", json!({"length":20,"width":20,"height":20})).unwrap();
+        let id = app.run("solid.fillet", json!({"edges":[[0,0,10]],"radius":2})).unwrap()["feature"].as_u64().unwrap();
+        app.run("occurrence.move", json!({"occurrence":"Part:1","translate":[30,0,0]})).unwrap();
+        app.run("occurrence.copy", json!({"component":"Part","translate":[0,40,0]})).unwrap();
+        let geometry = feature_geometry(&app, id);
+        assert_eq!(geometry.len(), 2, "both occurrences retain the fillet's face: {geometry:?}");
+        app.session.selection = vec![Sel::Feature { id }];
+        let bounds = selection_bounds(&app).unwrap();
+        assert!(bounds.min.x >= 29.99 && bounds.max.x <= 32.01 && bounds.max.y >= 41.99, "{bounds:?}");
+    }
 
     fn hover_frame(app: &mut SolveApp, ctx: &egui::Context, events: Vec<egui::Event>) {
         let selected = app.highlighted();

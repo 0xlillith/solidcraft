@@ -2946,7 +2946,11 @@ pub fn world_state(doc: &Document, st: &ModelState) -> ModelState {
             let bm = doc.body_offsets.get(&b.name).map(|o| crate::mat_mul(&m, o)).unwrap_or(m);
             let body =
                 if crate::is_identity(&bm) { b.body.clone() } else { kernel::transform_matrix(&b.body, bm).unwrap_or_else(|_| b.body.clone()) };
-            out.bodies.push(ModelBody::new(name, body, b.feature));
+            let mut placed = ModelBody::new(name, body, b.feature);
+            // Placement preserves topology: face ownership remains that of the
+            // source model, including modifiers on component instances.
+            placed.names = crate::naming::NameCell::known(crate::naming::face_names(b));
+            out.bodies.push(placed);
         }
         if primary {
             for s in st.sketches.iter().filter(|s| comp_of_feature(s.feature) == comp) {
