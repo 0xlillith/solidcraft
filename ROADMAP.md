@@ -69,6 +69,7 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   planar end faces (equal-distance chamfers also meet sloped planar end faces, including inner
   basin rims within the rim width); convex fillets also meet sloped planar ends and reflex
   corners around pocket rims, with unequal wall slopes and extensions confined to the face;
+  connected equal-distance chamfers also trim each other across unequal sloped rim walls;
   whole smooth loops of a planar face, picked whole or by one edge (tangent
   chain), including circles and walls at any angle (boss bases and tops, bores, pocket floors,
   plate outlines), loops with sharp corners between straight edges (the blends meet in mitres), runs of
