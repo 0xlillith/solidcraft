@@ -42,6 +42,12 @@ Generated-in-code assets are original and have no file to list:
 | LICENSE-MIT, LICENSE-APACHE (licence text) | CADCraft | — |
 | .github/workflows/release.yml, .github/workflows/packaging-lint.yml and packaging/ (release pipeline: Linux AppImage/deb/rpm/Flatpak/tar.gz, FreeBSD, macOS dmg, Windows MSI/portable zip, web zip; AppRun, nfpm, Flatpak, WiX and Info.plist templates) | PhotoCraft (https://github.com/storytold/photocraft) `.github/workflows/{release,packaging-lint}.yml`, `packaging/` | Apache-2.0 |
 
+## Recovered contributions
+
+| SolveCraft file | Original contribution | Licence |
+|---|---|---|
+| crates/ui-egui/src/viewport.rs (`nearest_quarter_turn`, `view_cube_orbit`) | N3MI-DG's [PR #101](https://github.com/bherbruck/solvecraft/pull/101): [minimal TOP/BOTTOM turns](https://github.com/bherbruck/solvecraft/commit/c28e780f52490784ef5886f094b9d3f6d10c3e3f) and [drag-to-orbit](https://github.com/bherbruck/solvecraft/commit/f30b30be6ecc4e2e6544a851243137c01a354934), adapted to the 14-target cube | MIT OR Apache-2.0 |
+
 ## Vendored third-party code
 
 | Directory | Source | Licence | Changes |

@@ -51,6 +51,8 @@ pub struct ViewportState {
     pub orbit_pivot: Option<Vec3>,
     /// Continuous orbit: the view turns about the vertical until the next click or key.
     pub spin: bool,
+    /// A primary press on the cube: the pointer position used by its last orbit step.
+    pub cube_drag: Option<Pos2>,
     pub build_ms: f64,
     /// The right-click menu, open at this screen position.
     pub context_menu: Option<Pos2>,
@@ -1401,7 +1403,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         let (dx, dy) = (delta.x as f64, delta.y as f64);
         let mode = if middle || secondary_down {
             crate::prefs::nav_mode(app, middle, secondary_down, mods)
-        } else if primary_down {
+        } else if primary_down && app.viewport.cube_drag.is_none() {
             app.viewport.nav
         } else {
             None
@@ -1448,8 +1450,13 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // Suppress hover for the whole navigation gesture, including frames between pointer
     // events. Testing delta made the highlight reappear whenever a held drag paused.
     // Resolve it before rendering so the GPU scene and screen overlays use the same hit.
-    let navigating =
-        scroll != 0.0 || middle || secondary_down || (app.viewport.nav.is_some() && primary_down) || app.viewport.spin || app.cam_anim.is_some();
+    let navigating = scroll != 0.0
+        || middle
+        || secondary_down
+        || (app.viewport.nav.is_some() && primary_down)
+        || app.viewport.cube_drag.is_some()
+        || app.viewport.spin
+        || app.cam_anim.is_some();
     let hits = hover.filter(|_| inside && app.viewport.boxsel.is_none() && !navigating).map(|p| pick_cached(app, &proj, p)).unwrap_or_default();
     let cand = if app.tool.is_some() { hits.first().cloned().map(|h| (h, None)) } else { candidate(app, &hits).map(|(h, s)| (h, Some(s))) };
     app.viewport.hover = cand.as_ref().map(|c| c.0.clone());
@@ -2084,16 +2091,45 @@ fn cube_basis(cam: &Camera) -> (Vec3, Vec3, Vec3) {
     (cam.to_frame(r), cam.to_frame(u), cam.to_frame(b))
 }
 
+/// Dragging a primary press on the cube orbits about the view centre. A stationary press
+/// remains a click; a floating window over the cube owns its input.
+fn view_cube_orbit(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, targets: &[CubeTarget], c: Pos2) -> bool {
+    let (pressed, down, decided, origin, pos) = ui.input(|i| {
+        let p = &i.pointer;
+        (p.primary_pressed(), p.primary_down(), p.is_decidedly_dragging(), p.press_origin(), p.interact_pos())
+    });
+    if pressed && ui.rect_contains_pointer(rect) {
+        let shapes = cube_projected(targets, cube_basis(&app.cam), c);
+        app.viewport.cube_drag = origin.filter(|p| cube_hit(&shapes, *p).is_some());
+    }
+    if !down {
+        app.viewport.cube_drag = None;
+    }
+    let Some(last) = app.viewport.cube_drag.filter(|_| decided) else { return false };
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    // Include the movement that crossed the drag threshold, so the orbit follows the pointer.
+    if let Some(p) = pos
+        && p != last
+    {
+        app.cancel_view_animation();
+        app.cam.orbit(f64::from(p.x - last.x), f64::from(p.y - last.y));
+        app.viewport.cube_drag = Some(p);
+        ui.ctx().request_repaint();
+    }
+    true
+}
+
 fn view_cube(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     let t = Tokens::get();
     let c = pos2(rect.right() - 80.0, rect.top() + 80.0);
+    let targets = cube_targets();
+    let orbiting = view_cube_orbit(app, ui, rect, &targets, c);
     let (r, u, b) = cube_basis(&app.cam);
     let (wr, wu, _) = app.cam.basis();
     let painter = ui.painter_at(rect);
     let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rect));
-    let targets = cube_targets();
     let shapes = cube_projected(&targets, (r, u, b), c);
-    let hovered = hover.and_then(|h| cube_hit(&shapes, h));
+    let hovered = if orbiting { None } else { hover.and_then(|h| cube_hit(&shapes, h)) };
     // Axis triad from the cube's back corner, drawn first: the cube hides what is behind it.
     // The corner is in the cube's frame, the axes are the world's.
     let o = Vec3::new(-1.0, -1.0, -1.0);
@@ -2137,11 +2173,31 @@ fn view_cube(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     }
     if let Some(dir) = clicked {
         let mut to = app.cam.looking_from(app.cam.from_frame(dir));
-        // TOP and BOTTOM turn to the standard plan views (front edge at the bottom).
+        // Keep the nearest square heading when looking straight down or up.
         if dir.x == 0.0 && dir.y == 0.0 {
-            to.yaw = 0.0;
+            to.yaw = nearest_quarter_turn(app.cam.yaw);
         }
         app.animate_to(to);
+    }
+}
+
+/// The nearest square heading. At a halfway tie, prefer the heading nearer the standard
+/// plan view, so clicking TOP or BOTTOM from home still puts the front edge at the bottom.
+fn nearest_quarter_turn(yaw: f64) -> f64 {
+    if !yaw.is_finite() {
+        return 0.0;
+    }
+    let q = std::f64::consts::FRAC_PI_2;
+    let lo = (yaw / q).floor() * q;
+    let hi = lo + q;
+    let (dlo, dhi) = (yaw - lo, hi - yaw);
+    if (dlo - dhi).abs() < 1e-6 {
+        let off_front = |a: f64| ((a + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI).abs();
+        if off_front(lo) <= off_front(hi) { lo } else { hi }
+    } else if dlo < dhi {
+        lo
+    } else {
+        hi
     }
 }
 
@@ -2206,7 +2262,7 @@ fn cube_to_screen((r, u): (Vec3, Vec3), c: Pos2, p: Vec3) -> Pos2 {
 }
 
 /// A face's text directions (right, up): read from outside the cube, and upright in the view
-/// clicking the face turns to (TOP and BOTTOM: the plan views, front edge at the bottom).
+/// of the standard face view (TOP and BOTTOM: yaw 0, front edge at the bottom).
 fn cube_label_axes(n: Vec3) -> (Vec3, Vec3) {
     if n.z.abs() > 0.5 { (Vec3::X, Vec3::Y * n.z.signum()) } else { (Vec3::Z.cross(n), Vec3::Z) }
 }
@@ -2748,11 +2804,32 @@ mod tests {
         assert_eq!(crate::scenario::count_of("cube_highlights"), Some(0.0));
         h.call("ui.click", json!({"x": p.x, "y": p.y}));
         assert_eq!(serde_json::to_value(h.app.cam).unwrap(), camera, "dialog clicks must not turn the view cube");
+        h.call("ui.drag", json!({"x0": p.x, "y0": p.y, "x1": p.x + 20.0, "y1": p.y, "steps": 8}));
+        assert_eq!(serde_json::to_value(h.app.cam).unwrap(), camera, "dialog drags must not orbit the cube");
+        assert!(h.app.viewport.cube_drag.is_none());
         h.call("ui.prefs", json!({"button": "cancel"}));
         h.call("ui.move", json!({"x": p.x, "y": p.y}));
         assert_eq!(crate::scenario::count_of("cube_highlights"), Some(1.0));
         h.call("ui.click", json!({"x": p.x, "y": p.y}));
         assert_ne!(serde_json::to_value(h.app.cam).unwrap(), camera);
+    }
+
+    #[test]
+    fn view_cube_drag_owns_navigation_and_keeps_the_view_centre() {
+        for nav in [None, Some(NavMode::Orbit), Some(NavMode::Pan)] {
+            let mut h = crate::scenario::Harness::new();
+            h.call("ui.view", json!({"view": "front"}));
+            h.app.viewport.nav = nav;
+            let before = h.app.cam;
+            let p = crate::scenario::handle_at("cube:front").unwrap();
+            h.call("ui.drag", json!({"x0": p.x, "y0": p.y, "x1": p.x + 48.0, "y1": p.y, "steps": 8}));
+            assert!((h.app.cam.yaw - 48.0 * 0.008).abs() < 1e-6, "{nav:?}: cube drag must orbit exactly once");
+            assert_eq!(h.app.cam.target, before.target, "{nav:?}: cube drag must not pan");
+            assert_eq!(h.app.cam.distance, before.distance);
+            assert_eq!(h.app.cam.pitch, before.pitch);
+            assert!(h.app.viewport.cube_drag.is_none(), "release clears the cube gesture");
+            assert!(h.app.viewport.boxsel.is_none());
+        }
     }
 
     #[test]
@@ -2832,7 +2909,7 @@ mod tests {
     #[test]
     fn view_cube_labels_read_upright_in_their_own_view() {
         for tg in cube_targets().iter().filter(|t| !t.corner) {
-            // The view clicking the face turns to (TOP and BOTTOM with yaw 0).
+            // The standard face view (TOP and BOTTOM with yaw 0).
             let mut cam = solvecraft_engine::render::Camera::default().looking_from(tg.dir);
             if tg.dir.z.abs() > 0.5 {
                 cam.yaw = 0.0;
@@ -2845,6 +2922,32 @@ mod tests {
 
     fn face_labels(targets: &[CubeTarget]) -> Vec<String> {
         targets.iter().filter(|t| !t.corner).map(|t| t.name.to_uppercase()).collect()
+    }
+
+    #[test]
+    fn view_cube_top_bottom_choose_nearest_square_heading() {
+        for (from, to) in [
+            (0.0, 0.0),
+            (30.0, 0.0),
+            (-80.0, -90.0),
+            (100.0, 90.0),
+            (170.0, 180.0),
+            (400.0, 360.0),
+            (-400.0, -360.0),
+            (-45.0, 0.0),
+            (45.0, 0.0),
+            (135.0, 90.0),
+            (-135.0, -90.0),
+            (44.99, 0.0),
+            (45.01, 90.0),
+            (-44.99, 0.0),
+            (-45.01, -90.0),
+        ] {
+            let got = nearest_quarter_turn(f64::to_radians(from)).to_degrees();
+            assert!((got - to).abs() < 1e-9, "{from}° → {got}°, expected {to}°");
+        }
+        assert_eq!(nearest_quarter_turn(f64::NAN), 0.0);
+        assert_eq!(nearest_quarter_turn(f64::INFINITY), 0.0);
     }
 
     /// The widest label spans 90% of its face, looking straight at it.
