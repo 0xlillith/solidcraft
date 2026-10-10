@@ -25,6 +25,29 @@ fn select_lines(h: &mut Harness) {
     assert_eq!(h.app.session.selection, vec![Sel::SketchCurve { id: "l1".into() }, Sel::SketchCurve { id: "l2".into() }]);
 }
 
+fn assert_line_geometry(h: &Harness, command: &str) {
+    let sk = &h.app.session.model.state().sketches[0].sketch;
+    let point = |name| sk.point(sk.resolve_point(name).unwrap()).unwrap();
+    let a = point("l1.start");
+    let b = point("l2.start");
+    let u = point("l1.end") - a;
+    let v = point("l2.end") - b;
+    // Normalization also rejects a collapsed line; zero-length vectors must not
+    // accidentally satisfy the parallel/perpendicular checks.
+    let du = u.normalized().unwrap();
+    let dv = v.normalized().unwrap();
+    match command {
+        "parallel" => assert!(du.cross(dv).abs() < 1e-6),
+        "perpendicular" => assert!(du.dot(dv).abs() < 1e-6),
+        "equal" => assert!((u.len() - v.len()).abs() < 1e-6),
+        "collinear" => {
+            assert!(du.cross(dv).abs() < 1e-6);
+            assert!((b - a).cross(du).abs() < 1e-6);
+        }
+        _ => panic!("unexpected line constraint: {command}"),
+    }
+}
+
 #[test]
 fn selected_lines_apply_constraints_with_one_undo_step() {
     for command in ["parallel", "perpendicular", "equal", "collinear"] {
@@ -44,6 +67,7 @@ fn selected_lines_apply_constraints_with_one_undo_step() {
             }),
             "{command}"
         );
+        assert_line_geometry(&h, command);
         let after = h.app.session.doc.clone();
         assert_eq!(h.app.session.undo.len(), undo + 1);
         assert!(h.app.session.selection.is_empty());
@@ -52,6 +76,7 @@ fn selected_lines_apply_constraints_with_one_undo_step() {
         assert_eq!(serde_json::to_value(&h.app.session.doc).unwrap(), serde_json::to_value(before).unwrap());
         h.app.session.execute("edit.redo", &json!({})).unwrap();
         assert_eq!(serde_json::to_value(&h.app.session.doc).unwrap(), serde_json::to_value(after).unwrap());
+        assert_line_geometry(&h, command);
     }
 }
 
