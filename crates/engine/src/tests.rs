@@ -36,6 +36,7 @@ fn join_extrude_from_a_chamfered_top_face() {
 }
 
 mod component_frames;
+mod mirror_planes;
 mod primitive_points;
 mod robustness;
 
