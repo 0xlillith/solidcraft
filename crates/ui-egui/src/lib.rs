@@ -517,6 +517,27 @@ impl SolveApp {
             self.last_command = Some((spec.id.to_string(), spec.label.to_string()));
         }
         if let Some(mut t) = tools::Tool::for_command(id) {
+            // Curve-pair constraints can consume an exact preselection. Leave ambiguous
+            // selections to the ordinary pick tool; never silently constrain a subset.
+            if matches!(
+                id,
+                "sketch.constraint.parallel"
+                    | "sketch.constraint.perpendicular"
+                    | "sketch.constraint.equal"
+                    | "sketch.constraint.tangent"
+                    | "sketch.constraint.concentric"
+                    | "sketch.constraint.collinear"
+            ) && let [solvecraft_engine::Sel::SketchCurve { id: a }, solvecraft_engine::Sel::SketchCurve { id: b }] =
+                self.session.selection.as_slice()
+                && a != b
+            {
+                let params = json!({ "a": a, "b": b });
+                if self.run(id, params).is_ok() {
+                    let _ = self.session.execute("select.clear", &json!({}));
+                    self.set_status("Constraint applied", false);
+                }
+                return;
+            }
             if id == "sketch.dimension" {
                 t.picks = self
                     .session
