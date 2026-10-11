@@ -39,5 +39,10 @@ Preferences (File › Preferences) hold the theme, the units of new designs, the
 visual style and autosave. Help › Keyboard Shortcuts lists every key, and File › Keyboard
 Shortcuts changes them.
 
+Navigation › **Smooth wheel zoom** is on by default. Turn it off to apply each wheel or
+trackpad event immediately, with no smoothing tail. It is independent of **Animate view
+changes**, which controls axis views, Look At, Home and Fit. Re-enabling smoothing during
+a wheel gesture takes effect after that gesture ends, avoiding leftover zoom being replayed.
+
 Shift-orbit snapping includes 45-degree edge views and isometric corner views, with a
 lightly damped spring transition and a small boundary margin to prevent flicker.
