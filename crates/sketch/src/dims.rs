@@ -59,6 +59,26 @@ pub fn dim_frame(sk: &Sketch, k: &ConstraintKind) -> Option<DimFrame> {
             let (a, b) = line_ends(sk, l)?;
             DimFrame::Linear { p0: a, p1: b, dir: unit(b - a, Vec2::X) }
         }
+        LineAngle { l, value } => {
+            let (a, b) = line_ends(sk, l)?;
+            let d = unit(b - a, Vec2::X);
+            if value < 0.0 {
+                DimFrame::Angular { vertex: a, d0: d, sweep: (-value).rem_euclid(std::f64::consts::TAU) }
+            } else {
+                DimFrame::Angular { vertex: a, d0: Vec2::X, sweep: value.rem_euclid(std::f64::consts::TAU) }
+            }
+        }
+        ArcSweep { c, .. } => match sk.segs(c).first()? {
+            solvecraft_geom::Seg2::Arc { center, start, sweep, .. } => {
+                DimFrame::Angular { vertex: *center, d0: Vec2::from_angle(*start), sweep: *sweep }
+            }
+            _ => return None,
+        },
+        SlotOverallLength { a, b, .. } => {
+            let (ca, cb) = (sk.center(a)?, sk.center(b)?);
+            let dir = unit(cb - ca, Vec2::X);
+            DimFrame::Linear { p0: ca - dir * sk.radius(a)?, p1: cb + dir * sk.radius(b)?, dir }
+        }
         PointLineDistance { p, l, .. } | LinearDiameter { p, l, .. } => {
             let (a, b) = line_ends(sk, l)?;
             let q = sk.point(p)?;

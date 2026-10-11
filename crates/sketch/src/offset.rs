@@ -12,7 +12,51 @@ pub struct OffsetChain {
 }
 
 impl Sketch {
+    /// Removing an output removes its relationship. A partial analytic chain
+    /// deletion releases the surviving outputs, while retained dependents keep
+    /// their source references so the command's refresh refuses broken sources.
+    pub(crate) fn prune_offsets_for_removed_curves(&mut self, which: &[usize]) {
+        let removed = which.iter().filter_map(|i| self.curves.get(*i).map(|curve| curve.id.clone())).collect::<std::collections::BTreeSet<_>>();
+        if removed.is_empty() {
+            return;
+        }
+        let released = self
+            .offsets
+            .iter()
+            .filter(|offset| offset.outputs.iter().any(|id| removed.contains(id)))
+            .flat_map(|offset| offset.outputs.iter().cloned())
+            .chain(self.freeform_offsets.iter().filter(|offset| removed.contains(&offset.output)).map(|offset| offset.output.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        self.offsets.retain(|offset| !offset.outputs.iter().any(|id| removed.contains(id)));
+        self.freeform_offsets.retain(|offset| !removed.contains(&offset.output));
+        let points = self
+            .curves
+            .iter()
+            .filter(|curve| released.contains(&curve.id))
+            .flat_map(|curve| curve.kind.point_ids())
+            .collect::<std::collections::BTreeSet<_>>();
+        for index in points {
+            if index != 0
+                && self.curves.iter().all(|curve| !curve.kind.uses(index) || released.contains(&curve.id))
+                && let Some(point) = self.points.get_mut(index)
+            {
+                point.fixed = false;
+            }
+        }
+    }
+
     pub fn refresh_offsets(&mut self) -> Result<(), SketchError> {
+        if self.offsets.is_empty() && self.freeform_offsets.is_empty() {
+            return Ok(());
+        }
+        let mut candidate = self.clone();
+        candidate.refresh_analytic_offsets()?;
+        candidate.refresh_freeform_offsets()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    fn refresh_analytic_offsets(&mut self) -> Result<(), SketchError> {
         for offset in self.offsets.clone() {
             if offset.sources.len() != offset.outputs.len() || offset.sources.len() > 10_000 || !offset.distance.is_finite() {
                 return Err(SketchError::Invalid("damaged offset chain".into()));

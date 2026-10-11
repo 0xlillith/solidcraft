@@ -6,6 +6,10 @@
 //! viewport, a double-click on a sketch edits it, and a right-click opens the item's menu
 //! ([`crate::context_menu`]).
 
+#[cfg(test)]
+#[path = "occurrence_ui_tests.rs"]
+mod occurrence_ui_tests;
+
 use std::collections::BTreeSet;
 
 use egui::{Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, pos2, vec2};
@@ -21,11 +25,16 @@ thread_local! {
     /// The rows drawn this frame: (label, row, fold arrow area, open). For automation
     /// (`ui.at {browser | chevron}`, `ui.browser`).
     static DRAWN: std::cell::RefCell<Vec<(String, Rect, Option<Rect>, Option<bool>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    static OCCURRENCES: std::cell::RefCell<Vec<(Vec<u64>, String, Rect, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The rows on screen: (label, row rect, fold arrow area, open).
 pub fn drawn_rows() -> Vec<(String, Rect, Option<Rect>, Option<bool>)> {
     DRAWN.with(|d| d.borrow().clone())
+}
+
+pub fn drawn_occurrences() -> Vec<(Vec<u64>, String, Rect, bool)> {
+    OCCURRENCES.with(|d| d.borrow().clone())
 }
 
 /// Browser state kept between frames.
@@ -41,6 +50,7 @@ pub struct TreeState {
     pub occurrence_move: Option<OccMove>,
     /// The Redefine Sketch Plane panel (sketch id).
     pub redefine: Option<u64>,
+    pub redefine_draft: Option<crate::sketch_attachment_ui::Draft>,
     /// Components picked in the tree (they have no viewport selection).
     pub picked_components: Vec<u64>,
     /// Canvases picked in the tree.
@@ -59,6 +69,11 @@ pub struct TreeState {
 #[derive(Clone, Debug)]
 pub struct OccMove {
     pub occurrence: u64,
+    /// Exact assembly placement used for world-space movement and the pivot.
+    pub path: Vec<u64>,
+    /// Effective local placement at dialog opening, including its pre-existing pending move.
+    pub baseline: Option<solvecraft_engine::doc::Mat>,
+    pub had_pending: bool,
     /// Distances along X, Y, Z (mm) and turns about X, Y, Z (degrees) from where it was.
     pub translate: [f64; 3],
     pub angles: [f64; 3],
@@ -70,7 +85,7 @@ pub struct OccMove {
 
 impl OccMove {
     pub fn new(occurrence: u64) -> Self {
-        OccMove { occurrence, translate: [0.0; 3], angles: [0.0; 3], pivot: None, drag0: None }
+        OccMove { occurrence, path: Vec::new(), baseline: None, had_pending: false, translate: [0.0; 3], angles: [0.0; 3], pivot: None, drag0: None }
     }
 }
 
@@ -98,6 +113,7 @@ pub fn set_sketch_visible(app: &mut SolveApp, id: u64, on: bool) {
 
 pub fn redefine_sketch(app: &mut SolveApp, id: u64) {
     app.tree.redefine = Some(id);
+    app.tree.redefine_draft = Some(crate::sketch_attachment_ui::Draft::new(app, id));
 }
 
 fn find_group(app: &SolveApp, id: u64) -> Option<&solvecraft_engine::doc::BrowserGroup> {
@@ -188,7 +204,7 @@ pub fn selection_group(app: &SolveApp, target: &Target) -> Option<Value> {
         Target::Body { name } => {
             let st = app.session.world_state();
             let b = st.body(name)?;
-            (app.session.doc.body_component(name, b.feature), "bodies")
+            (b.component, "bodies")
         }
         Target::Sketch { id } => (app.session.doc.feature(*id)?.component, "sketches"),
         _ => return None,
@@ -440,6 +456,13 @@ fn click_select(app: &mut SolveApp, ui: &egui::Ui, key: String, sel: Option<Sel>
 }
 
 fn sel_of_key(k: &str) -> Option<Sel> {
+    if let Some((_, id)) = k.rsplit_once("/s:") {
+        return id.parse().ok().map(|id| Sel::Feature { id });
+    }
+    if let Some(p) = k.strip_prefix("o:") {
+        let path: Option<Vec<u64>> = p.split('/').map(|id| id.parse().ok()).collect();
+        return path.filter(|p| !p.is_empty()).map(|path| Sel::Occurrence { path });
+    }
     if let Some(b) = k.strip_prefix("b:") {
         return Some(Sel::Body { name: b.to_string() });
     }
@@ -475,6 +498,7 @@ pub fn browser(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     app.tree.order.clear();
     DRAWN.with(|d| d.borrow_mut().clear());
+    OCCURRENCES.with(|d| d.borrow_mut().clear());
     let mut acts = Actions::default();
     egui::Panel::left("sc_browser")
         .exact_size(250.0)
@@ -501,7 +525,8 @@ pub fn browser(app: &mut SolveApp, ui: &mut egui::Ui) {
     occurrence_panel(app, ui);
     capture_prompt(app, ui.ctx());
     canvas_panel(app, ui.ctx());
-    redefine_panel(app, ui.ctx());
+    let repair_anchor = app.viewport.rect.map(|rect| rect.right_top() + vec2(-16.0, 16.0)).unwrap_or_else(|| ui.ctx().content_rect().right_top());
+    crate::sketch_attachment_ui::panel(app, ui.ctx(), repair_anchor);
 }
 
 fn component_name(app: &SolveApp, id: u64) -> String {
@@ -598,9 +623,109 @@ fn component_rows(app: &mut SolveApp, ui: &mut egui::Ui, id: u64, depth: usize, 
     if id == 0 {
         crate::dialogs_assembly::browser_joints(app, ui, d);
     }
-    let children: Vec<u64> = app.session.doc.components.iter().filter(|c| c.parent == id).map(|c| c.id).collect();
-    for c in children {
-        component_rows(app, ui, c, d, acts);
+    let children: Vec<u64> = app.session.doc.occurrences.iter().filter(|o| o.parent == id).map(|o| o.id).collect();
+    for occurrence in children {
+        occurrence_rows(app, ui, vec![occurrence], d, acts);
+    }
+}
+
+fn occurrence_key(path: &[u64]) -> String {
+    format!("o:{}", path.iter().map(u64::to_string).collect::<Vec<_>>().join("/"))
+}
+
+/// A placement, rather than a component definition: repeated child IDs remain distinct
+/// because their complete paths are the selection and row identity.
+fn occurrence_rows(app: &mut SolveApp, ui: &mut egui::Ui, path: Vec<u64>, depth: usize, acts: &mut Actions) {
+    let Ok(placement) = app.session.occurrence_placement(&path) else { return };
+    let key = occurrence_key(&path);
+    let open = is_open(app, &key, true);
+    let active = app.session.active_occurrence_path.as_deref() == Some(path.as_slice())
+        || (app.session.active_occurrence_path.is_none()
+            && app.session.active_component == placement.component
+            && app.session.doc.first_path(placement.component) == path);
+    let visible = app.session.occurrence_visible(&path);
+    let own_visible = !app.session.occurrence_hidden(&path);
+    let selected = app.session.selection.contains(&Sel::Occurrence { path: path.clone() });
+    let faded = app.session.active_occurrence_path.as_ref().is_some_and(|p| !path.starts_with(p) && !p.starts_with(&path));
+    let badges: &[&str] = if placement.grounded { &["pin"] } else { &[] };
+    app.tree.order.push(key.clone());
+    let r = draw_row(
+        ui,
+        ui.id().with(&key),
+        &Row {
+            depth,
+            fold: Some(open),
+            eye: Some(own_visible),
+            icon: "component",
+            label: &placement.name,
+            selected,
+            dim: faded || !visible,
+            radio: Some(active),
+            badges,
+            ..Default::default()
+        },
+    );
+    if let Some(rect) = r.rect.filter(|_| r.resp.is_some()) {
+        OCCURRENCES.with(|d| d.borrow_mut().push((path.clone(), placement.name.clone(), rect, open)));
+        crate::scenario::publish_handle(&format!("row:occurrence:{}", key.trim_start_matches("o:")), pos2(rect.right() - 12.0, rect.center().y));
+        let x = rect.left() + 2.0 + depth as f32 * INDENT;
+        for (control, offset) in [("fold", 6.0), ("eye", 22.0), ("activate", 38.0)] {
+            crate::scenario::publish_handle(&format!("{control}:occurrence:{}", key.trim_start_matches("o:")), pos2(x + offset, rect.center().y));
+        }
+    }
+    if let Some(resp) = &r.resp {
+        let definition = app.session.doc.components.iter().find(|c| c.id == placement.component).map(|c| c.name.as_str()).unwrap_or("");
+        let location = path
+            .iter()
+            .filter_map(|id| app.session.doc.occurrences.iter().find(|o| o.id == *id))
+            .map(|o| o.name.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        let inherited = if own_visible && !visible { "\nHidden by a parent placement. Show the parent to reveal this instance." } else { "" };
+        resp.clone().on_hover_text(format!(
+            "Component: {definition}\nPlacement: {}\nGeometry edits apply to every instance of this component.{inherited}",
+            location
+        ));
+    }
+    if r.fold {
+        toggle(app, &key, true);
+    }
+    if r.eye {
+        let _ = app.run("browser.visibility", json!({"visible": app.session.occurrence_hidden(&path), "paths": [path]}));
+    }
+    if r.radio || r.double {
+        let _ = app.run("component.activate", json!({"component": placement.component, "occurrence": placement.occurrence, "path": path}));
+    }
+    if r.clicked {
+        click_select(app, ui, key.clone(), Some(Sel::Occurrence { path: path.clone() }));
+    }
+    if r.hovered {
+        acts.hover_bodies = app.session.occurrence_bodies(&path, true).unwrap_or_default();
+    }
+    if let Some(p) = r.secondary {
+        if !selected {
+            let _ = app.run("select.set", json!({"items": [Sel::Occurrence { path: path.clone() }]}));
+        }
+        acts.menu = Some((p, Target::Occurrence { path: path.clone() }));
+    }
+    if let Some(resp) = &r.resp
+        && let Some(d) = drop_target(ui, resp, |d: &Drag| d.comp != placement.component && d.folder != "construction", DropMark::Box)
+    {
+        acts.drop = Some(DropAction::Component { to: placement.component, folder: d.folder, keys: d.keys.clone() });
+    }
+    if !open {
+        return;
+    }
+    for folder in ["bodies", "sketches", "construction"] {
+        occurrence_folder_rows(app, ui, placement.component, &path, folder, depth + 1, acts);
+    }
+    let children: Vec<u64> = app.session.doc.occurrences.iter().filter(|o| o.parent == placement.component).map(|o| o.id).collect();
+    if path.len() < 64 {
+        for occurrence in children {
+            let mut child = path.clone();
+            child.push(occurrence);
+            occurrence_rows(app, ui, child, depth + 1, acts);
+        }
     }
 }
 
@@ -998,13 +1123,13 @@ fn entries(app: &SolveApp, comp: u64, folder: &str) -> Vec<Entry> {
             .state()
             .bodies
             .iter()
-            .filter(|b| doc.body_component(&b.name, b.feature) == comp)
+            .filter(|b| doc.model_body_component(b) == comp)
             .map(|b| Entry {
                 key: b.name.clone(),
                 row_key: format!("b:{}", b.name),
                 label: b.name.clone(),
                 icon: "body",
-                visible: !app.session.visibility.hidden_bodies.contains(&b.name),
+                visible: app.session.body_visible(&b.name),
                 selected: sel.iter().any(|x| matches!(x, Sel::Body { name } if *name == b.name)),
                 color: None,
                 locked: app.ui.locked_bodies.contains(&b.name),
@@ -1019,14 +1144,22 @@ fn entries(app: &SolveApp, comp: u64, folder: &str) -> Vec<Entry> {
             .filter(|f| f.component == comp && matches!(f.kind, FeatureKind::Sketch { .. }))
             .map(|f| {
                 let active = app.session.active_sketch == Some(f.id);
+                let lost = app.session.model.result(f.id).is_some_and(|result| result.error.is_some())
+                    && matches!(doc.sketch_face_attachment(f.id, &app.session.model), solvecraft_engine::doc::FaceAttachmentStatus::Lost { .. });
                 Entry {
                     key: f.id.to_string(),
                     row_key: format!("s:{}", f.id),
-                    label: if active { format!("{}  (editing)", f.name) } else { f.name.clone() },
+                    label: if lost {
+                        format!("{}  (attachment lost)", f.name)
+                    } else if active {
+                        format!("{}  (editing)", f.name)
+                    } else {
+                        f.name.clone()
+                    },
                     icon: "sketch",
                     visible: sketch_visible(app, f.id),
                     selected: active || sel.iter().any(|x| matches!(x, Sel::Feature { id } if *id == f.id)),
-                    color: active.then_some(t.sketch_accent),
+                    color: if lost { Some(t.error) } else { active.then_some(t.sketch_accent) },
                     locked: false,
                     sel: Some(Sel::Feature { id: f.id }),
                     target: Some(Target::Sketch { id: f.id }),
@@ -1082,9 +1215,9 @@ fn set_visible(app: &mut SolveApp, folder: &str, items: &[&Entry], on: bool) {
     for e in items {
         match folder {
             "bodies" => {
-                app.session.visibility.hidden_bodies.retain(|b| *b != e.key);
+                app.session.visibility.hidden_bodies.retain(|b| !e.bodies.contains(b));
                 if !on {
-                    app.session.visibility.hidden_bodies.push(e.key.clone());
+                    app.session.visibility.hidden_bodies.extend(e.bodies.clone());
                 }
             }
             "sketches" => {
@@ -1121,13 +1254,38 @@ fn folder_static(folder: &str) -> &'static str {
 /// A component's folder: its row, its groups and its items. Rows are drag sources; items,
 /// groups and the folder row are drop targets (reorder, into a group, out of groups).
 fn folder_rows(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, folder: &str, depth: usize, acts: &mut Actions) {
+    folder_rows_at(app, ui, comp, None, folder, depth, acts);
+}
+
+fn occurrence_folder_rows(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: &[u64], folder: &str, depth: usize, acts: &mut Actions) {
+    folder_rows_at(app, ui, comp, Some(path), folder, depth, acts);
+}
+
+fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option<&[u64]>, folder: &str, depth: usize, acts: &mut Actions) {
     let t = Tokens::get();
-    let all = entries(app, comp, folder);
+    let mut all = entries(app, comp, folder);
+    let prefix = path.map(occurrence_key).unwrap_or_else(|| format!("c{comp}"));
+    if let Some(path) = path {
+        let Ok(placement) = app.session.occurrence_placement(path) else { return };
+        for e in &mut all {
+            if folder == "bodies" {
+                let Some(body) = placement.bodies.iter().find(|b| b.source == e.key) else { continue };
+                e.sel = Some(Sel::Body { name: body.world.clone() });
+                e.target = Some(Target::Body { name: body.world.clone() });
+                e.bodies = vec![body.world.clone()];
+                e.visible = app.session.body_visible(&body.world);
+                e.selected = app.session.selection.contains(&Sel::Body { name: body.world.clone() });
+                e.row_key = format!("b:{}", body.world);
+            } else {
+                e.row_key = format!("{prefix}/{}", e.row_key);
+            }
+        }
+    }
     if all.is_empty() {
         return;
     }
     let fstatic = folder_static(folder);
-    let key = format!("c{comp}/{folder}");
+    let key = format!("{prefix}/{folder}");
     if let Some(r) = app.tree.reveal.clone()
         && folder == "bodies"
         && all.iter().any(|e| e.key == r)
@@ -1174,7 +1332,7 @@ fn folder_rows(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, folder: &str, d
     let (groups, loose) = arrange(app, comp, folder, all);
     let loose_keys: Vec<String> = loose.iter().map(|e| e.key.clone()).collect();
     for (g, items) in &groups {
-        let gkey = format!("g{}", g.id);
+        let gkey = format!("{prefix}/g{}", g.id);
         let gopen = is_open(app, &gkey, true);
         let gvis = items.is_empty() || items.iter().any(|e| e.visible);
         let label = format!("{} ({})", g.name, items.len());
@@ -1203,12 +1361,12 @@ fn folder_rows(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, folder: &str, d
         }
         if gopen {
             for e in items {
-                entry_row(app, ui, comp, fstatic, e, depth + 2, Some(g.id), &loose_keys, acts);
+                entry_row(app, ui, comp, path, fstatic, e, depth + 2, Some(g.id), &loose_keys, acts);
             }
         }
     }
     for e in &loose {
-        entry_row(app, ui, comp, fstatic, e, depth + 1, None, &loose_keys, acts);
+        entry_row(app, ui, comp, path, fstatic, e, depth + 1, None, &loose_keys, acts);
     }
     let _ = t;
 }
@@ -1219,6 +1377,7 @@ fn entry_row(
     app: &mut SolveApp,
     ui: &mut egui::Ui,
     comp: u64,
+    path: Option<&[u64]>,
     folder: &'static str,
     e: &Entry,
     depth: usize,
@@ -1255,6 +1414,9 @@ fn entry_row(
     }
     if r.double && folder == "sketches" {
         if let Ok(id) = e.key.parse() {
+            if let Some(path) = path {
+                let _ = app.run("component.activate", json!({"component": comp,"occurrence":path.last(),"path":path}));
+            }
             app.edit_sketch(id);
         }
     } else if r.clicked {
@@ -1367,9 +1529,29 @@ fn apply_drop(app: &mut SolveApp, d: DropAction) {
 /// Move/Copy of an occurrence: offsets and a rotation about Z, pending until Capture Position.
 fn occurrence_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     let Some(mut m) = app.tree.occurrence_move.clone() else { return };
+    if !m.path.is_empty()
+        && let Err(error) = app.session.occurrence_placement(&m.path)
+    {
+        app.tree.occurrence_move = None;
+        app.set_status(error.to_string(), true);
+        return;
+    }
+    if m.baseline.is_none() {
+        m.had_pending = app.session.pending_moves.contains_key(&m.occurrence);
+        m.baseline = app
+            .session
+            .pending_moves
+            .get(&m.occurrence)
+            .copied()
+            .or_else(|| app.session.doc.occurrences.iter().find(|o| o.id == m.occurrence).map(|o| o.transform));
+    }
     let ctx = ui.ctx().clone();
     if m.pivot.is_none() {
-        m.pivot = occurrence_origin(app, m.occurrence);
+        m.pivot = if m.path.is_empty() {
+            occurrence_origin(app, m.occurrence)
+        } else {
+            app.session.occurrence_placement(&m.path).ok().map(|p| solvecraft_engine::doc::apply_point(&p.world, solvecraft_engine::geom::Vec3::ZERO))
+        };
     }
     let name = app.session.doc.occurrences.iter().find(|o| o.id == m.occurrence).map(|o| o.name.clone()).unwrap_or_default();
     let mut open = true;
@@ -1383,28 +1565,33 @@ fn occurrence_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         .resizable(false)
         .collapsible(false)
         .show(&ctx, |ui| {
+            if !m.path.is_empty() && app.session.occurrence_scope_count(&m.path).is_ok_and(|n| n > 1) {
+                ui.label("This child is shared. Position changes apply to every copy of its parent.");
+            }
             egui::Grid::new("sc_occ_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 for (k, axis) in ["X distance", "Y distance", "Z distance"].iter().enumerate() {
                     ui.label(*axis);
                     if let Some(v) = m.translate.get_mut(k) {
-                        ui.add(egui::DragValue::new(v).speed(0.5).suffix(" mm"));
+                        let response = ui.add(egui::DragValue::new(v).speed(0.5).suffix(" mm"));
+                        crate::scenario::publish_handle(&format!("occurrence-move:distance:{k}"), response.rect.center());
                     }
                     ui.end_row();
                 }
                 for (k, axis) in ["X angle", "Y angle", "Z angle"].iter().enumerate() {
                     ui.label(*axis);
                     if let Some(v) = m.angles.get_mut(k) {
-                        ui.add(egui::DragValue::new(v).speed(1.0).suffix(" deg"));
+                        let response = ui.add(egui::DragValue::new(v).speed(1.0).suffix(" deg"));
+                        crate::scenario::publish_handle(&format!("occurrence-move:angle:{k}"), response.rect.center());
                     }
                     ui.end_row();
                 }
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("Capture Position").clicked() {
+                if ui.button("Capture All Positions").clicked() {
                     action = Some("capture");
                 }
-                if ui.button("Revert").clicked() {
+                if ui.button("Revert All Positions").clicked() {
                     action = Some("revert");
                 }
             });
@@ -1423,10 +1610,18 @@ fn occurrence_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
             app.tree.occurrence_move = None;
         }
         None if !open => {
-            let _ = app.run("component.revert_position", json!({}));
+            revert_occurrence_dialog(app, &m);
             app.tree.occurrence_move = None;
         }
         None => app.tree.occurrence_move = Some(m),
+    }
+}
+
+pub(crate) fn revert_occurrence_dialog(app: &mut SolveApp, m: &OccMove) {
+    if m.had_pending {
+        let _ = app.run("occurrence.move", json!({"occurrence":m.occurrence,"base_transform":m.baseline,"capture":false}));
+    } else {
+        let _ = app.run("component.revert_position", json!({"occurrences":[m.occurrence]}));
     }
 }
 
@@ -1438,10 +1633,14 @@ pub fn apply_occurrence_move(app: &mut SolveApp, m: &OccMove) {
     let r = gizmo::mul(&gizmo::mul(&gizmo::rotation(Vec3::Z, a[2]), &gizmo::rotation(Vec3::Y, a[1])), &gizmo::rotation(Vec3::X, a[0]));
     let (axis, angle) = gizmo::axis_angle(&r);
     let o = m.pivot.unwrap_or(Vec3::ZERO);
-    let _ = app.session.execute("component.revert_position", &json!({}));
+    let baseline = m.baseline.or_else(|| app.session.doc.occurrences.iter().find(|o| o.id == m.occurrence).map(|o| o.transform));
     let _ = app.run(
         "occurrence.move",
-        json!({ "occurrence": m.occurrence, "translate": m.translate, "axis": [axis.x, axis.y, axis.z], "angle": angle, "origin": [o.x, o.y, o.z], "capture": false }),
+        if m.path.is_empty() {
+            json!({ "occurrence": m.occurrence, "base_transform": baseline, "translate": m.translate, "axis": [axis.x, axis.y, axis.z], "angle": angle, "origin": [o.x, o.y, o.z], "capture": false })
+        } else {
+            json!({ "occurrence": m.occurrence, "path": m.path, "space": "world", "base_transform": baseline, "translate": m.translate, "axis": [axis.x, axis.y, axis.z], "angle": angle, "origin": [o.x, o.y, o.z], "capture": false })
+        },
     );
 }
 
@@ -1616,47 +1815,4 @@ fn occurrence_origin(app: &SolveApp, occurrence: u64) -> Option<solvecraft_engin
     let parent = app.session.doc.component_transform(o.parent);
     let own = app.session.pending_moves.get(&occurrence).copied().unwrap_or(o.transform);
     Some(solvecraft_engine::doc::apply_point(&solvecraft_engine::doc::mat_mul(&parent, &own), solvecraft_engine::geom::Vec3::ZERO))
-}
-
-/// Redefine Sketch Plane: pick an origin or construction plane, or the selected planar face.
-fn redefine_panel(app: &mut SolveApp, ctx: &egui::Context) {
-    let Some(id) = app.tree.redefine else { return };
-    let name = app.session.doc.feature(id).map(|f| f.name.clone()).unwrap_or_default();
-    let mut planes: Vec<String> = vec!["XY".into(), "XZ".into(), "YZ".into()];
-    planes.extend(app.session.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::ConstructionPlane { .. })).map(|f| f.name.clone()));
-    let face = app.session.selection.iter().find_map(|s| if let Sel::Face { point, .. } = s { Some(*point) } else { None });
-    let mut open = true;
-    let mut pick: Option<Value> = None;
-    crate::frame::window(ctx, format!("Redefine Sketch Plane: {name}"), crate::frame::Width::Normal)
-        .id(egui::Id::new("sc_redefine"))
-        .pivot(egui::Align2::LEFT_TOP)
-        .default_pos(panel_pos(app))
-        .open(&mut open)
-        .resizable(false)
-        .collapsible(false)
-        .show(ctx, |ui| {
-            ui.label(RichText::new("Move the sketch to").color(Tokens::get().text_dim));
-            ui.horizontal_wrapped(|ui| {
-                for p in &planes {
-                    if ui.button(p).clicked() {
-                        pick = Some(json!(p));
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            let b = ui.add_enabled(face.is_some(), egui::Button::new("Selected face"));
-            if b.clicked()
-                && let Some(f) = face
-            {
-                pick = Some(json!({ "face": [f.x, f.y, f.z] }));
-            }
-            b.on_disabled_hover_text("Select a planar face in the viewport first");
-        });
-    if let Some(plane) = pick {
-        if app.run("sketch.redefine", json!({ "sketch": id, "plane": plane })).is_ok() {
-            app.tree.redefine = None;
-        }
-    } else if !open {
-        app.tree.redefine = None;
-    }
 }

@@ -304,6 +304,16 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
             ok(json!(list.into_iter().map(|(n, p)| json!({"name": n, "x": p.x, "y": p.y})).collect::<Vec<_>>()))
         }
         "ui.at" => {
+            if let Some(path) = p.get("occurrence").and_then(Value::as_array) {
+                let ids: Option<Vec<u64>> = path.iter().map(Value::as_u64).collect();
+                let Some(ids) = ids else { return err("occurrence path must contain integer ids") };
+                let key = ids.iter().map(u64::to_string).collect::<Vec<_>>().join("/");
+                let control = s("control").unwrap_or("row");
+                return match crate::scenario::handle_at(&format!("{control}:occurrence:{key}")) {
+                    Some(q) => ok(json!([q.x, q.y])),
+                    None => err("occurrence row or control is not shown"),
+                };
+            }
             // A scenario point: {world: [x,y,z]} | {sketch: [x,y]} | {plane: "XY"} (the middle of an
             // origin plane's square) → screen point.
             if let Some(h) = p.get("handle").and_then(Value::as_str) {
@@ -466,6 +476,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
             }
         }
         "ui.browser" => ok(json!({
+            "occurrences": crate::browser::drawn_occurrences().iter().map(|(path, label, r, open)| json!({"path": path, "label": label, "y": r.center().y, "open": open})).collect::<Vec<_>>(),
             "rows": crate::browser::drawn_rows().iter().map(|(label, r, _, open)| json!({"label": label, "y": r.center().y, "open": open})).collect::<Vec<_>>(),
             "selection": app.session.selection,
             "picked_components": app.tree.picked_components,

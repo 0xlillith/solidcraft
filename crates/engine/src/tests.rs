@@ -28,7 +28,19 @@ fn join_extrude_from_a_chamfered_top_face() {
     run(&mut s, "solid.extrude", json!({"distance": 20}));
     run(&mut s, "solid.chamfer", json!({"edges": [[10, 0, 20]], "distance": 2}));
     let base = volume(&mut s);
-    run(&mut s, "sketch.create", json!({"plane": {"face": [0, 0, 20]}}));
+    let before = s.doc.to_json();
+    let active = s.active_sketch;
+    assert!(s.execute("sketch.create", &json!({"plane":{"face":[0,0,20]}})).is_err(), "modified faces require an explicit fixed plane");
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(s.active_sketch, active);
+    assert!(rel(volume(&mut s), base) < 1e-12);
+    let id = run(&mut s, "sketch.create", json!({"plane": {"face": [0, 0, 20],"fixed":true}}))["sketch"].as_u64().unwrap();
+    let solvecraft_doc::FeatureKind::Sketch { plane: solvecraft_doc::PlaneRef::Custom { plane }, sketch } = &s.doc.feature(id).unwrap().kind else {
+        panic!("explicit fixed face must become a custom plane");
+    };
+    assert!((plane.origin.z - 20.).abs() < 1e-9);
+    assert!(sketch.links.is_empty(), "fresh fixed plane does not create live auto-projections");
+    run(&mut s, "sketch.circle.center", json!({"center":[0,0],"radius":8}));
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "solid.extrude", json!({"distance": 5, "operation": "join"}));
     assert_eq!(s.model.state().bodies.len(), 1);
@@ -407,6 +419,46 @@ fn sample_edges_chain_and_faces() {
     assert!(m.edge_faces.iter().all(|f| !f.is_empty()));
 }
 
+/// timeline.inspect returns a feature's definition in the shape timeline.edit's `set` takes, so
+/// an agent can read the field names instead of guessing them.
+#[test]
+fn timeline_inspect_shows_what_timeline_edit_changes() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 10, "name": "Slab"}));
+    run(&mut s, "solid.fillet", json!({"edges": [[20, 0, 10]], "radius": 2, "name": "Round"}));
+    let i = run(&mut s, "timeline.inspect", json!({"feature": "Slab"}));
+    assert_eq!(i["type"], "ExtrudeFeature", "{i}");
+    assert_eq!(i["definition"]["extent"]["distance"], "10", "{i}");
+    assert_eq!(i["definition"]["operation"], "new_body", "{i}");
+    assert!(i["definition"].get("type").is_none() && i["definition"].get("param_names").is_none(), "{i}");
+    assert_eq!(i["inputs"][0]["label"], "Distance", "{i}");
+    assert_eq!(i["inputs"][0]["unit"], "mm", "{i}");
+    let d = i["inputs"][0]["param"].as_str().unwrap().to_string();
+    // The definition's field names are what timeline.edit takes.
+    run(&mut s, "timeline.edit", json!({"feature": "Slab", "set": {"extent": {"distance": "12"}}}));
+    let i = run(&mut s, "timeline.inspect", json!({"feature": i["id"]}));
+    assert_eq!(i["definition"]["extent"]["distance"], "12", "{i}");
+    assert_eq!(i["inputs"][0]["param"], d.as_str(), "{i}");
+    let f = run(&mut s, "timeline.inspect", json!({"feature": "Round"}));
+    assert_eq!(f["definition"]["radius"], "2", "{f}");
+    run(&mut s, "timeline.edit", json!({"feature": "Round", "set": {"radius": "3"}}));
+    assert_eq!(run(&mut s, "timeline.inspect", json!({"feature": "Round"}))["definition"]["radius"], "3");
+    // A sketch leaves its geometry out (sketch.inspect has it) and says so.
+    let k = run(&mut s, "timeline.inspect", json!({"feature": "Base"}));
+    assert!(k["definition"].get("sketch").is_none() && k["definition"].get("plane").is_some(), "{k}");
+    assert_eq!(k["omitted"][0]["field"], "sketch", "{k}");
+    // Read-only: no undo step; bad input is refused.
+    let undo = s.undo.len();
+    run(&mut s, "timeline.inspect", json!({"feature": "Slab"}));
+    assert_eq!(s.undo.len(), undo);
+    for bad in [json!({}), json!({"feature": "Nope"}), json!({"feature": [1]}), json!({"feature": 1e300}), json!({"feature": null})] {
+        assert!(s.execute("timeline.inspect", &bad).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn timeline_edits_reresolve_references() {
     let mut s = Session::default();
@@ -482,7 +534,12 @@ fn step_open_then_model_on_it() {
     run(&mut s, "solid.hole", json!({"position": at(28.0, 15.0, 20.0), "diameter": 6}));
     want -= PI * 9.0 * 20.0;
     assert!(rel(volume(&mut s), want) < 5e-4, "{} vs {want}", volume(&mut s));
-    run(&mut s, "sketch.create", json!({"plane": {"face": at(10.0, 15.0, 20.0)}}));
+    // Modified imported faces no longer have an immutable construction certificate.
+    // The public attachment refuses them; the user can explicitly choose a fixed plane.
+    let before_fixed = s.doc.to_json();
+    assert!(s.execute("sketch.create", &json!({"plane":{"face":at(10.0,15.0,20.0)}})).is_err());
+    assert_eq!(s.doc.to_json(), before_fixed);
+    run(&mut s, "sketch.create", json!({"plane": {"face": at(10.0, 15.0, 20.0), "fixed": true}}));
     let c = [x0 + 10.0, y0 + 15.0];
     // Sketch coordinates on the face are relative to the model origin projected onto it.
     run(&mut s, "sketch.rectangle.two_point", json!({"p0": [c[0] - 4.0, c[1] - 4.0], "p1": [c[0] + 4.0, c[1] + 4.0]}));
@@ -864,7 +921,14 @@ fn holes_at_sketch_points_threads_and_components() {
     let text = s.doc.to_json();
     let back = solvecraft_doc::Document::from_json(&text).unwrap();
     assert_eq!(back.components.len(), 2);
-    assert_eq!(back.body_components.len(), 1);
+    let assigned = r["components"][0]["component"].as_u64().unwrap();
+    let transfer = r["components"][0]["feature"].as_u64().unwrap();
+    assert!(
+        matches!(&back.feature(transfer).unwrap().kind, solvecraft_doc::FeatureKind::BodyTransfer { bodies, to, .. } if bodies == &["Shaft"] && *to == assigned)
+    );
+    let reopened = Session::new(back);
+    assert_eq!(reopened.model.state().body("Shaft").unwrap().component, assigned);
+    assert_eq!(reopened.world_state().threads.len(), s.world_state().threads.len());
 }
 
 #[test]
@@ -985,11 +1049,22 @@ fn components_occurrences_and_world_placement() {
     run(&mut s, "component.capture_position", json!({}));
     assert!(s.pending_moves.is_empty());
     assert!((bbox(&mut s, "ArmBody")["min"][2].as_f64().unwrap() - 5.0).abs() < 1e-9);
-    // Bodies and sketches move between components.
-    run(&mut s, "component.move_bodies", json!({"bodies": ["Base"], "component": "Arm"}));
+    // A definition placed twice cannot receive one world body without duplicating it.
+    let document = s.doc.to_json();
+    let pending = s.pending_moves.clone();
+    let error = s.execute("component.move_bodies", &json!({"bodies": ["Base"], "component": "Arm"})).unwrap_err();
+    assert!(error.to_string().contains("one source and destination placement"), "{error}");
+    assert_eq!(s.doc.to_json(), document);
+    assert_eq!(s.pending_moves, pending);
+    // The independent Paste New result has one placement and can receive it.
+    let copied = pn["component"].as_u64().unwrap();
+    run(&mut s, "component.move_bodies", json!({"bodies": ["Base"], "component": copied}));
     let l = run(&mut s, "component.list", json!({}));
     let arm = l["components"].as_array().unwrap().iter().find(|x| x["id"] == cid).unwrap().clone();
-    assert!(arm["bodies"].as_array().unwrap().iter().any(|b| b == "Base"), "{arm}");
+    assert!(!arm["bodies"].as_array().unwrap().iter().any(|b| b == "Base"), "{arm}");
+    let receiver = l["components"].as_array().unwrap().iter().find(|x| x["id"] == copied).unwrap();
+    assert!(receiver["bodies"].as_array().unwrap().iter().any(|b| b == "Base"), "{receiver}");
+    assert_eq!(bbox(&mut s, "Base")["min"], json!([0.0, 0.0, 0.0]));
     run(&mut s, "sketch.create", json!({"plane": "XY", "name": "S1"}));
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "component.move_sketches", json!({"sketches": ["S1"], "component": cid}));
@@ -999,8 +1074,9 @@ fn components_occurrences_and_world_placement() {
     assert_eq!(s.doc.find_feature("S1").unwrap().component, 0);
     run(&mut s, "edit.redo", json!({}));
     run(&mut s, "timeline.roll_to", json!({"position": 1}));
-    // Only Base is left; it now lives in Arm, which is placed twice (original and instance).
-    assert_eq!(s.world_state().bodies.len(), 2);
+    // The ownership boundary is later: before it Base remains the sole root body.
+    assert_eq!(s.world_state().bodies.len(), 1);
+    assert_eq!(s.world_state().body("Base").unwrap().component, 0);
     run(&mut s, "timeline.roll_to", json!({}));
     // Saved and loaded; older designs get occurrences.
     let back = solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
@@ -1568,20 +1644,71 @@ mod naming {
         run(&mut s, "solid.extrude", json!({"sketch": "Top", "distance": 5, "operation": "join", "name": "Peg"}));
         let top = |s: &mut Session| run(s, "inspect.measure", json!({}))["bodies"][0]["bbox"]["max"][2].as_f64().unwrap_or(0.0);
         assert!((top(&mut s) - 15.0).abs() < 1e-6);
-        // Upstream, a tall boss over the picked point: the nearest upward face is now its top,
-        // but the sketch keeps to the block's top face by name.
-        run(&mut s, "timeline.roll_to", json!({"feature": "Block"}));
-        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "B"}));
-        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [8, -5], "p1": [45, 35]}));
-        run(&mut s, "sketch.finish", json!({}));
-        run(&mut s, "solid.extrude", json!({"sketch": "B", "distance": 20, "operation": "join", "name": "Boss"}));
-        run(&mut s, "timeline.roll_to", json!({}));
-        // (Its projected face outline changed, which it says; its plane did not.)
-        assert!(!warning(&s, "Top").unwrap_or_default().contains("no longer exists"));
-        // The peg starts on the block's top (z = 10), inside the boss: the part stays 20 tall.
+        let attached = |s: &Session| s.model.state().sketch(s.doc.find_feature("Top").unwrap().id).map(|sketch| sketch.plane.origin.z);
+        assert_eq!(attached(&s), Some(10.));
+        run(&mut s, "timeline.edit", json!({"feature":"Block","set":{"extent":{"distance":"12"}}}));
+        assert_eq!(attached(&s), Some(12.));
+        assert!((top(&mut s) - 17.).abs() < 1e-6);
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(attached(&s), Some(10.));
+        assert!((top(&mut s) - 15.).abs() < 1e-6);
+        let reopened = solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        let mut model = solvecraft_doc::Model::new();
+        model.evaluate(&reopened);
+        assert_eq!(model.state().sketch(reopened.find_feature("Top").unwrap().id).unwrap().plane.origin.z, 10.);
+        assert!((model.state().bodies[0].mesh().bounds().max.z - 15.).abs() < 1e-6);
+        // A historical format-10 attachment uses its saved generic face name and no strong anchor.
+        let mut old = (*s.doc).clone();
+        let solvecraft_doc::FeatureKind::Sketch { plane: solvecraft_doc::PlaneRef::Face { anchor, name, .. }, sketch } =
+            &mut old.features.iter_mut().find(|f| f.name == "Top").unwrap().kind
+        else {
+            panic!("fixture must contain a face sketch");
+        };
+        *anchor = None;
+        for link in &mut sketch.links {
+            if link.auto_face {
+                link.auto_face = false;
+                link.face_name = name.clone();
+            }
+        }
+        old.format = "solvecraft/10".into();
+        let mut legacy = Session::new(solvecraft_doc::Document::from_json(&old.to_json()).unwrap());
+        assert_eq!(attached(&legacy), Some(10.));
+        assert!((top(&mut legacy) - 15.).abs() < 1e-6);
+        // The upstream join consumes the certified body; new attachments cannot follow its substitute roof.
+        for target in [&mut s, &mut legacy] {
+            run(target, "timeline.roll_to", json!({"feature": "Block"}));
+            run(target, "sketch.create", json!({"plane": "XY", "name": "B"}));
+            run(target, "sketch.rectangle.two_point", json!({"p0": [8, -5], "p1": [45, 35]}));
+            run(target, "sketch.finish", json!({}));
+            run(target, "solid.extrude", json!({"sketch": "B", "distance": 20, "operation": "join", "name": "Boss"}));
+            run(target, "timeline.roll_to", json!({}));
+        }
+        assert_eq!(attached(&legacy), Some(10.), "historical weak naming retains its saved geometry behavior");
+        assert!((top(&mut legacy) - 20.).abs() < 1e-6);
+        let legacy_reopened = Session::new(solvecraft_doc::Document::from_json(&legacy.doc.to_json()).unwrap());
+        assert_eq!(attached(&legacy_reopened), Some(10.));
+        assert!((legacy_reopened.model.state().bodies[0].mesh().bounds().max.z - 20.).abs() < 1e-6);
+        let solvecraft_doc::FeatureKind::Sketch { plane: solvecraft_doc::PlaneRef::Face { anchor, .. }, .. } =
+            &legacy_reopened.doc.find_feature("Top").unwrap().kind
+        else {
+            panic!("saved historical face reference must remain present");
+        };
+        assert!(anchor.is_none(), "opening old face references must not infer a strict attachment");
+        let failed = |s: &Session, name: &str| s.model.results.iter().find(|r| r.id == s.doc.find_feature(name).unwrap().id).unwrap().error.is_some();
+        assert!(failed(&s, "Top"));
+        assert!(failed(&s, "Peg"), "lost sketch cannot supply downstream geometry");
+        assert_eq!(attached(&s), None);
         assert!((top(&mut s) - 20.0).abs() < 1e-6, "{}", top(&mut s));
-        let sk = s.model.state().sketch(s.doc.find_feature("Top").map(|f| f.id).unwrap_or(0)).map(|x| x.plane.origin.z);
-        assert_eq!(sk.map(|z| (z * 1e6).round() / 1e6), Some(10.0));
+        run(&mut s, "timeline.suppress", json!({"feature":"Boss","suppressed":true}));
+        assert!(!failed(&s, "Top"));
+        assert!(!failed(&s, "Peg"));
+        assert_eq!(attached(&s), Some(10.));
+        assert!((top(&mut s) - 15.).abs() < 1e-6);
+        run(&mut s, "edit.undo", json!({}));
+        assert!(failed(&s, "Top"));
+        assert!(failed(&s, "Peg"));
+        assert_eq!(attached(&s), None);
     }
 
     #[test]

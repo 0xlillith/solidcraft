@@ -8,10 +8,237 @@ use solvecraft_engine::{Sel, Session};
 use crate::dialogs::{Dialog, Kind, apply_commands};
 use crate::{Services, SolveApp};
 
+#[test]
+fn cylinder_emboss_empty_target_face_applies_automatic_wrap_and_deboss() {
+    for deboss in [false, true] {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();
+        let initial = h.app.session.model.state().body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume;
+        let sketch =
+            h.app.run("sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"})).unwrap()["sketch"]
+                .as_u64()
+                .unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.session.selection = vec![Sel::Profile { sketch, index: 0 }];
+        h.app.start("solid.emboss");
+        h.frames(2);
+        if deboss {
+            h.settle();
+            h.step(&json!({"click":{"handle":"dialog:Type"}})).unwrap();
+            h.step(&json!({"click":{"handle":"dialog:Type:Deboss"}})).unwrap();
+        }
+        let dialog = h.app.dialog.as_ref().unwrap();
+        assert!(dialog.inputs[1].items.is_empty());
+        let commands = apply_commands(&h.app, dialog).unwrap();
+        assert!(commands[0].1.get("face").is_none());
+        let preview = h.app.session.preview_world(&commands).unwrap();
+        let expected = if deboss { -19.0 } else { 21.0 };
+        let preview_delta = preview.after.body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume - initial;
+        assert!(
+            (preview_delta - expected).abs() < 0.05,
+            "deboss={deboss}, preview delta={preview_delta}, expected={expected}, commands={commands:?}"
+        );
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+        let feature = h.app.session.doc.features.last().unwrap().clone();
+        let solvecraft_engine::doc::FeatureKind::Emboss { face: Some(face), deboss: actual, .. } = &feature.kind else {
+            panic!("automatic Apply must save its cylinder anchor: {:?}", feature.kind)
+        };
+        assert_eq!(*actual, deboss);
+        assert_eq!(face.body, "Sleeve");
+        assert!(
+            (h.app.session.model.state().body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume - initial - expected)
+                .abs()
+                < 0.05
+        );
+        h.app.edit_feature(feature.id);
+        h.frames(2);
+        assert!(matches!(h.app.dialog.as_ref().unwrap().inputs[1].items.first(), Some(Sel::Face { body, .. }) if body == "Sleeve"));
+        h.step(&json!({"key":"Escape"})).unwrap();
+        assert_eq!(h.app.session.doc.feature(feature.id).unwrap().kind, feature.kind);
+    }
+}
+
+#[test]
+fn cylinder_emboss_target_face_and_edit_keep_the_anchored_operation() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();
+    let sketch = h.app.run("sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"})).unwrap()["sketch"]
+        .as_u64()
+        .unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.app.session.selection = vec![Sel::Profile { sketch, index: 0 }];
+    h.app.start("solid.emboss");
+    h.frames(2);
+    assert_eq!(h.app.dialog.as_ref().unwrap().inputs[0].items.len(), 1);
+    let planar = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    assert!(planar[0].1.get("face").is_none());
+    h.call("ui.dialogInput", json!({"index":1}));
+    h.call("ui.view", json!({"view":"back"}));
+    h.frames(2);
+    h.step(&json!({"click":{"world":[0,10,7.5]}})).unwrap();
+    let dialog = h.app.dialog.as_ref().unwrap();
+    assert!(matches!(dialog.inputs[1].items.first(), Some(Sel::Face { body, .. }) if body == "Sleeve"));
+    let commands = apply_commands(&h.app, dialog).unwrap();
+    assert_eq!(commands[0].1["targets"], json!(["Sleeve"]));
+    assert!(commands[0].1.get("face").is_some());
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    let feature = h.app.session.doc.features.last().unwrap().id;
+    let before = serde_json::to_value(&h.app.session.doc.feature(feature).unwrap().kind).unwrap();
+    h.app.edit_feature(feature);
+    h.frames(2);
+    let edited = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    assert_eq!(edited[0].0, "timeline.redefine");
+    assert_eq!(edited[0].1["params"]["targets"], json!(["Sleeve"]));
+    assert!(edited[0].1["params"].get("face").is_some());
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    assert_eq!(serde_json::to_value(&h.app.session.doc.feature(feature).unwrap().kind).unwrap(), before);
+}
+
+#[test]
+fn cylinder_emboss_edit_retains_second_source_and_author_paths_and_all_profiles() {
+    let mut h = crate::scenario::Harness::new();
+    let source = h.app.run("component.create", json!({"name":"Source"})).unwrap()["component"].as_u64().unwrap();
+    h.app.run("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();
+    h.app.run("occurrence.move", json!({"occurrence":"Source:1","axis":[0,0,1],"angle":"90 deg","translate":[50,0,0]})).unwrap();
+    let source_second = h.app.run("occurrence.copy", json!({"component":source,"translate":[80,0,0]})).unwrap()["occurrence"].as_u64().unwrap();
+    h.app.run("component.activate", json!({"component":"root"})).unwrap();
+    let author = h.app.run("component.create", json!({"name":"Author"})).unwrap()["component"].as_u64().unwrap();
+    h.app.run("occurrence.move", json!({"occurrence":"Author:1","axis":[1,0,0],"angle":"90 deg","translate":[-100,40,30]})).unwrap();
+    let author_second = h.app.run("occurrence.copy", json!({"component":author,"translate":[0,100,0]})).unwrap()["occurrence"].as_u64().unwrap();
+    h.app.run("component.activate", json!({"component":author,"occurrence":author_second})).unwrap();
+    h.app.run("sketch.create", json!({"plane":{"origin":[120,0,0],"x_dir":[0,-1,0],"y_dir":[0,0,1]},"name":"Badge"})).unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    let target = h.app.session.occurrence_bodies(&[source_second], false).unwrap().into_iter().next().unwrap();
+    let feature = h.app.run("solid.emboss", json!({"sketch":"Badge","profiles":"all","face":[120,0,7.5],"depth":"1mm","targets":[target]})).unwrap()
+        ["feature"]
+        .as_u64()
+        .unwrap();
+    let before = h.app.session.doc.feature(feature).unwrap().clone();
+    let solvecraft_engine::doc::FeatureKind::Emboss { face: Some(face), .. } = &before.kind else { panic!("selected face") };
+    assert_eq!(face.path, vec![source_second]);
+    assert_eq!(face.author_path, vec![author_second]);
+    h.app.run("component.activate", json!({"component":"root"})).unwrap();
+    h.app.edit_feature(feature);
+    h.frames(2);
+    let dialog = h.app.dialog.as_ref().unwrap();
+    let Sel::Face { body, point, .. } = &dialog.inputs[1].items[0] else { panic!("refilled face") };
+    assert_eq!(body, &target);
+    assert!(point.dist(Vec3::new(120.0, 0.0, 7.5)) < 1e-8);
+    let commands = apply_commands(&h.app, dialog).unwrap();
+    assert_eq!(commands[0].1["params"]["profiles"], json!("all"));
+    let Sel::Profile { sketch, index } = dialog.inputs[0].items[0] else { panic!("refilled profile") };
+    let plane = crate::dialogs::emboss_profile_plane(&h.app, sketch).unwrap().unwrap();
+    assert!(plane.origin.dist(Vec3::new(120.0, 0.0, 0.0)) < 1e-8, "{plane:?}");
+    let mut guide = crate::gpu::GpuScene::default();
+    crate::viewport::profile_fill(&mut guide, &h.app, sketch, index, egui::Color32::BLUE, egui::Color32::BLUE);
+    let (vertices, remainder) = guide.trans.as_chunks::<{ crate::gpu::TRI_SIZE }>();
+    assert!(remainder.is_empty() && !vertices.is_empty());
+    let lift = h.app.cam.back() * (h.app.cam.half_height() * 0.002);
+    for vertex in vertices {
+        let coordinate = |offset| f32::from_le_bytes(vertex[offset..offset + 4].try_into().unwrap()) as f64;
+        let point = Vec3::new(coordinate(0), coordinate(4), coordinate(8)) - lift;
+        assert!((point.x - 120.0).abs() < 1e-4 && point.y.abs() < 2.01 && (4.99..=10.01).contains(&point.z), "{point:?}");
+    }
+    let preview = h.app.session.preview_world(&commands).unwrap();
+    let volume = preview.after.body(&target).unwrap().mesh().measure().volume;
+    assert!(volume > preview.before.body(&target).unwrap().mesh().measure().volume + 10.0);
+    let colors = crate::preview::Colors::from_tokens(&crate::theme::Tokens::get());
+    let built = crate::preview::compute(&h.app.session, &commands, colors).unwrap();
+    assert!(built.replaced.contains(&target) && !built.scene.tris.is_empty(), "{:?}", built.replaced);
+    let source_first = h.app.session.doc.occurrence_of(source).unwrap().id;
+    h.app.run("browser.visibility", json!({"paths":[[source_first]],"visible":false})).unwrap();
+    let hidden = crate::preview::compute(&h.app.session, &commands, colors).unwrap();
+    assert_eq!(hidden.replaced, vec![target.clone()]);
+    let visible = h.app.session.preview_visible_world(&commands).unwrap();
+    assert!(visible.before.body("Sleeve").is_none() && visible.after.body("Sleeve").is_none());
+    assert!(visible.after.body(&target).is_some() && !hidden.scene.tris.is_empty());
+    let mut shared = h.app.session.scratch();
+    shared.execute("component.activate", &json!({"component":source,"occurrence":source_first})).unwrap();
+    let new_body = shared
+        .preview_visible_world(&[("solid.box".into(), json!({"body_name":"NewPreview","length":2,"width":2,"height":2,"operation":"new"}))])
+        .unwrap();
+    let added = new_body.after.bodies.iter().filter(|body| new_body.before.body(&body.name).is_none()).collect::<Vec<_>>();
+    assert_eq!(added.len(), 1, "{:?}", added.iter().map(|body| &body.name).collect::<Vec<_>>());
+    assert!(added[0].name.contains("Source:2"), "{}", added[0].name);
+    let doc = h.app.session.doc.to_json();
+    let history = (h.app.session.undo.len(), h.app.session.redo.len());
+    let selection = h.app.session.selection.clone();
+    let Kind::Emboss { depth, .. } = &mut h.app.dialog.as_mut().unwrap().kind else { panic!("Emboss editor") };
+    *depth = "2 mm".into();
+    let changed = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    let changed_preview = h.app.session.preview_world(&changed).unwrap();
+    assert!(changed_preview.after.body(&target).unwrap().mesh().measure().volume > volume + 10.0);
+    let mut invalid = changed.clone();
+    invalid[0].1["params"]["depth"] = json!("unknown_depth");
+    assert!(h.app.session.preview_world(&invalid).is_err());
+    assert_eq!(h.app.session.doc.to_json(), doc);
+    assert_eq!((h.app.session.undo.len(), h.app.session.redo.len()), history);
+    assert_eq!(h.app.session.selection, selection);
+    h.step(&json!({"key":"Escape"})).unwrap();
+    assert!(h.app.dialog.is_none());
+    assert_eq!(h.app.session.doc.feature(feature).unwrap().kind, before.kind);
+    h.app.edit_feature(feature);
+    h.frames(2);
+    h.step(&json!({"key":"Enter"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    let after = h.app.session.doc.feature(feature).unwrap();
+    assert_eq!(after.kind, before.kind);
+    assert_eq!(after.face_names, before.face_names);
+    assert_eq!(h.app.session.active_component, 0);
+}
+
 fn app_with(script: serde_json::Value) -> SolveApp {
     let mut s = Session::default();
     s.run_script(&script).unwrap();
     SolveApp::new(s, Services::default())
+}
+
+#[test]
+fn cylinder_emboss_profile_guide_uses_target_or_unique_foreign_sketch_frame() {
+    for target_owned in [true, false] {
+        let mut h = crate::scenario::Harness::new();
+        let source = if target_owned { h.app.run("component.create", json!({"name":"Source"})).unwrap()["component"].as_u64().unwrap() } else { 0 };
+        h.app.run("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();
+        let (profile_owner, expected, target, face) = if target_owned {
+            h.app.run("occurrence.move", json!({"occurrence":"Source:1","axis":[0,0,1],"angle":"90 deg","translate":[50,0,0]})).unwrap();
+            let second = h.app.run("occurrence.copy", json!({"component":source,"translate":[80,0,0]})).unwrap()["occurrence"].as_u64().unwrap();
+            let target = h.app.session.occurrence_bodies(&[second], false).unwrap().remove(0);
+            (source, Vec3::new(120.0, 0.0, 0.0), target, json!([120, 0, 7.5]))
+        } else {
+            let profile = h.app.run("component.create", json!({"name":"Profile"})).unwrap()["component"].as_u64().unwrap();
+            h.app.run("occurrence.move", json!({"occurrence":"Profile:1","axis":[0,0,1],"angle":"90 deg","translate":[50,20,0]})).unwrap();
+            (profile, Vec3::new(0.0, 10.0, 0.0), "Sleeve".to_string(), json!([0, 10, 7.5]))
+        };
+        let plane = if target_owned {
+            json!({"origin":[40,0,0],"x_dir":[0,-1,0],"y_dir":[0,0,1]})
+        } else {
+            json!({"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]})
+        };
+        let sketch = h.app.run("sketch.create", json!({"plane":plane,"name":"Badge"})).unwrap()["sketch"].as_u64().unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.run("component.activate", json!({"component":"root"})).unwrap();
+        let feature =
+            h.app.run("solid.emboss", json!({"sketch":sketch,"profiles":"all","face":face,"depth":"1mm","targets":[target]})).unwrap()["feature"]
+                .as_u64()
+                .unwrap();
+        h.app.edit_feature(feature);
+        h.frames(2);
+        assert!(crate::dialogs::emboss_profile_plane(&h.app, sketch).unwrap().unwrap().origin.dist(expected) < 1e-8);
+        if !target_owned {
+            h.app.run("occurrence.copy", json!({"component":profile_owner,"translate":[100,0,0]})).unwrap();
+            assert!(crate::dialogs::emboss_profile_plane(&h.app, sketch).unwrap_err().contains("ambiguous"));
+            let mut guide = crate::gpu::GpuScene::default();
+            crate::viewport::profile_fill(&mut guide, &h.app, sketch, 0, egui::Color32::BLUE, egui::Color32::BLUE);
+            assert!(guide.trans.is_empty() && guide.lines.is_empty());
+        }
+    }
 }
 
 fn boxed() -> SolveApp {
