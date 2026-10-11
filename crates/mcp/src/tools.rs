@@ -151,7 +151,8 @@ pub fn tool_definitions() -> Vec<Value> {
             "Look at the design",
             "Render the design and return it as a PNG image. Headless: a CPU render of the model, fitted to the view. \
              Connected to the app: a screenshot of the window (source \"window\", the default) or a render of the model \
-             with the app's camera (source \"model\"). `view` first turns the camera to a standard view.",
+             with the app's camera (source \"model\"). Both show an active section (inspect.section) with its cut face \
+             capped. `view` first turns the camera to a standard view.",
             obj(
                 json!({
                     "view": {"type": "string", "enum": VIEWS, "description": "Standard view (default: keep the current one; headless starts at iso)"},
