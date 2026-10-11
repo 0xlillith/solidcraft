@@ -361,6 +361,10 @@ impl ConstraintKind {
             LinearDiameter { .. } => "LinearDiameterDimension",
         }
     }
+    /// Does the constraint refer to point `p` (by index)?
+    pub fn refers_to_point(&self, p: usize) -> bool {
+        self.indices().0.contains(&p)
+    }
     fn indices(&self) -> (Vec<usize>, Vec<usize>) {
         use ConstraintKind::*;
         match *self {
@@ -888,6 +892,48 @@ impl Sketch {
         if let Some(f) = first {
             out.retain(|x| *x != f);
             out.insert(0, f);
+        }
+        out
+    }
+
+    /// Virtual sharp corners (what a fillet or chamfer leaves where dimensions measured to the
+    /// corner): points used by no curve, held on two or more lines or arcs (their extensions).
+    /// Each with the extension segments from the corner to the nearest end of those curves, for
+    /// drawing.
+    pub fn virtual_corners(&self) -> Vec<(usize, Vec<(Vec2, Vec2)>)> {
+        let mut out = Vec::new();
+        for (i, p) in self.points.iter().enumerate().skip(1) {
+            if self.point_used_by_curve(i) {
+                continue;
+            }
+            let on: Vec<usize> = self
+                .constraints
+                .iter()
+                .filter_map(|c| match c.kind {
+                    ConstraintKind::PointOnCurve { p, c } if p == i => Some(c),
+                    _ => None,
+                })
+                .filter(|c| matches!(self.curves.get(*c).map(|c| &c.kind), Some(CurveKind::Line { .. } | CurveKind::Arc { .. })))
+                .collect();
+            if on.len() < 2 {
+                continue;
+            }
+            let mut ext = Vec::new();
+            for c in on {
+                let Some((a, b)) = self.curves.get(c).and_then(|c| c.kind.ends()) else { continue };
+                let (Some(pa), Some(pb)) = (self.point(a), self.point(b)) else { continue };
+                let near = if p.pos.dist(pa) <= p.pos.dist(pb) { pa } else { pb };
+                // A line only needs one when the corner is beyond its ends.
+                let inside = matches!(self.curves.get(c).map(|c| &c.kind), Some(CurveKind::Line { .. })) && {
+                    let d = pb - pa;
+                    let t = (p.pos - pa).dot(d) / d.dot(d).max(1e-300);
+                    (0.0..=1.0).contains(&t)
+                };
+                if !inside && p.pos.dist(near) > 1e-9 {
+                    ext.push((p.pos, near));
+                }
+            }
+            out.push((i, ext));
         }
         out
     }
