@@ -58,7 +58,10 @@ pub fn tool_definitions() -> Vec<Value> {
              {center: [20,15], radius: 5}; sketch.dimension {entities: [curve id], value: \"width\"}; sketch.finish {}; solid.extrude \
              {distance: 20, operation: \"cut\"}; solid.fillet {edges: [[0,0,10]], radius: 3}; solid.box {length, \
              width, height}. Lengths are mm; expressions may use parameters and units (\"width / 2\", \"30 deg\"). Returns \
-             the command's result; failures leave the design unchanged.",
+             the command's result; failures leave the design unchanged. Sketch commands that add geometry return \
+             created: {points, curves, constraints, dimensions}: the ids of what they added, stable and not reused \
+             after a delete (undo rewinds the counters with the design), usable right away \
+             in sketch.dimension, sketch.constraint.* and sketch.delete.",
             obj(
                 json!({
                     "command": string("Command id (see list_commands)"),
