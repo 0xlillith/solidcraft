@@ -17,6 +17,18 @@ events, one pointer event per frame.
 
 Commands never open dialogs when run this way. `solvecraft-cli commands` prints the same registry.
 
+Every `sketch.*` command that changes a sketch adds `created: {points, curves, constraints,
+dimensions}` to its result (and `wires` for 3D curves): the ids of what it added, in creation
+order, next to whatever else the command returns (`curves`, `sides`, `corners`…). Sketch ids are
+stable and never reused, even after a delete (`l1`, `l2`, then `l3` once `l2` is gone; only undo
+rolls the numbering back with the design), so they can go straight into later commands:
+
+```text
+{"id":7,"method":"engine.execute","params":{"command":"sketch.line","params":{"points":[[0,0],[40,0]]}}}
+→ {"curves":["l1"],"created":{"points":["l1.start","l1.end"],"curves":["l1"],"constraints":["k1"],"dimensions":[]},…}
+{"id":8,"method":"engine.execute","params":{"command":"sketch.dimension","params":{"entities":["l1"],"value":50}}}
+```
+
 ## UI
 
 | Method | Params | Notes |

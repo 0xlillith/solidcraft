@@ -15,6 +15,11 @@ fillet, chamfer, offset (O), mirror, patterns, move/copy and scale.
 **Project** (P) and **Intersect** bring model edges into the sketch as linked geometry that
 follows later changes. Sketching on a face projects its edges automatically.
 
+Run from a script or the control channel, every command that adds sketch geometry returns the
+ids of what it added (`created: {points, curves, constraints, dimensions}`). Ids are stable and
+never reused within a sketch, even after a delete, so a script can dimension or constrain the new
+geometry right away.
+
 Extend finds intersections with exact ellipses, rational conics and spline spans. It keeps the
 original line or circular support and extends only beyond the selected endpoint; conflicting
 constraints or an ambiguous overlap leave the sketch unchanged.

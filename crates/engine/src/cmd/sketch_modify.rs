@@ -20,28 +20,28 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("sketch_fillet")
         .enabled(in_sketch)
-        .params("point: corner shared by two curves (\"l1.end\") | points: [corners] (all rounded alike: one radius, the rest equal) | a, b: two lines or arcs meeting at a corner; radius: expr. A corner that dimensions or constraints measure to stays as a virtual sharp corner on both curves' extensions (`virtual_corners`; the moved ones in `moved_to_virtual_corner`)"),
+        .params(concat!("point: corner shared by two curves (\"l1.end\") | points: [corners] (all rounded alike: one radius, the rest equal) | a, b: two lines or arcs meeting at a corner; radius: expr. A corner that dimensions or constraints measure to stays as a virtual sharp corner on both curves' extensions (`virtual_corners`; the moved ones in `moved_to_virtual_corner`)", created_doc!())),
     CommandSpec::new("sketch.chamfer.equal_distance", "Equal Distance Chamfer", chamfer_equal)
         .at("SKETCH", "MODIFY")
         .icon("sketch_chamfer")
         .enabled(in_sketch)
-        .params("point | a, b: a corner of two lines; distance"),
+        .params(concat!("point | a, b: a corner of two lines; distance", created_doc!())),
     CommandSpec::new("sketch.chamfer.distance_angle", "Distance and Angle Chamfer", chamfer_dist_angle)
         .at("SKETCH", "MODIFY")
         .icon("sketch_chamfer")
         .enabled(in_sketch)
-        .params("point | a, b: a corner of two lines; distance: along a, angle: deg from a"),
+        .params(concat!("point | a, b: a corner of two lines; distance: along a, angle: deg from a", created_doc!())),
     CommandSpec::new("sketch.chamfer.two_distance", "Two Distance Chamfer", chamfer_two)
         .at("SKETCH", "MODIFY")
         .icon("sketch_chamfer")
         .enabled(in_sketch)
-        .params("point | a, b: a corner of two lines; distance: along a, distance2: along b"),
+        .params(concat!("point | a, b: a corner of two lines; distance: along a, distance2: along b", created_doc!())),
     CommandSpec::new("sketch.offset", "Offset", offset)
         .at("SKETCH", "MODIFY")
         .icon("offset")
         .key("O")
         .enabled(in_sketch)
-        .params("curves: [ids], distance: number (positive = left of the chain, or toward `side`), side?: [x,y], chain?: bool (default true: the connected chain)"),
+        .params(concat!("curves: [ids], distance: number (positive = left of the chain, or toward `side`), side?: [x,y], chain?: bool (default true: the connected chain)", created_doc!())),
     CommandSpec::new("sketch.offset.break", "Break Offset Association", break_offset)
         .enabled(in_sketch)
         .params("curve: derived offset curve id (retains geometry and makes its points editable)"),
@@ -50,7 +50,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("trim")
         .key("T")
         .enabled(in_sketch)
-        .params("curve: id, at: [x,y] (the piece to remove: between the nearest intersections around it)"),
+        .params(concat!("curve: id, at: [x,y] (the piece to remove: between the nearest intersections around it)", created_doc!())),
     CommandSpec::new("sketch.extend", "Extend", extend)
         .at("SKETCH", "MODIFY")
         .icon("extend")
@@ -60,7 +60,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("break")
         .enabled(in_sketch)
-        .params("curve: id, at: [x,y] (split at intersections) | points: [[x,y]…] (1…1000 positions projected onto the curve; duplicates are merged)"),
+        .params(concat!("curve: id, at: [x,y] (split at intersections) | points: [[x,y]…] (1…1000 positions projected onto the curve; duplicates are merged)", created_doc!())),
     CommandSpec::new("sketch.scale", "Sketch Scale", scale)
         .at("SKETCH", "MODIFY")
         .icon("scale")
@@ -68,22 +68,22 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("entities: [curve/point ids], base: [x,y] or point ref, factor: number"),
     CommandSpec::new("sketch.move", "Move/Copy Sketch Entities", move_copy)
         .enabled(in_sketch)
-        .params("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool"),
+        .params(concat!("entities: [ids], translate?: [dx,dy], angle?: deg, center?: [x,y], copy?: bool", created_doc!())),
     CommandSpec::new("sketch.mirror", "Mirror", mirror)
         .at("SKETCH", "CREATE")
         .icon("sketch_mirror")
         .enabled(in_sketch)
-        .params("entities: [curve/point ids], line: mirror line id (symmetry constraints are added)"),
+        .params(concat!("entities: [curve/point ids], line: mirror line id (symmetry constraints are added)", created_doc!())),
     CommandSpec::new("sketch.pattern.circular", "Circular Pattern", pattern_circular)
         .at("SKETCH", "CREATE")
         .icon("sketch_circ_pattern")
         .enabled(in_sketch)
-        .params("entities: [ids], center: [x,y] or point ref, count: 2…500, angle?: total deg (default 360)"),
+        .params(concat!("entities: [ids], center: [x,y] or point ref, count: 2…500, angle?: total deg (default 360)", created_doc!())),
     CommandSpec::new("sketch.pattern.rectangular", "Rectangular Pattern", pattern_rect)
         .at("SKETCH", "CREATE")
         .icon("sketch_rect_pattern")
         .enabled(in_sketch)
-        .params("entities: [ids], dir?: [x,y] (default x), count, spacing; count2?, spacing2? (perpendicular direction)"),
+        .params(concat!("entities: [ids], dir?: [x,y] (default x), count, spacing; count2?, spacing2? (perpendicular direction)", created_doc!())),
 ];
 
 const TOL: f64 = 1e-7;
