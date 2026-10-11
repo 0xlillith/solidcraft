@@ -53,8 +53,17 @@ fn main() -> ExitCode {
         Some("snapshot") => cmd_snapshot(&args[1..]),
         Some("exec") => cmd_exec(&args[1..]),
         Some("commands") => {
+            use std::io::Write as _;
             let mut s = Session::default();
-            s.execute("engine.commands", &json!({})).map(|v| println!("{}", pretty(&v))).map_err(|e| e.to_string())
+            s.execute("engine.commands", &json!({})).map_err(|e| e.to_string()).and_then(|v| {
+                // A pipeline consumer may stop early (e.g. `commands | head`).
+                // Unlike println!, writing explicitly lets us handle that without a panic.
+                match writeln!(std::io::stdout().lock(), "{}", pretty(&v)) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                    Err(e) => Err(format!("stdout: {e}")),
+                }
+            })
         }
         Some("recipe") => args.get(1).ok_or_else(|| USAGE.to_string()).and_then(|p| {
             let v = read_json(p)?;
