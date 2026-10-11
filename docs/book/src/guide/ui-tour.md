@@ -14,8 +14,9 @@
   row gives that item's menu. Rows drag into groups and other components.
 - **Viewport.** Click to select, Shift or Ctrl to add, drag for a window or crossing box. The
   wheel zooms at the cursor, the middle button pans and right-drag orbits freely (the mouse
-  preset in Preferences switches to SolidWorks or Inventor style). Hold Shift during an orbit
-  to snap to the nearest standard or diagonal view; the default Shift+middle gesture also snaps.
+  preset in Preferences switches to SolidWorks or Inventor style). Shift+middle orbits freely
+  in the default and Inventor presets. Shift+right-drag snaps to the nearest standard or
+  diagonal view; Shift does not request snapping when the preset already requires it to orbit.
   The axis view shows the world's X/Y/Z directions in SolidCraft's colors. Click a signed
   axis tip to look along that axis; click the aligned tip again to look from the opposite side.
   Drag the axis view to orbit around the view centre, with Shift for snapping. Top and bottom

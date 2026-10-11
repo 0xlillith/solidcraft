@@ -1534,7 +1534,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     if mode == Some(NavMode::Orbit) {
         let press = ui.input(|i| i.pointer.press_origin());
         app.cancel_view_animation();
-        orbit_drag(app, rect, f64::from(delta.x), f64::from(delta.y), press, mods.shift, true);
+        // Shift can be required to enter orbit (Fusion/Inventor middle drag), rather
+        // than an additional request for snapping. Only an extra modifier snaps.
+        let without_shift = egui::Modifiers { shift: false, ..mods };
+        let snap = mods.shift && (!middle || crate::prefs::nav_mode(app, middle, secondary_down, without_shift) == Some(NavMode::Orbit));
+        orbit_drag(app, rect, f64::from(delta.x), f64::from(delta.y), press, snap, true);
     } else {
         if matches!(mode, Some(NavMode::Pan | NavMode::Zoom)) {
             app.viewport.orbit_snap = None;
@@ -3408,12 +3412,34 @@ mod tests {
         h.call("ui.view", json!({"view":"front"}));
         let before = h.app.cam;
         h.call("ui.drag", json!({"x0":800,"y0":500,"x1":1020,"y1":500,"button":"middle","shift":true,"steps":40}));
-        assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6, "before={before:?}, after={:?}", h.app.cam);
+        assert!((h.app.cam.yaw - 1.76).abs() < 1e-6, "before={before:?}, after={:?}", h.app.cam);
+        assert!(h.app.viewport.orbit_snap.is_none());
         h.call("ui.view", json!({"view":"front"}));
         h.call("ui.drag", json!({"x0":800,"y0":500,"x1":850,"y1":520,"button":"middle"}));
         assert_eq!(h.app.cam.yaw, before.yaw);
         assert_eq!(h.app.cam.pitch, before.pitch);
         assert_ne!(h.app.cam.target, before.target);
+    }
+
+    #[test]
+    fn preset_shift_middle_orbit_is_free_but_shift_right_orbit_snaps() {
+        for preset in ["fusion", "inventor"] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.preferences.nav = preset.into();
+            h.call("ui.view", json!({"view":"front"}));
+            let before = h.app.cam;
+            h.call("ui.drag", json!({"x0":800,"y0":500,"x1":850,"y1":520,"button":"middle","shift":true,"steps":20}));
+            let mut expected = before;
+            expected.orbit(50.0, 20.0);
+            assert!((h.app.cam.yaw - expected.yaw).abs() < 1e-6, "{preset}: {:?}", h.app.cam);
+            assert!((h.app.cam.pitch - expected.pitch).abs() < 1e-6, "{preset}: {:?}", h.app.cam);
+            assert_eq!(h.app.cam.target, before.target);
+            assert_eq!(h.app.cam.distance, before.distance);
+            assert!(h.app.viewport.orbit_snap.is_none());
+            h.call("ui.view", json!({"view":"front"}));
+            h.call("ui.drag", json!({"x0":800,"y0":500,"x1":1020,"y1":500,"button":"right","shift":true,"steps":40}));
+            assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6, "{preset}: {:?}", h.app.cam);
+        }
     }
 
     #[test]
