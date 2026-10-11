@@ -27,11 +27,13 @@ pub mod dialogs_surface;
 pub mod dim_view;
 pub mod documents;
 pub mod drag_snap;
+pub mod fonts;
 pub mod frame;
 pub mod gizmo;
 pub mod gpu;
 pub mod help;
 pub mod home;
+pub mod i18n;
 pub mod icons;
 pub mod inference;
 pub mod keymap;
@@ -286,6 +288,11 @@ impl SolveApp {
             file_load: file_load::FileLoad::default(),
             docs: documents::Documents::default(),
         }
+    }
+
+    /// Translate text using the active language preference.
+    pub fn tr<'a>(&self, text: &'a str) -> &'a str {
+        i18n::tr_for_lang(&self.preferences.language, text)
     }
 
     /// Draw the viewport on the GPU (eframe's wgpu render state, with the app's depth and
@@ -813,6 +820,7 @@ impl SolveApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let t0 = now_ms();
+        crate::i18n::set_current_lang(&self.preferences.language);
         scenario::clear_handles();
         toolbar::app_bar(self, ui);
         file_load::show(self, ui.ctx());

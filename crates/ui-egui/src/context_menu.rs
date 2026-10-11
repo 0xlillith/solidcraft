@@ -1273,7 +1273,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 painter.circle_filled(c, 3.0, t.text_dim);
             }
             for (k, item) in radial.iter().enumerate() {
-                let galley = painter.layout_no_wrap(item.label.clone(), font.clone(), if item.enabled { t.text } else { t.text_dim });
+                let display_label = crate::i18n::tr(&item.label);
+                let galley = painter.layout_no_wrap(display_label.to_string(), font.clone(), if item.enabled { t.text } else { t.text_dim });
                 let size = vec2(galley.size().x + 40.0, 28.0);
                 let rr = slot_rect(c, k, size);
                 let resp = ui.interact(rr, ui.id().with(("radial", k)), Sense::click());
@@ -1295,7 +1296,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     picked = Some(item.clone());
                 }
                 if item.enabled {
-                    resp.on_hover_text(item.shortcut.clone());
+                    resp.on_hover_text(crate::i18n::tr(&item.shortcut).to_string());
                 }
             }
         });
@@ -1393,7 +1394,7 @@ pub fn list_row_lit(ui: &mut egui::Ui, item: &Item, lit: bool) -> Option<Item> {
         ui.painter().text(
             pos2(r.left() + 8.0, r.center().y + 2.0),
             Align2::LEFT_CENTER,
-            item.label.to_uppercase(),
+            crate::i18n::tr(&item.label).to_uppercase(),
             FontId::proportional(10.5),
             t.text_dim,
         );
@@ -1415,9 +1416,11 @@ pub fn list_row_lit(ui: &mut egui::Ui, item: &Item, lit: bool) -> Option<Item> {
         );
     }
     let text = if item.enabled { t.text } else { t.text_dim.gamma_multiply(0.75) };
-    ui.painter().text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, &item.label, FontId::proportional(13.0), text);
+    let display_label = crate::i18n::tr(&item.label);
+    ui.painter().text(pos2(r.left() + 32.0, r.center().y), Align2::LEFT_CENTER, display_label, FontId::proportional(13.0), text);
     if !item.shortcut.is_empty() {
-        ui.painter().text(pos2(r.right() - 10.0, r.center().y), Align2::RIGHT_CENTER, &item.shortcut, FontId::proportional(11.5), t.text_dim);
+        let display_shortcut = crate::i18n::tr(&item.shortcut);
+        ui.painter().text(pos2(r.right() - 10.0, r.center().y), Align2::RIGHT_CENTER, display_shortcut, FontId::proportional(11.5), t.text_dim);
     }
     (item.enabled && resp.clicked()).then(|| item.clone())
 }
