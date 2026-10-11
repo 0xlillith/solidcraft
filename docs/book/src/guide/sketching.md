@@ -91,10 +91,20 @@ midpoint, symmetry, fix, curvature (G2) and polygon. **Sketch Dimension** (D) ad
 aligned, horizontal, vertical, radius, diameter and angle dimensions. Each is a parameter
 (`d1`, `d2`, …), so it can hold an expression.
 
+For **Coincident**, pick two points, a point and a curve (in either order), or two
+distinct straight lines. Two lines join their closest pair of endpoints; the first
+picked line stays in place when the existing constraints allow it. Pick endpoints
+explicitly when you want to connect a different pair.
+
 For Parallel, Perpendicular, Equal, Tangent, Concentric and Collinear, select exactly two
 sketch curves (Shift-click to add the second) and choose the constraint to apply it immediately.
 You can also start the constraint first and then pick its curves. An incomplete or mixed
-selection starts that pick workflow; a rejected constraint keeps the selection for correction.
+selection leaves the tool ready for ordinary picking.
+
+Coincident accepts an exact selection of two points or a point and a curve. Midpoint
+accepts one point and one line, in either selection order. Symmetry accepts two distinct
+points and one symmetry line, regardless of where the line occurs in the selection.
+Successful constraints clear the selection; rejected constraints preserve it.
 
 Under-constrained geometry is blue and fully constrained geometry turns dark, and the status
 shows the remaining degrees of freedom. A constraint or dimension that would over-constrain the

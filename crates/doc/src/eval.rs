@@ -2910,6 +2910,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 }
                 o => return Err(DocError::Invalid(format!("unknown shell direction `{o}` (inside, outside or both)"))),
             };
+            let nb = nb.with_shell_certificate(f.id)?;
             if let Some(slot) = st.bodies.get_mut(i) {
                 *slot = ModelBody::new(mb.name, nb, mb.feature);
             }
@@ -3159,6 +3160,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 FeatureKind::Chamfer { distance2, angle, flip, .. } => chamfer_with(vals, &mb.body, &edges, r, distance2, angle, *flip)?,
                 _ => return Err(DocError::Invalid("blend".into())),
             };
+            let nb = nb.with_preserved_planar_sources(&mb.body)?;
             let (name, feat) = (mb.name.clone(), mb.feature);
             if let Some(slot) = st.bodies.get_mut(ti) {
                 *slot = ModelBody::new(name, nb, feat);
