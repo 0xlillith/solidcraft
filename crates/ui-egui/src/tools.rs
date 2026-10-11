@@ -14,6 +14,8 @@ pub enum Kind {
     Draw(usize),
     /// Pick sketch entities; `n` picks run the command.
     Pick(usize),
+    /// Pick one straight line, or two distinct points to align.
+    HorizontalVertical,
     Dimension,
     /// A tool from `sketch_tools` (it handles its own clicks).
     Ext,
@@ -56,7 +58,7 @@ impl Tool {
             "sketch.slot.overall" => ("sketch.slot.overall", Kind::Draw(3)),
             "sketch.point" => ("sketch.point", Kind::Draw(1)),
             "sketch.dimension" => ("sketch.dimension", Kind::Dimension),
-            "sketch.constraint.horizontal_vertical" => ("sketch.constraint.horizontal_vertical", Kind::Pick(1)),
+            "sketch.constraint.horizontal_vertical" => ("sketch.constraint.horizontal_vertical", Kind::HorizontalVertical),
             "sketch.constraint.fix" => ("sketch.constraint.fix", Kind::Pick(1)),
             "sketch.constraint.coincident" => ("sketch.constraint.coincident", Kind::Pick(2)),
             "sketch.constraint.tangent" => ("sketch.constraint.tangent", Kind::Pick(2)),
@@ -93,6 +95,7 @@ pub fn hint(id: &str) -> String {
         "sketch.arc.three_point" => "Arc: click start, end, then a point on the arc".into(),
         "sketch.arc.center_point" => "Arc: click centre and start, then click end or type a signed sweep".into(),
         "sketch.dimension" => "Dimension: pick one or two entities, then click to place the value".into(),
+        "sketch.constraint.horizontal_vertical" => "Horizontal/Vertical: pick a line or two points to align".into(),
         "sketch.slot.center_to_center" | "sketch.slot.overall" => "Slot: click both ends, then the width".into(),
         _ if id.starts_with("sketch.constraint.") => "Constraint: pick the sketch entities".into(),
         _ => crate::sketch_tools::hint(id).unwrap_or_else(|| "Click in the sketch".into()),
@@ -141,6 +144,29 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
                 app.tool = Some(tool);
                 place(app, p);
                 return;
+            }
+        }
+        Kind::HorizontalVertical => {
+            let hits = pick(app, proj, pos);
+            let hit = hits.iter().find(|hit| match hit {
+                Hit::SketchPoint { sketch, .. } | Hit::SketchCurve { sketch, .. } => Some(*sketch) == app.session.active_sketch,
+                _ => false,
+            });
+            match hit {
+                Some(Hit::SketchPoint { id, .. }) => {
+                    if let Some(first) = tool.picks.first() {
+                        if first != id {
+                            let _ = app.run(tool.cmd, json!({"points": [first, id]}));
+                            tool.picks.clear();
+                        }
+                    } else {
+                        tool.picks.push(id.clone());
+                    }
+                }
+                Some(Hit::SketchCurve { id, straight: true, .. }) if tool.picks.is_empty() => {
+                    let _ = app.run(tool.cmd, json!({"line": id}));
+                }
+                _ => {}
             }
         }
         Kind::Pick(n) => {
@@ -292,7 +318,6 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
 fn run_pick(app: &mut SolveApp, t: &Tool) {
     let k = &t.picks;
     let params = match t.cmd {
-        "sketch.constraint.horizontal_vertical" => json!({"line": k[0]}),
         "sketch.constraint.fix" => json!({"entity": k[0]}),
         "sketch.constraint.coincident" => json!({"a": k[0], "b": k[1]}),
         "sketch.constraint.midpoint" => json!({"point": k[0], "line": k[1]}),

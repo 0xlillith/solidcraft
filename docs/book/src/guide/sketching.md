@@ -54,6 +54,10 @@ fresh link once the source is available; their stored point values are preserved
 
 ## Constraints and dimensions
 
+**Horizontal/Vertical** accepts a click on a line or clicks on two distinct sketch points,
+including the origin, endpoints and circle centres. For two points, it chooses horizontal
+or vertical alignment from their current positions. Esc cancels a pending first point.
+
 The solver is SolveCraft's own (damped Gauss–Newton with degree-of-freedom analysis). Constraints:
 coincident, horizontal/vertical, parallel, perpendicular, tangent, equal, concentric, collinear,
 midpoint, symmetry, fix, curvature (G2) and polygon. **Sketch Dimension** (D) adds linear,
