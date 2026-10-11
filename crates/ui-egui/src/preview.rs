@@ -103,6 +103,28 @@ impl PreviewState {
             Err(e) => self.error = Some(e),
         }
     }
+
+    /// Errors validate only the current inputs. Keep the last good geometry while
+    /// computing new inputs, but never let an obsolete result block their Apply.
+    fn poll(&mut self, key: u64) {
+        if self.shown_key != Some(key) {
+            self.error = None;
+        }
+        if let Some((k, rx)) = &self.running {
+            let k = *k;
+            let job = match rx.try_recv() {
+                Ok(job) => Some(job),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("the preview failed".into())),
+            };
+            if let Some(job) = job {
+                self.running = None;
+                if k == key {
+                    self.apply(k, job);
+                }
+            }
+        }
+    }
 }
 
 /// Keep the preview in step with the open dialog: start a computation when its inputs changed,
@@ -110,6 +132,7 @@ impl PreviewState {
 pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
     let cmds = match app.dialog.as_ref().filter(|d| d.previews()).map(|d| crate::dialogs::preview_commands(app, d)) {
         Some(Ok(c)) if !c.is_empty() => c,
+        _ if crate::sketch_attachment_ui::commands(app).is_some() => crate::sketch_attachment_ui::commands(app).unwrap_or_default(),
         // A parameter being edited in Change Parameters.
         _ if app.params.as_ref().and_then(|p| p.preview_commands()).is_some() => {
             app.params.as_ref().and_then(|p| p.preview_commands()).unwrap_or_default()
@@ -127,20 +150,7 @@ pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
     format!("{colors:?}").hash(&mut h);
     let key = h.finish();
     let pv = &mut app.preview;
-    if let Some((k, rx)) = &pv.running {
-        let k = *k;
-        match rx.try_recv() {
-            Ok(job) => {
-                pv.running = None;
-                pv.apply(k, job);
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                pv.running = None;
-                pv.apply(k, Err("the preview failed".into()));
-            }
-        }
-    }
+    pv.poll(key);
     if pv.running.is_none() && pv.shown_key != Some(key) {
         pv.started = crate::now_ms();
         let scratch = app.session.scratch();
@@ -176,6 +186,15 @@ fn spawn(pv: &mut PreviewState, key: u64, scratch: Session, cmds: Vec<(String, V
 /// show their result in place of the bodies they change. When the feature fails (a boolean the
 /// kernel can't do yet), the tool body is still shown, with the error.
 pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
+    if cmds.iter().any(|(command, _)| command == "sketch.redefine") {
+        let preview = s.preview_visible_world(cmds).map_err(|error| error.to_string())?;
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut built = build(&preview.before, &preview.after, colors);
+            built.bounds = state_bounds(&preview.after);
+            built
+        }))
+        .map_err(|_| "the preview failed".to_string());
+    }
     // Joints and drives move occurrences: shown on the placed model.
     if let Some(job) = crate::dialogs_assembly::world_preview(s, cmds, colors) {
         return job;
@@ -365,6 +384,41 @@ mod tests {
 
     fn colors() -> Colors {
         Colors { body: [1, 1, 1, 255], added: [2, 2, 2, 255], removed: [3, 3, 3, 100], edge: [0, 0, 0, 255] }
+    }
+
+    #[test]
+    fn correcting_inputs_clears_old_errors_and_discards_late_old_jobs() {
+        let mut pv = PreviewState {
+            shown_key: Some(1),
+            error: Some("unknown_angle".into()),
+            active: true,
+            replaced: vec!["Turn".into()],
+            key: 9,
+            ..PreviewState::default()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        pv.running = Some((1, rx));
+        pv.poll(2);
+        assert!(pv.error.is_none(), "the corrected inputs can Apply while their preview computes");
+        assert!(pv.running.is_some());
+        assert!(pv.active);
+        assert_eq!(pv.replaced, ["Turn"]);
+        assert_eq!(pv.key, 9, "the last good geometry stays visible");
+        tx.send(Err("unknown_angle".into())).unwrap();
+        pv.poll(2);
+        assert!(pv.error.is_none(), "a late obsolete result cannot disable Apply again");
+        assert!(pv.running.is_none());
+        assert_eq!(pv.shown_key, Some(1));
+        assert_eq!(pv.key, 9);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        pv.running = Some((2, rx));
+        tx.send(Err("current invalid expression".into())).unwrap();
+        pv.poll(2);
+        assert_eq!(pv.error.as_deref(), Some("current invalid expression"));
+        assert_eq!(pv.shown_key, Some(2));
+        pv.poll(2);
+        assert_eq!(pv.error.as_deref(), Some("current invalid expression"), "current errors still prevent invalid Apply");
     }
 
     fn count(bytes: &[u8], stride: usize, col: [u8; 4]) -> usize {

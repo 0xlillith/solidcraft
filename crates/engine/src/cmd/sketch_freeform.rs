@@ -12,7 +12,7 @@ use crate::params::bad;
 
 /// Exact pieces of a free-form curve (polyline lines for the few kinds without them).
 fn pieces(sk: &Sketch, ci: usize) -> Vec<Seg2> {
-    sk.exact_segs(ci).unwrap_or_else(|| sk.polyline(ci).windows(2).map(|w| Seg2::Line { a: w[0], b: w[1] }).collect())
+    sk.exact_segs(ci).unwrap_or_else(|| sk.segs(ci))
 }
 
 /// Position along the pieces (piece index + local parameter) closest to `p`, and the distance.
@@ -44,7 +44,7 @@ fn project(sk: &Sketch, ci: usize, p: Vec2) -> Vec2 {
 }
 
 /// Where other curves meet free-form curve `ci`: (position along it, the point, the other curve).
-fn cuts(sk: &Sketch, ci: usize, segs: &[Seg2]) -> Vec<(f64, Vec2, usize)> {
+fn cuts(sk: &Sketch, ci: usize, segs: &[Seg2], only_freeform: bool) -> Vec<(f64, Vec2, usize)> {
     let mine = sk.polyline(ci);
     let tol = 1e-6;
     let mut out: Vec<(f64, Vec2, usize)> = Vec::new();
@@ -57,8 +57,8 @@ fn cuts(sk: &Sketch, ci: usize, segs: &[Seg2]) -> Vec<(f64, Vec2, usize)> {
         let (t, u) = ((c - a).cross(s) / den, (c - a).cross(r) / den);
         ((-1e-9..=1.0 + 1e-9).contains(&t) && (-1e-9..=1.0 + 1e-9).contains(&u)).then(|| a + r * t)
     };
-    for (oi, _) in sk.curves.iter().enumerate() {
-        if oi == ci {
+    for (oi, curve) in sk.curves.iter().enumerate() {
+        if oi == ci || (only_freeform && !curve.kind.is_freeform()) {
             continue;
         }
         let other = sk.polyline(oi);
@@ -90,13 +90,22 @@ fn cuts(sk: &Sketch, ci: usize, segs: &[Seg2]) -> Vec<(f64, Vec2, usize)> {
                 q = n;
             }
             let (u, d) = locate(segs, q);
-            if d < tol && !out.iter().any(|(_, y, _)| y.dist(q) < tol * 10.0) {
+            if d < tol && project(sk, oi, q).dist(q) < tol && !out.iter().any(|(_, y, _)| y.dist(q) < tol * 10.0) {
                 out.push((u, q, oi));
             }
         }
     }
     out.sort_by(|a, b| a.0.total_cmp(&b.0));
     out
+}
+
+/// Crossings for an analytic target with free-form cutters. Analytic-to-analytic crossings
+/// remain in the shape intersection routine; this supplies the missing mixed pairs.
+pub(super) fn analytic_cut_points(sk: &Sketch, ci: usize) -> Vec<(Vec2, usize)> {
+    if !sk.curves.iter().any(|c| c.kind.is_freeform()) {
+        return Vec::new();
+    }
+    cuts(sk, ci, &pieces(sk, ci), true).into_iter().map(|(_, q, oi)| (q, oi)).collect()
 }
 
 /// Exact sub-pieces between positions `ua` < `ub` (positions may run past the end on closed
@@ -147,7 +156,7 @@ fn add_pieces(sk: &mut Sketch, segs: &[Seg2], start: Option<usize>, end: Option<
             Seg2::Line { .. } => CurveKind::Line { a: prev, b: to },
             Seg2::Cubic { p1, p2, .. } => {
                 let (c1, c2) = (sk.add_point(p1, None)?, sk.add_point(p2, None)?);
-                CurveKind::Spline { pts: vec![prev, c1, c2, to], control: true, degree: 3 }
+                CurveKind::Spline { pts: vec![prev, c1, c2, to], control: true, degree: 3, periodic: false }
             }
             Seg2::Conic { apex, w, .. } => {
                 let x = sk.add_point(apex, None)?;
@@ -160,7 +169,7 @@ fn add_pieces(sk: &mut Sketch, segs: &[Seg2], start: Option<usize>, end: Option<
                     pts.push(sk.add_point(*q, None)?);
                 }
                 pts.push(to);
-                CurveKind::Spline { pts, control: true, degree: n }
+                CurveKind::Spline { pts, control: true, degree: n, periodic: false }
             }
             Seg2::Arc { .. } => return Err(bad("trim", "unexpected arc piece")),
         };
@@ -176,18 +185,45 @@ fn add_pieces(sk: &mut Sketch, segs: &[Seg2], start: Option<usize>, end: Option<
 
 /// Trim (`remove`) or break a free-form curve at the crossings around `at`.
 pub(super) fn trim_or_break(sk: &mut Sketch, ci: usize, at: Vec2, remove: bool, cmd: &str) -> Result<Value> {
+    modify(sk, ci, at, remove, None, cmd)
+}
+
+/// Break at explicit positions, projected onto the exact curve. Closed curves can be opened
+/// at one point; open curves require interior positions.
+pub(super) fn break_at_points(sk: &mut Sketch, ci: usize, points: &[Vec2], cmd: &str) -> Result<Value> {
+    modify(sk, ci, Vec2::ZERO, false, Some(points), cmd)
+}
+
+fn modify(sk: &mut Sketch, ci: usize, at: Vec2, remove: bool, points: Option<&[Vec2]>, cmd: &str) -> Result<Value> {
     let segs = pieces(sk, ci);
     if segs.is_empty() {
         return Err(bad(cmd, "the curve has no shape"));
     }
     let n = segs.len() as f64;
     let closed = segs.first().zip(segs.last()).is_some_and(|(a, b)| a.start().dist(b.end()) < 1e-9);
-    let cs: Vec<(f64, Vec2, usize)> = cuts(sk, ci, &segs).into_iter().filter(|c| closed || (c.0 > 1e-9 && c.0 < n - 1e-9)).collect();
+    let cs: Vec<(f64, Vec2, Option<usize>)> = if let Some(points) = points {
+        let mut positions: Vec<f64> = points.iter().map(|q| locate(&segs, *q).0).collect();
+        if positions.iter().any(|u| !u.is_finite() || (!closed && (*u <= 1e-9 || *u >= n - 1e-9))) {
+            return Err(bad(cmd, "break points must project inside the curve, away from its ends"));
+        }
+        if closed {
+            for u in &mut positions {
+                if *u >= n - 1e-9 {
+                    *u = 0.0;
+                }
+            }
+        }
+        positions.sort_by(f64::total_cmp);
+        positions.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
+        positions.into_iter().map(|u| (u, point_at(&segs, u), None)).collect()
+    } else {
+        cuts(sk, ci, &segs, false).into_iter().filter(|c| closed || (c.0 > 1e-9 && c.0 < n - 1e-9)).map(|(u, q, c)| (u, q, Some(c))).collect()
+    };
     let (uq, _) = locate(&segs, at);
     let ends = sk.curves.get(ci).and_then(|c| c.kind.ends());
     let construction = sk.curves.get(ci).is_some_and(|c| c.construction);
     // Intervals between consecutive cuts (closed curves wrap round).
-    let mut bounds: Vec<(f64, Option<usize>)> = cs.iter().map(|c| (c.0, Some(c.2))).collect();
+    let mut bounds: Vec<(f64, Option<usize>)> = cs.iter().map(|c| (c.0, c.2)).collect();
     if bounds.is_empty() {
         if remove {
             sk.remove_curves(&[ci]);
@@ -239,7 +275,7 @@ pub(super) fn trim_or_break(sk: &mut Sketch, ci: usize, at: Vec2, remove: bool, 
     // Cut points stay on the curves that cut there.
     for ((_, _, oi), (_, pi)) in cs.iter().zip(&cut_pt) {
         let used = sk.curves.iter().any(|c| c.kind.uses(*pi));
-        if used {
+        if used && let Some(oi) = oi {
             add_c(sk, ConstraintKind::PointOnCurve { p: *pi, c: *oi })?;
         }
     }

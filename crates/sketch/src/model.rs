@@ -53,6 +53,9 @@ pub enum CurveKind {
         control: bool,
         #[serde(default = "three")]
         degree: u8,
+        /// Explicit cyclic C2 fit interpolation; absent retains natural endpoints.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        periodic: bool,
     },
     /// Conic from `a` to `b` shaped by the `apex` point and `rho` in (0, 1) (0.5 parabola,
     /// less elliptical, more hyperbolic).
@@ -111,6 +114,7 @@ impl CurveKind {
     pub fn ends(&self) -> Option<(usize, usize)> {
         match self {
             CurveKind::Line { a, b } | CurveKind::Arc { a, b, .. } | CurveKind::Conic { a, b, .. } => Some((*a, *b)),
+            CurveKind::Spline { periodic: true, .. } => None,
             CurveKind::Spline { pts, .. } => Some((*pts.first()?, *pts.last()?)),
             CurveKind::Circle { .. } | CurveKind::Ellipse { .. } => None,
         }
@@ -233,6 +237,22 @@ pub enum ConstraintKind {
         l: usize,
         value: f64,
     },
+    /// Signed angle of a line's stored start-to-end direction from sketch +X (radians).
+    LineAngle {
+        l: usize,
+        value: f64,
+    },
+    /// Signed logical sweep of an arc (radians), preserving clockwise and major arcs.
+    ArcSweep {
+        c: usize,
+        value: f64,
+    },
+    /// Overall length of a straight slot: cap-centre distance plus both cap radii.
+    SlotOverallLength {
+        a: usize,
+        b: usize,
+        value: f64,
+    },
     Radius {
         c: usize,
         value: f64,
@@ -282,6 +302,9 @@ impl ConstraintKind {
             | DistanceY { value, .. }
             | PointLineDistance { value, .. }
             | Length { value, .. }
+            | LineAngle { value, .. }
+            | ArcSweep { value, .. }
+            | SlotOverallLength { value, .. }
             | Radius { value, .. }
             | Diameter { value, .. }
             | ArcLength { value, .. }
@@ -298,6 +321,9 @@ impl ConstraintKind {
             | DistanceY { value, .. }
             | PointLineDistance { value, .. }
             | Length { value, .. }
+            | LineAngle { value, .. }
+            | ArcSweep { value, .. }
+            | SlotOverallLength { value, .. }
             | Radius { value, .. }
             | Diameter { value, .. }
             | ArcLength { value, .. }
@@ -307,7 +333,7 @@ impl ConstraintKind {
         }
     }
     pub fn is_angle(&self) -> bool {
-        matches!(self, ConstraintKind::Angle { .. })
+        matches!(self, ConstraintKind::Angle { .. } | ConstraintKind::LineAngle { .. } | ConstraintKind::ArcSweep { .. })
     }
     /// Short type name (Fusion-like) for listings.
     pub fn name(&self) -> &'static str {
@@ -328,7 +354,8 @@ impl ConstraintKind {
             Distance { .. } | DistanceX { .. } | DistanceY { .. } | PointLineDistance { .. } | Length { .. } => "LinearDimension",
             Radius { .. } => "RadialDimension",
             Diameter { .. } => "DiameterDimension",
-            Angle { .. } => "AngularDimension",
+            Angle { .. } | LineAngle { .. } | ArcSweep { .. } => "AngularDimension",
+            SlotOverallLength { .. } => "LinearDimension",
             Smooth { .. } => "Smooth",
             ArcLength { .. } => "ArcLengthDimension",
             LinearDiameter { .. } => "LinearDiameterDimension",
@@ -340,12 +367,12 @@ impl ConstraintKind {
             Coincident { p, q } | HorizontalPoints { p, q } | VerticalPoints { p, q } => (vec![p, q], vec![]),
             Distance { p, q, .. } | DistanceX { p, q, .. } | DistanceY { p, q, .. } => (vec![p, q], vec![]),
             PointOnCurve { p, c } => (vec![p], vec![c]),
-            Horizontal { l } | Vertical { l } | Length { l, .. } => (vec![], vec![l]),
-            Radius { c, .. } | Diameter { c, .. } => (vec![], vec![c]),
+            Horizontal { l } | Vertical { l } | Length { l, .. } | LineAngle { l, .. } => (vec![], vec![l]),
+            Radius { c, .. } | Diameter { c, .. } | ArcSweep { c, .. } => (vec![], vec![c]),
             Parallel { a, b } | Perpendicular { a, b } | Collinear { a, b } | Tangent { a, b } | Equal { a, b } | Concentric { a, b } => {
                 (vec![], vec![a, b])
             }
-            Angle { a, b, .. } => (vec![], vec![a, b]),
+            Angle { a, b, .. } | SlotOverallLength { a, b, .. } => (vec![], vec![a, b]),
             Midpoint { p, l } | PointLineDistance { p, l, .. } => (vec![p], vec![l]),
             Symmetric { p, q, l } => (vec![p, q], vec![l]),
             Fix { p } => (vec![p], vec![]),
@@ -379,13 +406,13 @@ impl ConstraintKind {
                 fp(p);
                 fc(c);
             }
-            Horizontal { l } | Vertical { l } | Length { l, .. } => fc(l),
-            Radius { c, .. } | Diameter { c, .. } => fc(c),
+            Horizontal { l } | Vertical { l } | Length { l, .. } | LineAngle { l, .. } => fc(l),
+            Radius { c, .. } | Diameter { c, .. } | ArcSweep { c, .. } => fc(c),
             Parallel { a, b } | Perpendicular { a, b } | Collinear { a, b } | Tangent { a, b } | Equal { a, b } | Concentric { a, b } => {
                 fc(a);
                 fc(b);
             }
-            Angle { a, b, .. } => {
+            Angle { a, b, .. } | SlotOverallLength { a, b, .. } => {
                 fc(a);
                 fc(b);
             }
@@ -469,6 +496,9 @@ pub struct Sketch {
     pub links: Vec<crate::link::Link>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offsets: Vec<crate::offset::OffsetChain>,
+    /// New certified normal offsets; legacy sampled output splines remain independent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub freeform_offsets: Vec<crate::freeform_offset::FreeformOffset>,
     /// 3D curves (world coordinates) carried by the sketch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wires: Vec<crate::wire::Wire>,
@@ -498,6 +528,7 @@ impl Sketch {
             constraints: Vec::new(),
             links: Vec::new(),
             offsets: Vec::new(),
+            freeform_offsets: Vec::new(),
             wires: Vec::new(),
             counters: Default::default(),
             view: SketchView::default(),
@@ -694,11 +725,12 @@ impl Sketch {
             Horizontal { l }
             | Vertical { l }
             | Length { l, .. }
+            | LineAngle { l, .. }
             | Midpoint { l, .. }
             | Symmetric { l, .. }
             | PointLineDistance { l, .. }
             | LinearDiameter { l, .. } => need_line(l)?,
-            ArcLength { c, .. } if !matches!(self.curves.get(c).map(|c| &c.kind), Some(CurveKind::Arc { .. })) => {
+            ArcLength { c, .. } | ArcSweep { c, .. } if !matches!(self.curves.get(c).map(|c| &c.kind), Some(CurveKind::Arc { .. })) => {
                 return Err(SketchError::WrongKind(name(c), "arc length needs an arc".into()));
             }
             Smooth { a, b } => {
@@ -722,6 +754,36 @@ impl Sketch {
                 need_round(a)?;
                 need_round(b)?;
             }
+            SlotOverallLength { a, b, value } => {
+                if a == b || ![a, b].iter().all(|i| matches!(self.curves.get(*i).map(|c| &c.kind), Some(CurveKind::Arc { .. }))) {
+                    return Err(SketchError::Invalid("overall slot length needs two different arc caps".into()));
+                }
+                let radius = |cap: usize| {
+                    self.constraints
+                        .iter()
+                        .filter(|c| !c.driven)
+                        .find_map(|dimension| match dimension.kind {
+                            Radius { c, value } if c == cap => Some(value),
+                            Diameter { c, value } if c == cap => Some(value / 2.0),
+                            // Slot caps are constrained equal; a diameter on either drives both.
+                            Diameter { c, value } | Radius { c, value }
+                                if (c == a || c == b)
+                                    && self
+                                        .constraints
+                                        .iter()
+                                        .any(|e| matches!(e.kind, Equal { a: x, b: y } if (x == a && y == b) || (x == b && y == a))) =>
+                            {
+                                Some(if matches!(dimension.kind, Diameter { .. }) { value / 2.0 } else { value })
+                            }
+                            _ => None,
+                        })
+                        .or_else(|| self.radius(cap))
+                        .unwrap_or(0.0)
+                };
+                if value <= radius(a) + radius(b) + 1e-9 {
+                    return Err(SketchError::Invalid("overall slot length must exceed its width".into()));
+                }
+            }
             Tangent { a, b } => {
                 let free = |i: usize| self.curves.get(i).is_some_and(|c| c.kind.is_freeform());
                 if !(is_round(a) || is_round(b) || free(a) || free(b)) {
@@ -738,6 +800,11 @@ impl Sketch {
             && (!v.is_finite() || v.abs() > 1e9 || (v < 0.0 && !k.is_angle()))
         {
             return Err(SketchError::Invalid(format!("dimension value {v}")));
+        }
+        if let ArcSweep { value, .. } = *k
+            && !(value.abs() > 1e-9 && value.abs() < std::f64::consts::TAU - 1e-9)
+        {
+            return Err(SketchError::Invalid("arc sweep must be nonzero and less than a full turn".into()));
         }
         Ok(())
     }
@@ -827,7 +894,7 @@ impl Sketch {
 
     /// Is curve `c` held in place: fixed or projected (linked).
     pub fn curve_locked(&self, c: usize) -> bool {
-        self.curves.get(c).is_some_and(|c| c.fixed || c.link.is_some())
+        self.curves.get(c).is_some_and(|c| c.fixed || c.link.is_some() || self.freeform_offsets.iter().any(|offset| offset.output == c.id))
     }
 
     /// Radius of a circle or arc.
@@ -899,11 +966,13 @@ impl Sketch {
                 )
             }
             CurveKind::Conic { a, b, apex, rho } => Some(vec![Seg2::Conic { a: pt(a)?, apex: pt(apex)?, b: pt(b)?, w: rho / (1.0 - rho).max(1e-9) }]),
-            CurveKind::Spline { pts, control: false, .. } => {
+            CurveKind::Spline { pts, control: false, periodic, .. } => {
                 let p: Vec<Vec2> = pts.iter().map(pt).collect::<Option<_>>()?;
-                Some(crate::curves::fit_beziers(&p).into_iter().map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 }).collect())
+                Some(
+                    crate::curves::fit_beziers_mode(&p, *periodic).ok()?.into_iter().map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 }).collect(),
+                )
             }
-            CurveKind::Spline { pts, control: true, degree } if (*degree as usize) <= solvecraft_geom::MAX_BEZIER_DEGREE => {
+            CurveKind::Spline { pts, control: true, degree, .. } if (*degree as usize) <= solvecraft_geom::MAX_BEZIER_DEGREE => {
                 let p: Vec<Vec2> = pts.iter().map(pt).collect::<Option<_>>()?;
                 let k = (*degree as usize).min(p.len().saturating_sub(1)).max(1);
                 Some(crate::curves::bspline_beziers(&p, k).iter().filter_map(|c| solvecraft_geom::bezier(c)).collect())
@@ -922,9 +991,9 @@ impl Sketch {
                 (Some(c), Some(m)) => crate::curves::ellipse_polyline(c, m, *r),
                 _ => Vec::new(),
             },
-            CurveKind::Spline { pts, control, degree } => {
+            CurveKind::Spline { pts, control, degree, periodic } => {
                 let p: Option<Vec<Vec2>> = pts.iter().map(pt).collect();
-                p.map(|p| crate::curves::spline_polyline(&p, *control, *degree)).unwrap_or_default()
+                p.map(|p| crate::curves::spline_polyline_mode(&p, *control, *degree, *periodic)).unwrap_or_default()
             }
             CurveKind::Conic { a, b, apex, rho } => match (pt(a), pt(apex), pt(b)) {
                 (Some(a), Some(x), Some(b)) => crate::curves::conic_polyline(a, x, b, *rho),
@@ -960,9 +1029,19 @@ impl Sketch {
                 }
                 "e"
             }
-            CurveKind::Spline { pts, degree, .. } => {
+            CurveKind::Spline { pts, control, degree, periodic } => {
                 if pts.len() < 2 || pts.len() > crate::curves::MAX_SPLINE_POINTS || !(1..=7).contains(degree) {
                     return Err(SketchError::Invalid("a spline needs 2 to 500 points and degree 1 to 7".into()));
+                }
+                if *periodic {
+                    if *control || *degree != 3 {
+                        return Err(SketchError::Invalid("periodic mode requires a cubic fit spline".into()));
+                    }
+                    let p = pts
+                        .iter()
+                        .map(|i| self.point(*i).ok_or_else(|| SketchError::Invalid("missing periodic point".into())))
+                        .collect::<Result<Vec<_>>>()?;
+                    crate::periodic_beziers(&p)?;
                 }
                 "s"
             }
@@ -1001,6 +1080,7 @@ impl Sketch {
 
     /// Remove curves only (points stay), remapping constraints.
     fn drop_curves(&mut self, which: &[usize]) {
+        self.prune_offsets_for_removed_curves(which);
         let mut cmap = vec![None; self.curves.len()];
         let mut n = 0;
         for (i, slot) in cmap.iter_mut().enumerate() {
@@ -1028,7 +1108,34 @@ impl Sketch {
         let gone = |p: usize| p != 0 && which.contains(&p);
         let dead_curves: Vec<usize> =
             self.curves.iter().enumerate().filter(|(_, c)| c.kind.point_ids().into_iter().any(gone)).map(|(i, _)| i).collect();
+        let private = dead_curves
+            .iter()
+            .filter_map(|i| self.curves.get(*i))
+            .filter(|c| self.freeform_offsets.iter().any(|r| r.output == c.id))
+            .flat_map(|c| c.kind.point_ids())
+            .collect::<std::collections::BTreeSet<_>>();
         self.drop_curves(&dead_curves);
+        let mut removed = which.iter().copied().filter(|i| *i != 0).collect::<std::collections::BTreeSet<_>>();
+        // Keep any node still named by a surviving curve or constraint.
+        let referenced = self.curves.iter().flat_map(|c| c.kind.point_ids()).collect::<std::collections::BTreeSet<_>>();
+        let constraint_points = std::cell::RefCell::new(std::collections::BTreeSet::new());
+        for constraint in &self.constraints {
+            let mut kind = constraint.kind.clone();
+            kind.remap(
+                &|p| {
+                    constraint_points.borrow_mut().insert(p);
+                    Some(p)
+                },
+                &Some,
+            );
+        }
+        let constraint_points = constraint_points.into_inner();
+        for index in private {
+            if index != 0 && !referenced.contains(&index) && !constraint_points.contains(&index) {
+                removed.insert(index);
+            }
+        }
+        let gone = |p: usize| removed.contains(&p);
         let mut pmap = vec![None; self.points.len()];
         let mut n = 0;
         for (i, slot) in pmap.iter_mut().enumerate() {

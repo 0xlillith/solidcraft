@@ -168,6 +168,64 @@ pub fn fit_beziers(p: &[Vec2]) -> Vec<[Vec2; 4]> {
     fit_spans(p).into_iter().map(|(p0, p1, t0, t1)| [p0, p0 + t0 / 3.0, p1 - t1 / 3.0, p1]).collect()
 }
 
+/// Fit pieces in the explicitly selected interpolation mode.
+pub fn fit_beziers_mode(p: &[Vec2], periodic: bool) -> crate::model::Result<Vec<[Vec2; 4]>> {
+    if periodic { crate::periodic_beziers(p) } else { Ok(fit_beziers(p)) }
+}
+pub fn spline_point_mode(p: &[Vec2], control: bool, degree: u8, periodic: bool, t: f64) -> Vec2 {
+    if !periodic {
+        return spline_point(p, control, degree, t);
+    }
+    let Ok(pieces) = crate::periodic_beziers(p) else {
+        return p.first().copied().unwrap_or_default();
+    };
+    let lengths: Vec<f64> = p.windows(2).map(|p| p[0].dist(p[1])).collect();
+    let total = lengths.iter().sum::<f64>();
+    let mut remaining = t.clamp(0.0, 1.0) * total;
+    let mut i = 0;
+    while i + 1 < pieces.len() && remaining > lengths[i] {
+        remaining -= lengths[i];
+        i += 1;
+    }
+    let Some([a, b, c, d]) = pieces.get(i).copied() else {
+        return Vec2::ZERO;
+    };
+    let t = (remaining / lengths[i]).clamp(0.0, 1.0);
+    a * (1.0 - t).powi(3) + b * (3.0 * t * (1.0 - t).powi(2)) + c * (3.0 * t * t * (1.0 - t)) + d * t.powi(3)
+}
+pub fn spline_polyline_mode(p: &[Vec2], control: bool, degree: u8, periodic: bool) -> Vec<Vec2> {
+    if !periodic {
+        return spline_polyline(p, control, degree);
+    }
+    let Ok(pieces) = crate::periodic_beziers(p) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(pieces.len() * SPAN_SAMPLES + 1);
+    for [a, b, c, d] in pieces {
+        for i in 0..SPAN_SAMPLES {
+            let t = i as f64 / SPAN_SAMPLES as f64;
+            out.push(a * (1.0 - t).powi(3) + b * (3.0 * t * (1.0 - t).powi(2)) + c * (3.0 * t * t * (1.0 - t)) + d * t.powi(3));
+        }
+    }
+    if let Some(first) = p.first() {
+        out.push(*first);
+    }
+    out
+}
+pub fn spline_end_tangent_mode(p: &[Vec2], control: bool, periodic: bool, at_end: bool) -> Option<Vec2> {
+    if !periodic {
+        return spline_end_tangent(p, control, at_end);
+    }
+    let pieces = crate::periodic_beziers(p).ok()?;
+    if at_end {
+        let c = pieces.last()?;
+        (c[3] - c[2]).normalized()
+    } else {
+        let c = pieces.first()?;
+        (c[1] - c[0]).normalized()
+    }
+}
+
 /// The Bézier pieces (each `degree + 1` points) of the clamped uniform B-spline over `ctrl`
 /// (Boehm knot insertion until every interior knot has multiplicity `degree`).
 pub fn bspline_beziers(ctrl: &[Vec2], degree: usize) -> Vec<Vec<Vec2>> {

@@ -85,7 +85,7 @@ pub(crate) fn occurrence_at(s: &Session, p: Vec3) -> Option<u64> {
     let st = s.model.state();
     let mut best: Option<(f64, u64)> = None;
     for b in &st.bodies {
-        let comp = s.doc.body_component(&b.name, b.feature);
+        let comp = s.doc.model_body_component(b);
         let occs: Vec<u64> = if comp == 0 { vec![0] } else { s.doc.occurrences.iter().filter(|o| o.component == comp).map(|o| o.id).collect() };
         for occ in occs {
             let t = if occ == 0 { solvecraft_doc::IDENTITY } else { joints::occurrence_world(&s.doc, occ) };

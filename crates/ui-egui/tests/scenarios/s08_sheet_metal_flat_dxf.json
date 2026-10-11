@@ -111,6 +111,14 @@
   }
  },
  {
+  "widget": "Export Bend Table\u2026"
+ },
+ {
+  "expect": {
+   "file": "Untitled-Body1.csv"
+  }
+ },
+ {
   "shot": "s08_flat"
  }
 ]

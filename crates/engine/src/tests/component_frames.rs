@@ -24,8 +24,9 @@ fn moved_component_picks_and_frames() {
     // Root active: a fillet picked at the moved edge in the world.
     run(&mut s, "solid.fillet", json!({"edges": [[25, 54, 4]], "radius": 1}));
     assert!(rel(vol(&mut s, "ArmBody"), 160.0 - (1.0 - PI / 4.0) * 10.0) < 1e-4, "{}", vol(&mut s, "ArmBody"));
-    // A sketch on the moved body's top face: its points sit on that face in the world.
-    let sk = run(&mut s, "sketch.create", json!({"plane": {"face": [25, 52, 4]}}));
+    // An explicit fixed plane on the modified body's top keeps the world pick;
+    // unsupported modifier lineage cannot silently create a weak attachment.
+    let sk = run(&mut s, "sketch.create", json!({"plane": {"face": [25, 52, 4],"fixed":true}}));
     run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 1}));
     run(&mut s, "sketch.finish", json!({}));
     let si = run(&mut s, "sketch.inspect", json!({"sketch": sk["sketch"]}));

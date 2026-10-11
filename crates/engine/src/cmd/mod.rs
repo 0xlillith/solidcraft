@@ -5,6 +5,8 @@
 mod browser;
 mod clipboard;
 mod component;
+mod component_clone;
+mod component_clone_assembly;
 mod construct;
 mod delete;
 mod edit;
@@ -27,6 +29,7 @@ mod parameters;
 mod plastic;
 mod sheet;
 mod sketch;
+pub(crate) use sketch::author_path_for_rebind;
 mod sketch_3d;
 mod sketch_canvas;
 mod sketch_constraints;

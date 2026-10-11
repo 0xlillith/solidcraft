@@ -62,13 +62,14 @@ fn measure(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let want = string_list(p, "bodies");
     let st = s.world_state();
-    let mut bodies: Vec<Value> = st.bodies.iter().filter(|b| want.is_empty() || want.contains(&b.name)).map(measure_json).collect();
+    let selected: Vec<_> = st.bodies.iter().filter(|b| want.is_empty() || want.contains(&b.name)).collect();
+    let mut bodies: Vec<Value> = selected.iter().map(|b| measure_json(b)).collect();
     // Mass from each body's material.
-    for b in &mut bodies {
-        let name = b["name"].as_str().unwrap_or_default().to_string();
+    for (b, body) in bodies.iter_mut().zip(selected) {
         if let Some(v) = b["volume_mm3"].as_f64() {
-            let rho = s.doc.density(&name);
-            b["material"] = json!(s.doc.materials.get(&name).cloned().unwrap_or_else(|| "Default".into()));
+            let source = body.definition_name();
+            let rho = s.doc.density(source);
+            b["material"] = json!(s.doc.materials.get(source).cloned().unwrap_or_else(|| "Default".into()));
             b["density_g_cm3"] = json!(rho);
             b["mass_g"] = json!(v * rho / 1000.0);
         }
@@ -118,7 +119,7 @@ fn sketch_json(s: &Session, id: u64) -> Option<Value> {
                 CurveKind::Circle { c: cc, r } => json!({"id": c.id, "type": "circle", "center": pid(cc), "center_at": sk.point(cc), "radius": r, "construction": c.construction, "fixed": sk.curve_locked(i), "fully_constrained": det}),
                 CurveKind::Arc { c: cc, a, b } => json!({"id": c.id, "type": "arc", "center": pid(cc), "start": pid(a), "end": pid(b), "center_at": sk.point(cc), "start_at": sk.point(a), "end_at": sk.point(b), "radius": sk.radius(i), "construction": c.construction, "fixed": sk.curve_locked(i), "fully_constrained": det}),
                 CurveKind::Ellipse { c: cc, m, r } => json!({"id": c.id, "type": "ellipse", "center": pid(cc), "major": pid(m), "center_at": sk.point(cc), "major_at": sk.point(m), "minor_radius": r, "construction": c.construction, "fixed": sk.curve_locked(i), "fully_constrained": det}),
-                CurveKind::Spline { ref pts, control, degree } => json!({"id": c.id, "type": "spline", "points": pts.iter().map(|q| pid(*q)).collect::<Vec<_>>(), "points_at": pts.iter().map(|q| sk.point(*q)).collect::<Vec<_>>(), "control": control, "degree": degree, "construction": c.construction, "fixed": sk.curve_locked(i), "fully_constrained": det}),
+                CurveKind::Spline { ref pts, control, degree, periodic } => json!({"id": c.id, "type": "spline", "points": pts.iter().map(|q| pid(*q)).collect::<Vec<_>>(), "points_at": pts.iter().map(|q| sk.point(*q)).collect::<Vec<_>>(), "control": control, "degree": degree, "periodic": periodic, "construction": c.construction, "fixed": sk.curve_locked(i), "fully_constrained": det}),
                 CurveKind::Conic { a, b, apex, rho } => json!({"id": c.id, "type": "conic", "start": pid(a), "end": pid(b), "apex": pid(apex), "start_at": sk.point(a), "end_at": sk.point(b), "apex_at": sk.point(apex), "rho": rho, "construction": c.construction, "fixed": sk.curve_locked(i), "fully_constrained": det}),
             };
             if let (Some(l), Some(o)) = (&c.link, v.as_object_mut()) {
@@ -214,7 +215,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|b| {
             let mut v = if with_measure { measure_json(b) } else { json!({"name": b.name, "feature": b.feature}) };
             if let Some(o) = v.as_object_mut() {
-                o.insert("visible".into(), json!(!s.visibility.hidden_bodies.contains(&b.name)));
+                o.insert("visible".into(), json!(s.body_visible(&b.name)));
             }
             v
         })
@@ -400,7 +401,7 @@ fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(cmd, "too many face appearances"));
             }
             let name = st_names.iter().find(|(b, p, _)| b == body && p.dist(*pt) < 1e-12).and_then(|(_, _, n)| n.clone());
-            a.faces.push(FaceLook { body: body.clone(), point: *pt, look: l.clone(), name });
+            a.faces.push(FaceLook { body: body.clone(), point: *pt, look: l.clone(), name, strict_name: false, certificate: None });
         }
     }
     for c in &comps {
@@ -413,11 +414,27 @@ fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
     if look.is_none() && !faces.is_empty() {
         let st = s.model.state();
         let doc = s.doc_mut();
-        let picked: Vec<(String, Option<usize>)> =
-            faces.iter().map(|(b, pt)| (b.clone(), st.body(b).and_then(|mb| solvecraft_doc::appearance::face_index_at(mb, *pt)))).collect();
+        let picked: Vec<(String, Option<usize>, Option<String>)> = faces
+            .iter()
+            .map(|(b, pt)| {
+                (
+                    b.clone(),
+                    st.body(b).and_then(|mb| solvecraft_doc::appearance::face_index_at(mb, *pt)),
+                    st_names.iter().find(|(name, p, _)| name == b && p.dist(*pt) < 1e-12).and_then(|(_, _, name)| name.clone()),
+                )
+            })
+            .collect();
         doc.appearances.faces.retain(|f| {
             let idx = st.body(&f.body).and_then(|mb| solvecraft_doc::appearance::face_index_at(mb, f.point));
-            !picked.iter().any(|(b, i)| *b == f.body && i.is_some() && *i == idx)
+            !picked.iter().any(|(b, i, name)| {
+                *b == f.body
+                    && (f
+                        .name
+                        .as_ref()
+                        .zip(name.as_ref())
+                        .is_some_and(|(a, b)| solvecraft_doc::naming::strip_piece(a) == solvecraft_doc::naming::strip_piece(b))
+                        || (!f.strict_name && i.is_some() && *i == idx))
+            })
         });
     }
     Ok(json!({
@@ -495,7 +512,7 @@ fn appearance_list(s: &mut Session, p: &Value) -> Result<Value> {
         let b = st.body(name).ok_or_else(|| bad("appearance.list", format!("no body `{name}`")))?;
         out["body"] = json!({
             "name": name,
-            "appearance": s.doc.body_look(&b.name, b.feature).map(|l| look_json(&l)),
+            "appearance": s.doc.model_body_look(b).map(|l| look_json(&l)),
             "color": s.doc.body_color(b),
             "faces": s.doc.face_colors(b).iter().map(|(i, l)| json!({"face": i, "appearance": look_json(l)})).collect::<Vec<_>>(),
         });
