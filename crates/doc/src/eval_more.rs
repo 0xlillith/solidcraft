@@ -2,17 +2,65 @@
 //! kernel's extrude, boolean, offset and transform operations).
 
 use super::*;
+use crate::EmbossFace;
 use crate::apply_point;
+use crate::sheet;
 use solvecraft_geom::{Loop2, Seg2};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState) -> Result<()> {
     match &f.kind {
-        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets } => {
+        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face } => {
             let ss = st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?;
             let regions = select_profiles(ss, profiles)?;
             let d = val(vals, depth, Kind::Length)?;
             if !(d > 0.0) {
                 return Err(DocError::Invalid("the emboss depth must be positive".into()));
+            }
+            if let Some(face) = face {
+                if !targets.is_empty() && (targets.len() != 1 || targets.first() != Some(&face.body)) {
+                    return Err(DocError::Invalid("cylinder emboss must keep its selected target body".into()));
+                }
+                let i =
+                    st.bodies.iter().position(|b| b.name == face.body).ok_or_else(|| DocError::Unknown(format!("emboss body `{}`", face.body)))?;
+                let mb = st.bodies.get(i).cloned().ok_or_else(|| DocError::Invalid("emboss body".into()))?;
+                let body_frame = face.body_frame(doc, &mb)?;
+                let inverse = crate::mat_inverse(&body_frame).ok_or_else(|| DocError::Invalid("invalid cylinder body frame".into()))?;
+                let sketch_owner = doc.feature(ss.feature).map(|f| f.component).unwrap_or(0);
+                let author_frame = EmbossFace::component_frame(doc, f.component, &face.author_path)?;
+                let sketch_frame = face.sketch_frame(doc, f.component, sketch_owner, &mb)?;
+                let sketch_transform = crate::mat_mul(&inverse, &sketch_frame);
+                let plane = Plane::new(
+                    crate::apply_point(&sketch_transform, ss.plane.origin),
+                    crate::apply_vector(&sketch_transform, ss.plane.x),
+                    crate::apply_vector(&sketch_transform, ss.plane.y),
+                )
+                .ok_or_else(|| DocError::Invalid("invalid cylinder sketch frame".into()))?;
+                let mut at = crate::apply_point(&crate::mat_mul(&inverse, &author_frame), face.at);
+                let name = f
+                    .face_names
+                    .first()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| DocError::Invalid("selected cylinder face has no persistent identity".into()))?;
+                {
+                    let mut scoped = ModelState::default();
+                    scoped.bodies.push(mb.clone());
+                    let (picked, split) = crate::naming::point_on_face(&scoped, name, at)
+                        .ok_or_else(|| DocError::Invalid("selected cylinder face no longer exists".into()))?;
+                    if split {
+                        return Err(DocError::Invalid("selected cylinder face was split".into()));
+                    }
+                    let (index, _, _) = crate::project::nearest_face(&mb.mesh(), picked)
+                        .ok_or_else(|| DocError::Invalid("selected cylinder face cannot be resolved".into()))?;
+                    if crate::naming::face_names(&mb).get(index as usize) != Some(name) {
+                        return Err(DocError::Invalid("selected cylinder face is ambiguous".into()));
+                    }
+                    at = kernel::cylinder_emboss_anchor(&mb.body, index as usize, picked)?;
+                }
+                let result = kernel::emboss_cylinder_at(&mb.body, at, &plane, &regions, if *deboss { -d } else { d })?;
+                if let Some(slot) = st.bodies.get_mut(i) {
+                    *slot = ModelBody::new(mb.name, result, mb.feature);
+                }
+                return Ok(());
             }
             let (a, b) = if *deboss { (-d, 0.0) } else { (0.0, d) };
             let tools = kernel::extrude(&ss.plane, &regions, a, b)?;
@@ -242,12 +290,22 @@ fn point_on_polyline(pts: &[Vec2], d: f64) -> Vec2 {
 }
 
 /// Rebuild a sheet body's solid from its model.
+fn replace_sheet_body(mb: &mut ModelBody, body: Body) {
+    let mut next = ModelBody::new(mb.name.clone(), body, mb.feature);
+    next.component = mb.component;
+    next.transferred = mb.transferred;
+    next.source_name = mb.source_name.clone();
+    next.source_transform = mb.source_transform;
+    next.imported = mb.imported.clone();
+    *mb = next;
+}
+
 fn rebuild_sheet(st: &mut ModelState, idx: usize) -> Result<()> {
     let sheet = st.sheets.get(idx).cloned().ok_or_else(|| DocError::Invalid("sheet".into()))?;
     let solid = sheet.solid()?;
     let i = st.bodies.iter().position(|b| b.name == sheet.body).ok_or_else(|| DocError::Unknown(format!("body `{}`", sheet.body)))?;
     if let Some(mb) = st.bodies.get_mut(i) {
-        *mb = ModelBody::new(mb.name.clone(), solid, mb.feature);
+        replace_sheet_body(mb, solid);
     }
     Ok(())
 }
@@ -466,7 +524,7 @@ pub(super) fn sheet_eval(
             sh.holes = region.holes.iter().map(|h| Region2 { outer: h.ccw(), holes: Vec::new() }).collect();
             let solid = sh.solid()?;
             if let Some(b) = st.bodies.iter_mut().find(|b| &b.name == body) {
-                *b = ModelBody::new(b.name.clone(), solid, b.feature);
+                replace_sheet_body(b, solid);
             }
             st.sheets.retain(|s| &s.body != body);
             st.sheets.push(sh);
@@ -481,14 +539,15 @@ fn poly_area(p: &[Vec2]) -> f64 {
     (0..m).filter_map(|i| Some(p.get(i)?.cross(*p.get((i + 1) % m)?))).sum::<f64>() / 2.0
 }
 
-/// An extrude cut through sheet metal: the profiles become cut-outs of the flat pattern
-/// (parallel to a panel, through its thickness). Returns the sheet bodies handled.
+/// Exact prismatic machining, retained in sheet material/depth metadata.
 pub(super) fn sheet_cut(f: &Feature, st: &mut ModelState, tools: &[Body], targets: &[String]) -> Result<Vec<String>> {
-    let FeatureKind::Extrude { sketch, profiles, .. } = &f.kind else { return Ok(Vec::new()) };
+    let FeatureKind::Extrude { sketch, profiles, operation, extent, .. } = &f.kind else { return Ok(Vec::new()) };
+    if extent.taper.is_some() {
+        return Ok(Vec::new());
+    }
     let Some(ss) = st.sketch(*sketch).cloned() else { return Ok(Vec::new()) };
     let regions = solvecraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
     let n = ss.plane.normal();
-    // How far the tools reach along the sketch normal.
     let mut span = (f64::MAX, f64::MIN);
     for t in tools {
         for p in t.tessellate((t.size() * 1e-3).max(1e-3))?.positions {
@@ -496,62 +555,125 @@ pub(super) fn sheet_cut(f: &Feature, st: &mut ModelState, tools: &[Body], target
             span = (span.0.min(d), span.1.max(d));
         }
     }
-    let mut handled = Vec::new();
-    for i in 0..st.sheets.len() {
-        let Some(sh) = st.sheets.get(i).cloned() else { continue };
-        if !targets.is_empty() && !targets.contains(&sh.body) {
+    let targets = if targets.is_empty() { &f.participants } else { targets };
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
+    let mut plans = Vec::new();
+    let mut work = sheet::FlatWork::new();
+    for original in &st.sheets {
+        let eligible = all
+            || if targets.is_empty() {
+                st.bodies.iter().any(|b| b.name == original.body && (b.component == f.component || b.feature == f.id))
+            } else {
+                targets.contains(&original.body)
+            };
+        if !eligible {
             continue;
         }
-        let candidates: Vec<(Option<usize>, Region2)> = if sh.flat {
-            if sh.frame.normal().cross(n).len() > 1e-6 {
-                Vec::new()
-            } else {
-                vec![(None, Region2 { outer: Loop2::polygon(&sh.outline()?.into_iter().next().unwrap_or_default()), holes: Vec::new() })]
-            }
-        } else {
-            sh.parallel_panels(&ss.plane)
+        let Some(mb) = st.body(&original.body) else {
+            continue;
         };
-        let mut added = Vec::new();
-        for (pi, panel) in candidates {
-            // The panel's faces along the sketch normal must both be inside the cut.
-            let w = sh.world(pi);
-            let z0 = (apply_point(&w, Vec3::ZERO) - ss.plane.origin).dot(n);
-            let z1 = (apply_point(&w, Vec3::Z * sh.t) - ss.plane.origin).dot(n);
-            if z0.min(z1) < span.0 - 1e-6 || z0.max(z1) > span.1 + 1e-6 {
-                continue;
-            }
-            let outline = if sh.flat { sh.outline()?.into_iter().flatten().collect::<Vec<_>>() } else { panel.outer.polyline(1e-3) };
-            for r in &regions {
-                let Some(flat) = sh.region_to_flat(pi, &ss.plane, r) else { continue };
-                let fp = flat.outer.polyline(1e-3);
-                let overlaps = fp.iter().any(|p| point_in_poly(&outline, *p)) || outline.iter().any(|p| point_in_poly(&fp, *p));
-                if overlaps && !added.iter().any(|x: &Region2| x == &flat) {
-                    added.push(flat);
+        let mut sh = original.clone();
+        if *operation == Operation::Intersect && (!sh.flat && !sh.flanges.is_empty()) {
+            super::sheet_boolean_unchanged(&mb.body, tools, *operation)?;
+            plans.push((sh.body.clone(), Some((sh, mb.body.clone()))));
+            continue;
+        }
+        if !sh.flat && !sh.flanges.is_empty() && !super::sheet_boolean_changes(&mb.body, tools, *operation)? {
+            plans.push((sh.body.clone(), Some((sh, mb.body.clone()))));
+            continue;
+        }
+        if let Some(bends) = sh.unmodeled_solid(&ss.plane)? {
+            for tool in tools {
+                if kernel::boolean(&bends, tool, kernel::BoolOp::Intersect)?.is_some() {
+                    return Err(DocError::Invalid(
+                        "this machining intersects a folded bend or a nonparallel panel; unfold the sheet before machining that material".into(),
+                    ));
                 }
             }
         }
-        if added.is_empty() {
-            continue;
+        let candidates = if sh.flat {
+            if sh.frame.normal().cross(n).len() > 1e-6 { Vec::new() } else { sh.flat_regions()?.into_iter().map(|r| (None, r)).collect() }
+        } else {
+            sh.material_panels(Some(&ss.plane), &mut work)?
+        };
+        let mut modeled = false;
+        for (pi, panel) in candidates {
+            let w = if sh.flat { sh.world(None) } else { sh.world(pi) };
+            let zorigin = (apply_point(&w, Vec3::ZERO) - ss.plane.origin).dot(n);
+            let sign = crate::apply_vector(&w, Vec3::Z).dot(n);
+            if sign.abs() < 1e-6 {
+                continue;
+            }
+            let (a, b) = ((span.0 - zorigin) / sign, (span.1 - zorigin) / sign);
+            let (z0, z1) = (a.min(b).max(0.0), a.max(b).min(sh.t));
+            if *operation == Operation::Intersect {
+                if z1 <= z0 {
+                    sh.holes.push(panel);
+                    modeled = true;
+                    continue;
+                }
+                if z0 > 1e-7 || z1 < sh.t - 1e-7 {
+                    super::sheet_boolean_unchanged(&mb.body, tools, *operation)?;
+                    continue;
+                }
+                let mapped = regions.iter().map(|r| sh.region_to_flat(pi, &ss.plane, r)).collect::<Result<Vec<_>>>()?;
+                let tool = sheet::material_union(mapped, &mut work)?;
+                let retained = sheet::material_boolean(std::slice::from_ref(&panel), &tool, kernel::BoolOp::Intersect, &mut work)?;
+                let removed = sheet::material_boolean(&[panel], &retained, kernel::BoolOp::Cut, &mut work)?;
+                sh.holes.extend(removed);
+                modeled = true;
+            } else if z1 > z0 {
+                for r in &regions {
+                    let flat = sh.region_to_flat(pi, &ss.plane, r)?;
+                    let clipped =
+                        sheet::material_boolean(std::slice::from_ref(&panel), std::slice::from_ref(&flat), kernel::BoolOp::Intersect, &mut work)?;
+                    if !clipped.is_empty() && z0 <= 1e-7 && z1 >= sh.t - 1e-7 {
+                        // Keep a single original tool boundary across structural seams.
+                        // Re-clipping notch polygons creates coincident seam endpoints.
+                        if !sh.holes.contains(&flat) {
+                            sh.holes.push(flat);
+                        }
+                        modeled = true;
+                    } else {
+                        for region in clipped {
+                            sh.pockets.push(sheet::SheetPocket { region, z0, z1 });
+                            modeled = true;
+                        }
+                    }
+                }
+            }
         }
-        if let Some(s) = st.sheets.get_mut(i) {
-            s.holes.extend(added);
+        if !modeled {
+            super::sheet_boolean_unchanged(&mb.body, tools, *operation)?;
+            plans.push((sh.body.clone(), Some((sh, mb.body.clone()))));
+        } else if sh.flat_material()?.is_empty() {
+            // Empty exact material removes geometry and metadata together. Budget or
+            // topology errors propagate; they are never mistaken for an empty blank.
+            plans.push((sh.body.clone(), None));
+        } else {
+            let body = sh.solid()?;
+            plans.push((sh.body.clone(), Some((sh, body))));
         }
-        rebuild_sheet(st, i)?;
-        handled.push(sh.body.clone());
+    }
+    let handled = plans.iter().map(|(name, _)| name.clone()).collect();
+    for (name, result) in plans {
+        match result {
+            Some((sh, body)) => {
+                if let Some(mb) = st.bodies.iter_mut().find(|b| b.name == name) {
+                    replace_sheet_body(mb, body);
+                }
+                if let Some(target) = st.sheets.iter_mut().find(|s| s.body == name) {
+                    *target = sh;
+                }
+            }
+            None => {
+                st.bodies.retain(|b| b.name != name);
+                st.sheets.retain(|s| s.body != name);
+                st.threads.retain(|t| t.body != name);
+            }
+        }
     }
     Ok(handled)
-}
-
-fn point_in_poly(poly: &[Vec2], p: Vec2) -> bool {
-    let mut inside = false;
-    let m = poly.len();
-    for i in 0..m {
-        let (Some(&a), Some(&b)) = (poly.get(i), poly.get((i + m - 1) % m)) else { continue };
-        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 /// Outline loops (in `plane` coordinates) of the mesh triangles lying in the plane at distance

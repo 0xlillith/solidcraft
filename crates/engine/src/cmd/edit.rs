@@ -35,8 +35,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("feature: id|name → features deleted with it, and features that would fail without it"),
     CommandSpec::new("timeline.suppress", "Suppress Feature", suppress).params("feature: id|name, suppressed?: bool (default toggles)"),
     CommandSpec::new("timeline.edit", "Edit Feature", edit_feature).params(
-        "feature: id|name, set: {fields to change, e.g. {\"extent\": {\"distance\": \"30\"}}} → recomputed: features rebuilt, \
-             restored: features whose earlier result for the same inputs was reused",
+        "feature: id|name, set: {fields to change, merged into the feature's definition as timeline.inspect returns it, \
+         e.g. {\"extent\": {\"distance\": \"30\"}} (extrude), {\"angle\": \"90 deg\"} (revolve); \
+         expressions are text} → recomputed: features rebuilt, restored: features whose earlier result for the same inputs was reused",
+    ),
+    CommandSpec::new("timeline.inspect", "Inspect Feature", inspect_feature).noundo().params(
+        "feature: id|name → type, definition (the fields timeline.edit's set changes, with their current values), \
+         inputs: [{label, param, expression, unit}] (named inputs parameters.change can also set), error, warning",
     ),
     CommandSpec::new("select.set", "Select", select_set)
         .noundo()
@@ -47,9 +52,10 @@ pub static COMMANDS: &[CommandSpec] = &[
 fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
     let Some(prev) = s.undo.pop() else { return Err(EngineError::Other("nothing to undo".into())) };
     let label = prev.label.clone();
-    s.redo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch });
+    s.redo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch, pending_moves: s.pending_moves.clone() });
     s.doc = prev.doc;
     s.active_sketch = prev.active_sketch;
+    s.pending_moves = prev.pending_moves;
     s.selection.clear();
     s.refresh();
     Ok(json!({"undone": label}))
@@ -58,9 +64,10 @@ fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
 fn redo(s: &mut Session, _p: &Value) -> Result<Value> {
     let Some(next) = s.redo.pop() else { return Err(EngineError::Other("nothing to redo".into())) };
     let label = next.label.clone();
-    s.undo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch });
+    s.undo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch, pending_moves: s.pending_moves.clone() });
     s.doc = next.doc;
     s.active_sketch = next.active_sketch;
+    s.pending_moves = next.pending_moves;
     s.selection.clear();
     s.refresh();
     Ok(json!({"redone": label}))
@@ -188,6 +195,52 @@ fn merge(dst: &mut Value, src: &Value, depth: usize) {
     }
 }
 
+/// Fields of a stored feature left out of its definition: bookkeeping timeline.edit recomputes, and
+/// the name and suppression, which timeline.rename and timeline.suppress change.
+const NOT_EDITABLE: &[&str] = &["id", "type", "name", "suppressed", "param_names", "edge_refs", "edge_names", "face_names"];
+
+fn inspect_feature(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "timeline.inspect";
+    let id = feature_id(s, p.get("feature"), cmd)?;
+    let f = s.doc.feature(id).ok_or_else(|| bad(cmd, "feature"))?;
+    let mut def = serde_json::to_value(f).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut omitted = Vec::new();
+    if let Some(o) = def.as_object_mut() {
+        for k in NOT_EDITABLE {
+            o.remove(*k);
+        }
+        // Large payloads that timeline.edit cannot change.
+        let heavy: &[(&str, &str)] = match &f.kind {
+            FeatureKind::Sketch { .. } => &[("sketch", "the sketch geometry (sketch.inspect; edit it with the sketch commands)")],
+            FeatureKind::Import { .. } => &[("step", "the imported STEP text"), ("components", "the imported product tree")],
+            FeatureKind::MeshImport { .. } => &[("meshes", "the imported meshes")],
+            _ => &[],
+        };
+        for (k, why) in heavy {
+            if o.remove(*k).is_some() {
+                omitted.push(json!({"field": k, "what": why}));
+            }
+        }
+    }
+    let inputs: Vec<Value> = f
+        .kind
+        .inputs()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (label, e, k))| {
+            json!({"label": label, "param": f.param_names.get(i).filter(|n| !n.is_empty()), "expression": e, "unit": k.default_unit()})
+        })
+        .collect();
+    let marker = s.doc.marker.unwrap_or(usize::MAX);
+    let rolled_back = s.doc.features.iter().position(|x| x.id == id).is_some_and(|i| i >= marker);
+    let r = s.model.result(id);
+    Ok(json!({
+        "id": f.id, "name": f.name, "type": f.kind.type_name(), "suppressed": f.suppressed, "rolled_back": rolled_back,
+        "definition": def, "omitted": omitted, "inputs": inputs,
+        "error": r.and_then(|r| r.error.clone()), "warning": r.and_then(|r| r.warning.clone()),
+    }))
+}
+
 fn edit_feature(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "timeline.edit";
     let id = feature_id(s, p.get("feature"), cmd)?;
@@ -199,6 +252,10 @@ fn edit_feature(s: &mut Session, p: &Value) -> Result<Value> {
     nf.id = f.id;
     if std::mem::discriminant(&nf.kind) != std::mem::discriminant(&f.kind) {
         return Err(bad(cmd, "the feature type cannot change"));
+    }
+    if let FeatureKind::BodyTransfer { bodies, from, to, transform } = &nf.kind {
+        solvecraft_doc::validate_body_transfer(&s.doc, bodies, *from, *to, transform)?;
+        nf.component = *to;
     }
     if let (FeatureKind::Sketch { sketch: a, .. }, FeatureKind::Sketch { sketch: b, .. }) = (&nf.kind, &f.kind)
         && a != b
@@ -238,6 +295,9 @@ fn select_set(s: &mut Session, p: &Value) -> Result<Value> {
     let mut sel: Vec<Sel> = Vec::new();
     for it in items {
         let one: Sel = serde_json::from_value(it).map_err(|e| bad("select.set", e.to_string()))?;
+        if let Sel::Occurrence { path } = &one {
+            s.occurrence_bodies(path, true).map_err(|e| bad("select.set", e.to_string()))?;
+        }
         sel.push(one);
     }
     if !bool_(p, "add").unwrap_or(false) {
@@ -296,36 +356,169 @@ fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"feature": id, "position": to}))
 }
 
+fn input_keys(kind: &FeatureKind) -> Vec<(String, solvecraft_doc::expr::Kind)> {
+    let mut keys: Vec<_> = kind.inputs().into_iter().map(|(label, _, unit)| (label.to_string(), unit)).collect();
+    if let FeatureKind::Fillet { style, .. } = kind {
+        if let Some((key, _)) = keys.first_mut() {
+            *key = "fillet.radius".into();
+        }
+        if let solvecraft_doc::FilletStyle::Variable { mid, .. } = style {
+            for ((key, _), (position, _)) in keys.iter_mut().skip(2).zip(mid) {
+                *key = format!("fillet.mid.{}", position.to_bits());
+            }
+        }
+    }
+    keys
+}
+
 fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "timeline.redefine";
     let id = feature_id(s, p.get("feature"), cmd)?;
     let cid = str_(p, "command").ok_or_else(|| bad(cmd, "`command` must name the feature's command"))?;
     let spec = super::find_command(cid).ok_or_else(|| bad(cmd, format!("no command `{cid}`")))?;
-    if spec.id.starts_with("timeline.") || spec.id.starts_with("select.") || spec.id.starts_with("sketch.") {
+    // Only modeling constructors may run here. In particular, a scratch session does not
+    // isolate filesystem writes performed by export commands.
+    let constructor = super::features::COMMANDS
+        .iter()
+        .chain(super::features_more::COMMANDS)
+        .chain(super::construct::COMMANDS)
+        .chain(super::surface::COMMANDS)
+        .any(|candidate| candidate.id == spec.id)
+        || matches!(
+            spec.id,
+            "sheet.flange"
+                | "sheet.hem"
+                | "sheet.fold"
+                | "sheet.unfold"
+                | "sheet.refold"
+                | "sheet.convert"
+                | "plastic.boss"
+                | "plastic.lip"
+                | "plastic.snap_fit"
+                | "plastic.rest"
+        );
+    if !constructor {
         return Err(bad(cmd, format!("`{cid}` does not make a feature")));
     }
-    let params = p.get("params").cloned().unwrap_or_else(|| json!({}));
+    let mut params = p.get("params").cloned().unwrap_or_else(|| json!({}));
     let idx = s.doc.feature_index(id).ok_or_else(|| bad(cmd, "feature"))?;
     let old = s.doc.feature(id).cloned().ok_or_else(|| bad(cmd, "feature"))?;
-    let marker = s.doc.marker;
-    // Build the new definition where the feature sits, against the model before it.
-    s.doc_mut().marker = Some(idx);
-    s.refresh();
-    let r = (spec.run)(s, &params);
-    let made = r.as_ref().ok().and_then(|v| v.get("feature")).and_then(Value::as_u64);
-    let new = made.and_then(|nid| s.doc.feature(nid).cloned());
-    if let Some(nid) = made {
-        s.doc_mut().features.retain(|f| f.id != nid);
+    if let FeatureKind::Revolve { convention, .. } = &old.kind
+        && cid == "solid.revolve"
+        && let Some(parameters) = params.as_object_mut()
+    {
+        parameters.entry("convention").or_insert_with(|| json!(convention));
     }
-    s.doc_mut().marker = marker;
-    r?;
-    let new = new.ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
+    if !old.participants.is_empty()
+        && let Some(parameters) = params.as_object_mut()
+    {
+        parameters.entry("participants").or_insert_with(|| json!(old.participants));
+    }
+    // Run the constructor on a scratch session: failed edits must not disturb sketch mode,
+    // selections, component authoring state or the original feature's definition.
+    let mut trial = s.scratch();
+    trial.active_component = old.component;
+    if let FeatureKind::Emboss { face: Some(face), .. } = &old.kind {
+        trial.active_occurrence_path = (!face.author_path.is_empty()).then(|| face.author_path.clone());
+    }
+    trial.active_sketch = None;
+    trial.selection = s.selection.clone();
+    // Keep the original identity as a suppressed placeholder. The constructor and
+    // any ownership boundary it adds go AFTER this slot, so discarding its temporary
+    // feature leaves auxiliary history after the rewritten original.
+    if let Some(slot) = trial.doc_mut().feature_mut(id) {
+        slot.suppressed = true;
+    }
+    trial.doc_mut().marker = Some(idx + 1);
+    trial.refresh();
+    (spec.enabled)(&trial).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
+    let r = (spec.run)(&mut trial, &params)?;
+    let made = r.get("feature").and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
+    let mut new = trial.doc.feature(made).cloned().ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
+    if let (FeatureKind::Emboss { face: Some(before), .. }, FeatureKind::Emboss { face: Some(after), .. }) = (&old.kind, &mut new.kind)
+        && before.body == after.body
+        && before.path == after.path
+        && before.author_path == after.author_path
+        && before.at.dist(after.at) < 1e-8
+    {
+        *after = before.clone();
+    }
     if std::mem::discriminant(&new.kind) != std::mem::discriminant(&old.kind) {
         return Err(bad(cmd, format!("{} is not a {} feature", old.name, cid)));
     }
-    if let Some(slot) = s.doc_mut().feature_mut(id) {
-        slot.kind = new.kind;
+    // Optional inputs can move other inputs' positions (e.g. Distance 2 goes before Taper).
+    // Keep each existing model parameter attached to its semantic input, rather than its
+    // old index. Constructor-assigned names for new inputs cannot reuse the old dimensions.
+    let mut old_inputs: Vec<_> = input_keys(&old.kind).into_iter().zip(&old.param_names).collect();
+    let param_names: Vec<String> = input_keys(&new.kind)
+        .iter()
+        .enumerate()
+        .map(|(i, (label, kind))| {
+            if let Some(k) = old_inputs.iter().position(|((old_label, old_kind), _)| old_label == label && old_kind == kind) {
+                old_inputs.remove(k).1.clone()
+            } else {
+                new.param_names.get(i).cloned().unwrap_or_default()
+            }
+        })
+        .collect();
+    trial.doc_mut().features.retain(|f| f.id != made);
+    let added = trial.doc.features.len().saturating_sub(s.doc.features.len());
+    trial.doc_mut().marker = s.doc.marker.map(|marker| if marker > idx { marker.saturating_add(added) } else { marker });
+    if made == s.doc.next_id && trial.doc.next_id == made.saturating_add(1) {
+        trial.doc_mut().next_id = s.doc.next_id;
     }
+    if let Some(slot) = trial.doc_mut().feature_mut(id) {
+        slot.suppressed = old.suppressed;
+        slot.kind = new.kind;
+        slot.edge_refs = new.edge_refs;
+        slot.edge_names = new.edge_names;
+        slot.face_names = new.face_names;
+        slot.param_names = param_names;
+        if params.get("participants").is_some() {
+            slot.participants = new.participants;
+        }
+    }
+    // New optional inputs need model parameter names, while existing dimensions keep theirs.
+    trial.doc_mut().name_feature_inputs(id);
+    trial.refresh();
+    if let Some(e) = trial.model.result(id).and_then(|r| r.error.clone()) {
+        return Err(EngineError::Other(e));
+    }
+    let original_ids: std::collections::BTreeSet<u64> = s.doc.features.iter().map(|feature| feature.id).collect();
+    let added_ids: std::collections::BTreeSet<u64> =
+        trial.doc.features.iter().filter(|feature| !original_ids.contains(&feature.id)).map(|feature| feature.id).collect();
+    let adds_transfer =
+        trial.doc.features.iter().any(|feature| added_ids.contains(&feature.id) && matches!(feature.kind, FeatureKind::BodyTransfer { .. }));
+    let baseline = if adds_transfer && s.doc.marker.is_some() {
+        let mut baseline = s.scratch();
+        baseline.doc_mut().marker = None;
+        baseline.refresh();
+        Some(baseline)
+    } else {
+        None
+    };
+    let proof = if (adds_transfer && trial.doc.marker.is_some()) || added_ids.iter().any(|id| trial.model.result(*id).is_none()) {
+        let mut proof = trial.scratch();
+        proof.doc_mut().marker = None;
+        proof.refresh();
+        Some(proof)
+    } else {
+        None
+    };
+    let validated = proof.as_ref().map(|proof| &proof.model).unwrap_or(&trial.model);
+    let original_model = baseline.as_ref().map(|baseline| &baseline.model).unwrap_or(&s.model);
+    for feature in &trial.doc.features {
+        let auxiliary = added_ids.contains(&feature.id);
+        let protected_transfer = matches!(feature.kind, FeatureKind::BodyTransfer { .. })
+            && original_model.result(feature.id).is_some_and(|result| !result.skipped && result.error.is_none());
+        if (auxiliary || protected_transfer)
+            && let Some(error) = validated.result(feature.id).and_then(|result| result.error.as_ref())
+        {
+            return Err(bad(cmd, format!("{}: {error}", feature.name)));
+        }
+    }
+    s.pending_moves = trial.pending_moves;
+    s.doc = trial.doc;
     s.refresh();
     if let Some(e) = s.model.result(id).and_then(|r| r.error.clone()) {
         return Err(EngineError::Other(e));
@@ -344,3 +537,7 @@ fn dependents(s: &mut Session, p: &Value) -> Result<Value> {
     let broken: Vec<String> = newly_broken(&s.model, &after).into_iter().map(|(n, _)| n).collect();
     Ok(json!({"deleted_with_it": names(&gone), "would_fail": broken}))
 }
+
+#[cfg(test)]
+#[path = "edit_tests.rs"]
+mod tests;

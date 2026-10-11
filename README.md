@@ -23,21 +23,33 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## What works
 
-- **Sketches** on the origin planes, offset planes or planar faces: lines, rectangles (2-point,
-  3-point, centre), circles (centre, 2-point, 3-point), arcs (3-point, centre), polygons, slots
-  and points; construction geometry.
+- **Sketches** on origin planes, offset planes or planar faces: lines, rectangles, circles,
+  arcs, polygons, slots, ellipses, fit/control splines, conics and text; construction geometry,
+  projection, trimming, fillets and chamfers, including corners at the origin.
+  New face attachments retain supported construction identities and chosen occurrences;
+  missing sources expose an explicit plane repair workflow. See [face attachments](docs/face-attachments.md).
+  Explicitly closed fit splines and closed associative offsets use periodic C2 interpolation.
 - **Constraints and dimensions** solved by our own solver (damped Gauss–Newton with
   degree-of-freedom analysis): coincident, horizontal/vertical, parallel, perpendicular, tangent,
   equal, concentric, collinear, midpoint, symmetry, fix; linear, aligned, horizontal, vertical,
   radius, diameter and angle dimensions driven by parameters. Over-constraining edits are
   rejected; fully constrained geometry turns black.
 - **Profiles** found automatically, including regions split by lines and holes inside outlines.
-- **Features** on a parametric timeline: extrude (one side, flipped, symmetric, two-sided, start
-  offset; new body, join, cut, intersect), revolve, fillet and chamfer (straight convex edges),
-  box, cylinder, sphere, torus, combine, move. The timeline rebuilds incrementally from the first
-  changed feature; it can be rolled back, and features can be suppressed, renamed, edited and
-  deleted.
-- **Parameters** with unit-aware expressions (`2 * width + 5 mm`, `angle / 2`).
+- **Features** on a parametric timeline: extrude, revolve, sweep, loft, fillet/chamfer,
+  shell, draft, holes, threads, patterns, mirror, split, combine, move and construction geometry.
+  The timeline rebuilds incrementally; features can be edited, suppressed, renamed, reordered
+  and deleted. Supported geometry and current limitations are described in [ROADMAP.md](ROADMAP.md).
+  New revolves preserve symmetric and two-sided angular placement across reversed axes;
+  older designs retain their saved convention when reopened or edited.
+- **Parameters and configurations** with unit-aware expressions (`2 * width + 5 mm`,
+  `angle / 2`), ordered rules, feature suppression and per-row body materials/appearances.
+- **Assemblies** with nested components and occurrences, joints, motion studies, contact sets,
+  interference and material-aware mass properties. Recorded body transfers preserve modelling
+  history and world placement; 3D sketch wires retain their coordinate frames through edits.
+- **Sheet metal** with flanges, hems, fold/unfold/refold, material cutouts, flat patterns,
+  retained shallow prismatic pockets, exact line/arc/circle DXF outlines and bend tables;
+  plastic enclosure features and rules. Pocket depth and side survive unfold/refold and appear
+  separately from through-hole outlines in the flat preview and DXF.
 - **Files**: designs as JSON (`.solvecraft`), export to STEP (AP242 with body names, colours and
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;

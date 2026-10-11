@@ -456,7 +456,7 @@ fn link_polyline(g: &solvecraft_sketch::LinkGeom) -> Vec<Vec2> {
         LinkGeom::Ellipse { c, major, minor } => {
             (0..=96).map(|i| solvecraft_sketch::ellipse_point(c, major, minor, i as f64 / 96.0 * std::f64::consts::TAU)).collect()
         }
-        LinkGeom::Spline { ref pts, control, degree } => solvecraft_sketch::spline_polyline(pts, control, degree),
+        LinkGeom::Spline { ref pts, control, degree, periodic } => solvecraft_sketch::spline_polyline_mode(pts, control, degree, periodic),
         LinkGeom::Point(_) => Vec::new(),
     }
 }

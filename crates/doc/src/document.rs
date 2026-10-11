@@ -56,15 +56,18 @@ pub enum PlaneRef {
     AlongPath { path: Box<GeoRef>, t: String },
     /// Through a straight edge (or line, axis) and square to a plane (or planar face).
     Perpendicular { plane: Box<GeoRef>, line: Box<GeoRef> },
-    /// A planar body face: found again on each evaluation (the face with this plane's normal
-    /// nearest `at`), so sketches on it follow when earlier features change; `plane` is the
-    /// plane as picked (its frame, and the fallback when the face is gone). `name` is the face's
-    /// persistent name (found first; see `naming`).
+    /// A planar body face. Certified attachments resolve only their exact source and report
+    /// an error when it is lost; `plane` then supplies a repair guide. Legacy references without
+    /// an anchor try the persistent `name`, then the nearest parallel face at `at`, and retain
+    /// the picked `plane` as their historical fallback.
     Face {
         plane: Plane,
         at: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Exact attachment identity for newly certified faces; absent on legacy designs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<Box<crate::FaceAnchor>>,
     },
 }
 
@@ -116,6 +119,16 @@ pub enum Direction {
     Symmetric,
 }
 
+/// Angular starts in older designs used the raw axis sign. New revolves measure starts
+/// along the same sketch-normal sweep direction as the kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevolveConvention {
+    #[default]
+    LegacyAxisStart,
+    SketchNormal,
+}
+
 /// Extent of an extrude.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Extent {
@@ -161,10 +174,97 @@ pub enum AxisRef {
     Line { origin: Vec3, dir: Vec3 },
 }
 
+/// Persistent cylindrical Emboss selection, authored in the feature component frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EmbossFace {
+    pub body: String,
+    pub at: Vec3,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub author_path: Vec<u64>,
+}
+
+impl EmbossFace {
+    /// The selected sketch placement, shared by evaluation and interactive guides.
+    pub fn sketch_frame(&self, doc: &Document, author: u64, sketch_owner: u64, body: &crate::ModelBody) -> Result<crate::Mat> {
+        let owner = doc.model_body_component(body);
+        if sketch_owner == owner {
+            return Self::component_frame(doc, owner, &self.path);
+        }
+        if sketch_owner == author {
+            return Self::component_frame(doc, author, &self.author_path);
+        }
+        let path = doc.first_path(sketch_owner);
+        let mut component = sketch_owner;
+        for _ in 0..64 {
+            if component == 0 {
+                break;
+            }
+            let mut occurrences = doc.occurrences.iter().filter(|o| o.component == component);
+            let occurrence = occurrences.next().ok_or_else(|| DocError::Invalid("sketch placement no longer exists".into()))?;
+            if occurrences.next().is_some() {
+                return Err(DocError::Invalid("sketch placement is ambiguous".into()));
+            }
+            component = occurrence.parent;
+        }
+        if component != 0 {
+            return Err(DocError::Invalid("sketch placement exceeds depth limit".into()));
+        }
+        Self::component_frame(doc, sketch_owner, &path)
+    }
+
+    /// Resolve this exact placement without expanding every assembly instance.
+    pub fn body_frame(&self, doc: &Document, body: &crate::ModelBody) -> Result<crate::Mat> {
+        let owner = doc.model_body_component(body);
+        let mut frame = Self::component_frame(doc, owner, &self.path)?;
+        if let Some(offset) = doc.model_body_offset(body) {
+            frame = crate::mat_mul(&frame, offset);
+        }
+        Ok(frame)
+    }
+
+    /// Resolve one saved component path without expanding other occurrences.
+    pub fn component_frame(doc: &Document, owner: u64, path: &[u64]) -> Result<crate::Mat> {
+        if path.len() > 64 || doc.occurrences.len() > 100_000 {
+            return Err(DocError::Invalid("selected cylinder path exceeds work limits".into()));
+        }
+        let mut frame = crate::IDENTITY;
+        let mut component = 0;
+        let mut seen = std::collections::BTreeSet::new();
+        for id in path {
+            if *id == 0 || !seen.insert(*id) {
+                return Err(DocError::Invalid("invalid selected cylinder path".into()));
+            }
+            let occurrence = doc
+                .occurrences
+                .iter()
+                .find(|o| o.id == *id && o.parent == component)
+                .ok_or_else(|| DocError::Invalid("selected cylinder placement no longer exists".into()))?;
+            frame = crate::mat_mul(&frame, &occurrence.transform);
+            component = occurrence.component;
+        }
+        if path.is_empty() {
+            frame = doc.component_transform(owner);
+        } else if component != owner {
+            return Err(DocError::Invalid("selected cylinder path belongs to another component".into()));
+        }
+        Ok(frame)
+    }
+}
+
 /// Feature definitions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FeatureKind {
+    /// A recorded timeline ownership boundary. Geometry is converted from its
+    /// current local frame into the destination component frame exactly once.
+    BodyTransfer {
+        bodies: Vec<String>,
+        from: u64,
+        to: u64,
+        transform: crate::Mat,
+    },
     Sketch {
         plane: PlaneRef,
         sketch: Sketch,
@@ -195,6 +295,9 @@ pub enum FeatureKind {
         /// Symmetric: `angle` split evenly either side of the profile.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         symmetric: bool,
+        /// Missing fields retain the angular placement of existing designs.
+        #[serde(default)]
+        convention: RevolveConvention,
         /// To Object: turn until the face, vertex or point here.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<Vec3>,
@@ -437,13 +540,15 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<String>,
     },
-    /// Raise (emboss) or sink (deboss) sketch profiles on the planar face they lie on.
+    /// Raise or sink profiles on a planar face, or wrap them on a selected cylindrical wall.
     Emboss {
         sketch: u64,
         profiles: ProfileSel,
         depth: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         deboss: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        face: Option<EmbossFace>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<String>,
     },
@@ -1040,7 +1145,8 @@ impl FeatureKind {
             | K::SurfaceTrim { .. }
             | K::Move { .. }
             | K::Import { .. }
-            | K::MeshImport { .. } => Vec::new(),
+            | K::MeshImport { .. }
+            | K::BodyTransfer { .. } => Vec::new(),
         }
     }
 
@@ -1065,6 +1171,7 @@ impl FeatureKind {
     /// Fusion-like type name (timeline tooltip, `inspect`).
     pub fn type_name(&self) -> &'static str {
         match self {
+            FeatureKind::BodyTransfer { .. } => "BodyTransferFeature",
             FeatureKind::Sketch { .. } => "Sketch",
             FeatureKind::Extrude { .. } => "ExtrudeFeature",
             FeatureKind::Revolve { .. } => "RevolveFeature",
@@ -1129,6 +1236,7 @@ impl FeatureKind {
     /// Default name prefix (`Extrude` → `Extrude1`).
     pub fn base_name(&self) -> &'static str {
         match self {
+            FeatureKind::BodyTransfer { .. } => "BodyTransfer",
             FeatureKind::Sketch { .. } => "Sketch",
             FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Revolve { .. } => "Revolve",
@@ -1220,6 +1328,7 @@ impl FeatureKind {
             FeatureKind::Extrude { extent, .. } => extent.to.iter_mut().chain(extent.from.iter_mut()).collect(),
             FeatureKind::Revolve { to: Some(p), .. } => vec![p],
             FeatureKind::Thread { face, .. } => vec![face],
+            FeatureKind::Emboss { face: Some(face), .. } => vec![&mut face.at],
             FeatureKind::Boss { position, .. } | FeatureKind::SnapFit { position, .. } | FeatureKind::Rest { position, .. } => vec![position],
             _ => Vec::new(),
         }
@@ -1253,6 +1362,9 @@ impl FeatureKind {
                     v.push(d);
                 }
                 if let Some(d) = &extent.taper {
+                    v.push(d);
+                }
+                if let Some(d) = &extent.to_offset {
                     v.push(d);
                 }
             }
@@ -1380,7 +1492,7 @@ impl FeatureKind {
             FeatureKind::SurfaceTrim { plane, .. } => plane_exprs(plane, &mut v),
             FeatureKind::SurfaceExtend { distance, .. } => v.push(distance),
             FeatureKind::Patch { .. } => {}
-            FeatureKind::Import { .. } | FeatureKind::MeshImport { .. } => {}
+            FeatureKind::Import { .. } | FeatureKind::MeshImport { .. } | FeatureKind::BodyTransfer { .. } => {}
         }
         v
     }
@@ -1586,7 +1698,7 @@ impl Document {
     /// else its component's, else its material's look, else the colour it was imported with.
     /// (Faces may have their own: `face_looks`.)
     pub fn body_color(&self, b: &crate::ModelBody) -> Option<[f32; 3]> {
-        self.body_look(&b.name, b.feature).map(|l| l.rgb()).or_else(|| b.body.color()).or_else(|| b.imported.as_ref().and_then(|i| i.color))
+        self.model_body_look(b).map(|l| l.rgb()).or_else(|| b.body.color()).or_else(|| b.imported.as_ref().and_then(|i| i.color))
     }
 
     /// The model with each body carrying the colour, opacity and face colours it is shown with
@@ -1595,17 +1707,12 @@ impl Document {
         let mut st = state.clone();
         for b in &mut st.bodies {
             let c = self.body_color(b);
-            let look = self.body_look(&b.name, b.feature);
             let faces: Vec<solvecraft_kernel::FacePaint> = self
                 .face_colors(b)
                 .into_iter()
                 .map(|(face, l)| solvecraft_kernel::FacePaint { face, color: l.rgb(), opacity: l.opacity as f32 })
                 .collect();
-            let opacity = look
-                .map(|l| l.opacity as f32)
-                .or_else(|| b.body.paint().map(|p| p.opacity))
-                .or_else(|| b.imported.as_ref().and_then(|i| i.opacity))
-                .unwrap_or(1.0);
+            let opacity = self.model_body_opacity(b) as f32;
             let paint = solvecraft_kernel::Paint { opacity, faces };
             if c != b.body.color() || b.body.paint() != Some(&paint) {
                 b.body = b.body.clone().with_color(c).with_paint(Some(paint));
@@ -1621,7 +1728,34 @@ impl Document {
 
     /// The component a body belongs to: where it was moved, else its feature's.
     pub fn body_component(&self, body: &str, feature: u64) -> u64 {
+        self.features
+            .iter()
+            .take(self.marker.unwrap_or(usize::MAX))
+            .rev()
+            .find_map(|f| {
+                if f.suppressed {
+                    return None;
+                }
+                match &f.kind {
+                    FeatureKind::BodyTransfer { bodies, to, .. } if bodies.iter().any(|b| b == body) => Some(*to),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| self.legacy_body_component(body, feature))
+    }
+
+    pub fn legacy_body_component(&self, body: &str, feature: u64) -> u64 {
         self.body_components.get(body).copied().unwrap_or_else(|| self.feature(feature).map(|f| f.component).unwrap_or(0))
+    }
+
+    /// Ownership in this evaluated timeline state, rather than a later transfer.
+    pub fn model_body_component(&self, body: &crate::ModelBody) -> u64 {
+        if body.transferred || body.source_name.is_some() { body.component } else { self.legacy_body_component(&body.name, body.feature) }
+    }
+
+    /// Recorded transfers already converted geometry into the new local frame.
+    pub fn model_body_offset(&self, body: &crate::ModelBody) -> Option<&crate::Mat> {
+        if body.transferred { None } else { self.body_offsets.get(&body.name) }
     }
 
     /// Add a component under `parent` and return its id.
@@ -1704,6 +1838,12 @@ impl Document {
         if self.features.len() >= MAX_FEATURES {
             return Err(DocError::Invalid("too many features".into()));
         }
+        let component = if let FeatureKind::BodyTransfer { bodies, from, to, transform } = &kind {
+            crate::validate_body_transfer(self, bodies, *from, *to, transform)?;
+            *to
+        } else {
+            0
+        };
         let id = self.next_id.max(1);
         self.next_id = id + 1;
         let name = match name {
@@ -1716,7 +1856,7 @@ impl Document {
             suppressed: false,
             body_names: Vec::new(),
             param_names: Vec::new(),
-            component: 0,
+            component,
             edge_refs: Vec::new(),
             edge_names: Vec::new(),
             face_names: Vec::new(),
@@ -1739,9 +1879,26 @@ impl Document {
         let idx = self.feature_index(id).ok_or_else(|| DocError::Unknown(format!("feature {id}")))?;
         let mut gone = vec![id];
         gone.extend(self.features.iter().filter(|f| f.kind.input_sketches().contains(&id)).map(|f| f.id));
+        let gone_params: Vec<String> = self.features.iter().filter(|f| gone.contains(&f.id)).flat_map(|f| f.param_names.clone()).collect();
+        self.configs
+            .rules
+            .retain(|rule| !rule.references_features(&gone) && !rule.parameter_references().iter().any(|name| gone_params.contains(name)));
         self.features.retain(|f| !gone.contains(&f.id));
         // Configuration columns of deleted features go with them.
-        let keep: Vec<bool> = self.configs.columns.iter().map(|c| !matches!(c, crate::config::Column::Suppress(id) if gone.contains(id))).collect();
+        let keep: Vec<bool> = self
+            .configs
+            .columns
+            .iter()
+            .map(|c| match c {
+                crate::config::Column::Suppress(id) => !gone.contains(id),
+                crate::config::Column::Param(name) => !gone_params.contains(name),
+                crate::config::Column::FaceAppearance(target) => !gone.contains(&target.origin_feature),
+                _ => true,
+            })
+            .collect();
+        self.appearances
+            .faces
+            .retain(|face| !face.strict_name || !face.name.as_ref().is_some_and(|name| gone.iter().any(|id| name.starts_with(&format!("F{id}:")))));
         if keep.contains(&false) {
             let mut k = keep.iter();
             self.configs.columns.retain(|_| k.next().copied().unwrap_or(true));
@@ -1768,6 +1925,19 @@ impl Document {
 
     fn referenced_names(&self) -> Vec<String> {
         let mut used: Vec<String> = Vec::new();
+        for rule in &self.configs.rules {
+            used.extend(rule.parameter_references());
+        }
+        for (index, column) in self.configs.columns.iter().enumerate() {
+            if let crate::config::Column::Param(name) = column {
+                used.push(name.clone());
+                for row in &self.configs.rows {
+                    if let Some(value) = row.cells.get(index) {
+                        used.extend(expr::references(value));
+                    }
+                }
+            }
+        }
         for f in &self.features {
             for e in f.kind.expressions() {
                 used.extend(expr::references(e));
@@ -1959,6 +2129,9 @@ impl Document {
                 let v = vals.get(p).copied().ok_or_else(|| DocError::Unknown(format!("parameter `{p}`")))?.to_kind(kind)?;
                 c.kind.set_value(v);
             }
+        }
+        for c in &sk.constraints {
+            sk.validate(&c.kind)?;
         }
         Ok(())
     }

@@ -18,4 +18,8 @@ existing geometry.
 
 Parameters export to and import from CSV or JSON (`parameters.export`, `parameters.import`).
 **Configurations** (`config.*`) keep a table of rows, each with its own parameter values and
-suppressed features, switched with `config.activate`.
+suppressed features, physical materials and body appearances, switched with `config.activate`.
+The table's Library picker selects material or appearance values. Choose **Follow material**
+to clear an appearance override. Custom looks retain their colour and opacity across
+activation, undo and save/reopen. See
+[configuration commands and examples](https://github.com/bherbruck/solvecraft/blob/main/docs/configurations.md).

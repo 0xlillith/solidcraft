@@ -50,7 +50,7 @@ pub fn boxes_for(cmd: &str, n: usize) -> Vec<DimBox> {
 
 /// A locked box's value (mm or radians).
 fn locked(app: &SolveApp, t: &Tool, label: &str) -> Option<f64> {
-    let b = t.dims.iter().find(|b| b.label == label && b.locked)?;
+    let b = t.dims.iter().chain(&t.dim_history).find(|b| b.label == label && b.locked)?;
     app.session.doc.eval(&b.value, b.kind).ok().filter(|v| v.is_finite())
 }
 
@@ -181,29 +181,71 @@ fn fmt(kind: ValueKind, v: f64) -> String {
 /// Make the tool's boxes match its stage (new boxes when a point was placed).
 pub fn sync(t: &mut Tool) {
     if t.dims_stage != t.pts.len() {
+        if t.dims_stage == 1
+            && t.pts.len() == 2
+            && matches!(t.cmd, "sketch.arc.center_point" | "sketch.slot.center_to_center" | "sketch.slot.overall")
+        {
+            t.dim_history.extend(t.dims.iter().filter(|dimension| dimension.locked).cloned());
+        } else if t.pts.len() <= t.dims_stage || t.cmd == "sketch.line" {
+            t.dim_history.clear();
+        }
         t.dims = boxes_for(t.cmd, t.pts.len());
         t.dims_stage = t.pts.len();
         t.dims_focus = !t.dims.is_empty();
     }
 }
 
-/// The dimension constraints the locked values ask for after the shape made `curves`:
-/// (entities, type, value).
-pub fn constraints(t: &Tool, curves: &[String]) -> Vec<(Vec<String>, &'static str, String)> {
-    let mut out = Vec::new();
-    for b in t.dims.iter().filter(|b| b.locked) {
-        let target = match (t.cmd, b.label) {
-            ("sketch.line", "Length") | ("sketch.rectangle.two_point" | "sketch.rectangle.center", "Width") => curves.first().map(|c| (c, "length")),
-            ("sketch.rectangle.two_point" | "sketch.rectangle.center", "Height") => curves.get(1).map(|c| (c, "length")),
-            ("sketch.circle.center", "Diameter") => curves.first().map(|c| (c, "diameter")),
-            ("sketch.arc.center_point", "Radius") => curves.first().map(|c| (c, "radius")),
-            _ => None,
-        };
-        if let Some((c, ty)) = target {
-            out.push((vec![c.clone()], ty, b.value.clone()));
+/// Clear a shape's input immediately, including when another first point arrives before redraw.
+pub fn reset(t: &mut Tool) {
+    t.dims.clear();
+    t.dim_history.clear();
+    t.dims_stage = usize::MAX;
+    t.dims_focus = false;
+}
+
+pub fn has_locked(t: &Tool, label: &str) -> bool {
+    t.dims.iter().chain(&t.dim_history).any(|dimension| dimension.locked && dimension.label == label)
+}
+
+/// Original expressions, rather than sampled numbers, become the shape's permanent dimensions.
+pub fn dimensions(t: &Tool) -> Value {
+    let values = t
+        .dim_history
+        .iter()
+        .chain(&t.dims)
+        .filter(|dimension| dimension.locked && dimension.label != "Sides")
+        .map(|dimension| (dimension.label.to_ascii_lowercase(), json!(dimension.value)))
+        .collect::<serde_json::Map<_, _>>();
+    Value::Object(values)
+}
+
+/// Invalid values stay in the current field, so users can correct them before another stage.
+pub fn validate(app: &SolveApp, t: &Tool) -> Result<(), String> {
+    for dimension in t.dim_history.iter().chain(&t.dims).filter(|dimension| dimension.locked) {
+        if dimension.value.len() > 4096 {
+            return Err(format!("{} expression is too long", dimension.label));
+        }
+        let value = app.session.doc.eval(&dimension.value, dimension.kind).map_err(|error| format!("{}: {error}", dimension.label))?;
+        if !value.is_finite() || value.abs() > 1e9 {
+            return Err(format!("{} must be finite and within the model's size limits", dimension.label));
+        }
+        match dimension.label {
+            "Angle" => {}
+            "Sweep" if value.abs() > 1e-9 && value.abs() < std::f64::consts::TAU - 1e-9 => {}
+            "Sweep" => return Err("Sweep must lie strictly between -360 and 360 degrees, and cannot be zero".into()),
+            "Sides" if (3.0..=200.0).contains(&value) && value.fract() == 0.0 => {}
+            "Sides" => return Err("Sides must be an integer from 3 to 200".into()),
+            _ if value > 1e-9 => {}
+            _ => return Err(format!("{} must be positive", dimension.label)),
         }
     }
-    out
+    if t.cmd == "sketch.slot.overall"
+        && let (Some(length), Some(width)) = (locked(app, t, "Length"), locked(app, t, "Width"))
+        && length <= width
+    {
+        return Err("Overall slot Length must exceed Width".into());
+    }
+    Ok(())
 }
 
 /// A locked box value by label (for the polygon side count).
@@ -240,6 +282,30 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
     let px = 2.0 * app.cam.half_height() / f64::from(proj.rect.height().max(1.0));
     let lv = live(t, e, px);
     let focus = std::mem::take(&mut t.dims_focus);
+    // Egui processes ordinary Tab navigation before these floating text edits are drawn.
+    // Remember the box that owned the keyboard and restore a focus within this tool after
+    // drawing, so the last dimension wraps to the first rather than reaching the panels.
+    let tab = ui.input(|input| {
+        input.raw.events.iter().find_map(|event| match event {
+            egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if !modifiers.ctrl && !modifiers.alt && !modifiers.command => {
+                Some(modifiers.shift)
+            }
+            _ => None,
+        })
+    });
+    let source = tab.and_then(|_| {
+        ui.ctx().memory(|memory| {
+            (0..t.dims.len())
+                .find(|i| memory.had_focus_last_frame(egui::Id::new(("sc_dim", i))))
+                .or_else(|| (0..t.dims.len()).find(|i| memory.has_focus(egui::Id::new(("sc_dim", i)))))
+        })
+    });
+    if source.is_some() {
+        // Also cancel navigation on the first focused frame, before the text edit's focus
+        // filter has been installed (e.g. immediately repeated keyboard input).
+        ui.ctx().memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+    }
+    let mut completed = false;
     let mut any_focused = false;
     for (i, b) in t.dims.iter_mut().enumerate() {
         let Some((v, at)) = lv.get(i).copied() else { continue };
@@ -260,9 +326,21 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
         egui::Area::new(egui::Id::new(("sc_dim_area", i))).fixed_pos(pos).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
             let fill = if b.locked { tk.accent_soft } else { tk.panel };
             egui::Frame::popup(ui.style()).fill(fill).inner_margin(egui::Margin::symmetric(3, 1)).show(ui, |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut b.value).id(id).desired_width(66.0)).on_hover_text(b.label);
-                crate::params_dialog::complete(ui, &r, &mut b.value);
-                if r.changed() {
+                let r = ui
+                    // The drawing tool handles Enter. Keep the text edit focused when a
+                    // rejected value needs correction, instead of surrendering the keyboard.
+                    .add(egui::TextEdit::singleline(&mut b.value).id(id).desired_width(66.0).return_key(None).event_filter(egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..Default::default()
+                    }))
+                    .on_hover_text(b.label);
+                // A completion gets first use of forward Tab. Shift+Tab always moves back;
+                // the box reached by egui's generic traversal must not complete its text.
+                let changed = (source.is_none() || (source == Some(i) && tab != Some(true))) && crate::params_dialog::complete(ui, &r, &mut b.value);
+                completed |= changed && source == Some(i);
+                if r.changed() || changed {
                     b.locked = true;
                 }
                 if focus && i == 0 {
@@ -272,12 +350,30 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
             });
         });
     }
+    if let Some(source) = source
+        && !completed
+    {
+        let next = if tab == Some(true) { (source + t.dims.len() - 1) % t.dims.len() } else { (source + 1) % t.dims.len() };
+        let id = egui::Id::new(("sc_dim", next));
+        if let Some(dimension) = t.dims.get(next) {
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(dimension.value.chars().count()),
+            )));
+            state.store(ui.ctx(), id);
+        }
+        ui.ctx().memory_mut(|memory| memory.request_focus(id));
+    }
     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let nothing = ui.ctx().memory(|m| m.focused().is_none());
     (enter && (any_focused || nothing)).then_some(e)
 }
 
-/// JSON for a typed dimension.
-pub fn dimension_params(entities: &[String], ty: &str, value: &str) -> Value {
-    json!({"entities": entities, "type": ty, "value": value})
-}
+#[cfg(test)]
+#[path = "sketch_dims_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "sketch_typed_intent_tests.rs"]
+mod typed_intent_tests;

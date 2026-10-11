@@ -34,6 +34,9 @@ pub enum Target {
     Component {
         id: u64,
     },
+    Occurrence {
+        path: Vec<u64>,
+    },
     /// A browser group of items.
     Group {
         id: u64,
@@ -227,6 +230,7 @@ pub fn target_bodies(app: &SolveApp, target: &Target) -> Vec<String> {
         Target::Viewport => touched_bodies(app),
         Target::Body { name } => vec![name.clone()],
         Target::Component { id } => component_bodies(app, *id),
+        Target::Occurrence { path } => app.session.occurrence_bodies(path, true).unwrap_or_default(),
         Target::Group { id } => crate::browser::group_bodies(app, *id),
         Target::Sketch { .. }
         | Target::Folder { .. }
@@ -244,14 +248,7 @@ pub fn target_bodies(app: &SolveApp, target: &Target) -> Vec<String> {
 /// Bodies in a component and its subcomponents.
 pub fn component_bodies(app: &SolveApp, id: u64) -> Vec<String> {
     let doc = &app.session.doc;
-    app.session
-        .model
-        .state()
-        .bodies
-        .iter()
-        .filter(|b| doc.component_within(doc.body_component(&b.name, b.feature), id))
-        .map(|b| b.name.clone())
-        .collect()
+    app.session.model.state().bodies.iter().filter(|b| doc.component_within(doc.model_body_component(b), id)).map(|b| b.name.clone()).collect()
 }
 
 /// The eight radial commands, clockwise from the top.
@@ -292,6 +289,7 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Body { name } => body_items(app, std::slice::from_ref(name), true),
         Target::Sketch { id } => sketch_items(app, *id),
         Target::Component { id } => component_items(app, *id),
+        Target::Occurrence { path } => occurrence_items(app, path),
         Target::Group { id } => crate::browser::group_items(app, *id),
         Target::Folder { component, folder } => crate::browser::folder_items(app, *component, folder),
         Target::Canvas { id } => crate::browser::canvas_items(app, *id),
@@ -366,7 +364,7 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.push(act("ui.editFeature", "Edit Feature", "").with(json!({ "feature": feature })).on(feature.is_some()));
         v.push(act("ui.editSketch", "Edit Profile Sketch", "sketch").with(json!({ "sketch": sketch })).on(sketch.is_some()));
         v.push(Item::sep());
-        v.push(act("ui.appearance", "Appearance", "").key("A").on(false));
+        v.push(act("ui.appearance", "Appearance", "appearance").key("A"));
         v.push(act("ui.properties", "Properties", "measure").with(json!({ "bodies": [face] })));
         v.push(Item::sep());
         v.push(act("ui.delete", "Delete", "delete").key("Del"));
@@ -437,7 +435,7 @@ fn body_items(app: &SolveApp, bodies: &[String], browser: bool) -> Vec<Item> {
         cmd(app, "component.from_bodies", "Create Components from Bodies").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.material", "Physical Material", "").with(json!({ "bodies": names })),
-        act("ui.appearance", "Appearance", "").key("A").on(false),
+        act("ui.appearance", "Appearance", "appearance").key("A").with(json!({ "bodies": names })),
         act("ui.properties", "Properties", "measure").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.saveMesh", "Save As Mesh", "export").with(json!({ "bodies": names })),
@@ -504,6 +502,54 @@ fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
     ]
 }
 
+fn occurrence_items(app: &SolveApp, path: &[u64]) -> Vec<Item> {
+    let Ok(placement) = app.session.occurrence_placement(path) else { return Vec::new() };
+    let mut entries = component_items(app, placement.component);
+    if app.session.occurrence_scope_count(path).is_ok_and(|n| n > 1) {
+        entries.insert(0, Item::heading("Shared child: edits affect all copies of its parent"));
+    }
+    let bodies = app.session.occurrence_bodies(path, true).unwrap_or_default();
+    for item in &mut entries {
+        match item.id.as_str() {
+            "ui.activate" => {
+                item.params = Some(json!({"component": placement.component, "occurrence": placement.occurrence, "path": path}));
+                item.enabled = app.session.active_occurrence_path.as_deref() != Some(path);
+            }
+            "occurrence.ground" => {
+                item.label = if placement.grounded { "Unground" } else { "Ground" }.into();
+                item.params = Some(json!({"occurrence": placement.occurrence, "grounded": !placement.grounded}));
+            }
+            "ui.moveOccurrence" => {
+                item.params = Some(json!({"occurrence": placement.occurrence, "path": path}));
+                item.enabled = !placement.grounded;
+            }
+            "ui.properties" => item.params = Some(json!({"occurrence": placement.occurrence, "path": path})),
+            "occurrence.copy" => item.params = Some(json!({"occurrence": placement.occurrence, "translate": [10,10,0]})),
+            "component.create" => item.params = Some(json!({"parent": placement.component, "parent_path": path})),
+            "component.paste_new" => {
+                item.label = "Paste New (Own Features)".into();
+                item.params = Some(json!({"component":placement.component,"occurrence":placement.occurrence,"path":path,"translate":[10,10,0]}));
+            }
+            "ui.rename" => item.label = "Rename Component".into(),
+            "ui.appearance" => item.label = "Component Appearance".into(),
+            "ui.material" => item.label = "Component Physical Material".into(),
+            "ui.delete" => item.params = Some(json!({"occurrences": [placement.occurrence]})),
+            "ui.hide" | "ui.show" => {
+                item.id = "browser.visibility".into();
+                item.params = Some(json!({"visible": app.session.occurrence_hidden(path), "paths": [path]}));
+                item.enabled = true;
+            }
+            "ui.isolate" => {
+                item.id = "ui.isolateOccurrence".into();
+                item.params = Some(json!({"path": path}));
+            }
+            "ui.export" | "ui.saveMesh" => item.params = Some(json!({"bodies": bodies})),
+            _ => {}
+        }
+    }
+    entries
+}
+
 fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     let doc = &app.session.doc;
     let occ = doc.occurrence_of(id);
@@ -530,8 +576,13 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     }
     v.push(Item::sep());
     v.push(act("ui.material", "Physical Material", "").with(json!({ "bodies": names })).on(!bodies.is_empty()));
-    v.push(act("ui.appearance", "Appearance", "").key("A").on(false));
-    v.push(act("ui.properties", "Properties", "measure").with(json!({ "bodies": names })).on(!bodies.is_empty()));
+    v.push(
+        act("ui.appearance", "Appearance", "appearance")
+            .key("A")
+            .with(if id == 0 { json!({ "bodies": names }) } else { json!({"component": id}) })
+            .on(id != 0 || !bodies.is_empty()),
+    );
+    v.push(act("ui.properties", "Properties", "measure").with(json!({ "component": id })));
     v.push(Item::sep());
     v.push(act("ui.export", "Export…", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
     v.push(act("ui.saveMesh", "Save As Mesh", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
@@ -593,6 +644,9 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     v.push(cmd(app, "sketch.move", "Move/Copy").key("M"));
     if !curves.is_empty() {
         v.push(cmd(app, "sketch.construction", "Normal / Construction").with(json!({ "curves": curves })));
+    }
+    if curves.len() == 1 && ss.sketch.freeform_offsets.iter().any(|offset| offset.output == curves[0]) {
+        v.push(cmd(app, "sketch.offset.break", "Break Offset Association").with(json!({"curve":curves[0]})));
     }
     v.push(act("ui.fix", "Fix/Unfix", "c_fix").with(json!({ "entities": ents })));
     v.push(act("ui.delete", "Delete", "delete").key("Del"));
@@ -676,7 +730,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         }
         "ui.show" => app.session.visibility.hidden_bodies.retain(|b| !bodies.contains(b)),
         "ui.showAll" => {
-            app.session.visibility.hidden_bodies.clear();
+            let _ = app.run("browser.visibility", json!({"folder":"bodies", "visible":true}));
             app.session.visibility.hidden_sketches.clear();
         }
         "ui.isolate" => {
@@ -716,10 +770,26 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             };
             start_rename(app, what, at);
         }
-        "ui.properties" => match app.session.execute("inspect.measure", &json!({ "bodies": bodies })) {
-            Ok(v) => app.menu.props = Some((if bodies.len() == 1 { bodies.join("") } else { format!("{} bodies", bodies.len()) }, v)),
-            Err(e) => app.set_status(e.to_string(), true),
-        },
+        "ui.properties" => {
+            let command = if p.get("occurrence").is_some() {
+                "occurrence.properties"
+            } else if p.get("component").is_some() {
+                "component.properties"
+            } else {
+                "inspect.measure"
+            };
+            let params = if command == "inspect.measure" { json!({ "bodies": bodies }) } else { p.clone() };
+            match app.session.execute(command, &params) {
+                Ok(v) => {
+                    let title = v["name"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| if bodies.len() == 1 { bodies.join("") } else { format!("{} bodies", bodies.len()) });
+                    app.menu.props = Some((title, v));
+                }
+                Err(e) => app.set_status(e.to_string(), true),
+            }
+        }
         "ui.export" => {
             let name = bodies.first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
             if let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&format!("{name}.step"), &["step", "stp", "igs", "stl", "3mf", "obj"]))
@@ -783,14 +853,26 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             }
         }
         "ui.activate" => {
-            if let Some(id) = id_of(&p, "component") {
-                let _ = app.run("component.activate", json!({ "component": id }));
+            if id_of(&p, "component").is_some() {
+                let _ = app.run("component.activate", p);
             }
         }
         "ui.moveOccurrence" => {
             if let Some(o) = id_of(&p, "occurrence") {
-                app.tree.occurrence_move = Some(crate::browser::OccMove::new(o));
+                let mut movement = crate::browser::OccMove::new(o);
+                movement.had_pending = app.session.pending_moves.contains_key(&o);
+                movement.path = p.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+                movement.baseline = app
+                    .session
+                    .pending_moves
+                    .get(&o)
+                    .copied()
+                    .or_else(|| app.session.doc.occurrences.iter().find(|occ| occ.id == o).map(|occ| occ.transform));
+                app.tree.occurrence_move = Some(movement);
             }
+        }
+        "ui.isolateOccurrence" => {
+            let _ = app.run("browser.visibility", json!({"visible": true, "paths": [p["path"]], "isolate": true}));
         }
         "ui.canvasVisible" => drop(app.run("canvas.edit", p)),
         "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.shortcutPin" => crate::toolbar_custom::run(app, &item.id, &p),
@@ -845,6 +927,26 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.editFeature" => {
             if let Some(f) = id_of(&p, "feature") {
                 app.edit_feature(f);
+            }
+        }
+        "ui.appearance" => {
+            if item.params.is_some() {
+                let items: Vec<Value> = bodies.iter().map(|b| json!({"type": "body", "name": b})).collect();
+                let _ = app.run("select.set", json!({ "items": items }));
+            }
+            app.start("appearance.assign");
+            if let Some(name) = id_of(&p, "component").and_then(|id| app.session.doc.components.iter().find(|c| c.id == id).map(|c| c.name.clone()))
+                && let Some(d) = app.dialog.as_mut()
+                && let crate::dialogs::Kind::Appearance(k) = &mut d.kind
+            {
+                if let Some(id) = id_of(&p, "component")
+                    && let Some(look) = app.session.doc.appearances.components.get(&id)
+                {
+                    k.color = look.color;
+                    k.opacity = look.opacity;
+                    k.look = Some(look.name.clone());
+                }
+                k.component = Some(name);
             }
         }
         "ui.material" => {
@@ -913,6 +1015,12 @@ pub fn delete(app: &mut SolveApp) {
 /// axes, components' bodies, canvases). When some are shown and some hidden, all are hidden.
 pub fn toggle_visibility(app: &mut SolveApp) {
     use solvecraft_engine::doc::FeatureKind;
+    let paths: Vec<Vec<u64>> =
+        app.session.selection.iter().filter_map(|s| if let Sel::Occurrence { path } = s { Some(path.clone()) } else { None }).collect();
+    if !paths.is_empty() {
+        let visible = !paths.iter().any(|p| !app.session.occurrence_hidden(p));
+        let _ = app.run("browser.visibility", json!({"visible": visible, "paths": paths}));
+    }
     let mut bodies: Vec<String> = touched_bodies(app);
     for c in app.tree.picked_components.clone() {
         bodies.extend(component_bodies(app, c));
@@ -959,6 +1067,10 @@ pub fn rename_selection(app: &mut SolveApp, at: Pos2) -> bool {
     let what = match (app.session.selection.as_slice(), app.tree.picked_components.as_slice(), app.tree.picked_canvases.as_slice()) {
         ([Sel::Body { name }], [], []) => RenameWhat::Body(name.clone()),
         ([Sel::Feature { id }], [], []) => RenameWhat::Feature(*id),
+        ([Sel::Occurrence { path }], [], []) => match app.session.occurrence_placement(path) {
+            Ok(p) => RenameWhat::Component(p.component),
+            Err(_) => return false,
+        },
         ([Sel::Plane { name }], [], []) => match app.session.doc.find_feature(name) {
             Some(f) => RenameWhat::Feature(f.id),
             None => return false,
@@ -1389,14 +1501,9 @@ pub fn list_row_lit(ui: &mut egui::Ui, item: &Item, lit: bool) -> Option<Item> {
         return None;
     }
     if item.is_heading() {
-        let (r, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
-        ui.painter().text(
-            pos2(r.left() + 8.0, r.center().y + 2.0),
-            Align2::LEFT_CENTER,
-            item.label.to_uppercase(),
-            FontId::proportional(10.5),
-            t.text_dim,
-        );
+        let text = ui.painter().layout(item.label.to_uppercase(), FontId::proportional(10.5), t.text_dim, w - 16.0);
+        let (r, _) = ui.allocate_exact_size(vec2(w, (text.size().y + 8.0).max(20.0)), Sense::hover());
+        ui.painter().galley(pos2(r.left() + 8.0, r.top() + 4.0), text, t.text_dim);
         return None;
     }
     let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), if item.enabled { Sense::click() } else { Sense::hover() });
@@ -1502,7 +1609,8 @@ fn show_props(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.label("Area");
                 ui.label(crate::prefs::show_mm(app, f(total, "area_mm2"), 2));
                 ui.end_row();
-                if let [b] = bodies.as_slice() {
+                let geometry = if total.get("center_of_mass").is_some() { Some(total) } else { bodies.first().filter(|_| bodies.len() == 1) };
+                if let Some(b) = geometry {
                     if let Some(c) = b["center_of_mass"].as_array() {
                         let c: Vec<String> = c.iter().map(|x| crate::prefs::show_mm_bare(app, x.as_f64().unwrap_or(f64::NAN))).collect();
                         ui.label("Center of mass");
