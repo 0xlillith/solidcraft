@@ -2905,7 +2905,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             Ok(())
         }
         FeatureKind::ConstructionAxis { def } => {
-            let (origin, dir) = crate::construct::resolve_axis(&crate::construct::Ctx { doc, vals, st }, def)?;
+            let (origin, dir) = crate::construct::resolve_axis(&crate::construct::Ctx { doc, vals, st, depth: 0 }, def)?;
             st.construct.push(crate::construct::Construct {
                 feature: f.id,
                 name: f.name.clone(),
@@ -2914,7 +2914,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             Ok(())
         }
         FeatureKind::ConstructionPoint { def } => {
-            let p = crate::construct::resolve_point(&crate::construct::Ctx { doc, vals, st }, def)?;
+            let p = crate::construct::resolve_point(&crate::construct::Ctx { doc, vals, st, depth: 0 }, def)?;
             st.construct.push(crate::construct::Construct { feature: f.id, name: f.name.clone(), geom: crate::construct::ConstructGeom::Point(p) });
             Ok(())
         }
