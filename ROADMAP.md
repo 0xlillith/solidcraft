@@ -90,6 +90,27 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   the original electronics enclosure story and animated pointer in the actual English
   0.2.0 UI, at 4× playback. Publication follows [the release workflow](docs/releasing.md).
 
+## 0.2.1 critical fixes
+
+- Axis view and navigation controls stay anchored to the viewport when feature dialogs or
+  the command palette open, at normal and enlarged display scales. Fit still accounts for
+  dialog coverage; covered controls do not receive clicks through dialogs.
+- Eligible planar faces survive fillet, chamfer and shell operations with exact source
+  certificates. Sketches placed directly on the enclosure wall and inner floor follow
+  width and wall changes, including after the USB cut and cold reopening.
+- Remove artificial straight-wall and rounded-corner subdivisions left by shell and
+  extrusion cuts. Identical generated wall segments span adjacent slabs as one physical
+  face, with exact full-height supports and boundary stitching. Preserve authored face
+  splits and face appearances. Permanent regressions cover material, STEP, reopening and
+  unaffected bodies across the extrusion end plane.
+- Feature dialogs use the available screen height for their fields, with OK and Cancel
+  outside the scrolling region, including enlarged display scales.
+- Design format 13 records shell-face attachments. Older designs remain readable;
+  newly saved designs require 0.2.1 or later. Ambiguous or unsupported faces still refuse
+  attachment rather than guessing a plane.
+- Saved projections from a removed strip retain their geometry and report the lost
+  reference. Explicitly reselect the wall to repair that projection.
+
 ## View navigation
 
 - Compact clickable signed X/Y/Z axis tips, smooth drag-to-orbit, and Shift-orbit snapping
@@ -99,9 +120,8 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Known limitations
 
-- Some shelled planar faces cannot supply the exact source required for an associative
-  face sketch. The enclosure demo uses parameter-driven offset planes (`width/2` for the
-  USB port, `wall` for the mounting bosses), so width and wall edits still rebuild the case.
+- Associative shell-face sketches require a unique certified planar source. Nested shell
+  attachments and ambiguous coincident sources remain unsupported.
 - Fillets and chamfers: constant, variable-radius and chord-length fillets; a radius per edge,
   rounds next to earlier rounds of another radius, and smooth corner patches where three rounds
   meet (a sphere for equal radii); straight edges (convex or concave) between planar faces with perpendicular

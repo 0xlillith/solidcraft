@@ -78,6 +78,8 @@ mod revolve_edit_tests;
 mod revolve_manipulator_tests;
 pub mod scenario;
 pub mod selection;
+#[cfg(test)]
+mod shell_face_sketch_ui_tests;
 pub mod shortcut_box;
 pub mod sketch3d;
 #[cfg(test)]
