@@ -91,6 +91,9 @@ midpoint, symmetry, fix, curvature (G2) and polygon. **Sketch Dimension** (D) ad
 aligned, horizontal, vertical, radius, diameter and angle dimensions. Each is a parameter
 (`d1`, `d2`, …), so it can hold an expression.
 
+Horizontal/Vertical also applies immediately to one selected line or two distinct selected
+points. Shift-click to add the second point before choosing the constraint.
+
 For Parallel, Perpendicular, Equal, Tangent, Concentric and Collinear, select exactly two
 sketch curves (Shift-click to add the second) and choose the constraint to apply it immediately.
 You can also start the constraint first and then pick its curves. An incomplete or mixed

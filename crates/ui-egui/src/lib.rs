@@ -545,6 +545,21 @@ impl SolveApp {
             self.last_command = Some((spec.id.to_string(), spec.label.to_string()));
         }
         if let Some(mut t) = tools::Tool::for_command(id) {
+            if id == "sketch.constraint.horizontal_vertical" {
+                use solvecraft_engine::Sel;
+                let params = match self.session.selection.as_slice() {
+                    [Sel::SketchCurve { id }] => Some(json!({ "line": id })),
+                    [Sel::SketchPoint { id: a }, Sel::SketchPoint { id: b }] if a != b => Some(json!({ "points": [a, b] })),
+                    _ => None,
+                };
+                if let Some(params) = params {
+                    if self.run(id, params).is_ok() {
+                        let _ = self.session.execute("select.clear", &json!({}));
+                        self.set_status("Constraint applied", false);
+                    }
+                    return;
+                }
+            }
             // Curve-pair constraints can consume an exact preselection. Leave ambiguous
             // selections to the ordinary pick tool; never silently constrain a subset.
             if matches!(
