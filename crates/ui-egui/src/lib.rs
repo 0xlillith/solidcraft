@@ -547,6 +547,13 @@ impl SolveApp {
             self.last_command = Some((spec.id.to_string(), spec.label.to_string()));
         }
         if let Some(mut t) = tools::Tool::for_command(id) {
+            if let Some(params) = tools::constraint_preselection(id, &self.session.selection) {
+                if self.run(id, params).is_ok() {
+                    let _ = self.session.execute("select.clear", &json!({}));
+                    self.set_status("Constraint applied", false);
+                }
+                return;
+            }
             // Curve-pair constraints can consume an exact preselection. Leave ambiguous
             // selections to the ordinary pick tool; never silently constrain a subset.
             if matches!(
