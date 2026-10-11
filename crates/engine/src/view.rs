@@ -95,6 +95,13 @@ pub fn sketch_lines(sk: &Sketch, plane: &Plane, active: bool, determined: &[bool
             out.push((seg.polyline(0.02).iter().map(|p| plane.to_world(*p)).collect(), col, c.construction || c.centerline));
         }
     }
+    // Virtual sharp corners (kept by fillets and chamfers): thin extension lines from the
+    // curves to the corner, like construction geometry.
+    for (_, ext) in sk.virtual_corners() {
+        for (a, b) in ext {
+            out.push((vec![plane.to_world(a), plane.to_world(b)], colors::SKETCH_CONSTRUCTION, true));
+        }
+    }
     // 3D curves are in world coordinates already.
     for w in sk.wires.iter().filter(|w| !w.fit.is_empty() || !sk.view.hide_projected) {
         // Curves drawn in a 3D sketch look like the sketch's own; included ones are references.
