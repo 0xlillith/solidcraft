@@ -103,6 +103,11 @@ cargo xtask ci                                          # fmt, clippy, tests, as
 
 Windows builds: `cargo xwin build --release --target x86_64-pc-windows-msvc -p solvecraft`.
 
+On Windows, SolidCraft detects a connected 3Dconnexion SpaceNavigator or SpaceMouse through its
+multi-axis HID interface. Move the cap to pan and zoom, and tilt or twist it to rotate the 3D view.
+While editing a sketch, the cap pans and zooms without changing the sketch view. The Navigation
+page in Preferences has an on/off switch and a speed control for the 3D mouse.
+
 In the browser: `cd apps/solvecraft-web && trunk build --release --public-url ./` (WebGPU, or
 WebGL2 with `?webgl`; `?sample` opens the sample part).
 
