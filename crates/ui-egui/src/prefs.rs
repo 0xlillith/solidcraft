@@ -46,6 +46,8 @@ pub struct Prefs {
     pub angle_decimals: u8,
     /// `dark`, `light` or `system` (follow the operating system).
     pub theme: String,
+    /// Interface language (a registered locale ID).
+    pub language: String,
     /// Interface scale (1 = 100 %).
     pub ui_scale: f32,
     /// The wheel zooms toward the point under the cursor (else toward the view's centre).
@@ -70,6 +72,7 @@ impl Default for Prefs {
             length_decimals: 2,
             angle_decimals: 1,
             theme: "dark".into(),
+            language: "en".into(),
             ui_scale: 1.0,
             zoom_to_cursor: true,
             look_at_anim: true,
@@ -157,6 +160,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
     match page {
         0 => {
             p.theme = d.theme;
+            p.language = d.language;
             p.ui_scale = d.ui_scale;
             p.default_units = d.default_units;
             p.length_decimals = d.length_decimals;
@@ -376,7 +380,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut open = true;
     let mut button: Option<&str> = None;
     let before = app.preferences.clone();
-    crate::frame::window(ctx, "Preferences", crate::frame::Width::Wide)
+    crate::frame::window(ctx, app.tr("ui.preferences"), crate::frame::Width::Wide)
         .id(egui::Id::new("sc_prefs"))
         .open(&mut open)
         .collapsible(false)
@@ -389,7 +393,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.vertical(|ui| {
                     ui.set_width(140.0);
                     for (i, s) in PAGES.iter().enumerate() {
-                        if ui.selectable_label(app.prefs_window.section == i, *s).clicked() {
+                        if ui.selectable_label(app.prefs_window.section == i, app.tr_label(s)).clicked() {
                             app.prefs_window.section = i;
                             app.keymap.read_only = false;
                         }
@@ -399,24 +403,24 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.vertical(|ui| {
                     // A fixed width, so the window keeps its size from page to page.
                     ui.set_width(540.0);
-                    ui.label(RichText::new(PAGES.get(app.prefs_window.section).copied().unwrap_or_default()).strong().size(14.0));
+                    ui.label(RichText::new(app.tr_label(PAGES.get(app.prefs_window.section).copied().unwrap_or_default())).strong().size(14.0));
                     ui.add_space(6.0);
                     page(app, ui, &t);
                 });
             });
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.button("Restore Defaults").on_hover_text("Reset the settings on this page").clicked() {
+                if ui.button(app.tr("ui.restore_defaults")).on_hover_text(app.tr("ui.reset_the_settings_on_this_page")).clicked() {
                     button = Some("defaults");
                 }
                 crate::frame::right_aligned(ui, 700.0, 170.0, |ui| {
-                    if ui.button("OK").clicked() {
+                    if ui.button(app.tr("ui.heading_ok")).clicked() {
                         button = Some("ok");
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(app.tr("ui.cancel")).clicked() {
                         button = Some("cancel");
                     }
-                    if ui.button("Apply").clicked() {
+                    if ui.button(app.tr("ui.apply")).clicked() {
                         button = Some("apply");
                     }
                 });
@@ -467,6 +471,7 @@ fn up_axis_changed(app: &mut SolveApp) {
 
 /// One page of the dialog.
 fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
+    let _language = crate::i18n::scope(&app.preferences.language);
     let note = |ui: &mut egui::Ui, s: &str| {
         ui.label("");
         ui.label(RichText::new(s).size(11.0).color(t.text_dim));
@@ -478,10 +483,21 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
     }
     egui::Grid::new(("sc_prefs_grid", app.prefs_window.section)).num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| match app.prefs_window.section {
         0 => {
-            ui.label("Theme");
+            ui.label(app.tr("ui.language"));
+            egui::ComboBox::from_id_salt("pref_language").selected_text(crate::i18n::Locale::for_language(&app.preferences.language).name()).show_ui(
+                ui,
+                |ui| {
+                    for locale in crate::i18n::LOCALES {
+                        let (id, label) = (locale.id, locale.name);
+                        ui.selectable_value(&mut app.preferences.language, id.to_string(), label);
+                    }
+                },
+            );
+            ui.end_row();
+            ui.label(app.tr("ui.theme"));
             ui.horizontal(|ui| {
                 for (id, label) in THEMES {
-                    if ui.radio(app.preferences.theme == id, label).clicked() {
+                    if ui.radio(app.preferences.theme == id, app.tr_label(label)).clicked() {
                         app.preferences.theme = id.to_string();
                         if id != "system" {
                             app.ui.dark = id == "dark";
@@ -490,33 +506,34 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 }
             });
             ui.end_row();
-            ui.label("UI scale");
+            ui.label(app.tr("ui.ui_scale"));
             ui.add(egui::Slider::new(&mut app.preferences.ui_scale, 0.75..=2.0).step_by(0.05).custom_formatter(|v, _| format!("{:.0} %", v * 100.0)));
             ui.end_row();
-            ui.label("Units of new designs");
+            ui.label(app.tr("ui.units_of_new_designs"));
             egui::ComboBox::from_id_salt("pref_units").selected_text(app.preferences.default_units.clone()).show_ui(ui, |ui| {
                 for u in UNITS {
                     ui.selectable_value(&mut app.preferences.default_units, u.to_string(), u);
                 }
             });
             ui.end_row();
-            ui.label("Autosave every");
+            ui.label(app.tr("ui.autosave_every"));
             if ui.add(egui::DragValue::new(&mut app.autosave_minutes).range(0.0..=120.0).speed(0.5).suffix(" min")).changed() {
                 set_autosave(app);
             }
             ui.end_row();
             note(ui, "0 turns it off");
-            ui.label("Length decimals");
+            ui.label(app.tr("ui.length_decimals"));
             ui.add(egui::DragValue::new(&mut app.preferences.length_decimals).range(0..=6));
             ui.end_row();
-            ui.label("Angle decimals");
+            ui.label(app.tr("ui.angle_decimals"));
             ui.add(egui::DragValue::new(&mut app.preferences.angle_decimals).range(0..=6));
             ui.end_row();
-            ui.label("Agent cursor");
+            ui.label(app.tr("ui.agent_cursor"));
+            let speed_label = app.tr("ui.agent_cursor_speed");
             let s = &mut app.ui.agent_cursor;
             ui.checkbox(&mut s.show, "Show the pointer an AI agent moves (#35)");
             ui.end_row();
-            ui.label("Agent cursor speed");
+            ui.label(speed_label);
             ui.add_enabled_ui(s.show, |ui| {
                 crate::agent_cursor::speed_slider(ui, &mut s.speed);
             });
@@ -693,6 +710,9 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
     if !THEMES.iter().any(|(id, _)| *id == new.theme) || !["z", "y"].contains(&new.up_axis.as_str()) {
         return Err("`theme` must be dark, light or system and `up_axis` z or y".into());
     }
+    if !crate::i18n::is_supported(&new.language) {
+        return Err(format!("`language` must be one of: {}", crate::i18n::LOCALES.iter().map(|locale| locale.id).collect::<Vec<_>>().join(", ")));
+    }
     if !(0.5..=2.5).contains(&new.ui_scale) || !(0.25..=4.0).contains(&new.look_at_speed) {
         return Err("`ui_scale` must be 0.5…2.5 and `look_at_speed` 0.25…4".into());
     }
@@ -778,11 +798,33 @@ mod tests {
         // File and Help › Keyboard Shortcuts open the same dialog at its page.
         app.keymap.open = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(Default::default(), |ui| show(&mut app, ui.ctx()));
+        let mut out = ctx.run_ui(Default::default(), |ui| show(&mut app, ui.ctx()));
+        out.textures_delta.clear();
         assert!(app.prefs_window.open && app.prefs_window.section == PAGE_SHORTCUTS && !app.keymap.open);
         assert!(control(&mut app, &json!({"open": "Plugins"})).is_err());
         assert!(set(&mut app, &json!({"up_axis": "x"})).is_err());
         assert!(set(&mut app, &json!({"theme": "sepia"})).is_err());
+        assert!(set(&mut app, &json!({"language": "fr"})).is_err());
+    }
+
+    #[test]
+    fn language_preference_switches_and_persists() {
+        let mut app = SolveApp::new(solvecraft_engine::Session::default(), Default::default());
+        assert_eq!(app.preferences.language, "en");
+        assert_eq!(app.tr("ui.preferences"), "Preferences");
+        assert_eq!(app.tr("ui.extrude"), "Extrude");
+
+        // Switch language to Japanese
+        set(&mut app, &json!({"language": "ja"})).unwrap();
+        assert_eq!(app.preferences.language, "ja");
+        assert_eq!(app.tr("ui.preferences"), "環境設定");
+        assert_eq!(app.tr("ui.extrude"), "押し出し");
+
+        // Preferences round-trip
+        let mut other = SolveApp::new(solvecraft_engine::Session::default(), Default::default());
+        other.load_prefs(&app.prefs());
+        assert_eq!(other.preferences.language, "ja");
+        assert_eq!(other.tr("ui.preferences"), "環境設定");
     }
 
     /// A STEP file opened Z-up is offered to be stood up: a quarter turn about X, undoable.

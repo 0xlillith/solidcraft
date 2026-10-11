@@ -68,26 +68,26 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
             );
             resp.on_hover_text(tip).clicked()
         };
-        let file = click(ui, "folder", "File");
-        if click(ui, "save", "Save (Ctrl+S)") {
+        let file = click(ui, "folder", app.tr("ui.file"));
+        if click(ui, "save", &format!("{} (Ctrl+S)", app.tr("ui.save"))) {
             save(app);
         }
-        if click(ui, "undo", "Undo (Ctrl+Z)") {
+        if click(ui, "undo", &format!("{} (Ctrl+Z)", app.tr("ui.undo"))) {
             let _ = app.run("edit.undo", json!({}));
         }
-        if click(ui, "redo", "Redo (Ctrl+Y)") {
+        if click(ui, "redo", &format!("{} (Ctrl+Y)", app.tr("ui.redo"))) {
             let _ = app.run("edit.redo", json!({}));
         }
-        if click(ui, "home", "Start page") {
+        if click(ui, "home", app.tr("ui.home")) {
             let rev = app.session.revision;
             app.home.show(rev);
         }
-        let theme_tip = if app.ui.dark { "Light theme" } else { "Dark theme" };
+        let theme_tip = if app.ui.dark { app.tr("ui.light") } else { app.tr("ui.dark") };
         if click(ui, if app.ui.dark { "sun" } else { "moon" }, theme_tip) {
             app.ui.dark = !app.ui.dark;
             app.preferences.theme = if app.ui.dark { "dark" } else { "light" }.into();
         }
-        if click(ui, "help", "Help") {
+        if click(ui, "help", app.tr("ui.help")) {
             app.help.menu = !app.help.menu;
             let at = ui.ctx().input(|i| i.pointer.latest_pos()).map_or(300.0, |p| p.x);
             ui.ctx().data_mut(|d| {
@@ -118,7 +118,12 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         icons::paint(ui.painter(), gear.shrink(4.0), "settings", t.app_bar_text, t.app_bar_text, t.app_bar);
         crate::scenario::publish_handle("titlebar:preferences", gear.center());
-        if gresp.on_hover_text(if cfg!(target_os = "macos") { "Preferences (Cmd+,)" } else { "Preferences (Ctrl+,)" }).clicked() {
+        let prefs_tip = if cfg!(target_os = "macos") {
+            format!("{} (Cmd+,)", app.tr("ui.preferences"))
+        } else {
+            format!("{} (Ctrl+,)", app.tr("ui.preferences"))
+        };
+        if gresp.on_hover_text(prefs_tip).clicked() {
             crate::prefs::open_at(app, 0);
         }
         ui.painter().text(
@@ -155,17 +160,17 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                 let item = |ui: &mut egui::Ui, label: &str, key: &str| {
                     ui.add(egui::Button::new(label).shortcut_text(key).min_size(vec2(180.0, 22.0))).clicked()
                 };
-                if item(ui, "New Design", "Ctrl+N") {
+                if item(ui, app.tr("ui.new_design"), "Ctrl+N") {
                     crate::documents::new_design(app);
                     close = true;
                 }
-                if item(ui, "Open…", "Ctrl+O") {
+                if item(ui, &format!("{}…", app.tr("ui.open")), "Ctrl+O") {
                     if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
                         app.open_path_async(&p);
                     }
                     close = true;
                 }
-                ui.menu_button("Open Recent", |ui| {
+                ui.menu_button(app.tr("ui.open_recent"), |ui| {
                     for path in app.home.recent.clone() {
                         let missing = !solvecraft_engine::io::vfs::exists(&path);
                         let label = format!("{path}{}", if missing { " (missing)" } else { "" });
@@ -176,7 +181,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                         }
                     }
                     ui.separator();
-                    if ui.button("Clear Recent").clicked() {
+                    if ui.button(app.tr("ui.clear_recent")).clicked() {
                         app.home.recent.clear();
                         app.home.opened_at.clear();
                         close = true;
@@ -191,11 +196,11 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     app.start("file.insert_mesh");
                     close = true;
                 }
-                if item(ui, "Save", "Ctrl+S") {
+                if item(ui, app.tr("ui.save"), "Ctrl+S") {
                     save(app);
                     close = true;
                 }
-                if item(ui, "Save As…", "") {
+                if item(ui, &format!("{}…", app.tr("ui.save_as")), "") {
                     save_as(app);
                     close = true;
                 }
@@ -217,16 +222,16 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 ui.separator();
-                if item(ui, "Preferences…", "") {
+                if item(ui, &format!("{}…", app.tr("ui.preferences")), "") {
                     app.prefs_window.open = true;
                     close = true;
                 }
-                if item(ui, "Keyboard Shortcuts…", "") {
+                if item(ui, &format!("{}…", app.tr("ui.keyboard_shortcuts")), "") {
                     app.keymap.open = true;
                     app.keymap.read_only = false;
                     close = true;
                 }
-                if item(ui, "Quit", "") {
+                if item(ui, app.tr("ui.quit"), "") {
                     crate::documents::request_quit(app);
                     close = true;
                 }
@@ -282,13 +287,13 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         painter.text(
             pos2(ws.center().x - 5.0, ws.top() + 52.0),
             Align2::CENTER_CENTER,
-            crate::toolbar_custom::WORKSPACE,
+            app.tr_label(crate::toolbar_custom::WORKSPACE),
             FontId::proportional(12.0),
             t.text,
         );
         caret(&painter, pos2(ws.center().x + 27.0, ws.top() + 52.0), t.text);
-        painter.text(pos2(ws.center().x, ws.top() + 69.0), Align2::CENTER_CENTER, "workspace", FontId::proportional(10.0), t.text_dim);
-        if wresp.on_hover_text("Change workspace").clicked() {
+        painter.text(pos2(ws.center().x, ws.top() + 69.0), Align2::CENTER_CENTER, app.tr("ui.workspace"), FontId::proportional(10.0), t.text_dim);
+        if wresp.on_hover_text(app.tr("ui.change_workspace")).clicked() {
             crate::context_menu::open_for(app, ws.left_bottom(), crate::context_menu::Target::Workspace);
         }
         crate::scenario::publish_rect("toolbar", r);
@@ -300,7 +305,9 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         tabs.extend(TABS.iter());
         for tab in tabs {
-            let w = 12.0 + tab.len() as f32 * 7.4;
+            let display_tab = app.tr_label(tab);
+            let text_width = painter.layout_no_wrap(display_tab.to_string(), FontId::proportional(12.0), t.text).size().x;
+            let w = 12.0 + text_width.max(28.0);
             let tr = Rect::from_min_size(pos2(x, tabs_y), vec2(w, 22.0));
             let active = app.ui.tab == tab;
             let resp = ui.interact(tr, ui.id().with(("tab", tab)), Sense::click());
@@ -317,7 +324,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             } else {
                 t.text_dim
             };
-            painter.text(tr.center(), Align2::CENTER_CENTER, tab, FontId::proportional(12.0), col);
+            painter.text(tr.center(), Align2::CENTER_CENTER, display_tab, FontId::proportional(12.0), col);
             if resp.clicked() {
                 app.ui.tab = tab.to_string();
             }
@@ -384,9 +391,10 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 };
                 let icon = if c.id == "sketch.finish" { "finish" } else { c.icon };
                 icons::paint(&painter, br.shrink(6.0), icon, ink, fill, acc);
+                let tr_label = app.tr_label(c.label);
                 let tip = match &info.disabled_reason {
-                    Some(why) => format!("{}\n{why}", c.label),
-                    None => format!("{}{}", c.label, c.shortcut.map(|k| format!("  ({k})")).unwrap_or_default()),
+                    Some(why) => format!("{}\n{why}", tr_label),
+                    None => format!("{}{}", tr_label, c.shortcut.map(|k| format!("  ({k})")).unwrap_or_default()),
                 };
                 if resp.on_hover_text(tip).clicked() && info.enabled {
                     let id = c.id;
@@ -399,7 +407,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             // Panel label with drop-down.
             let lr = Rect::from_min_size(pos2(px, top + 42.0), vec2(width, 18.0));
-            let label = panel.to_string();
+            let label = app.tr_label(panel).to_string();
             let lresp = ui.interact(lr, ui.id().with(("panel", panel)), Sense::click());
             crate::scenario::publish_handle(&format!("panel:{tab}:{panel}"), lr.center());
             if lresp.hovered() && enabled_panel {
@@ -437,7 +445,10 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                             ui.horizontal(|ui| {
                                 let (ir, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
                                 icons::paint(ui.painter(), ir, c.icon, t.icon, t.icon_fill, t.accent);
-                                let b = ui.add_enabled(info.enabled, egui::Button::new(c.label).frame(false).shortcut_text(c.shortcut.unwrap_or("")));
+                                let b = ui.add_enabled(
+                                    info.enabled,
+                                    egui::Button::new(app.tr_label(c.label)).frame(false).shortcut_text(c.shortcut.unwrap_or("")),
+                                );
                                 crate::scenario::publish_handle(&format!("toolbar:{}", c.id), b.rect.center());
                                 if b.secondary_clicked() {
                                     menu = Some((b.interact_pointer_pos().unwrap_or(b.rect.left_bottom()), c.id));

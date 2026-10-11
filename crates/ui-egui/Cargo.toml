@@ -17,6 +17,7 @@ serde_json = { workspace = true }
 log = { workspace = true }
 web-time = { workspace = true }
 image = { workspace = true, features = ["jpeg"] }
+ttf-parser = { workspace = true }
 
 [build-dependencies]
 serde_json = { workspace = true }
