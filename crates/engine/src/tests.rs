@@ -2032,3 +2032,40 @@ fn drawing_on_existing_points_connects_to_them() {
     let si = run(&mut s, "sketch.inspect", json!({}));
     assert_ne!(si["status"], "conflict", "{si}");
 }
+
+#[test]
+fn computed_import_preserves_file_and_earlier_undo_history() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    s.path = Some("existing.solvecraft".into());
+    s.mark_saved();
+    let saved = s.doc.clone();
+    let mut computed = s.scratch();
+    run(&mut computed, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [30, 0, 0]}));
+    s.accept_computed(computed);
+    assert_eq!(s.path.as_deref(), Some("existing.solvecraft"));
+    assert!(s.is_dirty());
+    assert_eq!(s.model.state().bodies.len(), 2);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(std::sync::Arc::ptr_eq(&saved, &s.doc));
+    assert!(!s.is_dirty());
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.model.state().bodies.is_empty());
+}
+
+#[test]
+fn adopting_a_computed_component_keeps_its_warm_world_geometry() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Part"}));
+    run(&mut s, "solid.box", json!({"length":10,"width":10,"height":10}));
+    let mut computed = s.scratch();
+    run(&mut computed, "solid.box", json!({"length":5,"width":5,"height":5,"corner":[30,0,0]}));
+    let prepared = computed.world_state();
+    for b in &prepared.bodies {
+        let _ = b.mesh();
+    }
+    s.accept_computed(computed);
+    assert!(std::sync::Arc::ptr_eq(&prepared, &s.world_state()));
+    s.invalidate_view(100);
+    assert!(std::sync::Arc::ptr_eq(&prepared, &s.world_state()));
+}

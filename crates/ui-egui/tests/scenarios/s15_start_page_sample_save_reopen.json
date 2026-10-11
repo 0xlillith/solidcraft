@@ -18,6 +18,7 @@
   {"expect": {"bodies": 0}},
   {"choose_file": "Sample Plate.solvecraft"},
   {"key": "O", "cmd": true},
+  {"until": {"file_busy": false}},
   {"debug": 1},
   {"expect": {"bodies": 1, "errors": 0, "param": {"width": 100}}},
   {"shot": "s15_reopened"}

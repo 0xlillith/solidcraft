@@ -31,11 +31,17 @@ pub struct HomeState {
     queued: Vec<String>,
     #[cfg(not(target_arch = "wasm32"))]
     rx: Option<std::sync::mpsc::Receiver<Made>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    remembering: Option<std::sync::mpsc::Receiver<Made>>,
     /// A sample picked before its design was ready.
     wanted: Option<usize>,
 }
 
 impl HomeState {
+    pub fn ready_recents(&self) -> usize {
+        self.recent.iter().filter(|p| self.thumbs.get(*p).is_some_and(Option::is_some)).count()
+    }
+
     pub fn show(&mut self, _rev: u64) {
         self.open = true;
     }
@@ -67,8 +73,104 @@ pub fn thumbnail(s: &Session) -> Option<egui::ColorImage> {
     (c.rgba.len() == c.w * c.h * 4).then(|| egui::ColorImage::from_rgba_unmultiplied([c.w, c.h], &c.rgba))
 }
 
+/// File identity, not just its path: saving or replacing a design invalidates its picture.
+#[cfg(not(target_arch = "wasm32"))]
+fn cache_path(key: &str) -> Option<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let meta = std::fs::metadata(key).ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    meta.len().hash(&mut h);
+    meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.hash(&mut h);
+    let root = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    Some(root.join("SolveCraft").join("thumbnails").join(format!("{:016x}.png", h.finish())))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cached(key: &str) -> Option<egui::ColorImage> {
+    let path = cache_path(key)?;
+    if std::fs::metadata(&path).ok()?.len() > 512 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(THUMB[0] as u32);
+    limits.max_image_height = Some(THUMB[1] as u32);
+    limits.max_alloc = Some((THUMB[0] * THUMB[1] * 8) as u64);
+    reader.limits(limits);
+    let image = reader.decode().ok()?.to_rgba8();
+    (image.width() as usize == THUMB[0] && image.height() as usize == THUMB[1])
+        .then(|| egui::ColorImage::from_rgba_unmultiplied(THUMB, image.as_raw()))
+}
+
+/// Render from the model already built by Open/Save, rather than evaluating its file again.
+pub(crate) fn remember(s: &Session) -> Option<egui::ColorImage> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let identity = s.path.as_deref().and_then(cache_path);
+    remember_at(
+        s,
+        #[cfg(not(target_arch = "wasm32"))]
+        identity,
+    )
+}
+
+fn remember_at(s: &Session, #[cfg(not(target_arch = "wasm32"))] identity: Option<std::path::PathBuf>) -> Option<egui::ColorImage> {
+    let img = thumbnail(s)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = identity.filter(|p| s.path.as_deref().and_then(cache_path).as_ref() == Some(p)) {
+        let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+        if let Some(bytes) = solvecraft_engine::render::png(THUMB[0], THUMB[1], rgba)
+            && let Some(dir) = path.parent()
+            && std::fs::create_dir_all(dir).is_ok()
+        {
+            let _ = solvecraft_engine::io::write_atomic(&path, &bytes, false);
+        }
+    }
+    Some(img)
+}
+
+pub(crate) fn remember_session(h: &mut HomeState, s: &Session) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(path) = &s.path {
+        let identity = cache_path(path);
+        let mut snapshot = s.scratch();
+        snapshot.path = Some(path.clone());
+        let key = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("saved-thumbnail".into())
+            .spawn(move || {
+                let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| remember_at(&snapshot, identity))).ok().flatten();
+                let _ = tx.send((key, img, None));
+            })
+            .is_ok()
+        {
+            h.remembering = Some(rx);
+            h.queued.retain(|k| k != path);
+            h.thumbs.insert(path.clone(), None);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (h, s);
+    }
+}
+
+pub(crate) fn install(h: &mut HomeState, ctx: &egui::Context, key: &str, img: Option<egui::ColorImage>) {
+    let tex = img.map(|i| ctx.load_texture(format!("thumb:{key}"), i, egui::TextureOptions::LINEAR));
+    h.thumbs.insert(key.to_string(), tex);
+}
+
 /// Build what a key stands for (runs off the UI thread where threads exist).
 fn make(key: &str) -> Made {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(img) = cached(key) {
+        return (key.to_string(), Some(img), None);
+    }
     let mut s = Session::default();
     let built = match key.strip_prefix("sample:").and_then(|i| i.parse::<usize>().ok()) {
         Some(i) => solvecraft_engine::sample::samples().get(i).is_some_and(|smp| {
@@ -83,7 +185,7 @@ fn make(key: &str) -> Made {
     if !built {
         return (key.to_string(), None, None);
     }
-    let img = thumbnail(&s);
+    let img = remember(&s);
     (key.to_string(), img, key.starts_with("sample:").then_some(s))
 }
 
@@ -92,7 +194,18 @@ fn start_jobs(h: &mut HomeState) {
     if h.rx.is_some() || h.queued.is_empty() {
         return;
     }
-    let keys = std::mem::take(&mut h.queued);
+    let mut keys = std::mem::take(&mut h.queued);
+    // Cached recents first, then cold recents, then samples. A sample must never hold up
+    // pictures of the user's work; a cold file must not hold up already cached pictures.
+    keys.sort_by_key(|k| {
+        if k.starts_with("sample:") {
+            2
+        } else if cache_path(k).is_some_and(|p| p.exists()) {
+            0
+        } else {
+            1
+        }
+    });
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new().name("thumbnails".into()).spawn(move || {
         for k in keys {
@@ -112,12 +225,31 @@ fn start_jobs(h: &mut HomeState) {
 fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     let mut done: Vec<Made> = Vec::new();
     #[cfg(not(target_arch = "wasm32"))]
+    let mut remembered = None;
+    #[cfg(not(target_arch = "wasm32"))]
     {
+        if let Some(rx) = &app.home.remembering {
+            match rx.try_recv() {
+                Ok(m) => {
+                    remembered = Some(m);
+                    app.home.remembering = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => app.home.remembering = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                }
+            }
+        }
         start_jobs(&mut app.home);
         if let Some(rx) = &app.home.rx {
             loop {
                 match rx.try_recv() {
-                    Ok(m) => done.push(m),
+                    Ok(m) => {
+                        // A cold job started before a save/open cannot overwrite its fresh picture.
+                        if m.0.starts_with("sample:") || !app.home.thumbs.get(&m.0).is_some_and(Option::is_some) {
+                            done.push(m);
+                        }
+                    }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         app.home.rx = None;
@@ -125,6 +257,9 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                 }
             }
+        }
+        if let Some(m) = remembered {
+            done.push(m);
         }
         if app.home.rx.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -185,7 +320,7 @@ pub fn open_recent(app: &mut SolveApp, path: &str) {
         return;
     }
     app.home.open = false;
-    app.open_path(path);
+    app.open_path_async(path);
 }
 
 /// The page itself (in place of the toolbar, browser and viewport).
@@ -250,7 +385,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     action = Some(Box::new(|app: &mut SolveApp| {
                         if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
                             app.home.open = false;
-                            app.open_path(&p);
+                            app.open_path_async(&p);
                         }
                     }));
                 }
@@ -415,6 +550,30 @@ fn card(ui: &mut egui::Ui, pic: Pic, name: &str, sub: &str, dim: bool) -> egui::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cached_recent_uses_a_separate_png_without_reading_or_changing_design_json() {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("solvecraft-thumb-{}-{nonce}.solvecraft", std::process::id()));
+        // Deliberately invalid design: a cached recent must not parse/evaluate it.
+        let bytes = b"{\"thumbnail_test\":true}";
+        std::fs::write(&path, bytes).unwrap();
+        let key = path.to_string_lossy().to_string();
+        let mut s = Session::default();
+        s.execute("solid.box", &serde_json::json!({"length":10,"width":10,"height":10})).unwrap();
+        s.path = Some(key.clone());
+        let image = remember(&s).unwrap();
+        let png = cache_path(&key).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let (_, cached_image, session) = make(&key);
+        assert!(session.is_none());
+        assert_eq!(cached_image.unwrap().pixels, image.pixels);
+        std::fs::write(&path, b"changed file identity").unwrap();
+        assert!(cached(&key).is_none());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_file(png).unwrap();
+    }
 
     #[test]
     fn recent_list_is_newest_first_and_bounded() {

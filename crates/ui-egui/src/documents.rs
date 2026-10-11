@@ -91,7 +91,7 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     };
     put_view(app, slot.view);
     // Views cache by revision: the incoming design must not look unchanged.
-    app.session.revision = app.session.revision.max(out_rev) + 1;
+    app.session.invalidate_view(out_rev);
     app.ui.tab = if app.session.active_sketch.is_some() { "SKETCH".into() } else { "SOLID".into() };
     out
 }
@@ -141,7 +141,7 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
         crate::dialogs::cancel(app);
         app.tool = None;
         app.session = session;
-        app.session.revision = app.session.revision.max(rev) + 1;
+        app.session.invalidate_view(rev);
         app.cam = Camera::default();
         app.fit_view();
     } else if let Err(e) = open_tab(app, session) {

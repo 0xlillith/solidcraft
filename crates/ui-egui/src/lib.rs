@@ -54,6 +54,7 @@ mod status_tests {
         assert!(app.session.log.last().is_some_and(|l| l.starts_with("Redo: ") && !l.contains("edit.redo")), "{:?}", app.session.log.last());
     }
 }
+mod file_load;
 pub mod palette;
 pub mod params_dialog;
 pub mod prefs;
@@ -230,6 +231,7 @@ pub struct SolveApp {
     fitted: bool,
     /// The start page.
     pub home: home::HomeState,
+    pub file_load: file_load::FileLoad,
     /// The other open designs (tabs).
     pub docs: documents::Documents,
 }
@@ -281,6 +283,7 @@ impl SolveApp {
             styled: false,
             fitted: false,
             home: home::HomeState::default(),
+            file_load: file_load::FileLoad::default(),
             docs: documents::Documents::default(),
         }
     }
@@ -388,6 +391,9 @@ impl SolveApp {
 
     /// Run a command programmatically (JSON parameters, no dialogs).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        if self.file_load.busy() {
+            return Err("a file operation is in progress".into());
+        }
         let t0 = now_ms();
         let r = self.session.execute(id, &params).map_err(|e| e.to_string());
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;
@@ -406,6 +412,9 @@ impl SolveApp {
                     && let Some(p) = self.session.path.clone()
                 {
                     self.home.add_recent(&p);
+                    if matches!(id, "file.save" | "file.save_as") {
+                        home::remember_session(&mut self.home, &self.session);
+                    }
                 }
             }
             Err(e) => {
@@ -441,7 +450,7 @@ impl SolveApp {
         }
         if matches!(id, "file.insert_step" | "file.insert_mesh") {
             if let Some(p) = self.services.pick_open.as_ref().and_then(|f| f()) {
-                self.insert_path(&p);
+                self.insert_path_async(&p);
             }
             return;
         }
@@ -622,6 +631,13 @@ impl SolveApp {
         }
     }
 
+    pub fn open_path_async(&mut self, path: &str) {
+        file_load::begin(self, path, false);
+    }
+    pub fn insert_path_async(&mut self, path: &str) {
+        file_load::begin(self, path, true);
+    }
+
     /// Insert a STEP file's bodies (an Import base feature) or a 3MF/STL file's meshes into the
     /// current design.
     pub fn insert_path(&mut self, path: &str) {
@@ -641,9 +657,9 @@ impl SolveApp {
     pub fn drop_path(&mut self, path: &str) {
         let import = solvecraft_engine::io::is_step_path(path) || solvecraft_engine::io::is_mesh_path(path);
         if import && !self.session.doc.features.is_empty() {
-            self.insert_path(path);
+            self.insert_path_async(path);
         } else {
-            self.open_path(path);
+            self.open_path_async(path);
         }
     }
 
@@ -733,6 +749,7 @@ impl SolveApp {
 
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        file_load::tick(self, ctx);
         self.esc_handled = false;
         prefs::apply(self, ctx);
         if !self.styled || theme::is_dark() != self.ui.dark {
@@ -798,6 +815,7 @@ impl SolveApp {
         let t0 = now_ms();
         scenario::clear_handles();
         toolbar::app_bar(self, ui);
+        file_load::show(self, ui.ctx());
         documents::prompt(self, ui.ctx());
         if self.home.open {
             home::show(self, ui);

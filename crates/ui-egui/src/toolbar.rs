@@ -161,7 +161,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                 }
                 if item(ui, "Open…", "Ctrl+O") {
                     if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
-                        app.open_path(&p);
+                        app.open_path_async(&p);
                     }
                     close = true;
                 }
@@ -531,6 +531,9 @@ fn caret(p: &egui::Painter, c: egui::Pos2, col: Color32) {
 
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
+    if app.file_load.busy() {
+        return;
+    }
     // The Keyboard Shortcuts window is waiting for a key: it is not a shortcut.
     if crate::keymap::capturing(app) {
         return;
@@ -554,7 +557,7 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 Key::Comma => crate::prefs::open_at(app, 0),
                 Key::O => {
                     if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
-                        app.open_path(&p);
+                        app.open_path_async(&p);
                     }
                 }
                 _ => {

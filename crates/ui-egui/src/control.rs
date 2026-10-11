@@ -127,13 +127,24 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
             "hover": app.viewport.hover.as_ref().map(|h| format!("{h:?}")),
             "renderer": if app.viewport.gpu.is_some() { "gpu" } else { "cpu" },
             "frame_ms": app.frame_ms,
+            "file_busy": app.file_load.busy(),
             "build_ms": app.viewport.build_ms,
             "preview": {"active": app.preview.active, "busy": app.preview.busy, "error": app.preview.error, "ms": app.preview.ms, "replaced": app.preview.replaced},
             "home": app.home.open,
+            "recent_thumbnails_ready": app.home.ready_recents(),
             "documents": app.docs.count(),
             "quit_requested": app.quit_requested,
             "quitting": app.docs.quitting.is_some(),
         })),
+        "ui.file" => {
+            let Some(path) = s("path") else { return err("path is required") };
+            if p.get("insert").and_then(Value::as_bool).unwrap_or(false) {
+                app.insert_path_async(path);
+            } else {
+                app.open_path_async(path);
+            }
+            ok(json!({"busy": app.file_load.busy()}))
+        }
         "ui.documents" => ok(crate::documents::control(app, p)),
         "ui.home" => {
             match p.get("open").and_then(Value::as_bool) {

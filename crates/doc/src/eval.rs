@@ -19,7 +19,9 @@ pub struct ModelBody {
     pub body: Body,
     /// Feature that created it.
     pub feature: u64,
-    mesh: OnceLock<Arc<Mesh>>,
+    // Timeline snapshots are cloned before meshes are requested. Share the cell itself so
+    // meshing any snapshot also warms every unchanged copy of this body.
+    mesh: Arc<OnceLock<Arc<Mesh>>>,
     /// Identity of this body's content for the evaluation cache: the key of the evaluation
     /// that produced it (kept while later features pass it through unchanged).
     key: u64,
@@ -33,7 +35,7 @@ pub struct ModelBody {
 
 impl ModelBody {
     pub fn new(name: String, body: Body, feature: u64) -> Self {
-        ModelBody { name, body, feature, mesh: OnceLock::new(), key: 0, names: Default::default(), component: 0, imported: None }
+        ModelBody { name, body, feature, mesh: Arc::new(OnceLock::new()), key: 0, names: Default::default(), component: 0, imported: None }
     }
     /// Display mesh (chord tolerance 1/1000 of the body size), computed once.
     pub fn mesh(&self) -> Arc<Mesh> {

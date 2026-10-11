@@ -83,6 +83,7 @@
  {
   "widget": "Insert STEP\u2026"
  },
+ {"until": {"file_busy": false}},
  {
   "debug": 1
  },

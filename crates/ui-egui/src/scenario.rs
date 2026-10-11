@@ -865,7 +865,7 @@ pub fn check(h: &mut Harness, e: &Value) -> Result<(), String> {
                     }
                 }
             }
-            "quit_requested" | "quitting" => {
+            "file_busy" | "quit_requested" | "quitting" => {
                 if ui[k] != *v {
                     return Err(format!("{k}: got {}, want {v}", ui[k]));
                 }

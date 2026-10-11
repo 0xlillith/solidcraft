@@ -439,6 +439,42 @@ impl Session {
         }
     }
 
+    /// Refresh UI caches when adopting a session or switching tabs, without discarding its
+    /// already prepared world-space geometry. This does not change the document.
+    pub fn invalidate_view(&mut self, previous_revision: u64) {
+        let old = self.revision;
+        self.revision = old.max(previous_revision) + 1;
+        if let Ok(mut cache) = self.world_cache.lock()
+            && let Some((revision, _)) = cache.as_mut()
+            && *revision == old
+        {
+            *revision = self.revision;
+        }
+    }
+
+    /// Commit commands evaluated on a scratch copy without losing this session's file,
+    /// saved state, view state, checkpoints or earlier undo steps.
+    pub fn accept_computed(&mut self, mut computed: Session) {
+        let previous_revision = self.revision;
+        self.doc = computed.doc;
+        self.model = computed.model;
+        self.world_cache = computed.world_cache;
+        self.undo.append(&mut computed.undo);
+        if self.undo.len() > MAX_UNDO {
+            self.undo.drain(..self.undo.len() - MAX_UNDO);
+        }
+        self.redo = computed.redo;
+        self.active_sketch = computed.active_sketch;
+        self.selection = computed.selection;
+        self.revision = computed.revision;
+        self.invalidate_view(previous_revision);
+        self.active_component = computed.active_component;
+        self.pending_moves = computed.pending_moves;
+        for message in computed.log {
+            self.echo(message);
+        }
+    }
+
     /// Live preview: run `commands` (id, parameters) on a scratch copy and return the model
     /// before and after. Nothing in this session changes (document, undo history, selection).
     /// A `timeline.redefine` is shown even while the timeline is rolled back to the feature

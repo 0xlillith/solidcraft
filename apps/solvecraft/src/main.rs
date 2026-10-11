@@ -191,7 +191,7 @@ fn main() -> eframe::Result {
                 app.session.undo.clear();
             }
             for f in &files {
-                app.open_path(f);
+                app.open_path_async(f);
             }
             // No design given: the start page (not when driven over the control channel, whose
             // clients expect the design view; `ui.home` shows it there).
