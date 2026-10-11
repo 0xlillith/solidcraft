@@ -26,5 +26,44 @@ Feature references to faces and edges are stored by name, so an upstream edit th
 keeps them on the right face (see [Persistent naming](../dev/naming.md)). When a reference can't
 be found, the feature warns instead of silently picking another face.
 
+## Editing a feature from a script
+
+`timeline.inspect {feature}` returns a feature's `definition`: the fields `timeline.edit` changes,
+with their current values. `timeline.edit {feature, set}` merges `set` into that definition
+(objects are merged field by field, anything else replaces the value), rebuilds the feature and
+reports `recomputed` and `restored`. The feature's type cannot change, and sketch geometry is
+edited with the sketch commands. Expressions are text (`"30"`, `"30 mm"`, `"width / 2"`,
+`"45 deg"`); a bare number is a length in the design's units, or degrees for an angle.
+
+```json
+{"command": "timeline.inspect", "params": {"feature": "Slab"}}
+→ {"type": "ExtrudeFeature",
+   "definition": {"sketch": 1, "profiles": {"type": "all"}, "operation": "new_body",
+                  "extent": {"distance": "10", "direction": "positive"}},
+   "inputs": [{"label": "Distance", "param": "d1", "expression": "10", "unit": "mm"}], …}
+{"command": "timeline.edit", "params": {"feature": "Slab", "set": {"extent": {"distance": "12"}}}}
+```
+
+`inputs` lists the feature's named inputs. `parameters.change {name: "d1", expression}` sets one
+of those directly. Optional fields that are not set do not appear in the definition; they can
+still be added through `set`. The fields of the common features:
+
+| Feature | Fields |
+|---|---|
+| Extrude | `extent`: {`distance`, `direction`: positive\|negative\|symmetric, `distance2`, `start_offset`, `through_all`, `taper`, `to`, `to_offset`, `from`}; `operation`: new_body\|join\|cut\|intersect; `targets`; `profiles`; `sketch` |
+| Revolve | `angle`, `angle2`, `symmetric`, `axis`, `to`, `operation`, `targets`, `profiles`, `sketch` |
+| Fillet | `radius`, `edges` (a point on each edge), `body`, `style` |
+| Chamfer | `distance`, `distance2` or `angle`, `flip`, `edges`, `body` |
+| Box | `length`, `width`, `height`, `corner`, `operation` |
+| Cylinder | `radius`, `height`, `base`, `axis`, `operation` |
+| Hole | `diameter`, `depth`, `position`, `direction`, `hole` (simple, drilled, counterbore, countersink), `thread`, `to` |
+| Shell | `thickness`, `faces`, `direction`, `body`, `tangent_chain` |
+| Draft | `angle`, `faces`, `neutral`, `pull`, `body` |
+| Offset face | `distance`, `faces`, `body` |
+| Pattern | `pattern` (its kind and counts/spacing), `features`, `bodies` |
+| Mirror | `plane`, `features`, `bodies`, `combine` |
+
+For any other feature, `timeline.inspect` shows the fields.
+
 Press **Delete** on anything selected (bodies, faces, sketches, features, planes, components,
 canvases). It runs as one undoable step and lists the features that would go with it or fail.

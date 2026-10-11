@@ -407,6 +407,46 @@ fn sample_edges_chain_and_faces() {
     assert!(m.edge_faces.iter().all(|f| !f.is_empty()));
 }
 
+/// timeline.inspect returns a feature's definition in the shape timeline.edit's `set` takes, so
+/// an agent can read the field names instead of guessing them.
+#[test]
+fn timeline_inspect_shows_what_timeline_edit_changes() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": 10, "name": "Slab"}));
+    run(&mut s, "solid.fillet", json!({"edges": [[20, 0, 10]], "radius": 2, "name": "Round"}));
+    let i = run(&mut s, "timeline.inspect", json!({"feature": "Slab"}));
+    assert_eq!(i["type"], "ExtrudeFeature", "{i}");
+    assert_eq!(i["definition"]["extent"]["distance"], "10", "{i}");
+    assert_eq!(i["definition"]["operation"], "new_body", "{i}");
+    assert!(i["definition"].get("type").is_none() && i["definition"].get("param_names").is_none(), "{i}");
+    assert_eq!(i["inputs"][0]["label"], "Distance", "{i}");
+    assert_eq!(i["inputs"][0]["unit"], "mm", "{i}");
+    let d = i["inputs"][0]["param"].as_str().unwrap().to_string();
+    // The definition's field names are what timeline.edit takes.
+    run(&mut s, "timeline.edit", json!({"feature": "Slab", "set": {"extent": {"distance": "12"}}}));
+    let i = run(&mut s, "timeline.inspect", json!({"feature": i["id"]}));
+    assert_eq!(i["definition"]["extent"]["distance"], "12", "{i}");
+    assert_eq!(i["inputs"][0]["param"], d.as_str(), "{i}");
+    let f = run(&mut s, "timeline.inspect", json!({"feature": "Round"}));
+    assert_eq!(f["definition"]["radius"], "2", "{f}");
+    run(&mut s, "timeline.edit", json!({"feature": "Round", "set": {"radius": "3"}}));
+    assert_eq!(run(&mut s, "timeline.inspect", json!({"feature": "Round"}))["definition"]["radius"], "3");
+    // A sketch leaves its geometry out (sketch.inspect has it) and says so.
+    let k = run(&mut s, "timeline.inspect", json!({"feature": "Base"}));
+    assert!(k["definition"].get("sketch").is_none() && k["definition"].get("plane").is_some(), "{k}");
+    assert_eq!(k["omitted"][0]["field"], "sketch", "{k}");
+    // Read-only: no undo step; bad input is refused.
+    let undo = s.undo.len();
+    run(&mut s, "timeline.inspect", json!({"feature": "Slab"}));
+    assert_eq!(s.undo.len(), undo);
+    for bad in [json!({}), json!({"feature": "Nope"}), json!({"feature": [1]}), json!({"feature": 1e300}), json!({"feature": null})] {
+        assert!(s.execute("timeline.inspect", &bad).is_err(), "{bad}");
+    }
+}
+
 #[test]
 fn timeline_edits_reresolve_references() {
     let mut s = Session::default();
