@@ -33,7 +33,7 @@ pub enum Kind {
         distance: String,
         direction: usize,
         operation: usize,
-        /// The operation follows the geometry (into a body: cut, out of one: join, else new)
+        /// Into a body: cut; additions: join when a solid exists, otherwise new.
         /// until the user picks one.
         auto_op: bool,
         /// The other side's distance (two sides).

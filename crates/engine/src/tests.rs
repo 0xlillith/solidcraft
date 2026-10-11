@@ -592,7 +592,7 @@ fn preview_of_an_edit() {
     assert!(Arc::ptr_eq(&doc, &s.doc));
 }
 
-/// `operation: "auto"`: into a body cuts, out of a body joins, in free space makes a new body.
+/// `operation: "auto"`: into a body cuts; additions default to Join when a solid exists.
 #[test]
 fn extrude_auto_operation() {
     let mut s = Session::default();
@@ -605,7 +605,7 @@ fn extrude_auto_operation() {
     // Pulled out, it joins.
     assert_eq!(auto_operation(&s, &json!({"face": [20, 15, 15], "distance": 5})), Some("join"));
     // A sketch on XY under the box: up goes into it (cut), down grows out of it (join), and a
-    // profile beside the box makes a new body.
+    // profile beside the box still defaults to Join (New Body remains explicit).
     run(&mut s, "sketch.create", json!({"plane": "XY"}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0": [5, 5], "p1": [15, 15]}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0": [60, 5], "p1": [70, 15]}));
@@ -613,9 +613,68 @@ fn extrude_auto_operation() {
     let at = |x: f64, d: f64| json!({"profiles": [{"point": [x, 10]}], "distance": d});
     assert_eq!(auto_operation(&s, &at(10.0, 8.0)), Some("cut"));
     assert_eq!(auto_operation(&s, &at(10.0, -8.0)), Some("join"));
-    assert_eq!(auto_operation(&s, &at(65.0, 8.0)), Some("new"));
+    assert_eq!(auto_operation(&s, &at(65.0, 8.0)), Some("join"));
     run(&mut s, "solid.extrude", json!({"profiles": [{"point": [10, 10]}], "distance": 8, "operation": "auto"}));
     assert!(rel(volume(&mut s), 40.0 * 30.0 * 15.0 - 100.0 * 8.0) < 1e-6);
+}
+
+/// Additive extrusions default to joining even when only a profile side touches material.
+#[test]
+fn auto_extrude_joins_side_contact_elbow_and_keeps_new_body_explicit() {
+    for operation in ["auto", "new"] {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 30}));
+        run(&mut s, "sketch.create", json!({"plane": {"origin": [10, 0, 0], "x_dir": [0, 1, 0], "y_dir": [0, 0, 1]}}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [10, 20], "p1": [30, 30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        // The profile centre is outside the vertical arm. Contact is along its
+        // y=10 side, not behind the centre along the extrusion's X direction.
+        let p = json!({"distance": 10, "to": [0, 15, 25], "operation": operation});
+        assert_eq!(auto_operation(&s, &p), Some("join"));
+        run(&mut s, "solid.extrude", p);
+        assert!((volume(&mut s) - 5000.0).abs() < 1e-6);
+        let st = s.model.state();
+        assert_eq!(st.bodies.len(), if operation == "auto" { 1 } else { 2 });
+        if operation == "auto" {
+            let body = &st.bodies.first().unwrap().body;
+            assert!(body.validity().is_empty());
+            assert_eq!(body.lumps().unwrap().len(), 1);
+            assert_eq!(body.face_count(), 8, "the two flat elbow sides must be single faces");
+            assert!(body.contains(geom::Vec3::new(5.0, 10.0, 25.0)));
+        }
+    }
+}
+
+#[test]
+fn auto_extrude_joins_corner_screw_boss() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 30}));
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 30], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}}));
+    run(&mut s, "sketch.circle.center", json!({"center": [10, 10], "radius": 4}));
+    run(&mut s, "sketch.circle.center", json!({"center": [10, 10], "radius": 1}));
+    run(&mut s, "sketch.finish", json!({}));
+    let p = json!({"profiles": [{"point": [12, 10]}], "distance": 5, "operation": "auto"});
+    assert_eq!(auto_operation(&s, &p), Some("join"));
+    run(&mut s, "solid.extrude", p);
+    assert!(rel(volume(&mut s), 3000.0 + PI * 15.0 * 5.0) < 1e-3);
+    let st = s.model.state();
+    assert_eq!(st.bodies.len(), 1);
+    let body = &st.bodies.first().unwrap().body;
+    assert_eq!(body.lumps().unwrap().len(), 1);
+    assert!(body.validity().is_empty());
+    assert!(!body.contains(geom::Vec3::new(10.0, 10.0, 32.0)), "the screw hole stays open");
+}
+
+#[test]
+fn auto_extrude_starts_new_body_in_empty_component() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "component.create", json!({"name": "Other"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 2}));
+    run(&mut s, "sketch.finish", json!({}));
+    assert_eq!(auto_operation(&s, &json!({"distance": 5})), Some("new"));
+    assert_eq!(auto_operation(&s, &json!({"distance": 5, "participants": ["missing"]})), Some("new"));
 }
 
 /// Measuring picked geometry: distance between faces, angle, edge length.

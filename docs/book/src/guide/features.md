@@ -12,6 +12,12 @@ it.
 | Construct | offset plane, plane at angle |
 | Inspect | measure, section analysis, interference, curvature comb and map, zebra, draft, minimum radius, isocurves, centre of mass |
 
+Extrude automatically selects **Join** for additions when the active component already has a
+solid, including sideways elbow connections and screw bosses that meet only part of a face.
+Extruding into existing material selects **Cut**. In an empty component it selects **New Body**;
+choose **New Body** explicitly to keep an addition separate. Changing the default does not alter
+operations already saved in a design.
+
 Fillets and chamfers handle straight edges between planar faces, whole smooth loops, runs of
 neighbouring edges with mitred or spherical corners, and closed chains of curved edges (a rolling
 ball). See the roadmap's known limitations for the rest.

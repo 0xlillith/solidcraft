@@ -13,7 +13,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "CREATE")
         .icon("extrude")
         .key("E")
-        .params("distance: expr (or through_all: true); taper?: angle expr; sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [[curve ids]] | [{point:[x,y]}]; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); direction?: positive|negative|symmetric; distance2?; start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, join out of one, else new); targets?: [body]; name?; body_name?"),
+        .params("distance: expr (or through_all: true); taper?: angle expr; sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [[curve ids]] | [{point:[x,y]}]; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); direction?: positive|negative|symmetric; distance2?; start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body]; name?; body_name?"),
     CommandSpec::new("solid.revolve", "Revolve", revolve)
         .at("SOLID", "CREATE")
         .icon("revolve")
@@ -141,7 +141,8 @@ fn extrude_base(s: &Session, p: &Value) -> Option<(Vec3, Vec3)> {
 }
 
 /// What `operation: "auto"` means for an extrude with these parameters: `cut` when it goes
-/// into a body, `join` when it grows out of one, `new` otherwise.
+/// into a body, otherwise `join` when the active component has a solid. Keeping an
+/// addition separate requires an explicit `new` operation.
 pub fn auto_operation(s: &Session, p: &Value) -> Option<&'static str> {
     let d = s.doc.eval(&expr(p, "distance")?, Kind::Length).ok()?;
     let dir = str_(p, "direction").map(str::to_ascii_lowercase);
@@ -154,23 +155,25 @@ pub fn auto_operation(s: &Session, p: &Value) -> Option<&'static str> {
     }
     // Only the active component's bodies take part (or the ones named as participants).
     let parts = string_list(p, "participants");
-    let inside = |q: Vec3| {
-        st.bodies
-            .iter()
-            .filter(|b| if parts.is_empty() { s.doc.body_component(&b.name, b.feature) == s.active_component } else { parts.contains(&b.name) })
-            .any(|b| b.mesh().contains(q))
-    };
-    let eps = (d.abs() * 1e-3).max(1e-3);
-    let sign = if d < 0.0 { -1.0 } else { 1.0 };
+    let bodies: Vec<_> = st
+        .bodies
+        .iter()
+        .filter(|b| if parts.is_empty() { s.doc.body_component(&b.name, b.feature) == s.active_component } else { parts.contains(&b.name) })
+        .collect();
+    if bodies.is_empty() {
+        return Some("new");
+    }
+    let inside = |q: Vec3| bodies.iter().any(|b| b.mesh().contains(q));
     if symmetric {
-        return Some(if inside(base + n * (d.abs() * 0.5)) || inside(base - n * (d.abs() * 0.5)) { "cut" } else { "new" });
+        return Some(if inside(base + n * (d.abs() * 0.5)) || inside(base - n * (d.abs() * 0.5)) { "cut" } else { "join" });
     }
     if inside(base + n * (d * 0.5)) {
         Some("cut")
-    } else if inside(base - n * (eps * sign)) {
-        Some("join")
     } else {
-        Some("new")
+        // A profile can meet material along its side, or only around part of a
+        // screw boss. A single point behind its centre cannot establish contact.
+        // Default additions to Join and let the boolean merge the actual geometry.
+        Some("join")
     }
 }
 

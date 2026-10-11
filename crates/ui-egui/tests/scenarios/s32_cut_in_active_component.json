@@ -208,7 +208,7 @@
   "start": "solid.extrude"
  },
  {
-  "widget": "New Body"
+  "widget": "Join"
  },
  {
   "widget": "Cut"
