@@ -27,11 +27,15 @@ pub mod dialogs_surface;
 pub mod dim_view;
 pub mod documents;
 pub mod drag_snap;
+pub mod fonts;
 pub mod frame;
 pub mod gizmo;
 pub mod gpu;
 pub mod help;
 pub mod home;
+pub mod i18n;
+#[cfg(test)]
+mod i18n_ui_tests;
 pub mod icons;
 pub mod inference;
 pub mod keymap;
@@ -299,6 +303,16 @@ impl SolveApp {
         }
     }
 
+    /// Translate text using the active language preference.
+    pub fn tr<'a>(&self, text: &'a str) -> &'a str {
+        i18n::Locale::for_language(&self.preferences.language).text(text)
+    }
+
+    /// Translate a display label supplied by the engine, without changing its identifier.
+    pub fn tr_label<'a>(&self, text: &'a str) -> &'a str {
+        i18n::Locale::for_language(&self.preferences.language).label(text)
+    }
+
     /// Draw the viewport on the GPU (eframe's wgpu render state, with the app's depth and
     /// stencil buffer bits and MSAA sample count). Without it the viewport renders on the CPU.
     pub fn set_wgpu(&mut self, rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32) {
@@ -517,6 +531,27 @@ impl SolveApp {
             self.last_command = Some((spec.id.to_string(), spec.label.to_string()));
         }
         if let Some(mut t) = tools::Tool::for_command(id) {
+            // Curve-pair constraints can consume an exact preselection. Leave ambiguous
+            // selections to the ordinary pick tool; never silently constrain a subset.
+            if matches!(
+                id,
+                "sketch.constraint.parallel"
+                    | "sketch.constraint.perpendicular"
+                    | "sketch.constraint.equal"
+                    | "sketch.constraint.tangent"
+                    | "sketch.constraint.concentric"
+                    | "sketch.constraint.collinear"
+            ) && let [solvecraft_engine::Sel::SketchCurve { id: a }, solvecraft_engine::Sel::SketchCurve { id: b }] =
+                self.session.selection.as_slice()
+                && a != b
+            {
+                let params = json!({ "a": a, "b": b });
+                if self.run(id, params).is_ok() {
+                    let _ = self.session.execute("select.clear", &json!({}));
+                    self.set_status("Constraint applied", false);
+                }
+                return;
+            }
             if id == "sketch.dimension" {
                 t.picks = self
                     .session
@@ -838,6 +873,7 @@ impl SolveApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let t0 = now_ms();
+        let _language = crate::i18n::scope(&self.preferences.language);
         scenario::clear_handles();
         toolbar::app_bar(self, ui);
         file_load::show(self, ui.ctx());
