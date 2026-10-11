@@ -82,7 +82,7 @@ pub fn rect_of(name: &str) -> Option<egui::Rect> {
     RECTS.with(|h| h.borrow().iter().rfind(|(n, _)| n == name).map(|x| x.1))
 }
 
-/// A number about this frame's drawing, by name ("cube_highlights": the view cube's lit patches).
+/// A number about this frame's drawing, by name ("axis_view_highlights": the axis view's highlighted tips).
 pub fn publish_count(name: &str, v: f64) {
     COUNTS.with(|h| h.borrow_mut().push((name.to_string(), v)));
 }
@@ -213,7 +213,7 @@ impl Harness {
     pub fn settle(&mut self) {
         for _ in 0..2000 {
             // Queued input used up and the view no longer moving.
-            if self.app.synthetic.is_empty() && self.app.cam_anim.is_none() {
+            if self.app.synthetic.is_empty() && self.app.cam_anim.is_none() && self.app.viewport.orbit_snap.is_none() {
                 break;
             }
             self.frame();
@@ -314,14 +314,14 @@ impl Harness {
         }
     }
 
-    /// Animate the view to `v` (as the view cube does), sampling the camera every frame: no
+    /// Animate the view to `v` (as the axis view does), sampling the camera every frame: no
     /// frame may turn the view (its right or back vector) by more than `max_deg`, the last
     /// included, so the move ends without a jump.
     fn view_anim(&mut self, v: &str, max_deg: f64) -> Result<(), String> {
         let basis = |c: &solvecraft_engine::render::Camera| c.basis();
         let mut prev = basis(&self.app.cam);
         self.app.animate_view(v);
-        if self.app.cam_anim.is_none() {
+        if self.app.cam_anim.is_none() && self.app.viewport.orbit_snap.is_none() {
             return Err(format!("view_anim {v}: no animation started"));
         }
         let mut worst = (0.0f64, 0usize);
@@ -334,7 +334,7 @@ impl Harness {
                 worst = (d, i);
             }
             prev = now;
-            if self.app.cam_anim.is_none() {
+            if self.app.cam_anim.is_none() && self.app.viewport.orbit_snap.is_none() {
                 if worst.0 > max_deg {
                     return Err(format!("view_anim {v}: frame {} of {} turns the view {:.1}° (limit {max_deg}°)", worst.1 + 1, i + 1, worst.0));
                 }

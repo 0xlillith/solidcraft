@@ -79,6 +79,8 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     app.tool = None;
     app.params = None;
     app.cam_anim = None;
+    app.viewport.orbit_snap = None;
+    app.viewport.orbit_free = None;
     app.preview = crate::preview::PreviewState::default();
     app.viewport.hover = None;
     app.menu.props = None;

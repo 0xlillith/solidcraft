@@ -103,9 +103,6 @@ pub struct Tokens {
     pub glyph_text: Color32,
     /// Chips drawn over the viewport (status, navigation bar, dimension labels).
     pub overlay: Color32,
-    /// View cube face (shaded by orientation) and edges.
-    pub cube_face: Color32,
-    pub cube_edge: Color32,
     /// Rubber band of the shape being drawn.
     pub rubber_band: Color32,
     /// Light text on the application bar.
@@ -191,8 +188,6 @@ impl Tokens {
             glyph_edge: Color32::from_rgb(90, 150, 90),
             glyph_text: Color32::from_rgb(40, 110, 40),
             overlay: Color32::from_rgba_unmultiplied_const(255, 255, 255, 235),
-            cube_face: Color32::from_rgb(236, 236, 236),
-            cube_edge: Color32::from_rgb(140, 148, 160),
             rubber_band: Color32::from_rgb(30, 120, 230),
             app_bar_text: Color32::from_rgb(230, 234, 242),
             timeline_item: Color32::WHITE,
@@ -247,8 +242,6 @@ impl Tokens {
         t.glyph_edge = Color32::from_rgb(96, 170, 110);
         t.glyph_text = Color32::from_rgb(150, 220, 160);
         t.overlay = Color32::from_rgba_unmultiplied_const(34, 38, 46, 240);
-        t.cube_face = Color32::from_rgb(196, 200, 207);
-        t.cube_edge = Color32::from_rgb(100, 108, 122);
         t.rubber_band = Color32::from_rgb(92, 160, 255);
         t.timeline_item = Color32::from_rgb(52, 58, 70);
         t.timeline_item_error = Color32::from_rgb(110, 50, 54);

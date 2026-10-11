@@ -1,5 +1,5 @@
-//! The 3D viewport: navigation, GPU (or CPU fallback) rendering, picking, overlays, the view
-//! cube and the navigation bar.
+//! The 3D viewport: navigation, GPU (or CPU fallback) rendering, picking, overlays, the axis
+//! view and the navigation bar.
 
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use serde_json::json;
@@ -55,8 +55,12 @@ pub struct ViewportState {
     pub orbit_pivot: Option<Vec3>,
     /// Continuous orbit: the view turns about the vertical until the next click or key.
     pub spin: bool,
-    /// A primary press on the cube: the pointer position used by its last orbit step.
-    pub cube_drag: Option<Pos2>,
+    /// A primary press on the axis gizmo: the pointer position used by its last orbit step.
+    pub axis_drag: Option<Pos2>,
+    /// Unsnapped camera while Shift-orbit previews a standard or diagonal view.
+    pub orbit_free: Option<Camera>,
+    /// Spring toward the chosen orientation, including after the drag ends.
+    pub(crate) orbit_snap: Option<OrbitSnap>,
     pub build_ms: f64,
     /// The right-click menu, open at this screen position.
     pub context_menu: Option<Pos2>,
@@ -983,8 +987,8 @@ fn section_clip(app: &SolveApp) -> [f32; 4] {
     }
 }
 
-/// Space kept free at the top right of the viewport for the view cube (docked dialogs start below).
-pub const VIEW_CUBE_CLEARANCE: f32 = 168.0;
+/// Space kept free at the top right of the viewport for the axis view (docked dialogs start below).
+pub const AXIS_VIEW_CLEARANCE: f32 = 168.0;
 
 /// Axis length as a multiple of the origin plane size (solid part 1, dashed beyond).
 const AXIS_LEN: f64 = 1.8;
@@ -1442,10 +1446,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
     // The right button belongs to the marking menu while it is open.
     let secondary_down = secondary_down && app.viewport.context_menu.is_none();
-    // The view cube handles its own clicks; the model underneath must not see them.
-    let cube = Rect::from_center_size(pos2(rect.right() - 80.0, rect.top() + 80.0), vec2(150.0, 150.0));
+    // The axis view handles its own clicks; the model underneath must not see them.
+    let axes = axis_rect(rect);
     // Floating windows and menus own input over the model, including wheel navigation.
-    let inside = resp.contains_pointer() && hover.is_some_and(|p| !cube.contains(p));
+    let inside = resp.contains_pointer() && hover.is_some_and(|p| !axes.contains(p));
     app.viewport.mouse = hover.filter(|_| inside);
     // Ctrl or Alt held: drawing and dragging don't snap.
     crate::drag_snap::set_suppressed(mods.ctrl || mods.alt || mods.command);
@@ -1453,6 +1457,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // ---- navigation ----
     let h = rect.height().max(1.0) as f64;
     if inside && scroll != 0.0 {
+        app.viewport.orbit_snap = None;
+        app.viewport.orbit_free = None;
         let f = (-scroll as f64 * 0.0015 * crate::prefs::zoom_sign(app)).exp();
         // Preferences › Navigation › Zoom to the cursor (off: toward the view's centre).
         let anchor = hover.filter(|_| app.preferences.zoom_to_cursor).map(|p| {
@@ -1470,26 +1476,37 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.cam.zoom_at(f, anchor);
     }
     let dragging = resp.dragged() || (inside && (middle || secondary_down));
-    if dragging && delta != egui::Vec2::ZERO {
-        let (dx, dy) = (delta.x as f64, delta.y as f64);
-        let mode = if middle || secondary_down {
+    let mode = if dragging && app.viewport.axis_drag.is_none() {
+        if middle || secondary_down {
             crate::prefs::nav_mode(app, middle, secondary_down, mods)
-        } else if primary_down && app.viewport.cube_drag.is_none() {
+        } else if primary_down {
             app.viewport.nav
         } else {
             None
-        };
-        if mode.is_some() {
-            app.cancel_view_animation();
         }
-        match mode {
-            Some(NavMode::Orbit) => {
-                let press = ui.input(|i| i.pointer.press_origin());
-                crate::prefs::orbit(app, rect, dx, dy, press);
+    } else {
+        None
+    };
+    if mode == Some(NavMode::Orbit) {
+        let press = ui.input(|i| i.pointer.press_origin());
+        app.cancel_view_animation();
+        orbit_drag(app, rect, f64::from(delta.x), f64::from(delta.y), press, mods.shift, true);
+    } else {
+        if matches!(mode, Some(NavMode::Pan | NavMode::Zoom)) {
+            app.viewport.orbit_snap = None;
+        }
+        if app.viewport.axis_drag.is_none() {
+            app.viewport.orbit_free = None;
+        }
+        if delta != egui::Vec2::ZERO {
+            if mode.is_some() {
+                app.cancel_view_animation();
             }
-            Some(NavMode::Pan) => app.cam.pan(dx, dy, h),
-            Some(NavMode::Zoom) => app.cam.zoom_at((dy * 0.01).exp(), None),
-            None => {}
+            match mode {
+                Some(NavMode::Pan) => app.cam.pan(f64::from(delta.x), f64::from(delta.y), h),
+                Some(NavMode::Zoom) => app.cam.zoom_at((f64::from(delta.y) * 0.01).exp(), None),
+                _ => {}
+            }
         }
     }
     if !dragging {
@@ -1513,10 +1530,16 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
     }
     if !app.cam.is_valid() {
+        app.viewport.orbit_free = None;
+        app.viewport.orbit_snap = None;
         app.cam = Camera::default();
         app.fit_view();
     }
 
+    step_orbit_snap(app, rect, ui.input(|i| f64::from(i.stable_dt)));
+    if app.viewport.orbit_snap.is_some() {
+        ui.ctx().request_repaint();
+    }
     let proj = projection(app, rect);
     // Suppress hover for the whole navigation gesture, including frames between pointer
     // events. Testing delta made the highlight reappear whenever a held drag paused.
@@ -1525,8 +1548,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         || middle
         || secondary_down
         || (app.viewport.nav.is_some() && primary_down)
-        || app.viewport.cube_drag.is_some()
+        || app.viewport.axis_drag.is_some()
         || app.viewport.spin
+        || app.viewport.orbit_snap.is_some()
         || app.cam_anim.is_some();
     let hits = hover.filter(|_| inside && app.viewport.boxsel.is_none() && !navigating).map(|p| pick_cached(app, &proj, p)).unwrap_or_default();
     let cand = if app.tool.is_some() { hits.first().cloned().map(|h| (h, None)) } else { candidate(app, &hits).map(|(h, s)| (h, Some(s))) };
@@ -1762,7 +1786,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         if resp.dragged_by(egui::PointerButton::Primary)
             && let (Some(a), Some(b)) = (origin, hover)
             && rect.contains(a)
-            && !cube.contains(a)
+            && !axes.contains(a)
         {
             app.viewport.boxsel = Some(BoxSel::from_drag(a, b));
         }
@@ -1807,7 +1831,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::canvas::show(app, ui, &painter, &proj);
     crate::sketch_tools::show(app, ui, &painter, &proj);
     crate::sketch_dims::show(app, ui, &proj);
-    view_cube(app, ui, rect);
+    axis_view(app, ui, rect);
     nav_bar(app, ui, rect);
     // Status chip.
     if let Some((msg, at, err)) = app.status.clone() {
@@ -2153,117 +2177,220 @@ fn cpu_render(app: &mut SolveApp, ctx: &egui::Context, painter: &egui::Painter, 
     }
 }
 
-/// Where a point in view-cube units (faces at ±1) is drawn.
-pub(crate) fn cube_point(app: &SolveApp, rect: Rect, p: Vec3) -> Pos2 {
-    let (r, u, _) = cube_basis(&app.cam);
-    pos2(rect.right() - 80.0 + (p.dot(r) * CUBE_SCALE) as f32, rect.top() + 80.0 - (p.dot(u) * CUBE_SCALE) as f32)
+/// Compact orientation gizmo, drawn and hit-tested in world coordinates.
+const AXIS_LENGTH: f64 = 38.0;
+const AXIS_RADIUS: f32 = 11.0;
+
+fn axis_center(rect: Rect) -> Pos2 {
+    pos2(rect.right() - 68.0, rect.top() + 68.0)
 }
 
-/// Half a view cube face, in pixels.
-const CUBE_SCALE: f64 = 32.0;
+fn axis_rect(rect: Rect) -> Rect {
+    Rect::from_center_size(axis_center(rect), vec2(116.0, 116.0))
+}
 
-/// The view cube (top right): a cube with chamfered corners. Its 14 targets are the 6 faces
-/// (orthographic views) and the 8 corner facets (iso views); the edges between them are not
-/// targets. Hover lights the face or facet under the pointer, a click turns the view to it, the
-/// house goes home.
-/// The camera's basis in its up-axis frame (Z up): the cube's TOP is the world's up, X, Y or Z.
-fn cube_basis(cam: &Camera) -> (Vec3, Vec3, Vec3) {
+/// Six signed world axes, sorted back to front so overlapping tips have one owner.
+fn axis_tips(cam: &Camera, rect: Rect) -> Vec<(&'static str, Vec3, Pos2, f64)> {
     let (r, u, b) = cam.basis();
-    (cam.to_frame(r), cam.to_frame(u), cam.to_frame(b))
+    let c = axis_center(rect);
+    let mut tips: Vec<_> = [("x", Vec3::X), ("-x", -Vec3::X), ("y", Vec3::Y), ("-y", -Vec3::Y), ("z", Vec3::Z), ("-z", -Vec3::Z)]
+        .into_iter()
+        .map(|(name, d)| (name, d, c + vec2((d.dot(r) * AXIS_LENGTH) as f32, -(d.dot(u) * AXIS_LENGTH) as f32), d.dot(b)))
+        .collect();
+    tips.sort_by(|a, b| a.3.total_cmp(&b.3));
+    tips
 }
 
-/// Dragging a primary press on the cube orbits about the view centre. A stationary press
-/// remains a click; a floating window over the cube owns its input.
-fn view_cube_orbit(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, targets: &[CubeTarget], c: Pos2) -> bool {
-    let (pressed, down, decided, origin, pos) = ui.input(|i| {
+fn axis_hit(tips: &[(&str, Vec3, Pos2, f64)], p: Pos2) -> Option<usize> {
+    tips.iter().enumerate().rev().find(|(_, (_, _, at, _))| at.distance(p) <= AXIS_RADIUS).map(|(i, _)| i)
+}
+
+/// Six principal views, twelve edge diagonals and eight isometric corner directions.
+fn snap_directions() -> impl Iterator<Item = Vec3> {
+    [-1.0, 0.0, 1.0].into_iter().flat_map(|x| {
+        [-1.0, 0.0, 1.0].into_iter().flat_map(move |y| [-1.0, 0.0, 1.0].into_iter().filter_map(move |z| Vec3::new(x, y, z).normalized()))
+    })
+}
+
+/// Snap to the nearest standard or diagonal direction in the user's up-axis frame.
+fn snapped_axis_camera(cam: Camera) -> Camera {
+    let b = cam.to_frame(cam.back());
+    let dir = snap_directions().max_by(|a, c| a.dot(b).total_cmp(&c.dot(b))).unwrap_or(Vec3::Z);
+    let mut to = cam.looking_from(cam.from_frame(dir));
+    if dir.x == 0.0 && dir.y == 0.0 {
+        to.yaw = nearest_quarter_turn(cam.yaw);
+    }
+    to
+}
+
+pub(crate) struct OrbitSnap {
+    target: Camera,
+    yaw_velocity: f64,
+    pitch_velocity: f64,
+    pivot: Option<(Vec3, Pos2)>,
+}
+
+/// Pointer motion accumulates independently of the spring preview, so many small deltas
+/// still cross snap boundaries. Keep a small angular margin to avoid boundary flicker.
+fn orbit_drag(app: &mut SolveApp, rect: Rect, dx: f64, dy: f64, press: Option<Pos2>, snap: bool, around_cursor: bool) {
+    let displayed = app.cam;
+    if let Some(free) = app.viewport.orbit_free.take() {
+        app.cam = free;
+    }
+    if around_cursor {
+        crate::prefs::orbit(app, rect, dx, dy, press);
+    } else {
+        app.cam.orbit(dx, dy);
+    }
+    let free = app.cam;
+    app.viewport.orbit_free = Some(free);
+    if snap || !around_cursor || app.viewport.orbit_snap.is_some() {
+        let mut target = if snap { snapped_axis_camera(free) } else { free };
+        if snap && let Some(previous) = app.viewport.orbit_snap.as_ref() {
+            let b = free.back();
+            if previous.target.back().dot(b) + 0.025 >= target.back().dot(b) {
+                target.yaw = previous.target.yaw;
+                target.pitch = previous.target.pitch;
+            }
+        }
+        let pivot = app.viewport.orbit_pivot.filter(|_| around_cursor).and_then(|p| {
+            app.cam = displayed;
+            projection(app, rect).to_screen(p).map(|at| (p, at))
+        });
+        let spring = app.viewport.orbit_snap.get_or_insert(OrbitSnap { target, yaw_velocity: 0.0, pitch_velocity: 0.0, pivot });
+        spring.target = target;
+        spring.pivot = pivot;
+        app.cam = displayed;
+    }
+}
+
+/// A lightly damped spring: mostly settled in about a third of a second, with a small
+/// elastic finish. Bounded substeps keep the behavior consistent across frame rates.
+fn step_orbit_snap(app: &mut SolveApp, rect: Rect, dt: f64) {
+    let Some(mut spring) = app.viewport.orbit_snap.take() else { return };
+    let dt = if dt.is_finite() { dt.clamp(0.0, 0.05) } else { 1.0 / 60.0 };
+    let steps = (dt * 240.0).ceil().max(1.0) as usize;
+    let h = dt / steps as f64;
+    let omega = 16.0;
+    let damping = 0.82;
+    let yaw_error = |yaw: f64| (spring.target.yaw - yaw + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+    for _ in 0..steps.min(12) {
+        spring.yaw_velocity += (omega * omega * yaw_error(app.cam.yaw) - 2.0 * damping * omega * spring.yaw_velocity) * h;
+        spring.pitch_velocity += (omega * omega * (spring.target.pitch - app.cam.pitch) - 2.0 * damping * omega * spring.pitch_velocity) * h;
+        app.cam.yaw += spring.yaw_velocity * h;
+        app.cam.pitch = (app.cam.pitch + spring.pitch_velocity * h).clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+    }
+    app.cam.target = spring.target.target;
+    let done = yaw_error(app.cam.yaw).abs() < 1e-5
+        && (spring.target.pitch - app.cam.pitch).abs() < 1e-5
+        && spring.yaw_velocity.abs() < 1e-4
+        && spring.pitch_velocity.abs() < 1e-4;
+    if done {
+        app.cam = spring.target;
+    }
+    if let Some((pivot, at)) = spring.pivot
+        && let Some(after) = projection(app, rect).to_screen(pivot)
+    {
+        app.cam.pan(f64::from(at.x - after.x), f64::from(at.y - after.y), f64::from(rect.height().max(1.0)));
+    }
+    if !done {
+        app.viewport.orbit_snap = Some(spring);
+    }
+}
+
+/// Dragging anywhere on the axis gizmo orbits about the view centre. A stationary press
+/// on a tip chooses its view. Floating windows own their input over the gizmo.
+fn axis_view_orbit(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) -> bool {
+    let (pressed, down, decided, origin, pos, shift) = ui.input(|i| {
         let p = &i.pointer;
-        (p.primary_pressed(), p.primary_down(), p.is_decidedly_dragging(), p.press_origin(), p.interact_pos())
+        (p.primary_pressed(), p.primary_down(), p.is_decidedly_dragging(), p.press_origin(), p.interact_pos(), i.modifiers.shift)
     });
     if pressed && ui.rect_contains_pointer(rect) {
-        let shapes = cube_projected(targets, cube_basis(&app.cam), c);
-        app.viewport.cube_drag = origin.filter(|p| cube_hit(&shapes, *p).is_some());
+        app.viewport.axis_drag = origin.filter(|p| axis_rect(rect).contains(*p));
+        if app.viewport.axis_drag.is_some() {
+            app.viewport.orbit_free = None;
+        }
     }
-    if !down {
-        app.viewport.cube_drag = None;
+    if !down && app.viewport.axis_drag.take().is_some() {
+        app.viewport.orbit_free = None;
     }
-    let Some(last) = app.viewport.cube_drag.filter(|_| decided) else { return false };
+    let Some(last) = app.viewport.axis_drag.filter(|_| decided) else { return false };
     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    // Include the movement that crossed the drag threshold, so the orbit follows the pointer.
-    if let Some(p) = pos
-        && p != last
-    {
+    if let Some(p) = pos {
         app.cancel_view_animation();
-        app.cam.orbit(f64::from(p.x - last.x), f64::from(p.y - last.y));
-        app.viewport.cube_drag = Some(p);
+        orbit_drag(app, rect, f64::from(p.x - last.x), f64::from(p.y - last.y), None, shift, false);
+        app.viewport.axis_drag = Some(p);
         ui.ctx().request_repaint();
     }
     true
 }
 
-fn view_cube(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
+fn axis_view(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     let t = Tokens::get();
-    let c = pos2(rect.right() - 80.0, rect.top() + 80.0);
-    let targets = cube_targets();
-    let orbiting = view_cube_orbit(app, ui, rect, &targets, c);
-    let (r, u, b) = cube_basis(&app.cam);
-    let (wr, wu, _) = app.cam.basis();
-    let painter = ui.painter_at(rect);
+    let c = axis_center(rect);
+    let orbiting = axis_view_orbit(app, ui, rect);
+    let tips = axis_tips(&app.cam, rect);
     let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rect));
-    let shapes = cube_projected(&targets, (r, u, b), c);
-    let hovered = if orbiting { None } else { hover.and_then(|h| cube_hit(&shapes, h)) };
-    // Axis triad from the cube's back corner, drawn first: the cube hides what is behind it.
-    // The corner is in the cube's frame, the axes are the world's.
-    let o = Vec3::new(-1.0, -1.0, -1.0);
-    let at = pos2(c.x + (o.dot(r) * CUBE_SCALE) as f32, c.y - (o.dot(u) * CUBE_SCALE) as f32);
-    for (d, col) in [(Vec3::X, colors::AXIS_X), (Vec3::Y, colors::AXIS_Y), (Vec3::Z, colors::AXIS_Z)] {
-        let tip = at + vec2((d.dot(wr) * CUBE_SCALE * 2.6) as f32, -(d.dot(wu) * CUBE_SCALE * 2.6) as f32);
-        painter.line_segment([at, tip], Stroke::new(2.0, Color32::from_rgb(col.0, col.1, col.2)));
+    let hovered = if orbiting { None } else { hover.and_then(|p| axis_hit(&tips, p)) };
+    let painter = ui.painter_at(rect);
+    if orbiting || hover.is_some_and(|p| axis_rect(rect).contains(p)) {
+        painter.circle_filled(c, 55.0, t.overlay);
     }
-    let labels: Vec<String> = targets.iter().filter(|tg| !tg.corner).map(|tg| tg.name.to_uppercase()).collect();
-    let size = cube_label_size(ui.ctx(), &labels);
-    // Back to front: the faces and facets turned toward the camera.
-    for (i, pts) in shapes.iter().rev() {
-        let tg = &targets[*i];
-        let n = tg.normal();
-        let shade = (0.75 + 0.25 * n.dot(b)) as f32;
-        let fill = if tg.corner { t.cube_face.gamma_multiply(shade * 0.92) } else { t.cube_face.gamma_multiply(shade) };
-        painter.extend(projected_polygon(pts, fill.to_opaque(), Stroke::new(1.0, t.cube_edge)));
-        if hovered == Some(*i) {
-            painter.extend(projected_polygon(pts, t.accent_soft, Stroke::new(1.0, t.accent)));
+    for (i, (name, d, at, depth)) in tips.iter().enumerate() {
+        let col = if d.x != 0.0 {
+            colors::AXIS_X
+        } else if d.y != 0.0 {
+            colors::AXIS_Y
+        } else {
+            colors::AXIS_Z
+        };
+        let col = Color32::from_rgb(col.0, col.1, col.2);
+        let positive = !name.starts_with('-');
+        let ink = if *depth < -0.01 { col.gamma_multiply(0.55) } else { col };
+        painter.line_segment([c, *at], Stroke::new(if positive { 2.0 } else { 1.0 }, ink));
+        painter.circle_filled(*at, AXIS_RADIUS, if hovered == Some(i) { t.accent_soft } else { t.overlay });
+        painter.circle_stroke(
+            *at,
+            AXIS_RADIUS,
+            Stroke::new(if hovered == Some(i) { 2.0 } else { 1.0 }, if hovered == Some(i) { t.accent } else { ink }),
+        );
+        painter.text(*at, Align2::CENTER_CENTER, name.to_uppercase(), FontId::proportional(11.0), ink);
+        crate::scenario::publish_handle(&format!("axis_view:{name}"), *at);
+    }
+    crate::scenario::publish_count("axis_view_highlights", f64::from(u8::from(hovered.is_some())));
+    if let Some(i) = hovered
+        && let Some((name, d, _, _)) = tips.get(i)
+    {
+        crate::scenario::publish_handle(&format!("axis_view_hover:{name}"), hover.unwrap_or(c));
+        ui.interact(Rect::from_center_size(hover.unwrap_or(c), vec2(2.0, 2.0)), ui.id().with("axis_view_tip"), Sense::hover())
+            .on_hover_text(format!("View from {}. Click again to reverse. Drag to orbit; hold Shift to snap.", name.to_uppercase()));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        if ui.input(|i| i.pointer.primary_clicked()) {
+            let frame = app.cam.to_frame(*d);
+            let dir = if app.cam.back().dot(*d) > 0.9999 { -*d } else { *d };
+            let mut to = app.cam.looking_from(dir);
+            if frame.z.abs() > 0.5 {
+                to.yaw = nearest_quarter_turn(app.cam.yaw);
+            }
+            if app.preferences.look_at_anim {
+                app.cancel_view_animation();
+                app.viewport.orbit_free = None;
+                app.viewport.orbit_snap = Some(OrbitSnap { target: to, yaw_velocity: 0.0, pitch_velocity: 0.0, pivot: None });
+                ui.ctx().request_repaint();
+            } else {
+                app.animate_to(to);
+            }
         }
-        let centre = cube_centroid(pts);
-        crate::scenario::publish_handle(&format!("cube:{}", tg.name), centre);
-        // Fades out as the face turns edge-on.
-        let ink = (n.dot(b) / 0.3).clamp(0.0, 1.0) as f32;
-        if !tg.corner && ink > 0.05 {
-            let color = Color32::from_rgb(40, 44, 52).gamma_multiply(ink);
-            painter.add(cube_label(ui.ctx(), &tg.name.to_uppercase(), size, n, (r, u), c, color));
-        }
     }
-    crate::scenario::publish_count("cube_highlights", f64::from(u8::from(hovered.is_some())));
-    if let Some(i) = hovered {
-        crate::scenario::publish_handle(&format!("cube_hover:{}", targets[i].name), hover.unwrap_or(c));
-    }
-    // Clicked: the view from the face's or facet's direction (target → eye).
-    let clicked = hovered.filter(|_| ui.input(|i| i.pointer.primary_clicked())).map(|i| targets[i].dir);
-    let home = Rect::from_center_size(pos2(c.x - 52.0, c.y - 48.0), vec2(18.0, 18.0));
-    let hr = ui.interact(home, ui.id().with("vc_home"), Sense::click());
+    let home = Rect::from_center_size(pos2(c.x - 46.0, c.y - 54.0), vec2(18.0, 18.0));
+    let hr = ui.interact(home, ui.id().with("axis_view_home"), Sense::click());
     icons::paint(&painter, home, "home", t.icon, if hr.hovered() { t.accent_soft } else { t.overlay }, t.accent);
     if hr.on_hover_text("Home view").clicked() {
         app.animate_view("home");
     }
-    if let Some(dir) = clicked {
-        let mut to = app.cam.looking_from(app.cam.from_frame(dir));
-        // Keep the nearest square heading when looking straight down or up.
-        if dir.x == 0.0 && dir.y == 0.0 {
-            to.yaw = nearest_quarter_turn(app.cam.yaw);
-        }
-        app.animate_to(to);
-    }
 }
 
-/// The nearest square heading. At a halfway tie, prefer the heading nearer the standard
-/// plan view, so clicking TOP or BOTTOM from home still puts the front edge at the bottom.
+/// At a halfway tie, prefer the square heading nearer the standard plan view.
 fn nearest_quarter_turn(yaw: f64) -> f64 {
     if !yaw.is_finite() {
         return 0.0;
@@ -2280,168 +2407,6 @@ fn nearest_quarter_turn(yaw: f64) -> f64 {
     } else {
         hi
     }
-}
-
-/// How far along each edge a view cube corner is cut off (the cube's faces are at ±1).
-const CUBE_CHAMFER: f64 = 0.38;
-
-/// A view cube target: a face or a corner facet, its view direction (target → eye) and outline
-/// (cube units).
-#[derive(Clone, Debug)]
-pub(crate) struct CubeTarget {
-    pub name: String,
-    pub dir: Vec3,
-    pub corner: bool,
-    pub outline: Vec<Vec3>,
-}
-
-impl CubeTarget {
-    fn normal(&self) -> Vec3 {
-        self.dir.normalized().unwrap_or(Vec3::Z)
-    }
-}
-
-/// The 14 targets: 6 octagonal faces and 8 triangular corner facets.
-pub(crate) fn cube_targets() -> Vec<CubeTarget> {
-    let k = CUBE_CHAMFER;
-    let mut out = Vec::new();
-    for (n, name) in [
-        (Vec3::new(0.0, -1.0, 0.0), "front"),
-        (Vec3::new(0.0, 1.0, 0.0), "back"),
-        (Vec3::new(1.0, 0.0, 0.0), "right"),
-        (Vec3::new(-1.0, 0.0, 0.0), "left"),
-        (Vec3::Z, "top"),
-        (Vec3::new(0.0, 0.0, -1.0), "bottom"),
-    ] {
-        let (e1, e2) = cube_face_axes(n);
-        let uv =
-            [(-1.0 + k, -1.0), (1.0 - k, -1.0), (1.0, -1.0 + k), (1.0, 1.0 - k), (1.0 - k, 1.0), (-1.0 + k, 1.0), (-1.0, 1.0 - k), (-1.0, -1.0 + k)];
-        out.push(CubeTarget { name: name.into(), dir: n, corner: false, outline: uv.iter().map(|(a, b2)| n + e1 * *a + e2 * *b2).collect() });
-    }
-    for sz in [1.0, -1.0] {
-        for sy in [-1.0, 1.0] {
-            for sx in [1.0, -1.0] {
-                let corner = Vec3::new(sx, sy, sz);
-                let name = format!(
-                    "{}-{}-{}",
-                    if sz > 0.0 { "top" } else { "bottom" },
-                    if sy < 0.0 { "front" } else { "back" },
-                    if sx > 0.0 { "right" } else { "left" }
-                );
-                let outline = vec![corner - Vec3::X * (sx * k), corner - Vec3::Y * (sy * k), corner - Vec3::Z * (sz * k)];
-                out.push(CubeTarget { name, dir: corner, corner: true, outline });
-            }
-        }
-    }
-    out
-}
-
-/// Where a point in cube units is drawn, for the camera's right and up `ru` and the cube's
-/// centre `c`.
-fn cube_to_screen((r, u): (Vec3, Vec3), c: Pos2, p: Vec3) -> Pos2 {
-    pos2(c.x + (p.dot(r) * CUBE_SCALE) as f32, c.y - (p.dot(u) * CUBE_SCALE) as f32)
-}
-
-/// A face's text directions (right, up): read from outside the cube, and upright in the view
-/// of the standard face view (TOP and BOTTOM: yaw 0, front edge at the bottom).
-fn cube_label_axes(n: Vec3) -> (Vec3, Vec3) {
-    if n.z.abs() > 0.5 { (Vec3::X, Vec3::Y * n.z.signum()) } else { (Vec3::Z.cross(n), Vec3::Z) }
-}
-
-/// How much of a face the widest face label spans.
-const CUBE_LABEL_WIDTH: f32 = 0.9;
-
-/// The face labels' font size: one size for all, the widest of `labels` spanning
-/// `CUBE_LABEL_WIDTH` of a face.
-fn cube_label_size(ctx: &egui::Context, labels: &[String]) -> f32 {
-    let probe = 10.0;
-    let widest = labels
-        .iter()
-        .map(|s| ctx.fonts_mut(|f| f.layout_no_wrap(s.clone(), FontId::proportional(probe), Color32::WHITE).size().x))
-        .fold(0.0, f32::max);
-    if widest > 0.0 { probe * CUBE_LABEL_WIDTH * 2.0 * CUBE_SCALE as f32 / widest } else { probe }
-}
-
-/// A face's label printed on the face at `size`: laid out flat, then mapped through the cube's
-/// projection, so it turns and foreshortens with the face.
-fn cube_label(ctx: &egui::Context, text: &str, size: f32, n: Vec3, ru: (Vec3, Vec3), c: Pos2, color: Color32) -> Shape {
-    let galley = ctx.fonts_mut(|f| f.layout(text.to_string(), FontId::proportional(size), color, f32::INFINITY));
-    let options = egui::epaint::TessellationOptions { round_text_to_pixels: false, ..Default::default() };
-    let mut tess = egui::epaint::Tessellator::new(ctx.pixels_per_point(), options, ctx.fonts(|f| f.font_image_size()), vec![]);
-    let mut mesh = egui::Mesh::default();
-    let at = (-galley.size() / 2.0).to_pos2();
-    tess.tessellate_text(&egui::epaint::TextShape::new(at, galley, color), &mut mesh);
-    let (right, up) = cube_label_axes(n);
-    for v in &mut mesh.vertices {
-        let p = n + right * (f64::from(v.pos.x) / CUBE_SCALE) - up * (f64::from(v.pos.y) / CUBE_SCALE);
-        v.pos = cube_to_screen(ru, c, p);
-    }
-    Shape::mesh(mesh)
-}
-
-/// The targets turned toward the camera (basis `rub`), front first, as screen polygons around
-/// the cube's centre `c`.
-pub(crate) fn cube_projected(targets: &[CubeTarget], rub: (Vec3, Vec3, Vec3), c: Pos2) -> Vec<(usize, Vec<Pos2>)> {
-    let (r, u, b) = rub;
-    let mut v: Vec<(usize, f64, Vec<Pos2>)> = targets
-        .iter()
-        .enumerate()
-        .filter(|(_, tg)| tg.normal().dot(b) > 1e-3)
-        .map(|(i, tg)| (i, tg.normal().dot(b), tg.outline.iter().map(|p| cube_to_screen((r, u), c, *p)).collect()))
-        .collect();
-    v.sort_by(|a, b2| b2.1.total_cmp(&a.1));
-    v.into_iter().map(|(i, _, p)| (i, p)).collect()
-}
-
-/// The target under `p`. The faces and facets tile the cube, so a point on an edge between two
-/// of them (where neither polygon claims it) goes to the nearer one, within a few pixels.
-pub(crate) fn cube_hit(shapes: &[(usize, Vec<Pos2>)], p: Pos2) -> Option<usize> {
-    if let Some((i, _)) = shapes.iter().find(|(_, pts)| point_in_poly(p, pts)) {
-        return Some(*i);
-    }
-    shapes.iter().map(|(i, pts)| (*i, poly_distance(p, pts))).filter(|(_, d)| *d <= 3.0).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
-}
-
-fn poly_distance(p: Pos2, pts: &[Pos2]) -> f32 {
-    (0..pts.len())
-        .map(|i| {
-            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
-            let ab = b - a;
-            let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
-            p.distance(a + ab * t)
-        })
-        .fold(f32::INFINITY, f32::min)
-}
-
-fn cube_centroid(pts: &[Pos2]) -> Pos2 {
-    let n = pts.len().max(1) as f32;
-    pos2(pts.iter().map(|p| p.x).sum::<f32>() / n, pts.iter().map(|p| p.y).sum::<f32>() / n)
-}
-
-/// The in-face axes of a view cube face.
-fn cube_face_axes(n: Vec3) -> (Vec3, Vec3) {
-    if n.z.abs() > 0.5 {
-        (Vec3::X, Vec3::Y)
-    } else if n.x.abs() > 0.5 {
-        (Vec3::Y, Vec3::Z)
-    } else {
-        (Vec3::X, Vec3::Z)
-    }
-}
-
-fn point_in_poly(p: Pos2, poly: &[Pos2]) -> bool {
-    let n = poly.len();
-    let mut inside = false;
-    for i in 0..n {
-        let (a, b) = (poly[i], poly[(i + 1) % n]);
-        if (a.y > p.y) != (b.y > p.y) {
-            let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-            if p.x < x {
-                inside = !inside;
-            }
-        }
-    }
-    inside
 }
 
 /// Navigation bar (bottom centre).
@@ -2465,7 +2430,7 @@ pub fn look_at_selection(app: &mut SolveApp) {
 fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     let t = Tokens::get();
     let items: [(&str, &str); 10] = [
-        ("orbit", "Orbit (drag; or Shift+middle / right drag)"),
+        ("orbit", "Orbit (right drag; hold Shift to snap)"),
         ("spin", "Continuous orbit (stops at the next click or key)"),
         ("pan", "Pan (drag; or middle drag)"),
         ("zoom", "Zoom (drag; or wheel)"),
@@ -2945,44 +2910,44 @@ mod tests {
     }
 
     #[test]
-    fn floating_dialog_blocks_view_cube_highlights_and_clicks() {
+    fn floating_dialog_blocks_axis_view_highlights_and_clicks() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.resize", json!({"width": 800, "height": 700}));
-        let p = crate::scenario::handle_at("cube:top").unwrap();
+        let p = crate::scenario::handle_at("axis_view:z").unwrap();
         h.call("ui.move", json!({"x": p.x, "y": p.y}));
-        assert_eq!(crate::scenario::count_of("cube_highlights"), Some(1.0));
+        assert_eq!(crate::scenario::count_of("axis_view_highlights"), Some(1.0));
         h.call("ui.prefs", json!({"open": "Navigation"}));
         let window = h.ctx.memory(|m| m.area_rect(egui::Id::new("sc_prefs"))).unwrap();
-        assert!(window.contains(p), "the floating dialog must cover the cube target");
+        assert!(window.contains(p), "the floating dialog must cover the axis target");
         let camera = serde_json::to_value(h.app.cam).unwrap();
         h.call("ui.move", json!({"x": p.x, "y": p.y}));
-        assert_eq!(crate::scenario::count_of("cube_highlights"), Some(0.0));
+        assert_eq!(crate::scenario::count_of("axis_view_highlights"), Some(0.0));
         h.call("ui.click", json!({"x": p.x, "y": p.y}));
-        assert_eq!(serde_json::to_value(h.app.cam).unwrap(), camera, "dialog clicks must not turn the view cube");
+        assert_eq!(serde_json::to_value(h.app.cam).unwrap(), camera, "dialog clicks must not turn the axis view");
         h.call("ui.drag", json!({"x0": p.x, "y0": p.y, "x1": p.x + 20.0, "y1": p.y, "steps": 8}));
-        assert_eq!(serde_json::to_value(h.app.cam).unwrap(), camera, "dialog drags must not orbit the cube");
-        assert!(h.app.viewport.cube_drag.is_none());
+        assert_eq!(serde_json::to_value(h.app.cam).unwrap(), camera, "dialog drags must not orbit the axis gizmo");
+        assert!(h.app.viewport.axis_drag.is_none());
         h.call("ui.prefs", json!({"button": "cancel"}));
         h.call("ui.move", json!({"x": p.x, "y": p.y}));
-        assert_eq!(crate::scenario::count_of("cube_highlights"), Some(1.0));
+        assert_eq!(crate::scenario::count_of("axis_view_highlights"), Some(1.0));
         h.call("ui.click", json!({"x": p.x, "y": p.y}));
         assert_ne!(serde_json::to_value(h.app.cam).unwrap(), camera);
     }
 
     #[test]
-    fn view_cube_drag_owns_navigation_and_keeps_the_view_centre() {
+    fn view_axis_drag_owns_navigation_and_keeps_the_view_centre() {
         for nav in [None, Some(NavMode::Orbit), Some(NavMode::Pan)] {
             let mut h = crate::scenario::Harness::new();
             h.call("ui.view", json!({"view": "front"}));
             h.app.viewport.nav = nav;
             let before = h.app.cam;
-            let p = crate::scenario::handle_at("cube:front").unwrap();
+            let p = crate::scenario::handle_at("axis_view:-y").unwrap();
             h.call("ui.drag", json!({"x0": p.x, "y0": p.y, "x1": p.x + 48.0, "y1": p.y, "steps": 8}));
-            assert!((h.app.cam.yaw - 48.0 * 0.008).abs() < 1e-6, "{nav:?}: cube drag must orbit exactly once");
-            assert_eq!(h.app.cam.target, before.target, "{nav:?}: cube drag must not pan");
+            assert!((h.app.cam.yaw - 48.0 * 0.008).abs() < 1e-6, "{nav:?}: axis drag must orbit exactly once");
+            assert_eq!(h.app.cam.target, before.target, "{nav:?}: axis drag must not pan");
             assert_eq!(h.app.cam.distance, before.distance);
             assert_eq!(h.app.cam.pitch, before.pitch);
-            assert!(h.app.viewport.cube_drag.is_none(), "release clears the cube gesture");
+            assert!(h.app.viewport.axis_drag.is_none(), "release clears the axis gesture");
             assert!(h.app.viewport.boxsel.is_none());
         }
     }
@@ -3018,69 +2983,8 @@ mod tests {
         assert!(!build_highlight(&app).hidden.is_empty());
     }
 
-    /// A camera basis looking from `dir` (target → eye), as the view cube draws with.
-    fn basis_from(dir: Vec3) -> (Vec3, Vec3, Vec3) {
-        let cam = solvecraft_engine::render::Camera::default().looking_from(dir);
-        cam.basis()
-    }
-
     #[test]
-    fn view_cube_has_14_targets_each_hit_where_drawn() {
-        let targets = cube_targets();
-        assert_eq!(targets.len(), 14);
-        assert_eq!(targets.iter().filter(|t| t.corner).count(), 8);
-        let c = pos2(100.0, 100.0);
-        for (i, tg) in targets.iter().enumerate() {
-            // Seen from a little off its own direction, its middle hits it.
-            let shapes = cube_projected(&targets, basis_from(tg.dir + Vec3::new(0.11, 0.07, 0.05)), c);
-            let pts = &shapes.iter().find(|(j, _)| *j == i).expect("visible").1;
-            assert_eq!(cube_hit(&shapes, cube_centroid(pts)), Some(i), "{}", tg.name);
-        }
-        // From an iso view: 3 faces and the 4 facets turned toward it.
-        let shapes = cube_projected(&targets, basis_from(Vec3::new(1.0, -1.0, 1.0)), c);
-        assert_eq!(shapes.len(), 3 + 4);
-        assert_eq!(cube_hit(&shapes, pos2(400.0, 400.0)), None);
-    }
-
-    /// From any direction, including faces turned nearly edge-on, everything drawn stays within
-    /// the cube.
-    #[test]
-    fn view_cube_faces_never_spike_past_the_cube() {
-        let targets = cube_targets();
-        let c = pos2(100.0, 100.0);
-        // The cube's circumradius (corner at √3) plus the stroke and feathering.
-        let limit = (3f64.sqrt() * CUBE_SCALE) as f32 + 3.0;
-        let mut worst = 0.0f32;
-        for dir in orbit_directions() {
-            for (_, pts) in cube_projected(&targets, basis_from(dir), c) {
-                for p in drawn_points(projected_polygon(&pts, Color32::GRAY, Stroke::new(1.0, Color32::BLACK))) {
-                    worst = worst.max(p.distance(c));
-                }
-            }
-        }
-        assert!(worst <= limit, "a vertex {worst} px from the centre (limit {limit})");
-    }
-
-    #[test]
-    fn view_cube_labels_read_upright_in_their_own_view() {
-        for tg in cube_targets().iter().filter(|t| !t.corner) {
-            // The standard face view (TOP and BOTTOM with yaw 0).
-            let mut cam = solvecraft_engine::render::Camera::default().looking_from(tg.dir);
-            if tg.dir.z.abs() > 0.5 {
-                cam.yaw = 0.0;
-            }
-            let (r, u, _) = cam.basis();
-            let (right, up) = cube_label_axes(tg.dir);
-            assert!(right.dot(r) > 0.99 && up.dot(u) > 0.99, "{}: right·r {} up·u {}", tg.name, right.dot(r), up.dot(u));
-        }
-    }
-
-    fn face_labels(targets: &[CubeTarget]) -> Vec<String> {
-        targets.iter().filter(|t| !t.corner).map(|t| t.name.to_uppercase()).collect()
-    }
-
-    #[test]
-    fn view_cube_top_bottom_choose_nearest_square_heading() {
+    fn axis_view_top_bottom_choose_nearest_square_heading() {
         for (from, to) in [
             (0.0, 0.0),
             (30.0, 0.0),
@@ -3105,70 +3009,134 @@ mod tests {
         assert_eq!(nearest_quarter_turn(f64::INFINITY), 0.0);
     }
 
-    /// The widest label spans 90% of its face, looking straight at it.
     #[test]
-    fn view_cube_widest_label_spans_most_of_its_face() {
-        let ctx = egui::Context::default();
-        let mut span = 0.0f32;
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let size = cube_label_size(ui.ctx(), &face_labels(&cube_targets()));
-            let front = Vec3::new(0.0, -1.0, 0.0);
-            let (r, u, _) = basis_from(front);
-            let pts = drawn_points(vec![cube_label(ui.ctx(), "BOTTOM", size, front, (r, u), pos2(100.0, 100.0), Color32::BLACK)]);
-            let (lo, hi) = pts.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.x), hi.max(p.x)));
-            span = (hi - lo) / (2.0 * CUBE_SCALE as f32);
-        });
-        assert!((span - CUBE_LABEL_WIDTH).abs() < 0.05, "BOTTOM spans {span} of the face");
+    fn shift_orbit_accumulates_and_returns_to_free_rotation() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.view", json!({"view":"front"}));
+        let rect = h.app.viewport.rect.unwrap();
+        let before = h.app.cam;
+        for _ in 0..100 {
+            orbit_drag(&mut h.app, rect, 2.0, 0.0, None, true, false);
+            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
+        }
+        for _ in 0..120 {
+            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
+        }
+        assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(h.app.cam.target, before.target);
+        assert_eq!(h.app.cam.distance, before.distance);
+        orbit_drag(&mut h.app, rect, 0.0, 0.0, None, false, false);
+        h.settle();
+        assert!((h.app.cam.yaw - 1.6).abs() < 1e-6);
+        assert!(h.app.viewport.orbit_free.is_none());
     }
 
-    /// From any direction, each label is printed within its face.
     #[test]
-    fn view_cube_labels_stay_on_their_faces() {
-        let ctx = egui::Context::default();
-        let (mut worst, mut drawn) = (f32::NEG_INFINITY, 0);
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            let targets = cube_targets();
-            let size = cube_label_size(ui.ctx(), &face_labels(&targets));
-            let c = pos2(100.0, 100.0);
-            for dir in orbit_directions().step_by(7) {
-                let (r, u, b) = basis_from(dir);
-                for (i, pts) in cube_projected(&targets, (r, u, b), c) {
-                    let tg = &targets[i];
-                    if tg.corner {
-                        continue;
-                    }
-                    for p in drawn_points(vec![cube_label(ui.ctx(), &tg.name.to_uppercase(), size, tg.normal(), (r, u), c, Color32::BLACK)]) {
-                        let outside = if point_in_poly(p, &pts) { 0.0 } else { poly_distance(p, &pts) };
-                        worst = worst.max(outside);
-                        drawn += 1;
-                    }
-                }
+    fn axis_snap_selects_all_directions_in_both_up_frames() {
+        assert_eq!(snap_directions().count(), 26);
+        for up in [solvecraft_engine::render::UpAxis::Z, solvecraft_engine::render::UpAxis::Y] {
+            for d in snap_directions() {
+                let mut cam = Camera { up, ..Camera::default() };
+                cam = cam.looking_from(cam.from_frame(d + Vec3::new(0.05, 0.03, 0.02)));
+                let to = snapped_axis_camera(cam);
+                assert!(to.back().dist(cam.from_frame(d)) < 1e-6);
+                assert_eq!(to.target, cam.target);
+                assert_eq!(to.distance, cam.distance);
+                assert_eq!(to.fov, cam.fov);
             }
-        });
-        assert!(drawn > 10_000, "only {drawn} label vertices drawn");
-        assert!(worst <= 0.5, "a label vertex {worst} px outside its face");
+        }
     }
 
     #[test]
-    fn view_cube_edges_are_not_targets() {
-        let targets = cube_targets();
-        let c = pos2(100.0, 100.0);
-        let shapes = cube_projected(&targets, basis_from(Vec3::new(1.0, -1.2, 0.9)), c);
-        let (r, u, _) = basis_from(Vec3::new(1.0, -1.2, 0.9));
-        let to2 = |p: Vec3| pos2(c.x + (p.dot(r) * CUBE_SCALE) as f32, c.y - (p.dot(u) * CUBE_SCALE) as f32);
-        let name = |i: Option<usize>| i.map(|i| targets[i].name.clone()).unwrap_or_default();
-        // On the top-front edge, its middle and near its ends: a neighbouring face (or facet).
-        for x in [-0.5, 0.0, 0.5] {
-            let hit = name(cube_hit(&shapes, to2(Vec3::new(x, -1.0, 1.0))));
-            assert!(hit == "top" || hit == "front", "edge point {x}: {hit}");
+    fn camera_resets_cancel_pending_axis_motion() {
+        for reset in 0..3 {
+            let mut h = crate::scenario::Harness::new();
+            h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+            let rect = h.app.viewport.rect.unwrap();
+            orbit_drag(&mut h.app, rect, 120.0, 40.0, None, true, false);
+            assert!(h.app.viewport.orbit_snap.is_some());
+            match reset {
+                0 => h.app.fit_view(),
+                1 => h.app.set_up_axis(solvecraft_engine::render::UpAxis::Y),
+                _ => crate::documents::new_design(&mut h.app),
+            }
+            let before = h.app.cam;
+            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
+            assert_eq!(h.app.cam.yaw, before.yaw);
+            assert_eq!(h.app.cam.pitch, before.pitch);
+            assert_eq!(h.app.cam.target, before.target);
+            assert!(h.app.viewport.orbit_snap.is_none());
+            assert!(h.app.viewport.orbit_free.is_none());
         }
-        let end = name(cube_hit(&shapes, to2(Vec3::new(0.9, -1.0, 1.0))));
-        assert!(["top", "front", "top-front-right"].contains(&end.as_str()), "{end}");
-        // Every direction a click turns to is a face's or a corner's: none along an edge.
-        for tg in &targets {
-            let zeros = [tg.dir.x, tg.dir.y, tg.dir.z].iter().filter(|v| v.abs() < 1e-9).count();
-            assert!(zeros == 2 || zeros == 0, "{}: {:?}", tg.name, tg.dir);
+    }
+
+    #[test]
+    fn axis_snap_spring_eases_in_and_settles_at_each_frame_rate() {
+        for fps in [30, 60, 120] {
+            let mut h = crate::scenario::Harness::new();
+            h.call("ui.view", json!({"view":"front"}));
+            let rect = h.app.viewport.rect.unwrap();
+            orbit_drag(&mut h.app, rect, 120.0, 0.0, None, true, false);
+            assert_eq!(h.app.cam.yaw, 0.0, "choosing a diagonal must not jump the camera");
+            step_orbit_snap(&mut h.app, rect, 1.0 / f64::from(fps));
+            assert!(h.app.cam.yaw > 0.0 && h.app.cam.yaw < std::f64::consts::FRAC_PI_4 * 0.25);
+            for _ in 0..fps * 2 {
+                step_orbit_snap(&mut h.app, rect, 1.0 / f64::from(fps));
+                assert!(h.app.cam.yaw <= std::f64::consts::FRAC_PI_4 + 0.03, "elastic finish stays small");
+            }
+            assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_4).abs() < 1e-6);
+            assert!(h.app.viewport.orbit_snap.is_none());
         }
+    }
+
+    #[test]
+    fn shift_orbit_keeps_cursor_pivot_and_default_middle_pan() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.orbit_cursor = true;
+        h.app.run("solid.box", json!({"length":40,"width":40,"height":40})).unwrap();
+        h.app.fit_view();
+        let rect = h.app.viewport.rect.unwrap();
+        let at = rect.center() + vec2(50.0, -20.0);
+        orbit_drag(&mut h.app, rect, 0.0, 0.0, Some(at), false, true);
+        let pivot = h.app.viewport.orbit_pivot.unwrap();
+        let before = projection(&h.app, rect).to_screen(pivot).unwrap();
+        for _ in 0..20 {
+            orbit_drag(&mut h.app, rect, 4.0, 2.0, Some(at), true, true);
+            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
+            let after = projection(&h.app, rect).to_screen(pivot).unwrap();
+            assert!(after.distance(before) < 2.0);
+        }
+        h.app.viewport.orbit_free = None;
+        h.app.viewport.orbit_pivot = None;
+        h.call("ui.view", json!({"view":"front"}));
+        let before = h.app.cam;
+        h.call("ui.drag", json!({"x0":800,"y0":500,"x1":1020,"y1":500,"button":"middle","shift":true,"steps":40}));
+        assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        h.call("ui.view", json!({"view":"front"}));
+        h.call("ui.drag", json!({"x0":800,"y0":500,"x1":850,"y1":520,"button":"middle"}));
+        assert_eq!(h.app.cam.yaw, before.yaw);
+        assert_eq!(h.app.cam.pitch, before.pitch);
+        assert_ne!(h.app.cam.target, before.target);
+    }
+
+    #[test]
+    fn axis_view_click_again_flips_and_drag_snaps() {
+        let mut h = crate::scenario::Harness::new();
+        h.run(&json!([
+            {"call":"ui.view","params":{"view":"home"}},
+            {"click":{"handle":"axis_view:z"}},
+            {"expect":{"camera":{"pitch_deg":90,"yaw_deg":0}}},
+            {"click":{"handle":"axis_view:z"}},
+            {"expect":{"camera":{"pitch_deg":-90,"yaw_deg":0}}},
+            {"call":"ui.view","params":{"view":"front"}}
+        ]))
+        .unwrap();
+        let c = axis_center(h.app.viewport.rect.unwrap());
+        h.call("ui.drag", json!({"x0":c.x,"y0":c.y,"x1":c.x+220.0,"y1":c.y,"shift":true,"steps":40}));
+        assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!(h.app.viewport.axis_drag.is_none());
+        assert!(h.app.viewport.orbit_free.is_none());
+        assert!(h.app.viewport.boxsel.is_none());
     }
 
     #[test]

@@ -49,7 +49,7 @@ rolls the numbering back with the design), so they can go straight into later co
 | `ui.sketchToScreen` | `points`: `[[x, y]…]` in active-sketch coordinates | their screen points (null when behind the camera) |
 | `ui.dialogInput` | `index` | what clicking an input's Select chip does: picks go to that input |
 | `ui.at` | `world: [x,y,z]` \| `sketch: [x,y]` \| `plane: "XY"` \| `axis: "Z"` \| `dimension: "d1"` (its value text) \| `handle: "arrow"` (a manipulator handle, see `scenario::publish_handle`) | the screen point (a scenario step's target; see `crates/ui-egui/src/scenario.rs`) |
-| `ui.handles` | `prefix?` | the handles drawn last frame, `[{name, x, y}]`: toolbar buttons and drop-down items `toolbar:<command id>`, panel labels `panel:<tab>:<panel>`, browser rows `row:<label>` and fold arrows `fold:<label>`, manipulator handles |
+| `ui.handles` | `prefix?` | the handles drawn last frame, `[{name, x, y}]`: toolbar buttons and drop-down items `toolbar:<command id>`, panel labels `panel:<tab>:<panel>`, browser rows `row:<label>` and fold arrows `fold:<label>`, manipulator handles; orientation tips `axis_view:x`, `axis_view:-x` (and y/z) |
 | `ui.editFeature` | `feature` (id or name) | what double-clicking a timeline item does: rolls back to it and opens its dialog filled in (sketches open in sketch mode) |
 | `ui.scroll` | `x`, `y`, `delta?` | wheel zoom at the cursor |
 | `ui.key` | `key` (egui key name, `Enter`, `Escape`…), `cmd?`, `shift?` | |
@@ -83,3 +83,11 @@ channel; see [mcp.md](mcp.md).
 {"id":4,"method":"engine.execute","params":{"command":"solid.fillet","params":{"edges":[[0,0,10]],"radius":3}}}
 {"id":5,"method":"ui.screenshot","params":{"path":"/tmp/part.png"}}
 ```
+
+Hold Shift during an orbit gesture to snap to the nearest standard or diagonal view. This applies to
+right-drag, the Orbit navigation tool, and dragging the axis view. Under the default preset,
+Shift+middle also orbits with snapping; middle alone pans. Axis-view tips use world coordinates,
+regardless of the up-axis preference. Clicking an aligned tip again flips to its opposite.
+
+Shift-orbit snapping includes 45-degree edge views and isometric corner views, with a
+lightly damped spring transition and a small boundary margin to prevent flicker.

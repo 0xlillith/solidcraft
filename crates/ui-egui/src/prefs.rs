@@ -52,7 +52,7 @@ pub struct Prefs {
     pub ui_scale: f32,
     /// The wheel zooms toward the point under the cursor (else toward the view's centre).
     pub zoom_to_cursor: bool,
-    /// View changes (view cube, Look At, Home) animate; `look_at_speed` scales how fast.
+    /// View changes (axis view, Look At, Home) animate; `look_at_speed` scales how fast.
     pub look_at_anim: bool,
     pub look_at_speed: f32,
     /// Default modelling orientation: `z` (Z up) or `y` (Y up) (#3).
@@ -554,7 +554,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                     }
                 });
             ui.end_row();
-            note(ui, &format!("{}; the wheel zooms", nav_help(&app.preferences.nav)));
+            note(ui, &format!("{}; hold Shift during orbit to snap; the wheel zooms", nav_help(&app.preferences.nav)));
             ui.label("Reverse zoom direction");
             ui.checkbox(&mut app.preferences.zoom_reverse, "");
             ui.end_row();
@@ -569,7 +569,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             });
             ui.end_row();
             ui.label("Animate view changes");
-            ui.checkbox(&mut app.preferences.look_at_anim, "View cube, Look At, Home and Fit");
+            ui.checkbox(&mut app.preferences.look_at_anim, "Axis view, Look At, Home and Fit");
             ui.end_row();
             ui.label("Animation speed");
             ui.add_enabled(
@@ -585,7 +585,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 ui.radio_value(&mut app.preferences.up_axis, "y".to_string(), "Y up");
             });
             ui.end_row();
-            note(ui, "Which axis points up in the views (view cube, Home, Look At). Designs are unchanged.");
+            note(ui, "Which axis points up in the views (axis view, Home, Look At). Designs are unchanged.");
             ui.label("Offer to stand up Y-up files");
             ui.checkbox(&mut app.preferences.offer_stand_up, "")
                 .on_hover_text("After a STEP or IGES file opens with Z up, offer a quarter turn about X");

@@ -3,7 +3,7 @@
 //! A thin shell over [`solvecraft_engine::Session`]: panels read engine state and act through
 //! commands ([`SolveApp::run`]). Nothing here owns design data. The layout follows the familiar
 //! parametric-CAD desktop: application bar, a toolbar of workspace tabs and panels, the browser
-//! on the left, the 3D viewport with a view cube and navigation bar, the command dialog on the
+//! on the left, the 3D viewport with an axis view and navigation bar, the command dialog on the
 //! right of the viewport, the command palette and the timeline at the bottom.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
@@ -129,7 +129,7 @@ pub struct UiState {
     pub visual_style: u8,
     /// A soft shadow on the ground under the model (seen from above).
     pub ground_shadow: bool,
-    /// The world's up axis (Z or Y; #3): the camera, view cube, home view and ground follow it.
+    /// The world's up axis (Z or Y; #3): the camera, axis view, home view and ground follow it.
     pub up_axis: solvecraft_engine::render::UpAxis,
     /// Sketches whose closed profiles are not shaded.
     pub hidden_profiles: Vec<u64>,
@@ -180,7 +180,7 @@ pub struct SolveApp {
     pub session: Session,
     pub ui: UiState,
     pub cam: Camera,
-    /// A view change in progress (view cube, Home, Fit); any mouse navigation cancels it.
+    /// A view change in progress (axis view, Home, Fit); any mouse navigation cancels it.
     pub cam_anim: Option<CameraAnim>,
     /// Seconds since start, as of this frame.
     pub now: f64,
@@ -736,6 +736,8 @@ impl SolveApp {
 
     pub fn fit_view(&mut self) {
         self.cam_anim = None;
+        self.viewport.orbit_snap = None;
+        self.viewport.orbit_free = None;
         self.cam = self.fitted(self.cam);
     }
 
@@ -753,6 +755,8 @@ impl SolveApp {
 
     /// Move the camera to `to` over half a second (ease in-out, orientation slerped).
     pub fn animate_to(&mut self, to: Camera) {
+        self.viewport.orbit_snap = None;
+        self.viewport.orbit_free = None;
         if !to.is_valid() {
             return;
         }
@@ -770,7 +774,7 @@ impl SolveApp {
         self.cam_anim = Some(anim);
     }
 
-    /// Animated view changes for the view cube and navigation bar.
+    /// Animated view changes for the axis view and navigation bar.
     pub fn animate_view(&mut self, v: &str) {
         let mut to = self.cam;
         match v {
