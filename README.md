@@ -1,6 +1,6 @@
 # SolidCraft
 
-**An independent, open-source parametric 3D CAD application built in pure Rust.**
+**An open-source parametric 3D CAD application built in pure Rust.**
 
 Sketch, constrain, and build solids with a parametric feature timeline. Change a dimension
 and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
@@ -159,7 +159,7 @@ and licence rules, and where help is wanted most.
 
 ## Licence
 
-MIT OR Apache-2.0, at your option. Developed independently under the
+MIT OR Apache-2.0, at your option. Developed under the
 [clean-room contribution rules](CLAUDE.md); third-party code and assets retain their
 documented licences and attribution.
 
