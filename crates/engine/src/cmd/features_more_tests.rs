@@ -9,6 +9,17 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
     }
 }
 
+fn auto_emboss_params(mut p: Value, auto: bool) -> Value {
+    if auto {
+        if let Some(params) = p.get_mut("params").and_then(Value::as_object_mut) {
+            params.remove("face");
+        } else if let Some(object) = p.as_object_mut() {
+            object.remove("face");
+        }
+    }
+    p
+}
+
 fn measure(s: &mut Session) -> Value {
     run(s, "inspect.measure", json!({}))
 }
@@ -81,6 +92,293 @@ fn emboss_and_deboss_on_a_face() {
     assert!(s.execute("solid.emboss", &json!({"sketch": "Logo", "depth": 1, "mode": "sideways"})).is_err());
 }
 
+fn cylinder_badge() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name":"badge_depth","expression":"1 mm"}));
+    run(&mut s, "solid.cylinder", json!({"radius":"10 mm","height":"20 mm","body_name":"Sleeve"}));
+    run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    s
+}
+
+fn exact_cylinder_volume(s: &Session) -> f64 {
+    s.model.state().body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume
+}
+
+#[test]
+fn cylinder_emboss_persists_selection_and_replays_radial_depth() {
+    use solvecraft_geom::Vec3;
+    let mut s = cylinder_badge();
+    let before = exact_cylinder_volume(&s);
+    run(
+        &mut s,
+        "solid.emboss",
+        json!({"sketch":"Badge","profiles":"all","face":[0,10,7.5],"depth":"badge_depth","targets":["Sleeve"],"name":"Raised Badge"}),
+    );
+    assert!((exact_cylinder_volume(&s) - before - 21.0).abs() < 0.02);
+    let state = s.model.state();
+    let body = &state.body("Sleeve").unwrap().body;
+    assert_eq!(body.shell_count(), 1);
+    let mesh = body.tessellate_with(0.001, true).unwrap();
+    assert!(mesh.contains(Vec3::new(-10.5 * 0.15_f64.sin(), 10.5 * 0.15_f64.cos(), 7.5)));
+    let feature = s.doc.find_feature("Raised Badge").unwrap();
+    assert!(
+        matches!(&feature.kind,solvecraft_doc::FeatureKind::Emboss{face:Some(face),..} if face.body=="Sleeve"&&face.at.dist(Vec3::new(0.,10.,7.5))<1e-10)
+    );
+    let saved = s.doc.to_json();
+    let mut loaded = Session { doc: solvecraft_doc::Document::from_json(&saved).unwrap().into(), ..Default::default() };
+    loaded.refresh();
+    assert!(loaded.model.results.iter().all(|f| f.error.is_none()), "{:?}", loaded.model.results);
+    assert!((exact_cylinder_volume(&loaded) - before - 21.0).abs() < 0.02);
+    run(&mut loaded, "parameters.change", json!({"name":"badge_depth","expression":"2 mm"}));
+    assert!(loaded.model.results.iter().all(|f| f.error.is_none()), "{:?}", loaded.model.results);
+    assert!((exact_cylinder_volume(&loaded) - before - 44.0).abs() < 0.02);
+}
+
+#[test]
+fn cylinder_deboss_is_connected_and_unsupported_profile_failure_is_atomic() {
+    let mut s = cylinder_badge();
+    let before = exact_cylinder_volume(&s);
+    run(&mut s, "solid.emboss", json!({"sketch":"Badge","face":[0,10,7.5],"depth":1,"mode":"deboss","targets":["Sleeve"]}));
+    assert!((exact_cylinder_volume(&s) - before + 19.0).abs() < 0.02);
+    assert_eq!(s.model.state().body("Sleeve").unwrap().body.shell_count(), 1);
+    let mut bad = cylinder_badge();
+    run(&mut bad, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Circle Badge"}));
+    run(&mut bad, "sketch.circle.center", json!({"center":[0,7.5],"radius":1}));
+    run(&mut bad, "sketch.finish", json!({}));
+    let saved = bad.doc.to_json();
+    let v = exact_cylinder_volume(&bad);
+    assert!(bad.execute("solid.emboss", &json!({"sketch":"Circle Badge","face":[0,10,7.5],"depth":1,"targets":["Sleeve"]})).is_err());
+    assert_eq!(bad.doc.to_json(), saved);
+    assert_eq!(exact_cylinder_volume(&bad), v);
+}
+
+#[test]
+fn cylinder_small_chord_pick_is_saved_on_the_exact_surface() {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius":"0.1mm","height":"0.2mm","body_name":"Tiny"}));
+    run(&mut s, "sketch.create", json!({"plane":{"origin":[0,0.1,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-0.02,0.05],"p1":[0.02,0.1]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let mesh = s.model.state().bodies.first().unwrap().mesh();
+    let pick = mesh
+        .triangles
+        .iter()
+        .filter_map(|tri| mesh.tri(tri))
+        .map(|[a, b, c]| (a + b + c) / 3.)
+        .find(|p| p.y > 0.08 && p.z > 0.04 && p.z < 0.16)
+        .unwrap();
+    assert!(((pick.x * pick.x + pick.y * pick.y).sqrt() - 0.1).abs() > 1e-7);
+    run(&mut s, "solid.emboss", json!({"sketch":"Badge","profiles":"all","face":[pick.x,pick.y,pick.z],"depth":"0.01mm","targets":["Tiny"]}));
+    let solvecraft_doc::FeatureKind::Emboss { face: Some(face), .. } = &s.doc.features.last().unwrap().kind else {
+        panic!("missing face");
+    };
+    assert!(((face.at.x * face.at.x + face.at.y * face.at.y).sqrt() - 0.1).abs() < 1e-12);
+    assert_eq!(s.model.state().bodies.first().unwrap().body.shell_count(), 1);
+}
+
+#[test]
+fn cylinder_cross_component_emboss_keeps_source_owner_and_placements() {
+    for (pick_offset, auto) in [(0., false), (80., false), (0., true), (80., true)] {
+        let run = |s: &mut Session, id: &str, p: Value| run(s, id, auto_emboss_params(p, auto && matches!(id, "solid.emboss" | "timeline.redefine")));
+        let mut s = Session::default();
+        let a = run(&mut s, "component.create", json!({"name":"Source"}))["component"].as_u64().unwrap();
+        run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
+        let source_feature = s.model.state().bodies.first().unwrap().feature;
+        let source_names = solvecraft_doc::naming::face_names(s.model.state().body("Sleeve").unwrap());
+        let before = exact_cylinder_volume(&s);
+        run(&mut s, "occurrence.move", json!({"occurrence":"Source:1","axis":[0,0,1],"angle":"90 deg","translate":[50,0,0]}));
+        let second = run(&mut s, "occurrence.copy", json!({"component":a,"translate":[80,0,0]}))["occurrence"].as_u64().unwrap();
+        run(&mut s, "component.activate", json!({"component":"root"}));
+        let author = run(&mut s, "component.create", json!({"name":"Author"}))["component"].as_u64().unwrap();
+        run(&mut s, "occurrence.move", json!({"occurrence":"Author:1","axis":[1,0,0],"angle":"90 deg","translate":[-100,40,30]}));
+        let author_second = run(&mut s, "occurrence.copy", json!({"component":author,"translate":[0,100,0]}))["occurrence"].as_u64().unwrap();
+        run(&mut s, "component.activate", json!({"component":author,"occurrence":author_second}));
+        run(&mut s, "parameters.add", json!({"name":"badge_depth","expression":"1mm"}));
+        run(&mut s, "sketch.create", json!({"plane":{"origin":[40.+pick_offset,0,0],"x_dir":[0,-1,0],"y_dir":[0,0,1]},"name":"Badge"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let placements = serde_json::to_value(&s.doc.occurrences).unwrap();
+        let target = s
+            .world_state()
+            .bodies
+            .iter()
+            .find(|b| b.body.tessellate_with(0.001, true).unwrap().contains(solvecraft_geom::Vec3::new(40.5 + pick_offset, 0., 7.5)))
+            .unwrap()
+            .name
+            .clone();
+        run(
+            &mut s,
+            "solid.emboss",
+            json!({"sketch":"Badge","profiles":"all","face":[40.+pick_offset,0,7.5],"depth":"badge_depth","targets":[target.clone()]}),
+        );
+        let solvecraft_doc::FeatureKind::Emboss { face: Some(face), .. } = &s.doc.features.last().unwrap().kind else {
+            panic!("missing selection");
+        };
+        assert_eq!(face.path, if pick_offset == 0. { s.doc.first_path(a) } else { vec![second] });
+        assert_eq!(face.author_path, vec![author_second]);
+        let state = s.model.state();
+        let body = state.body("Sleeve").unwrap();
+        assert_eq!(body.feature, source_feature);
+        assert_eq!(s.doc.body_component("Sleeve", body.feature), a);
+        assert_eq!(serde_json::to_value(&s.doc.occurrences).unwrap(), placements);
+        let selected = s.doc.features.last().unwrap().face_names.first().unwrap();
+        assert!(!selected.is_empty() && source_names.contains(selected), "{selected:?} not in {source_names:?}");
+        assert!((exact_cylinder_volume(&s) - before - 21.).abs() < 0.02);
+        let world = s.world_state();
+        for x in [39.5, 119.5] {
+            assert!(world.bodies.iter().any(|b| b.body.tessellate_with(0.001, true).unwrap().contains(solvecraft_geom::Vec3::new(x, 0., 7.5))));
+        }
+        let mut loaded = Session { doc: solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap().into(), ..Default::default() };
+        loaded.refresh();
+        assert!(loaded.model.results.iter().all(|r| r.error.is_none()), "{:?}", loaded.model.results);
+        run(&mut loaded, "parameters.change", json!({"name":"badge_depth","expression":"2mm"}));
+        assert!((exact_cylinder_volume(&loaded) - before - 44.).abs() < 0.02);
+        assert_eq!(loaded.doc.body_component("Sleeve", loaded.model.state().body("Sleeve").unwrap().feature), a);
+        assert_eq!(serde_json::to_value(&loaded.doc.occurrences).unwrap(), placements);
+        let feature = loaded.doc.features.last().unwrap().clone();
+        run(&mut loaded, "component.activate", json!({"component":"root"}));
+        run(
+            &mut loaded,
+            "timeline.redefine",
+            json!({"feature":feature.id,"command":"solid.emboss","params":{"sketch":"Badge","profiles":"all","face":[40.+pick_offset,0,7.5],"depth":"badge_depth","targets":[target.clone()]}}),
+        );
+        assert_eq!(loaded.doc.feature(feature.id).unwrap().kind, feature.kind);
+        assert_eq!(loaded.doc.feature(feature.id).unwrap().face_names, feature.face_names);
+        run(
+            &mut loaded,
+            "timeline.redefine",
+            json!({"feature":feature.id,"command":"solid.emboss","params":{"sketch":"Badge","profiles":"all","face":[40.+pick_offset,0,7.5],"depth":"3mm","targets":[target]}}),
+        );
+        assert!((exact_cylinder_volume(&loaded) - before - 69.).abs() < 0.02);
+        let mut broken = loaded.doc.as_ref().clone();
+        let id = broken.features.last().unwrap().id;
+        let solvecraft_doc::FeatureKind::Emboss { face: Some(face), .. } = &mut broken.feature_mut(id).unwrap().kind else {
+            panic!("missing selection");
+        };
+        face.path = vec![u64::MAX];
+        let mut invalid = Session { doc: broken.into(), ..Default::default() };
+        invalid.refresh();
+        assert!(invalid.model.results.iter().find(|r| r.id == id).unwrap().error.as_ref().unwrap().contains("placement"));
+        assert!((exact_cylinder_volume(&invalid) - before).abs() < 0.02);
+    }
+}
+
+#[test]
+fn cylinder_active_second_source_occurrence_authors_shared_geometry() {
+    check_active_second_source(false);
+    check_active_second_source(true);
+}
+fn check_active_second_source(auto: bool) {
+    let run = |s: &mut Session, id: &str, p: Value| run(s, id, auto_emboss_params(p, auto && id == "solid.emboss"));
+    let mut s = Session::default();
+    let component = run(&mut s, "component.create", json!({"name":"Source"}))["component"].as_u64().unwrap();
+    run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
+    let before = exact_cylinder_volume(&s);
+    let second = run(&mut s, "occurrence.copy", json!({"component":component,"translate":[80,0,0]}))["occurrence"].as_u64().unwrap();
+    run(&mut s, "component.activate", json!({"component":component,"occurrence":second}));
+    run(&mut s, "sketch.create", json!({"plane":{"origin":[80,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.emboss", json!({"sketch":"Badge","profiles":"all","face":[80,10,7.5],"depth":1}));
+    assert!((exact_cylinder_volume(&s) - before - 21.).abs() < 0.02);
+    let solvecraft_doc::FeatureKind::Emboss { face: Some(face), .. } = &s.doc.features.last().unwrap().kind else {
+        panic!("missing selection");
+    };
+    assert_eq!(face.path, vec![second]);
+    assert_eq!(face.author_path, vec![second]);
+    let mut loaded = Session { doc: solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap().into(), ..Default::default() };
+    loaded.refresh();
+    assert!(loaded.model.results.iter().all(|r| r.error.is_none()), "{:?}", loaded.model.results);
+    assert!((exact_cylinder_volume(&loaded) - before - 21.).abs() < 0.02);
+}
+
+#[test]
+fn cylinder_pending_leaf_or_ancestor_positions_require_capture_atomically() {
+    for (ancestor, auto) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut s = Session::default();
+        let parent = run(&mut s, "component.create", json!({"name":"Parent"}))["occurrence"].as_u64().unwrap();
+        let leaf = run(&mut s, "component.create", json!({"name":"Source"}))["occurrence"].as_u64().unwrap();
+        run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
+        run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "occurrence.move", json!({"occurrence":if ancestor {parent}else{leaf},"translate":[5,0,0],"capture":false}));
+        let before = s.doc.to_json();
+        let pending = s.pending_moves.clone();
+        let volume = exact_cylinder_volume(&s);
+        let error = s
+            .execute("solid.emboss", &auto_emboss_params(json!({"sketch":"Badge","profiles":"all","face":[5,10,7.5],"depth":1}), auto))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Capture Position"), "{error}");
+        assert_eq!(s.doc.to_json(), before);
+        assert_eq!(s.pending_moves, pending);
+        assert_eq!(exact_cylinder_volume(&s), volume);
+    }
+}
+
+#[test]
+fn cylinder_pending_third_component_profile_requires_capture_atomically() {
+    check_pending_third_profile(false);
+    check_pending_third_profile(true);
+}
+fn check_pending_third_profile(auto: bool) {
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
+    let profile_occurrence = run(&mut s, "component.create", json!({"name":"ProfileOwner"}))["occurrence"].as_u64().unwrap();
+    run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "component.activate", json!({"component":"root"}));
+    run(&mut s, "component.create", json!({"name":"Author"}));
+    run(&mut s, "occurrence.move", json!({"occurrence":profile_occurrence,"translate":[5,0,0],"capture":false}));
+    let before = s.doc.to_json();
+    let pending = s.pending_moves.clone();
+    let volume = exact_cylinder_volume(&s);
+    let error = s
+        .execute(
+            "solid.emboss",
+            &auto_emboss_params(json!({"sketch":"Badge","profiles":"all","face":[0,10,7.5],"depth":1,"targets":["Sleeve"]}), auto),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Capture Position"), "{error}");
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(s.pending_moves, pending);
+    assert_eq!(exact_cylinder_volume(&s), volume);
+}
+
+#[test]
+fn cylinder_body_offset_keeps_exact_profile_and_anchor_frames() {
+    check_body_offset(false);
+    check_body_offset(true);
+}
+fn check_body_offset(auto: bool) {
+    let run = |s: &mut Session, id: &str, p: Value| run(s, id, auto_emboss_params(p, auto && id == "solid.emboss"));
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
+    let before = exact_cylinder_volume(&s);
+    let holder = run(&mut s, "component.create", json!({"name":"Holder"}))["component"].as_u64().unwrap();
+    run(&mut s, "occurrence.move", json!({"occurrence":"Holder:1","translate":[0,50,0]}));
+    std::sync::Arc::make_mut(&mut s.doc).body_components.insert("Sleeve".into(), holder);
+    std::sync::Arc::make_mut(&mut s.doc)
+        .body_offsets
+        .insert("Sleeve".into(), [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., -50., 0., 1.]]);
+    s.refresh();
+    assert!(s.doc.body_offsets.contains_key("Sleeve"));
+    let offset = s.doc.body_offsets["Sleeve"];
+    run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.emboss", json!({"sketch":"Badge","profiles":"all","face":[0,10,7.5],"depth":1,"targets":["Sleeve"]}));
+    assert!((exact_cylinder_volume(&s) - before - 21.).abs() < 0.02);
+    assert_eq!(s.doc.body_offsets["Sleeve"], offset);
+    assert_eq!(s.doc.body_component("Sleeve", s.model.state().body("Sleeve").unwrap().feature), holder);
+    assert!(s.world_state().body("Sleeve").unwrap().body.tessellate_with(0.001, true).unwrap().contains(solvecraft_geom::Vec3::new(0., 10.5, 7.5)));
+}
+
 #[test]
 fn replace_face_align_remove() {
     let mut s = Session::default();
@@ -136,4 +434,123 @@ fn coil_and_loft_to_a_point() {
     run(&mut s, "solid.loft", json!({"sections": [{"sketch": "Base"}, {"sketch": "Top", "point": "apex"}]}));
     assert!(rel(volume(&mut s), 400.0 * 30.0 / 3.0) < 1e-6);
     assert!(s.execute("solid.loft", &json!({"sections": [{"sketch": "Base"}, {"sketch": "Top", "point": "nope"}]})).is_err());
+}
+
+#[test]
+fn cylinder_auto_inference_saves_a_profile_anchor_and_replays_both_depth_signs() {
+    use solvecraft_geom::Vec3;
+    for mode in ["emboss", "deboss"] {
+        let mut s = cylinder_badge();
+        let before = exact_cylinder_volume(&s);
+        let initial = s.doc.to_json();
+        run(&mut s, "solid.emboss", json!({"sketch":"Badge","profiles":"all","depth":"badge_depth","mode":mode,"name":"Auto Badge"}));
+        let feature = s.doc.find_feature("Auto Badge").unwrap().clone();
+        let solvecraft_doc::FeatureKind::Emboss { face: Some(face), targets, .. } = &feature.kind else {
+            panic!("missing inferred association");
+        };
+        assert_eq!(targets, &["Sleeve"]);
+        assert_eq!(face.body, "Sleeve");
+        assert!(face.at.z > 0. && face.at.z < 20.);
+        assert!((face.at.x.hypot(face.at.y) - 10.).abs() < 1e-10);
+        assert!(!feature.face_names.first().unwrap().is_empty());
+        let expected = if mode == "emboss" { 21. } else { -19. };
+        assert!((exact_cylinder_volume(&s) - before - expected).abs() < 0.02);
+        let state = s.model.state();
+        let body = &state.body("Sleeve").unwrap().body;
+        assert_eq!(body.shell_count(), 1);
+        assert_eq!(
+            body.tessellate_with(0.001, true).unwrap().contains(Vec3::new(0., if mode == "emboss" { 10.5 } else { 9.5 }, 7.5)),
+            mode == "emboss"
+        );
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.to_json(), initial);
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.find_feature("Auto Badge").unwrap().kind, feature.kind);
+        let mut loaded = Session { doc: solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap().into(), ..Default::default() };
+        loaded.refresh();
+        assert!(loaded.model.results.iter().all(|r| r.error.is_none()), "{:?}", loaded.model.results);
+        run(
+            &mut loaded,
+            "timeline.redefine",
+            json!({"feature":feature.id,"command":"solid.emboss","params":{"sketch":"Badge","profiles":"all","depth":"badge_depth","mode":mode}}),
+        );
+        assert_eq!(loaded.doc.feature(feature.id).unwrap().kind, feature.kind);
+        assert_eq!(loaded.doc.feature(feature.id).unwrap().face_names, feature.face_names);
+        run(&mut loaded, "parameters.change", json!({"name":"badge_depth","expression":"2mm"}));
+        assert!((exact_cylinder_volume(&loaded) - before - if mode == "emboss" { 44. } else { -36. }).abs() < 0.02);
+    }
+}
+
+#[test]
+fn cylinder_auto_inference_ignores_remote_finite_tangent_walls_in_each_body_order() {
+    for remote_first in [false, true] {
+        let mut s = Session::default();
+        for (name, z) in if remote_first { [("Remote", 100.), ("Sleeve", 0.)] } else { [("Sleeve", 0.), ("Remote", 100.)] } {
+            run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"base":[0,0,z],"body_name":name}));
+        }
+        run(&mut s, "solid.cylinder", json!({"radius":8,"height":10,"base":[0,0,120],"body_name":"Remote Step"}));
+        run(&mut s, "solid.combine", json!({"target":"Remote","tools":["Remote Step"],"operation":"join"}));
+        run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let before = exact_cylinder_volume(&s);
+        let remote = s.model.state().body("Remote").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume;
+        run(&mut s, "solid.emboss", json!({"sketch":"Badge","depth":1}));
+        assert!((exact_cylinder_volume(&s) - before - 21.).abs() < 0.02);
+        assert_eq!(s.model.state().body("Remote").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume, remote);
+    }
+}
+
+#[test]
+fn cylinder_auto_inference_retains_selected_holes_and_nested_islands() {
+    use solvecraft_geom::Vec3;
+    for mode in ["emboss", "deboss"] {
+        let mut s = cylinder_badge();
+        run(&mut s, "sketch.edit", json!({"sketch":"Badge"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-1,6],"p1":[1,9]}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-0.5,6.5],"p1":[0.5,8.5]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let before = exact_cylinder_volume(&s);
+        run(&mut s, "solid.emboss", json!({"sketch":"Badge","profiles":[{"point":[1.5,7.5]},{"point":[0,7.5]}],"depth":1,"mode":mode}));
+        let depth = if mode == "emboss" { 1. } else { -1. };
+        let expected = 16. * (depth + depth * depth / 20.);
+        assert!((exact_cylinder_volume(&s) - before - expected).abs() < 0.02);
+        let st = s.model.state();
+        let body = &st.body("Sleeve").unwrap().body;
+        assert_eq!(body.shell_count(), 1);
+        let mesh = body.tessellate_with(0.001, true).unwrap();
+        for (s, raised) in [(0., true), (0.75, false), (1.5, true)] {
+            let theta = s / 10.0_f64;
+            let radius = if mode == "emboss" { 10.5 } else { 9.5 };
+            assert_eq!(mesh.contains(Vec3::new(-radius * theta.sin(), radius * theta.cos(), 7.5)), if mode == "emboss" { raised } else { !raised });
+        }
+    }
+}
+
+#[test]
+fn cylinder_auto_inference_refuses_ambiguity_curves_and_seam_crossing_atomically() {
+    let mut s = cylinder_badge();
+    run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Coincident"}));
+    let before = s.doc.to_json();
+    let error = s.execute("solid.emboss", &json!({"sketch":"Badge","depth":1})).unwrap_err().to_string();
+    assert!(error.contains("multiple tangent cylinders"), "{error}");
+    assert_eq!(s.doc.to_json(), before);
+    run(&mut s, "solid.emboss", json!({"sketch":"Badge","depth":1,"targets":["Sleeve"]}));
+    assert!(matches!(&s.doc.features.last().unwrap().kind,solvecraft_doc::FeatureKind::Emboss{face:Some(face),..} if face.body=="Sleeve"));
+    for circle in [false, true] {
+        let mut s = cylinder_badge();
+        run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Unsupported"}));
+        if circle {
+            run(&mut s, "sketch.circle.center", json!({"center":[0,7.5],"radius":1}));
+        } else {
+            run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-20,5],"p1":[20,10]}));
+        }
+        run(&mut s, "sketch.finish", json!({}));
+        let before = s.doc.to_json();
+        let volume = exact_cylinder_volume(&s);
+        let error = s.execute("solid.emboss", &json!({"sketch":"Unsupported","depth":1})).unwrap_err().to_string();
+        assert!(error.contains(if circle { "orthogonal line" } else { "seam" }), "{error}");
+        assert_eq!(s.doc.to_json(), before);
+        assert_eq!(exact_cylinder_volume(&s), volume);
+    }
 }

@@ -13,6 +13,68 @@ fn ids(v: &Value) -> Vec<String> {
     v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
 
+#[test]
+fn manual_projection_captures_the_requested_coincident_body_producer() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Control","name":"ControlFeature"}));
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Target","name":"TargetFeature"}));
+    let producer = s.doc.find_feature("TargetFeature").unwrap().id;
+    let id = run(&mut s, "sketch.create", json!({"plane":"XY","offset":10}))["sketch"].as_u64().unwrap();
+    run(&mut s, "sketch.project", json!({"refs":[{"body":"Target","face":[1,1,10]}]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let initial_state = s.model.state();
+    let initial = &initial_state.sketch(id).unwrap().sketch.links[0];
+    assert_eq!(initial.face_name, Some(format!("F{producer}:+z")));
+    assert!(!initial.lost);
+    let height = s.doc.find_feature("TargetFeature").unwrap().param_names[2].clone();
+    run(&mut s, "parameters.change", json!({"name":height,"expression":"20 mm"}));
+    let verify = |session: &Session| {
+        let state = session.model.state();
+        let sk = &state.sketch(id).unwrap().sketch;
+        assert!(!sk.links[0].lost);
+        assert_eq!(sk.links[0].face_name, Some(format!("F{producer}:+z")));
+        assert!(matches!(&sk.links[0].source,solvecraft_sketch::LinkSource::Face{body,at} if body=="Target" && (at.z-20.).abs()<1e-6));
+        assert!(sk.points.iter().any(|point| point.pos.x > 19.));
+        assert!(sk.points.iter().any(|point| point.pos.y > 19.));
+        assert!((session.world_state().body("Control").unwrap().mesh().bounds().max.z - 10.).abs() < 1e-6);
+    };
+    verify(&s);
+    verify(&Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap()));
+}
+
+#[test]
+fn initial_projection_retains_selected_face_when_closest_point_lands_on_shared_edge() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Target"}));
+    let state = s.model.state();
+    let body = state.body("Target").unwrap();
+    let source = solvecraft_sketch::LinkSource::Face { body: "Target".into(), at: solvecraft_geom::Vec3::new(-0.1, 5., 10.5) };
+    let resolved = solvecraft_doc::project::resolve(
+        &s.doc,
+        &std::collections::BTreeMap::new(),
+        &state,
+        &solvecraft_geom::Plane::XY,
+        solvecraft_sketch::LinkKind::Project,
+        &source,
+    )
+    .unwrap();
+    let index = resolved.face_index.unwrap();
+    let expected = solvecraft_doc::naming::face_names(body)[index].clone();
+    let solvecraft_sketch::LinkSource::Face { at, .. } = resolved.source else { panic!("not face") };
+    assert!(at.x.abs() < 1e-6 && (at.z - 10.).abs() < 1e-6, "closestpoint must be on shared top/wall edge: {at:?}");
+    let plane = body.body.face_plane(index).unwrap();
+    let id = run(&mut s, "sketch.create", json!({"plane":{"origin":plane.origin,"x_dir":plane.x,"y_dir":plane.y}}))["sketch"].as_u64().unwrap();
+    run(&mut s, "sketch.project", json!({"refs":[{"body":"Target","face":[-0.1,5.,10.5]}]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let current = s.model.state();
+    let sk = &current.sketch(id).unwrap().sketch;
+    assert_eq!(sk.links[0].face_name, Some(expected));
+    assert!(!sk.links[0].lost);
+    assert_eq!(sk.curves.len(), 4);
+    let reopened = Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(reopened.model.state().sketch(id).unwrap().sketch.curves, sk.curves);
+}
+
 /// A 40 x 30 x 20 box from a sketch whose width is the user parameter `width`.
 fn box_part(s: &mut Session) {
     run(s, "parameters.change", json!({"name": "width", "expression": "40 mm"}));

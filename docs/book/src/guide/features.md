@@ -18,6 +18,32 @@ Extruding into existing material selects **Cut**. In an empty component it selec
 choose **New Body** explicitly to keep an addition separate. Changing the default does not alter
 operations already saved in a design.
 
+Editing an extrusion retains its signed distances, From/To Object inputs, taper expressions
+and explicit body targets. Revolve edits retain world, sketch and explicit-line axes, both
+angle expressions and To Object targets. An unchanged **All profiles** selection continues
+to include profiles added later. Cancel restores the complete timeline; a successful edit is
+one undo step, including downstream parameter changes. Editing a placed component previews the
+edited feature before its downstream history. Cylindrical Emboss profile guides follow the
+sketch's chosen occurrence frame.
+
+New symmetric revolves split the entered angle evenly around the sketch profile, regardless
+of which way the selected axis points. Two Sides measures the second angle backward and the
+first angle forward along the sketch-normal sweep direction. Profiles on opposite sides of
+an axis each use their own sweep direction. Designs saved before format 11 keep their original
+angular placement when opened, edited or copied; creating another revolve uses the new behavior.
+To Object follows that same direction for each selected profile, including curved target faces.
+Pick a target away from the axis so its angular position is defined.
+
+For cylindrical **Emboss**, select a supported exterior cylinder face and a tangent sketch
+profile. **Deboss** cuts radially into the wall. Orthogonal line profiles, including holes and
+concave outlines, wrap with exact radial walls; the profile must stay clear of seams and ends.
+Complete cylinders and coaxial sleeves are supported. Capture pending component positions
+before applying. The feature stores the selected target and author occurrence paths, so edits
+and reopening retain the chosen instances. Other curved surfaces and free-form profiles remain
+unsupported. A new Emboss without an explicit face infers a unique eligible supported cylinder;
+select the face when the target is ambiguous. Older saved features without a face retain their
+planar placement.
+
 Fillets and chamfers handle straight edges between planar faces, whole smooth loops, runs of
 neighbouring edges with mitred or spherical corners, and closed chains of curved edges (a rolling
 ball). See the roadmap's known limitations for the rest.
@@ -26,5 +52,48 @@ Feature references to faces and edges are stored by name, so an upstream edit th
 keeps them on the right face (see [Persistent naming](../dev/naming.md)). When a reference can't
 be found, the feature warns instead of silently picking another face.
 
+## Editing a feature from a script
+
+`timeline.inspect {feature}` returns a feature's `definition`: the fields `timeline.edit` changes,
+with their current values. `timeline.edit {feature, set}` merges `set` into that definition
+(objects are merged field by field, anything else replaces the value), rebuilds the feature and
+reports `recomputed` and `restored`. The feature's type cannot change, and sketch geometry is
+edited with the sketch commands. Expressions are text (`"30"`, `"30 mm"`, `"width / 2"`,
+`"45 deg"`); a bare number is a length in the design's units, or degrees for an angle.
+
+```json
+{"command": "timeline.inspect", "params": {"feature": "Slab"}}
+→ {"type": "ExtrudeFeature",
+   "definition": {"sketch": 1, "profiles": {"type": "all"}, "operation": "new_body",
+                  "extent": {"distance": "10", "direction": "positive"}},
+   "inputs": [{"label": "Distance", "param": "d1", "expression": "10", "unit": "mm"}], …}
+{"command": "timeline.edit", "params": {"feature": "Slab", "set": {"extent": {"distance": "12"}}}}
+```
+
+`inputs` lists the feature's named inputs. `parameters.change {name: "d1", expression}` sets one
+of those directly. Optional fields that are not set do not appear in the definition; they can
+still be added through `set`. The fields of the common features:
+
+| Feature | Fields |
+|---|---|
+| Extrude | `extent`: {`distance`, `direction`: positive\|negative\|symmetric, `distance2`, `start_offset`, `through_all`, `taper`, `to`, `to_offset`, `from`}; `operation`: new_body\|join\|cut\|intersect; `targets`; `profiles`; `sketch` |
+| Revolve | `angle`, `angle2`, `symmetric`, `axis`, `to`, `operation`, `targets`, `profiles`, `sketch` |
+| Fillet | `radius`, `edges` (a point on each edge), `body`, `style` |
+| Chamfer | `distance`, `distance2` or `angle`, `flip`, `edges`, `body` |
+| Box | `length`, `width`, `height`, `corner`, `operation` |
+| Cylinder | `radius`, `height`, `base`, `axis`, `operation` |
+| Hole | `diameter`, `depth`, `position`, `direction`, `hole` (simple, drilled, counterbore, countersink), `thread`, `to` |
+| Shell | `thickness`, `faces`, `direction`, `body`, `tangent_chain` |
+| Draft | `angle`, `faces`, `neutral`, `pull`, `body` |
+| Offset face | `distance`, `faces`, `body` |
+| Pattern | `pattern` (its kind and counts/spacing), `features`, `bodies` |
+| Mirror | `plane`, `features`, `bodies`, `combine` |
+
+For any other feature, `timeline.inspect` shows the fields.
+
 Press **Delete** on anything selected (bodies, faces, sketches, features, planes, components,
 canvases). It runs as one undoable step and lists the features that would go with it or fail.
+
+Face Extrude, face Revolve, and Press Pull retain linked generated profiles. When a modified planar face has no construction certificate, these internal profiles use the legacy named-face attachment and projection behavior so upstream edits still update the plane and outline. This compatibility path is private to those modeling tools: newly attached user sketches require a certified face or an explicitly fixed plane. Legacy internal attachments can follow the nearest matching face after topology changes; inspect their result after major upstream edits. Activate the intended occurrence before generating a face profile from a repeated component; capture a separately moved source position before creating a legacy profile across components.
+
+A negative Press Pull across a planar face containing a round through-hole can still fail when the Boolean cutter has coincident curved faces. This operation reports an error and preserves the design atomically; positive face extrusion and Press Pull retain the hole and remain linked.

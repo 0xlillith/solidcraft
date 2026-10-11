@@ -1,424 +1,266 @@
-//! Multi-language (i18n) static translation dictionary for SolveCraft.
-//!
-//! Provides zero-overhead, completely offline local string translations.
+//! Embedded offline message catalogs. UI messages use stable IDs; engine display labels
+//! pass through an adapter without changing engine or scenario identifiers.
 
-/// Supported languages: (id, display_name).
-pub const LANGUAGES: [(&str, &str); 2] = [("en", "English"), ("ja", "日本語")];
+use std::cell::Cell;
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-/// English to Japanese dictionary.
-const JA_TRANSLATIONS: &[(&str, &str)] = &[
-    // --- Common & Window controls ---
-    ("Preferences", "環境設定"),
-    ("General", "一般"),
-    ("Navigation", "ナビゲーション"),
-    ("Keyboard Shortcuts", "キーボードショートカット"),
-    ("Design", "デザイン"),
-    ("Graphics", "グラフィックス"),
-    ("Sketch", "スケッチ"),
-    ("Selection", "選択"),
-    ("Language", "言語"),
-    ("Theme", "テーマ"),
-    ("UI scale", "UIスケール"),
-    ("Units of new designs", "新規デザインの単位"),
-    ("Autosave every", "自動保存の間隔"),
-    ("Length decimals", "長さの小数点桁数"),
-    ("Angle decimals", "角度の小数点桁数"),
-    ("Agent cursor", "AIエージェントカーソル"),
-    ("Agent cursor speed", "AIエージェント速度"),
-    ("Restore Defaults", "初期値に戻す"),
-    ("Reset the settings on this page", "このページの設定をリセット"),
-    ("OK", "OK"),
-    ("Cancel", "キャンセル"),
-    ("Apply", "適用"),
-    ("Save", "保存"),
-    ("Don't Save", "保存しない"),
-    ("Untitled", "無題"),
-    ("Dark", "ダーク"),
-    ("Light", "ライト"),
-    ("System", "システム"),
-    ("Help", "ヘルプ"),
-    ("About", "SolveCraft について"),
-    ("Close", "閉じる"),
-    ("Delete", "削除"),
-    ("Expand", "展開"),
-    ("Collapse", "折りたたむ"),
-    // --- Preferences Navigation & Design ---
-    ("Pan, zoom, orbit", "パン、ズーム、オービット"),
-    ("Reverse zoom direction", "ズーム方向を反転"),
-    ("Zoom to the cursor", "カーソル位置へズーム"),
-    ("Orbit around", "回転の中心"),
-    ("View centre", "ビュー中心"),
-    ("Point under the cursor", "カーソル下の点"),
-    ("Animate view changes", "視点変更をアニメーション表示"),
-    ("Animation speed", "アニメーション速度"),
-    ("Default modelling orientation", "デフォルトのモデル方向"),
-    ("Offer to stand up Y-up files", "Y-upファイルを立ち上げるか確認"),
-    ("Visual style", "表示スタイル"),
-    // --- Application bar & Menus ---
-    ("File", "ファイル"),
-    ("Edit", "編集"),
-    ("Create", "作成"),
-    ("Modify", "修正"),
-    ("Assemble", "アセンブリ"),
-    ("Construct", "構築"),
-    ("Inspect", "検査"),
-    ("Insert", "挿入"),
-    ("Select", "選択"),
-    ("New Design", "新規デザイン"),
-    ("Open...", "開く..."),
-    ("Open", "開く"),
-    ("Save", "保存"),
-    ("Save As...", "名前を付けて保存..."),
-    ("Export...", "エクスポート..."),
-    ("Undo", "元に戻す"),
-    ("Redo", "やり直す"),
-    ("Cut", "切り取り"),
-    ("Copy", "コピー"),
-    ("Paste", "貼り付け"),
-    ("Clear Recent", "最近使った項目をクリア"),
-    ("Open Recent", "最近使った項目を開く"),
-    ("Quit", "終了"),
-    // --- Toolbar tabs ---
-    ("SOLID", "ソリッド"),
-    ("SURFACE", "サーフェス"),
-    ("MESH", "メッシュ"),
-    ("SHEET METAL", "板金"),
-    ("PLASTIC", "プラスチック"),
-    ("SKETCH", "スケッチ"),
-    ("CREATE", "作成"),
-    ("MODIFY", "修正"),
-    ("ASSEMBLE", "アセンブリ"),
-    ("CONSTRUCT", "構築"),
-    ("INSPECT", "検査"),
-    ("INSERT", "挿入"),
-    ("SELECT", "選択"),
-    ("FINISH SKETCH", "スケッチを終了"),
-    ("Finish Sketch", "スケッチを終了"),
-    // --- Sketch Palette ---
-    ("SKETCH PALETTE", "スケッチ パレット"),
-    ("Options", "オプション"),
-    ("Linetype", "線種"),
-    ("Normal", "標準"),
-    ("Construction", "構築"),
-    ("Centerline", "中心線"),
-    ("Look At", "視点を合わせる"),
-    ("Sketch Grid", "スケッチ グリッド"),
-    ("Snap", "スナップ"),
-    ("Slice", "スライス"),
-    ("Show Profile", "プロファイルを表示"),
-    ("Show Points", "点を表示"),
-    ("Show Dimensions", "寸法を表示"),
-    ("Show Constraints", "拘束を表示"),
-    ("Show Projected Geometries", "投影ジオメトリを表示"),
-    ("3D Sketch", "3D スケッチ"),
-    ("Fully constrained", "完全拘束"),
-    ("1 degree of freedom", "自由度 1"),
-    ("degrees of freedom", "自由度"),
-    ("Constraints conflict", "拘束が競合しています"),
-    // --- Dialog Titles (All Caps & Title Case) ---
-    ("CREATE SKETCH", "スケッチを作成"),
-    ("Create Sketch", "スケッチを作成"),
-    ("EDIT", "編集"),
-    ("EXTRUDE", "押し出し"),
-    ("Extrude", "押し出し"),
-    ("REVOLVE", "回転"),
-    ("Revolve", "回転"),
-    ("SWEEP", "スイープ"),
-    ("Sweep", "スイープ"),
-    ("LOFT", "ロフト"),
-    ("Loft", "ロフト"),
-    ("FILLET", "フィレット"),
-    ("Fillet", "フィレット"),
-    ("CHAMFER", "面取り"),
-    ("Chamfer", "面取り"),
-    ("SHELL", "シェル"),
-    ("Shell", "シェル"),
-    ("DRAFT", "勾配"),
-    ("Draft", "勾配"),
-    ("SCALE", "尺度"),
-    ("Scale", "尺度"),
-    ("COMBINE", "結合"),
-    ("Combine", "結合"),
-    ("SPLIT BODY", "ボディを分割"),
-    ("Split Body", "ボディを分割"),
-    ("MIRROR", "ミラー"),
-    ("Mirror", "ミラー"),
-    ("HOLE", "穴"),
-    ("Hole", "穴"),
-    ("THREAD", "ねじ"),
-    ("Thread", "ねじ"),
-    ("BOX", "直方体"),
-    ("Box", "直方体"),
-    ("CYLINDER", "円柱"),
-    ("Cylinder", "円柱"),
-    ("SPHERE", "球"),
-    ("Sphere", "球"),
-    ("TORUS", "トーラス"),
-    ("Torus", "トーラス"),
-    ("COIL", "コイル"),
-    ("Coil", "コイル"),
-    ("PIPE", "パイプ"),
-    ("Pipe", "パイプ"),
-    ("OFFSET PLANE", "オフセット平面"),
-    ("Offset Plane", "オフセット平面"),
-    ("PLANE AT ANGLE", "傾斜平面"),
-    ("Plane at Angle", "傾斜平面"),
-    ("MEASURE", "計測"),
-    ("Measure", "計測"),
-    ("SECTION ANALYSIS", "断面解析"),
-    ("Section Analysis", "断面解析"),
-    ("PARAMETERS", "パラメータ"),
-    ("Parameters", "パラメータ"),
-    ("MOVE", "移動"),
-    ("Move", "移動"),
-    ("RECTANGULAR PATTERN", "矩形パターン"),
-    ("Rectangular Pattern", "矩形パターン"),
-    ("CIRCULAR PATTERN", "円形パターン"),
-    ("Circular Pattern", "円形パターン"),
-    ("PATTERN ON PATH", "パス上のパターン"),
-    ("Pattern on Path", "パス上のパターン"),
-    // --- Dialog Row Labels and Inputs ---
-    ("Plane", "平面"),
-    ("Profile", "プロファイル"),
-    ("Profiles", "プロファイル"),
-    ("Axis", "軸"),
-    ("Axes", "軸"),
-    ("Path", "パス"),
-    ("Points", "点"),
-    ("Objects", "オブジェクト"),
-    ("Bodies", "ボディ"),
-    ("Features", "フィーチャー"),
-    ("Start", "開始"),
-    ("Offset", "オフセット"),
-    ("Profile Plane", "プロファイル平面"),
-    ("Direction", "方向"),
-    ("One Side", "片側"),
-    ("Two Sides", "両側"),
-    ("Symmetric", "対称"),
-    ("Extent Type", "範囲タイプ"),
-    ("Distance", "距離"),
-    ("Distance 1", "距離 1"),
-    ("Distance 2", "距離 2"),
-    ("To Object", "オブジェクトまで"),
-    ("All", "すべて"),
-    ("Taper Angle", "テーパ角度"),
-    ("Operation", "操作"),
-    ("New Body", "新規ボディ"),
-    ("Join", "結合"),
-    ("Cut", "切り取り"),
-    ("Intersect", "交差"),
-    ("Angle", "角度"),
-    ("Radius", "半径"),
-    ("Radius Type", "半径タイプ"),
-    ("Constant", "一定"),
-    ("Chord Length", "弦長"),
-    ("Variable", "可変"),
-    ("Start Radius", "開始半径"),
-    ("End Radius", "終了半径"),
-    ("Flip", "反転"),
-    ("Thickness", "厚さ"),
-    ("Placement", "配置"),
-    ("Single", "単一"),
-    ("Multiple", "複数"),
-    ("Hole Type", "穴タイプ"),
-    ("Simple", "単純"),
-    ("Counterbore", "座ぐり"),
-    ("Countersink", "皿もみ"),
-    ("Hole Tap Type", "タップタイプ"),
-    ("Tapped", "タップ立て"),
-    ("Drill Point", "先端"),
-    ("Flat", "フラット"),
-    ("Tip Angle", "先端角度"),
-    ("Diameter", "直径"),
-    ("Depth", "深さ"),
-    ("Object Type", "オブジェクトタイプ"),
-    ("Clear the selection", "選択をクリア"),
-    // --- Browser Tree ---
-    ("Document Settings", "ドキュメントの設定"),
-    ("Units", "単位"),
-    ("Named Views", "名前付きビュー"),
-    ("Origin", "原点"),
-    ("Top", "上面"),
-    ("Front", "正面"),
-    ("Right", "右側面"),
-    ("Home", "ホーム"),
-    // --- Sketch commands & tools ---
-    ("Line", "線分"),
-    ("Rectangle", "長方形"),
-    ("Circle", "円"),
-    ("Arc", "円弧"),
-    ("Polygon", "ポリゴン"),
-    ("Ellipse", "楕円"),
-    ("Slot", "スロット"),
-    ("Spline", "スプライン"),
-    ("Conic Curve", "円錐曲線"),
-    ("Point", "点"),
-    ("Text", "テキスト"),
-    ("Trim", "トリム"),
-    ("Extend", "延長"),
-    ("Break", "分割"),
-    ("Sketch Scale", "スケッチ尺度"),
-    ("Project", "投影"),
-    ("Dimension", "寸法"),
-    ("Sketch Dimension", "スケッチ寸法"),
-    ("Horizontal/Vertical", "水平/垂直"),
-    ("Coincident", "一致"),
-    ("Tangent", "正接"),
-    ("Equal", "等しい"),
-    ("Parallel", "平行"),
-    ("Perpendicular", "直交"),
-    ("Fix/Unfix", "固定/固定解除"),
-    ("Midpoint", "中点"),
-    ("Concentric", "同心円"),
-    ("Collinear", "同一直線"),
-    ("Symmetry", "対称"),
-    ("Curvature", "曲率"),
-    ("Smooth", "スムーズ"),
-    // --- Workspace selector & environments ---
-    ("DESIGN", "デザイン"),
-    ("workspace", "ワークスペース"),
-    ("Change workspace", "ワークスペースの変更"),
-    ("Generative Design", "ジェネレーティブ デザイン"),
-    ("Render", "レンダリング"),
-    ("Animation", "アニメーション"),
-    ("Simulation", "シミュレーション"),
-    ("Manufacture", "製造"),
-    ("Drawing", "図面"),
-    ("coming later", "準備中"),
-    ("current", "現在"),
-    // --- Browser Tree ---
-    ("Document Settings", "ドキュメントの設定"),
-    ("Units", "単位"),
-    ("Named Views", "名前付きビュー"),
-    ("Origin", "原点"),
-    ("Top", "上面"),
-    ("Front", "正面"),
-    ("Right", "右側面"),
-    ("Home", "ホーム"),
-    ("TOP", "上面"),
-    ("FRONT", "正面"),
-    ("RIGHT", "右側面"),
-    ("HOME", "ホーム"),
-    ("Bodies", "ボディ"),
-    ("Sketches", "スケッチ"),
-    ("Canvases", "キャンバス"),
-    ("Joints", "ジョイント"),
-    ("Construction", "構築"),
-    ("Collapse", "折りたたむ"),
-    ("Expand", "展開"),
-    ("Hide", "非表示"),
-    ("Show", "表示"),
-    ("Active component", "アクティブなコンポーネント"),
-    ("Activate", "アクティブ化"),
-];
+type Messages = BTreeMap<String, String>;
+
+/// Register locales here after adding their catalogs. Missing translations use English.
+pub struct Catalog {
+    pub id: &'static str,
+    pub name: &'static str,
+    source: &'static str,
+    messages: OnceLock<Messages>,
+}
+
+impl Catalog {
+    const fn new(id: &'static str, name: &'static str, source: &'static str) -> Self {
+        Self { id, name, source, messages: OnceLock::new() }
+    }
+
+    fn messages(&'static self) -> &'static Messages {
+        self.messages.get_or_init(|| match serde_json::from_str(self.source) {
+            Ok(messages) => messages,
+            Err(error) => {
+                log::error!("invalid embedded {} message catalog: {error}", self.id);
+                Messages::new()
+            }
+        })
+    }
+}
+
+static ENGLISH: Catalog = Catalog::new("en", "English", include_str!("locales/en.json"));
+static JAPANESE: Catalog = Catalog::new("ja", "日本語", include_str!("locales/ja.json"));
+pub const LOCALES: &[&Catalog] = &[&ENGLISH, &JAPANESE];
+
+pub fn is_supported(id: &str) -> bool {
+    LOCALES.iter().any(|catalog| catalog.id == id)
+}
+
+/// Immutable locale reference. Catalogs parse once; lookups are logarithmic.
+#[derive(Clone, Copy)]
+pub struct Locale(&'static Catalog);
+
+impl Locale {
+    pub fn for_language(id: &str) -> Self {
+        Self(LOCALES.iter().copied().find(|catalog| catalog.id == id).unwrap_or(&ENGLISH))
+    }
+
+    pub fn name(self) -> &'static str {
+        self.0.name
+    }
+
+    /// Stable message ID → translation → English → ID.
+    pub fn text(self, id: &str) -> &str {
+        self.0.messages().get(id).or_else(|| ENGLISH.messages().get(id)).map_or(id, String::as_str)
+    }
+
+    /// Translate source labels from engine/UI tables, preserving unknown labels.
+    /// Also accepts stable IDs while table helpers migrate away from source text.
+    pub fn label(self, label: &str) -> &str {
+        static LABEL_IDS: OnceLock<BTreeMap<&'static str, &'static str>> = OnceLock::new();
+        let ids = LABEL_IDS.get_or_init(|| {
+            ENGLISH.messages().iter().filter(|(_, text)| !text.contains('{')).map(|(id, text)| (text.as_str(), id.as_str())).collect()
+        });
+        ids.get(label).map_or_else(|| self.text(label), |id| self.text(id))
+    }
+
+    pub fn format(self, id: &str, args: &[(&str, &str)]) -> String {
+        interpolate(self.text(id), args)
+    }
+
+    /// Translate generated browser names and labels, preserving custom names otherwise.
+    pub fn dynamic(self, text: &str) -> String {
+        for (prefix, id) in [("Sketch", "browser.sketch_name"), ("Body", "browser.body_name"), ("Component", "browser.component_name")] {
+            if let Some(number) = text.strip_prefix(prefix)
+                && !number.is_empty()
+                && number.chars().all(|c| c.is_ascii_digit())
+            {
+                return self.format(id, &[("number", number)]);
+            }
+        }
+        for (prefix, id, arg) in [("Units: ", "browser.units", "units"), ("Precision: ", "browser.precision", "precision")] {
+            if let Some(value) = text.strip_prefix(prefix) {
+                return self.format(id, &[(arg, value)]);
+            }
+        }
+        if let Some(count) = text.strip_prefix("Parameters (").and_then(|s| s.strip_suffix(')')) {
+            return self.format("browser.parameters", &[("count", count)]);
+        }
+        if let Some(count) = text.strip_suffix(" degrees of freedom")
+            && !count.is_empty()
+            && count.chars().all(|c| c.is_ascii_digit())
+        {
+            return self.format("sketch.degrees_of_freedom", &[("count", count)]);
+        }
+        self.label(text).to_string()
+    }
+}
+
+/// One-pass substitution: argument values are literal, even when they contain braces.
+/// Missing arguments remain visible rather than crashing or silently removing text.
+fn interpolate(template: &str, args: &[(&str, &str)]) -> String {
+    let mut output = String::with_capacity(template.len());
+    let mut remaining = template;
+    while let Some((before, after)) = remaining.split_once('{') {
+        output.push_str(before);
+        let Some((name, rest)) = after.split_once('}') else {
+            output.push('{');
+            output.push_str(after);
+            return output;
+        };
+        if let Some((_, value)) = args.iter().find(|(key, _)| *key == name) {
+            output.push_str(value);
+        } else {
+            output.push('{');
+            output.push_str(name);
+            output.push('}');
+        }
+        remaining = rest;
+    }
+    output.push_str(remaining);
+    output
+}
 
 thread_local! {
-    static CURRENT_LANG: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    // Helpers without an app reference share a render scope. Nested renders restore
+    // their caller's locale; no owned language strings or persistent global setting.
+    static CURRENT: Cell<Locale> = const { Cell::new(Locale(&ENGLISH)) };
 }
 
-/// Sets the current UI language for the thread.
-pub fn set_current_lang(lang: &str) {
-    CURRENT_LANG.with(|l| {
-        *l.borrow_mut() = lang.to_string();
-    });
+#[must_use]
+pub struct LanguageScope {
+    previous: Locale,
+    // Drop on the thread where the scope was entered.
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
-/// Gets the current UI language for the thread.
-pub fn current_lang() -> String {
-    CURRENT_LANG.with(|l| l.borrow().clone())
+pub fn scope(id: &str) -> LanguageScope {
+    let previous = CURRENT.with(|current| current.replace(Locale::for_language(id)));
+    LanguageScope { previous, _thread: std::marker::PhantomData }
 }
 
-/// Translate text using the thread's current language.
-pub fn tr(text: &str) -> &str {
-    CURRENT_LANG.with(|l| {
-        let lang = l.borrow();
-        if lang.as_str() == "ja" { tr_for_lang("ja", text) } else { text }
-    })
-}
-
-/// Translate text using a specified language.
-pub fn tr_for_lang<'a>(lang: &str, text: &'a str) -> &'a str {
-    if lang == "ja" {
-        for &(en, ja) in JA_TRANSLATIONS {
-            if en == text {
-                return ja;
-            }
-        }
+impl Drop for LanguageScope {
+    fn drop(&mut self) {
+        CURRENT.with(|current| current.set(self.previous));
     }
-    text
 }
 
-/// Dynamically translate labels including patterned names like "Sketch1", "Body2", "Units: mm", etc.
+pub fn tr(id: &str) -> &str {
+    CURRENT.with(|current| current.get().text(id))
+}
+pub fn tr_label(label: &str) -> &str {
+    CURRENT.with(|current| current.get().label(label))
+}
+pub fn format(id: &str, args: &[(&str, &str)]) -> String {
+    CURRENT.with(|current| current.get().format(id, args))
+}
 pub fn tr_dyn(text: &str) -> String {
-    CURRENT_LANG.with(|l| {
-        let lang = l.borrow();
-        if lang.as_str() != "ja" {
-            return text.to_string();
-        }
-        for &(en, ja) in JA_TRANSLATIONS {
-            if en == text {
-                return ja.to_string();
-            }
-        }
-        if let Some(rest) = text.strip_prefix("Sketch")
-            && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
-        {
-            return format!("スケッチ{rest}");
-        }
-        if let Some(rest) = text.strip_prefix("Body")
-            && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
-        {
-            return format!("ボディ{rest}");
-        }
-        if let Some(rest) = text.strip_prefix("Component")
-            && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
-        {
-            return format!("コンポーネント{rest}");
-        }
-        if let Some(rest) = text.strip_prefix("Units: ") {
-            return format!("単位: {rest}");
-        }
-        if let Some(rest) = text.strip_prefix("Precision: ") {
-            return format!("精度: {rest}");
-        }
-        if let Some(rest) = text.strip_prefix("Parameters (") {
-            return format!("パラメータ ({rest}");
-        }
-        text.to_string()
-    })
+    CURRENT.with(|current| current.get().dynamic(text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
-    #[test]
-    fn translates_japanese() {
-        set_current_lang("ja");
-        assert_eq!(tr("Preferences"), "環境設定");
-        assert_eq!(tr("Extrude"), "押し出し");
-        assert_eq!(tr("CREATE SKETCH"), "スケッチを作成");
-        assert_eq!(tr("SKETCH PALETTE"), "スケッチ パレット");
-        assert_eq!(tr("Finish Sketch"), "スケッチを終了");
-        assert_eq!(tr("FINISH SKETCH"), "スケッチを終了");
-        assert_eq!(tr("Generative Design"), "ジェネレーティブ デザイン");
-        assert_eq!(tr("coming later"), "準備中");
-        assert_eq!(tr("Sketches"), "スケッチ");
-        assert_eq!(tr("NonExistentKey"), "NonExistentKey");
-
-        assert_eq!(tr_dyn("Sketch1"), "スケッチ1");
-        assert_eq!(tr_dyn("Body2"), "ボディ2");
-        assert_eq!(tr_dyn("Units: mm"), "単位: mm");
+    fn placeholders(text: &str) -> BTreeSet<&str> {
+        let mut result = BTreeSet::new();
+        let mut rest = text;
+        while let Some((_, after)) = rest.split_once('{') {
+            let (name, remaining) = after.split_once('}').expect("unclosed placeholder");
+            assert!(!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+            result.insert(name);
+            rest = remaining;
+        }
+        result
     }
 
     #[test]
-    fn keeps_english() {
-        set_current_lang("en");
-        assert_eq!(tr("Preferences"), "Preferences");
-        assert_eq!(tr("Extrude"), "Extrude");
-        assert_eq!(tr_dyn("Sketch1"), "Sketch1");
+    fn catalogs_have_valid_ids_and_matching_placeholders() {
+        let english: Messages = serde_json::from_str(ENGLISH.source).unwrap();
+        let mut ids = BTreeSet::new();
+        for catalog in LOCALES {
+            assert!(ids.insert(catalog.id), "duplicate locale");
+            let messages: Messages = serde_json::from_str(catalog.source).unwrap();
+            assert!(!messages.is_empty());
+            for (id, text) in messages {
+                let original = english.get(&id).expect("unknown message ID");
+                assert_eq!(placeholders(&text), placeholders(original), "{}: {id}", catalog.id);
+            }
+        }
+    }
+
+    #[test]
+    fn direct_ui_message_ids_exist_in_english_catalog() {
+        // Catch a misspelled key before it is shown verbatim in the UI. Engine-table labels
+        // deliberately use the separate label adapter and fall back to their source text.
+        for source in [
+            include_str!("toolbar.rs"),
+            include_str!("prefs.rs"),
+            include_str!("documents.rs"),
+            include_str!("dialogs.rs"),
+            include_str!("browser.rs"),
+            include_str!("sketch_palette.rs"),
+        ] {
+            for call in [".tr(\"", "i18n::tr(\"", "i18n::format(\""] {
+                for tail in source.split(call).skip(1) {
+                    let id = tail.split('"').next().unwrap();
+                    assert!(ENGLISH.messages().contains_key(id), "missing English message: {id}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn keys_and_engine_labels_translate_with_english_fallback() {
+        let ja = Locale::for_language("ja");
+        assert_eq!(ja.text("ui.preferences"), "環境設定");
+        assert_eq!(ja.label("Extrude"), "押し出し");
+        assert_eq!(ja.label("CREATE SKETCH"), "スケッチを作成");
+        assert_eq!(ja.label("NonExistentKey"), "NonExistentKey");
+        assert_eq!(Locale::for_language("unknown").text("ui.preferences"), "Preferences");
+        static PARTIAL: Catalog = Catalog::new("test", "Test", r#"{"ui.preferences":"Prefs"}"#);
+        assert_eq!(Locale(&PARTIAL).text("ui.preferences"), "Prefs");
+        assert_eq!(Locale(&PARTIAL).text("ui.extrude"), "Extrude");
+    }
+
+    #[test]
+    fn templates_allow_reordering_and_literal_braces_in_values() {
+        assert_eq!(interpolate("{second} then {first}", &[("first", "{second}"), ("second", "B")]), "B then {second}");
+        assert_eq!(interpolate("{missing} / {", &[]), "{missing} / {");
+        assert_eq!(Locale::for_language("ja").format("document.save_changes", &[("name", "My {design}")]), "My {design} への変更を保存しますか？");
+        assert_eq!(Locale::for_language("en").format("dialog.selected_count", &[("count", "2")]), "↖ 2 selected");
+    }
+
+    #[test]
+    fn browser_patterns_preserve_numbers_and_custom_names() {
+        let ja = Locale::for_language("ja");
+        assert_eq!(ja.dynamic("Sketch1"), "スケッチ1");
+        assert_eq!(ja.dynamic("Body2"), "ボディ2");
+        assert_eq!(ja.dynamic("Component12"), "コンポーネント12");
+        assert_eq!(ja.dynamic("Units: mm"), "単位: mm");
+        assert_eq!(ja.dynamic("Precision: 3"), "精度: 3");
+        assert_eq!(ja.dynamic("Parameters (5)"), "パラメータ (5)");
+        assert_eq!(ja.dynamic("4 degrees of freedom"), "自由度 4");
+        assert_eq!(ja.dynamic("Sketch of bracket"), "Sketch of bracket");
+        assert_eq!(Locale::for_language("en").dynamic("Sketch1"), "Sketch1");
+    }
+
+    #[test]
+    fn render_scopes_restore_the_previous_language() {
+        let _english = scope("en");
+        {
+            let _japanese = scope("ja");
+            assert_eq!(tr("ui.preferences"), "環境設定");
+            {
+                let _nested = scope("en");
+                assert_eq!(tr("ui.preferences"), "Preferences");
+            }
+            assert_eq!(tr("ui.preferences"), "環境設定");
+        }
+        assert_eq!(tr("ui.preferences"), "Preferences");
     }
 }

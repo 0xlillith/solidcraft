@@ -16,6 +16,9 @@ use crate::dialogs::{Dialog, Kind, combo, field, row_label};
 use crate::selection::{BODIES, SelInput};
 use crate::theme::Tokens;
 
+#[path = "configuration_rules_ui.rs"]
+mod configuration_rules_ui;
+
 /// One keyed value of a motion study: a joint's value (index) at steps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
@@ -60,6 +63,7 @@ pub enum Mo {
     Configurations {
         new_row: String,
         error: Option<String>,
+        rule_editor: configuration_rules_ui::Editor,
     },
 }
 
@@ -114,7 +118,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             vec![],
         ),
         "explode.create" => (Mo::Explode { name: n("Exploded View", "explode.list"), scale: 1.0, shown: None, saved: None, error: None }, vec![]),
-        "config.table" | "config.configure" => (Mo::Configurations { new_row: String::new(), error: None }, vec![]),
+        "config.table" | "config.configure" => (Mo::Configurations { new_row: String::new(), error: None, rule_editor: Default::default() }, vec![]),
         _ => return None,
     };
     Some((Kind::Motion(mo), inputs))
@@ -263,7 +267,11 @@ pub fn column_parts(c: &str) -> (&str, &str) {
 /// The value a table cell edit sends: suppress columns take booleans, parameters expressions.
 pub fn cell_value(column: &str, text: &str) -> Value {
     match column_parts(column).0 {
-        "suppress" => json!(matches!(text.trim().to_ascii_lowercase().as_str(), "suppressed" | "true" | "yes" | "1" | "off")),
+        "suppress" => match text.trim().to_ascii_lowercase().as_str() {
+            "suppressed" | "true" | "yes" | "1" | "off" => json!(true),
+            "unsuppressed" | "false" | "no" | "0" | "on" => json!(false),
+            _ => json!(text),
+        },
         _ => json!(text),
     }
 }
@@ -578,8 +586,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 ui.end_row();
             }
         }
-        Mo::Configurations { new_row, error } => {
-            let v = app.session.execute("config.table", &json!({})).unwrap_or(Value::Null);
+        Mo::Configurations { new_row, error, rule_editor } => {
+            let revision = app.session.revision;
+            let v = rule_editor.table.as_ref().filter(|(r, _)| *r == revision).map(|(_, v)| v.clone()).unwrap_or_else(|| {
+                let value = app.session.execute("config.table", &json!({})).unwrap_or(Value::Null);
+                rule_editor.table = Some((revision, value.clone()));
+                value
+            });
             let mut tb = table(&v);
             // Bare numbers show with their parameter's unit ("40" is 40 mm), as Fusion shows them.
             let kinds = app.session.doc.all_param_exprs();
@@ -588,7 +601,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                     let (kind, n) = column_parts(c);
                     if kind == "param"
                         && val.trim().parse::<f64>().is_ok()
-                        && let Some(unit) = kinds.iter().find(|x| x.0 == n).and_then(|x| unit_of(x.2))
+                        && let Some(unit) = app.session.doc.param(n).map(|parameter| parameter.unit.clone()).or_else(|| {
+                            kinds.iter().find(|x| x.0 == n).and_then(|x| {
+                                unit_of(x.2).map(|unit| {
+                                    if x.2 == solvecraft_engine::doc::expr::Kind::Length { app.session.doc.units.clone() } else { unit.to_string() }
+                                })
+                            })
+                        })
                     {
                         *val = format!("{} {unit}", val.trim());
                     }
@@ -597,56 +616,137 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             let run = |app: &mut SolveApp, error: &mut Option<String>, id: &str, p: Value| {
                 *error = app.run(id, p).err();
             };
-            // Header.
-            ui.label(RichText::new("Configuration").strong());
-            ui.horizontal(|ui| {
-                for c in &tb.columns {
-                    let (kind, n) = column_parts(c);
-                    ui.add_sized(vec2(96.0, 18.0), egui::Label::new(RichText::new(n).strong()).truncate())
-                        .on_hover_text(format!("{} {n}", if kind == "suppress" { "Suppress" } else { "Parameter" }));
-                    if ui.small_button("×").on_hover_text("Remove the column").clicked() {
-                        let key = if kind == "suppress" { "feature" } else { "param" };
-                        run(app, error, "config.column", json!({ key: n, "delete": true }));
-                    }
-                }
-            });
-            ui.end_row();
-            for (name, vals) in &tb.rows {
-                let active = tb.active.as_deref() == Some(name.as_str());
-                ui.horizontal(|ui| {
-                    ui.label(if active { RichText::new(name).strong() } else { RichText::new(name) });
-                    if active {
-                        ui.label(RichText::new("Active").color(t.accent));
-                    } else if ui.button("Activate").clicked() {
-                        run(app, error, "config.activate", json!({ "row": name }));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    for (c, val) in tb.columns.iter().zip(vals) {
-                        let id = egui::Id::new(("cfg", name, c));
-                        let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| val.clone());
-                        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(96.0));
-                        if r.changed() {
-                            ui.data_mut(|d| d.insert_temp(id, text.clone()));
+            egui::ScrollArea::horizontal().id_salt("configuration_columns").auto_shrink([false, true]).show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                egui::Grid::new("configuration_table").num_columns(2).min_col_width(210.0).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                    // Header.
+                    ui.label(RichText::new("Configuration").strong());
+                    ui.horizontal(|ui| {
+                        for c in &tb.columns {
+                            ui.allocate_ui_with_layout(vec2(190.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let (kind, n) = column_parts(c);
+                                let label = match kind {
+                                    "material" => format!("Material: {n}"),
+                                    "appearance" => format!("Appearance: {n}"),
+                                    "suppress" => format!("Suppress: {n}"),
+                                    _ => n.to_string(),
+                                };
+                                let label = v["targets"]
+                                    .as_array()
+                                    .and_then(|targets| targets.iter().find(|target| target["key"].as_str() == Some(c)))
+                                    .and_then(|target| target["label"].as_str())
+                                    .filter(|_| matches!(kind, "component_appearance" | "face_appearance"))
+                                    .map(str::to_string)
+                                    .unwrap_or(label);
+                                ui.add_sized(vec2(156.0, 22.0), egui::Label::new(RichText::new(label).strong()).truncate()).on_hover_text(c);
+                                if ui.small_button("×").on_hover_text("Remove the column").clicked() {
+                                    let key = if kind == "suppress" { "feature" } else { kind };
+                                    run(
+                                        app,
+                                        error,
+                                        "config.column",
+                                        json!({ key: if kind == "face_appearance" {c.as_str()} else {n}, "delete": true }),
+                                    );
+                                }
+                            });
                         }
-                        if r.lost_focus() {
-                            ui.data_mut(|d| d.remove::<String>(id));
-                            if text != *val {
-                                let (_, n) = column_parts(c);
-                                run(app, error, "config.row", json!({"name": name, "values": { n: cell_value(c, &text) }}));
+                    });
+                    ui.end_row();
+                    for (name, vals) in &tb.rows {
+                        let active = tb.active.as_deref() == Some(name.as_str());
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                vec2(100.0, 22.0),
+                                egui::Label::new(if active { RichText::new(name).strong() } else { RichText::new(name) }).truncate(),
+                            )
+                            .on_hover_text(name);
+                            if active {
+                                ui.label(RichText::new("Active").color(t.accent));
+                                if v.get("matches").and_then(Value::as_bool) == Some(false) && ui.button("Apply").clicked() {
+                                    run(app, error, "config.activate", json!({ "row": name }));
+                                }
+                            } else if ui.button("Activate").clicked() {
+                                run(app, error, "config.activate", json!({ "row": name }));
                             }
-                        }
-                        ui.add_space(18.0);
-                    }
-                    if ui.small_button("×").on_hover_text("Delete the row").clicked() {
-                        run(app, error, "config.row", json!({"name": name, "delete": true}));
+                        });
+                        ui.horizontal(|ui| {
+                            for (c, val) in tb.columns.iter().zip(vals) {
+                                ui.allocate_ui_with_layout(vec2(190.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let (kind, _) = column_parts(c);
+                                    let appearance = matches!(kind, "appearance" | "component_appearance" | "face_appearance");
+                                    let shown = if appearance {
+                                        solvecraft_engine::doc::config::appearance_cell(val)
+                                            .ok()
+                                            .flatten()
+                                            .filter(|look| solvecraft_engine::doc::appearance::library(&look.name).as_ref() == Some(look))
+                                            .map(|look| look.name)
+                                            .unwrap_or_else(|| val.clone())
+                                    } else {
+                                        val.clone()
+                                    };
+                                    let style = kind == "material" || appearance;
+                                    if style {
+                                        let mut choice = None;
+                                        ui.menu_button("Library", |ui| {
+                                            if ui
+                                                .button(if kind == "appearance" {
+                                                    "Follow material"
+                                                } else if appearance {
+                                                    "Follow inherited appearance"
+                                                } else {
+                                                    "Default material"
+                                                })
+                                                .clicked()
+                                            {
+                                                choice = Some("Default".to_string());
+                                                ui.close();
+                                            }
+                                            if kind == "material" {
+                                                for (name, _) in solvecraft_engine::doc::MATERIALS.iter().filter(|(n, _)| *n != "Default") {
+                                                    if ui.button(*name).clicked() {
+                                                        choice = Some(name.to_string());
+                                                        ui.close();
+                                                    }
+                                                }
+                                            } else {
+                                                for (name, _, _) in solvecraft_engine::doc::appearance::LIBRARY {
+                                                    if ui.button(name).clicked() {
+                                                        choice = Some(name.to_string());
+                                                        ui.close();
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        if let Some(choice) = choice {
+                                            run(app, error, "config.row", json!({"name": name, "values": { c: choice }}));
+                                        }
+                                    }
+                                    let id = (name.clone(), c.clone());
+                                    let mut text = rule_editor.drafts.get(&id).cloned().unwrap_or_else(|| shown.clone());
+                                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(if style { 106.0 } else { 164.0 }));
+                                    if r.changed() {
+                                        rule_editor.drafts.insert(id.clone(), text.clone());
+                                    }
+                                    if r.lost_focus() {
+                                        rule_editor.drafts.remove(&id);
+                                        if text != shown {
+                                            run(app, error, "config.row", json!({"name": name, "values": { c: cell_value(c, &text) }}));
+                                        }
+                                    }
+                                });
+                            }
+                            if ui.small_button("×").on_hover_text("Delete the row").clicked() {
+                                run(app, error, "config.row", json!({"name": name, "delete": true}));
+                            }
+                        });
+                        ui.end_row();
                     }
                 });
-                ui.end_row();
-            }
+            });
             // New row (a copy of the active one) and new column.
-            ui.add(egui::TextEdit::singleline(new_row).hint_text("new configuration").desired_width(130.0));
             ui.horizontal(|ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.add(egui::TextEdit::singleline(new_row).hint_text("new configuration").desired_width(160.0));
                 if ui.button("Add Row").on_hover_text("A new configuration, a copy of the active one").clicked() {
                     let name = if new_row.trim().is_empty() {
                         (tb.rows.len() + 1..).map(|k| format!("Configuration{k}")).find(|n| !tb.rows.iter().any(|r| &r.0 == n)).unwrap_or_default()
@@ -672,6 +772,24 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                         options.push((format!("Suppress {}", f.name), json!({ "feature": f.name })));
                     }
                 }
+                for body in &app.session.model.state().bodies {
+                    for kind in ["material", "appearance"] {
+                        if !tb.columns.contains(&format!("{kind}:{}", body.name)) {
+                            options.push((format!("{} ({kind})", body.name), json!({kind: body.name})));
+                        }
+                    }
+                }
+                for component in &app.session.doc.components {
+                    if component.id != 0 && !tb.columns.contains(&format!("component_appearance:{}", component.id)) {
+                        options.push((format!("{} (component appearance)", component.name), json!({"component_appearance":component.id})));
+                    }
+                }
+                for selected in &app.session.selection {
+                    if let solvecraft_engine::Sel::Face { body, point, .. } = selected {
+                        options
+                            .push((format!("Selected face on {body} (shared appearance)"), json!({"face_appearance":{"body":body,"point":point}})));
+                    }
+                }
                 let mut pick: Option<Value> = None;
                 ui.menu_button("Add Column", |ui| {
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
@@ -681,6 +799,50 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                 ui.close();
                             }
                         }
+                        ui.menu_button("Face Appearance", |ui| {
+                            ui.label("Semantic faces share their appearance across instances.");
+                            let state = app.session.model.state();
+                            for body in &state.bodies {
+                                if body.body.is_mesh() {
+                                    continue;
+                                }
+                                ui.menu_button(format!("Faces on {}", body.name), |ui| {
+                                    if let Ok(faces) = body.body.faces((body.body.size() * 2e-3).max(1e-3)) {
+                                        let mut seen = std::collections::BTreeSet::new();
+                                        let mesh = body.mesh();
+                                        let mut points = std::collections::BTreeMap::new();
+                                        for (triangle, index) in mesh.triangles.iter().zip(&mesh.tri_face) {
+                                            if let std::collections::btree_map::Entry::Vacant(entry) = points.entry(*index as usize)
+                                                && let Some([a, b, c]) = mesh.tri(triangle)
+                                            {
+                                                entry.insert((a + b + c) * (1. / 3.));
+                                            }
+                                        }
+                                        for face in faces {
+                                            // A curved face centroid can lie on another surface.
+                                            // Pick an interior triangle point on this actual face.
+                                            let Some(point) = points.get(&face.index).copied() else { continue };
+                                            let Ok(target) = app.session.doc.configuration_face_target(body, face.index, point) else { continue };
+                                            let supported = if target.certificate.is_some() {
+                                                // Capture read this exact face's current source certificate.
+                                                // Enumerate its pieces once in the command, not per menu face.
+                                                app.session.doc.certify_config_face(&target).is_ok()
+                                            } else {
+                                                app.session.doc.configuration_face_indices(body, &target).is_ok()
+                                            };
+                                            if !supported || !seen.insert(target.name.clone()) {
+                                                continue;
+                                            }
+                                            let Some((_, role)) = target.name.split_once(':') else { continue };
+                                            if ui.button(role).clicked() {
+                                                pick = Some(json!({"face_appearance":{"target":target}}));
+                                                ui.close();
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
                     });
                 });
                 if let Some(p) = pick {
@@ -688,9 +850,18 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                     let (id, p) = if tb.columns.is_empty() {
                         (
                             "config.configure",
-                            match p.get("param") {
-                                Some(n) => json!({ "params": [n] }),
-                                None => json!({ "features": [p.get("feature")] }),
+                            if let Some(n) = p.get("param") {
+                                json!({ "params": [n] })
+                            } else if let Some(n) = p.get("feature") {
+                                json!({ "features": [n] })
+                            } else if let Some(n) = p.get("material") {
+                                json!({ "materials": [n] })
+                            } else if let Some(n) = p.get("component_appearance") {
+                                json!({ "component_appearances": [n] })
+                            } else if let Some(n) = p.get("face_appearance") {
+                                json!({ "face_appearances": [n] })
+                            } else {
+                                json!({ "appearances": [p.get("appearance")] })
                             },
                         )
                     } else {
@@ -700,6 +871,21 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 }
             });
             ui.end_row();
+            configuration_rules_ui::show(ui, app, error, rule_editor);
+            if let Some(styles) = v["style_status"].as_array() {
+                for style in styles.iter().filter(|style| style["dormant"].as_bool() == Some(true)) {
+                    ui.add(
+                        egui::Label::new(format!(
+                            "{}: appearance dormant while its feature is suppressed",
+                            style["target"].as_str().unwrap_or("Face")
+                        ))
+                        .wrap(),
+                    );
+                }
+            }
+            if let Some(message) = v["style_error"].as_str() {
+                ui.add(egui::Label::new(RichText::new(message).color(t.error)).wrap());
+            }
             if let Some(e) = error {
                 ui.label("");
                 ui.label(RichText::new(e.as_str()).color(t.error));
@@ -747,7 +933,7 @@ pub fn commands(app: &SolveApp, k: &Mo, inputs: &[SelInput]) -> Result<Vec<(Stri
                 if let solvecraft_engine::Sel::Body { name } = x
                     && let Some(b) = app.session.world_state().body(name)
                 {
-                    let comp = app.session.doc.body_component(&b.name, b.feature);
+                    let comp = app.session.doc.model_body_component(b);
                     if let Some(o) = app.session.doc.occurrence_of(comp).map(|o| o.id)
                         && !occs.contains(&o)
                     {
@@ -835,6 +1021,224 @@ mod tests {
         assert_eq!(cell_value("suppress:Fillet1", "Suppressed"), json!(true));
         assert_eq!(cell_value("suppress:Fillet1", "on"), json!(false));
         assert_eq!(cell_value("param:width", "90 mm"), json!("90 mm"));
+    }
+
+    #[test]
+    fn configuration_compound_condition_and_rule_order_are_editable_in_dialog() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"parameters.change","params":{"name":"length","expression":"40 mm"}}},
+            {"call":"engine.execute","params":{"command":"config.configure","params":{"params":["length"]}}},
+            {"start":"config.table"},{"widget":"Add or edit rule"},
+            {"widget":"Always"},{"widget":"All"},{"widget":"Always"},{"widget":"Parameter"},
+            {"widget":"Choose…"},{"widget":"length"},{"widget":"Save Rule"}
+        ]))
+        .unwrap();
+        assert!(
+            matches!(&h.app.session.doc.configs.rules[0].condition,solvecraft_engine::doc::config::RuleCondition::All{conditions} if matches!(&conditions[0],solvecraft_engine::doc::config::RuleCondition::Parameter{..}))
+        );
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"config.rule","params":{"rule":{"id":"last","name":"Last drive","condition":{"type":"always"},"effect":{"type":"drive_parameter","parameter":"length","expression":"20 mm"}}}}},
+            {"widget":"Preview Row"},{"widget":"Preview: Default"}
+        ])).unwrap();
+        assert!(h.widget("length = 20 mm").is_some());
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "40 mm");
+        h.run(&json!([{"widget":"↑"},{"widget":"Preview Row"}])).unwrap();
+        assert_eq!(h.app.session.doc.configs.rules[0].id, "last");
+        assert!(h.widget("length = 10 mm").is_some());
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "40 mm");
+    }
+
+    #[test]
+    fn configuration_rule_editor_creates_previews_edits_and_applies_driven_value() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.resize", json!({"width":1400,"height":1000}));
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"parameters.change","params":{"name":"length","expression":"40 mm"}}},
+            {"call":"engine.execute","params":{"command":"solid.box","params":{"length":"length","width":10,"height":10}}},
+            {"call":"engine.execute","params":{"command":"config.configure","params":{"params":["length"]}}},
+            {"start":"config.table"},
+            {"widget":"Add or edit rule"},
+            {"widget":"Choose…"},
+            {"widget":"length"},
+            {"widget":"Save Rule"}
+        ]))
+        .unwrap();
+        assert_eq!(h.app.session.doc.configs.rules.len(), 1);
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "40 mm");
+        let before = h.app.session.doc.clone();
+        h.run(&json!([{"widget":"Preview Row"}])).unwrap();
+        assert_eq!(h.app.session.doc, before);
+        h.run(&json!([{"widget":"Apply"}])).unwrap();
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "10 mm");
+        assert!(h.app.session.doc.configuration_matches());
+        h.run(&json!([
+            {"widget":"10 mm","near":"Value"},{"key":"A","cmd":true},{"text":"20 mm"},{"widget":"Save Rule"},
+            {"widget":"Apply"}
+        ]))
+        .unwrap();
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "20 mm");
+        assert_eq!(h.app.session.doc.configs.rows[0].cells[0], "40 mm");
+        let before = h.app.session.doc.clone();
+        h.run(&json!([
+            {"widget":"Drive parameter"},{"widget":"Range"},
+            {"widget":"0 mm","near":"Minimum"},{"key":"A","cmd":true},{"text":"100 mm"},{"widget":"Save Rule"}
+        ]))
+        .unwrap();
+        assert_eq!(h.app.session.doc, before, "failed rule edit is atomic");
+        assert!(
+            h.widget("configuration rules: rule `New rule` restricts the final value").is_some()
+                || h.output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label().or(n.value()).is_some_and(|text| text.contains("restricts the final value")))
+        );
+    }
+
+    #[test]
+    fn configuration_component_and_face_pickers_start_fresh_and_clear_inherited() {
+        for (component, width) in [(true, 1400), (false, 900)] {
+            let mut h = crate::scenario::Harness::new();
+            h.call("ui.resize", json!({"width":width,"height":720}));
+            if component {
+                h.call("engine.execute", json!({"command":"component.create","params":{"name":"Part"}}));
+            }
+            h.run(&json!([
+                {"call":"engine.execute","params":{"command":"solid.box","params":{"length":10,"width":10,"height":10,"body_name":"Block"}}},
+                {"start":"config.table"}, {"widget":"Add Column"}
+            ]))
+            .unwrap();
+            if component {
+                h.step(&json!({"widget":"Part (component appearance)"})).unwrap();
+                assert!(h.widget("Component: Part").is_some());
+            } else {
+                h.run(&json!([{"widget":"Face Appearance"},{"widget":"Faces on Block"},{"widget":"+z"}])).unwrap();
+                assert!(h.widget("Face: Block / +z").is_some());
+            }
+            assert_eq!(h.app.session.doc.configs.rows.len(), 1);
+            h.run(&json!([{"widget":"Library"},{"widget":"ABS - Red"},{"widget":"Apply"}])).unwrap();
+            if component {
+                assert_eq!(h.app.session.doc.appearances.components.values().next().unwrap().name, "ABS - Red");
+            } else {
+                assert_eq!(h.app.session.doc.appearances.faces[0].look.name, "ABS - Red");
+                assert!(h.app.session.doc.appearances.faces[0].strict_name);
+            }
+            h.run(&json!([{"widget":"Library"},{"widget":"Follow inherited appearance"},{"widget":"Apply"}])).unwrap();
+            assert!(h.app.session.doc.appearances.components.is_empty());
+            assert!(h.app.session.doc.appearances.faces.is_empty());
+            crate::scenario::check(&mut h, &json!({"windows_fit":{"max_width":560}})).unwrap();
+        }
+    }
+
+    #[test]
+    fn configuration_annulus_picker_exposes_both_certificates_despite_shared_legacy_name() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.resize", json!({"width":1400,"height":900}));
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"sketch.create","params":{"plane":"XY"}}},
+            {"call":"engine.execute","params":{"command":"sketch.circle.center","params":{"center":[0,0],"radius":10,"id":"outer"}}},
+            {"call":"engine.execute","params":{"command":"sketch.circle.center","params":{"center":[0,0],"radius":9.999,"id":"inner"}}},
+            {"call":"engine.execute","params":{"command":"sketch.finish","params":{}}},
+            {"call":"engine.execute","params":{"command":"solid.extrude","params":{"distance":10,"profiles":[{"point":[9.9995,0]}],"body_name":"Ring"}}},
+            {"start":"config.table"},{"widget":"Add Column"},{"widget":"Face Appearance"},{"widget":"Faces on Ring"}
+        ]))
+        .unwrap();
+        assert!(h.widget("side:outer").is_some());
+        assert!(h.widget("side:inner").is_some());
+        h.run(&json!([{"widget":"side:outer"},{"widget":"Library"},{"widget":"ABS - Red"},{"widget":"Apply"}])).unwrap();
+        let solvecraft_engine::doc::config::Column::FaceAppearance(target) = &h.app.session.doc.configs.columns[0] else { panic!() };
+        assert!(matches!(&target.certificate, Some(solvecraft_engine::doc::config::FaceCertificate::ExtrudeSide { curve, .. }) if curve == "outer"));
+        let state = h.app.session.model.state();
+        let body = state.body("Ring").unwrap();
+        let indices = h.app.session.doc.configuration_face_indices(body, target).unwrap();
+        assert_eq!(indices.len(), 2);
+        let painted = h.app.session.doc.face_colors(body);
+        assert_eq!(painted.len(), 2);
+        assert!(painted.iter().all(|(index, _)| indices.contains(index)));
+    }
+
+    #[test]
+    fn configuration_style_picker_applies_then_inherits_material() {
+        let steps: Value = serde_json::from_str(include_str!("../tests/scenarios/s80_configuration_styles.json")).unwrap();
+        let mut harness = crate::scenario::Harness::new();
+        for step in steps.as_array().unwrap() {
+            harness.step(step).unwrap();
+            match step.get("shot").and_then(Value::as_str) {
+                Some("configuration_red") => {
+                    let look = harness.app.session.doc.appearances.bodies.get("Block").unwrap();
+                    assert_eq!(look.color, [196, 40, 40]);
+                    assert!(harness.app.session.doc.configuration_matches());
+                }
+                Some("configuration_default") => {
+                    assert!(!harness.app.session.doc.appearances.bodies.contains_key("Block"));
+                    let state = harness.app.session.model.state();
+                    let body = state.body("Block").unwrap();
+                    let look = harness.app.session.doc.body_look("Block", body.feature).unwrap();
+                    assert_eq!(look.name, "Steel");
+                    assert_eq!(look.color, [158, 164, 172]);
+                    assert!(harness.app.session.doc.configuration_matches());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_table_actions_stay_on_one_line_at_normal_and_narrow_widths() {
+        for width in [1400, 900] {
+            let mut harness = crate::scenario::Harness::new();
+            harness.call("ui.resize", json!({"width": width, "height": 720}));
+            harness
+                .run(&json!([
+                    {"call":"engine.execute","params":{"command":"solid.box","params":{"length":40,"width":20,"height":10,"body_name":"Block"}}},
+                    {"start":"config.table"}
+                ]))
+                .unwrap();
+            assert_single_line(&harness, "Configuration");
+            for name in ["span", "thickness", "depth", "clearance"] {
+                harness.call("engine.execute", json!({"command":"parameters.change","params":{"name":name,"expression":"10 mm"}}));
+            }
+            harness
+                .run(&json!([
+                    {"call":"engine.execute","params":{"command":"config.configure","params":{
+                        "params":["span","thickness","depth","clearance"],"materials":["Block"],"appearances":["Block"]
+                    }}},
+                    {"call":"engine.execute","params":{"command":"config.row","params":{"name":"Default","values":{"param:span":"20 mm"}}}}
+                ]))
+                .unwrap();
+            harness.frames(4);
+            for label in ["Configuration", "Active", "Apply", "Add Row", "Add Column"] {
+                assert_single_line(&harness, label);
+            }
+            crate::scenario::check(&mut harness, &json!({"windows_fit":{"max_width":560}})).unwrap();
+            for name in ["span", "thickness", "depth", "clearance"] {
+                harness.call("engine.execute", json!({"command":"config.column","params":{"param":name,"delete":true}}));
+            }
+            harness.call("engine.execute", json!({"command":"config.column","params":{"appearance":"Block","delete":true}}));
+            assert_single_line(&harness, "Material: Block");
+            harness.call("engine.execute", json!({"command":"config.column","params":{"material":"Block","delete":true}}));
+            harness.call("engine.execute", json!({"command":"config.column","params":{"feature":"Box1"}}));
+            assert_single_line(&harness, "Suppress: Box1");
+        }
+        fn assert_single_line(harness: &crate::scenario::Harness, label: &str) {
+            let tree = harness.output.accesskit_update.as_ref().unwrap();
+            let bounds = tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.label() == Some(label) || n.value() == Some(label))
+                .filter_map(|(_, n)| n.bounds())
+                .collect::<Vec<_>>();
+            assert!(
+                !bounds.is_empty(),
+                "missing {label}; labels/values: {:?}",
+                tree.nodes.iter().filter_map(|(_, n)| n.label().or(n.value())).collect::<Vec<_>>()
+            );
+            assert!(bounds.iter().all(|b| b.y1 - b.y0 <= 24.0), "{label} wrapped: {bounds:?}");
+        }
     }
 
     #[test]

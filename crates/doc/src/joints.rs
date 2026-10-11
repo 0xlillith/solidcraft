@@ -223,7 +223,7 @@ pub fn motion(kind: JointKind, q: &[f64]) -> Mat {
 
 /// Bodies of a component in the model (its own frame).
 fn component_bodies<'a>(doc: &Document, st: &'a ModelState, component: u64) -> Vec<&'a crate::ModelBody> {
-    st.bodies.iter().filter(|b| doc.body_component(&b.name, b.feature) == component).collect()
+    st.bodies.iter().filter(|b| doc.model_body_component(b) == component).collect()
 }
 
 /// The component an occurrence places (0 for the root).

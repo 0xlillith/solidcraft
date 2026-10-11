@@ -34,6 +34,8 @@ pub mod gpu;
 pub mod help;
 pub mod home;
 pub mod i18n;
+#[cfg(test)]
+mod i18n_ui_tests;
 pub mod icons;
 pub mod inference;
 pub mod keymap;
@@ -56,6 +58,8 @@ mod status_tests {
         assert!(app.session.log.last().is_some_and(|l| l.starts_with("Redo: ") && !l.contains("edit.redo")), "{:?}", app.session.log.last());
     }
 }
+#[cfg(test)]
+mod extrude_edit_tests;
 mod file_load;
 pub mod palette;
 pub mod params_dialog;
@@ -65,10 +69,19 @@ mod preselect_tests;
 pub mod preview;
 pub mod recovery_ui;
 pub mod ref_images;
+#[cfg(test)]
+mod revolve_edit_tests;
+#[cfg(test)]
+mod revolve_manipulator_tests;
 pub mod scenario;
 pub mod selection;
 pub mod shortcut_box;
 pub mod sketch3d;
+#[cfg(test)]
+mod sketch3d_frame_ui_tests;
+pub(crate) mod sketch_attachment_ui;
+#[cfg(test)]
+mod sketch_attachment_ui_tests;
 pub mod sketch_dims;
 #[cfg(test)]
 mod sketch_edit_tests;
@@ -292,7 +305,12 @@ impl SolveApp {
 
     /// Translate text using the active language preference.
     pub fn tr<'a>(&self, text: &'a str) -> &'a str {
-        i18n::tr_for_lang(&self.preferences.language, text)
+        i18n::Locale::for_language(&self.preferences.language).text(text)
+    }
+
+    /// Translate a display label supplied by the engine, without changing its identifier.
+    pub fn tr_label<'a>(&self, text: &'a str) -> &'a str {
+        i18n::Locale::for_language(&self.preferences.language).label(text)
     }
 
     /// Draw the viewport on the GPU (eframe's wgpu render state, with the app's depth and
@@ -411,7 +429,14 @@ impl SolveApp {
         match &r {
             Ok(_) => {
                 self.session.echo(format!("{} done", command_label(id)));
-                if matches!(id, "file.new" | "doc.open") {
+                if matches!(id, "file.new" | "doc.open" | "doc.recover") {
+                    self.menu.props = None;
+                    sketch_attachment_ui::clear(self);
+                    // The old document is already replaced: discard its editor without
+                    // applying cancellation hooks (such as restoring its timeline marker).
+                    self.dialog = None;
+                    self.tool = None;
+                    self.preview = preview::PreviewState::default();
                     self.cam = Camera::default();
                     self.fit_view();
                 }
@@ -549,13 +574,13 @@ impl SolveApp {
         let Some(idx) = self.session.doc.feature_index(id) else { return };
         let marker = self.session.doc.marker;
         self.tool = None;
-        if self.run("timeline.roll_to", json!({ "position": idx })).is_err() {
+        if dialogs::roll_marker(self, Some(idx)).is_err() {
             return;
         }
         match dialogs::for_feature(self, id, marker) {
             Some(d) => self.dialog = Some(d),
             None => {
-                let _ = self.run("timeline.roll_to", marker.map(|m| json!({ "position": m })).unwrap_or_else(|| json!({})));
+                let _ = dialogs::roll_marker(self, marker);
                 self.palette.text = format!("timeline.edit {{\"feature\": {id}, \"set\": {{}}}}");
                 self.ui.palette_open = true;
             }
@@ -567,6 +592,13 @@ impl SolveApp {
     /// puts them back. Editing the sketch that is already open does nothing; editing another one
     /// finishes the current sketch first, so edit sessions never nest.
     pub fn edit_sketch(&mut self, id: u64) {
+        if let solvecraft_engine::doc::FaceAttachmentStatus::Lost { message, .. } =
+            self.session.placed_document().sketch_face_attachment(id, &self.session.model)
+        {
+            browser::redefine_sketch(self, id);
+            self.set_status(message, true);
+            return;
+        }
         if self.session.active_sketch == Some(id) {
             return;
         }
@@ -622,7 +654,7 @@ impl SolveApp {
     pub fn origin_visible(&self) -> bool {
         self.ui.show_origin
             || (self.dialog.as_ref().is_some_and(|d| matches!(d.kind, dialogs::Kind::Sketch))
-                && !self.session.world_state().bodies.iter().any(|b| !self.session.visibility.hidden_bodies.contains(&b.name)))
+                && !self.session.world_state().bodies.iter().any(|b| self.session.body_visible(&b.name)))
     }
 
     pub fn set_status(&mut self, s: impl Into<String>, error: bool) {
@@ -820,7 +852,7 @@ impl SolveApp {
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let t0 = now_ms();
-        crate::i18n::set_current_lang(&self.preferences.language);
+        let _language = crate::i18n::scope(&self.preferences.language);
         scenario::clear_handles();
         toolbar::app_bar(self, ui);
         file_load::show(self, ui.ctx());

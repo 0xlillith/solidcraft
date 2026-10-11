@@ -29,7 +29,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("solid.emboss", "Emboss", emboss)
         .at("SOLID", "CREATE")
         .icon("emboss")
-        .params("sketch (on a planar face), profiles?; depth; mode?: emboss|deboss (default emboss); targets?"),
+        .params("sketch, profiles?; depth; mode?: emboss|deboss; targets?; face?: world point [x,y,z] selecting a planar or complete exterior cylindrical wall (inferred when exactly one supported tangent cylinder matches the selected profiles)"),
     CommandSpec::new("solid.replace_face", "Replace Face", replace_face)
         .at("SOLID", "MODIFY")
         .icon("offset_face")
@@ -143,14 +143,169 @@ fn emboss(s: &mut Session, p: &Value) -> Result<Value> {
         Some("deboss") => true,
         Some(m) => return Err(bad(cmd, format!("unknown mode `{m}` (emboss or deboss)"))),
     };
-    if let Some(fp) = p.get("face").and_then(vec3)
-        && super::face::face_normal(s, fp).is_none()
-    {
-        return Err(bad(cmd, "not supported yet: embossing onto a curved face"));
-    }
-    add_feature(s, p, FeatureKind::Emboss { sketch, profiles, depth, deboss, targets: string_list(p, "targets") })
+    let mut targets = string_list(p, "targets");
+    let face = if let Some(value) = p.get("face") {
+        let local = vec3(value).ok_or_else(|| bad(cmd, "`face` must be a finite point [x,y,z]"))?;
+        let at = solvecraft_doc::apply_point(&s.active_component_frame(), local);
+        let state = s.world_state();
+        let mut candidates = Vec::new();
+        for body in &state.bodies {
+            let definition = body.definition_name();
+            if !targets.is_empty() && !targets.iter().any(|n| n == definition || n == &body.name) {
+                continue;
+            }
+            let mesh = body.mesh();
+            let closest = mesh
+                .triangles
+                .iter()
+                .zip(&mesh.tri_face)
+                .filter_map(|(tri, face)| {
+                    let [a, b, c] = mesh.tri(tri)?;
+                    let n = (b - a).cross(c - a).normalized()?;
+                    let q = at - n * (at - a).dot(n);
+                    let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-9);
+                    inside.then_some(((at - a).dot(n).abs(), *face as usize))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((distance, index)) = closest
+                && distance < (body.body.size() * 1e-3).max(1e-3)
+            {
+                candidates.push((body, index));
+            }
+        }
+        if candidates.len() != 1 {
+            return Err(bad(cmd, "`face` must identify exactly one target body surface"));
+        }
+        let (selected, index) = candidates.first().copied().ok_or_else(|| bad(cmd, "no target face"))?;
+        let name = selected.definition_name();
+        let body = &selected.body;
+        match solvecraft_kernel::face_surface(body, index) {
+            Some(solvecraft_kernel::FaceSurface::Plane { .. }) => {
+                targets = vec![name.to_owned()];
+                None
+            }
+            Some(solvecraft_kernel::FaceSurface::Cylinder { .. }) => {
+                if targets.len() > 1 {
+                    return Err(bad(cmd, "cylinder emboss needs one selected target body"));
+                }
+                // Viewport picks lie on tessellated chords. Keep their axial and
+                // angular position, and certify their distance before storing an
+                // exact surface anchor for later replay.
+                let at = solvecraft_kernel::cylinder_emboss_anchor(body, index, at).map_err(|e| bad(cmd, e.to_string()))?;
+                let face = emboss_selection(s, selected, at)?;
+                check_emboss_positions(s, sketch, selected, &face)?;
+                targets = vec![name.to_owned()];
+                Some(face)
+            }
+            _ => return Err(bad(cmd, "only planar faces and complete exterior cylindrical walls support emboss")),
+        }
+    } else {
+        let inferred = infer_emboss_selection(s, sketch, &profiles, &depth, deboss, &targets)?;
+        if let Some(face) = &inferred {
+            targets = vec![face.body.clone()];
+        }
+        inferred
+    };
+    add_feature(s, p, FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face })
 }
 
+fn emboss_selection(s: &Session, selected: &solvecraft_doc::ModelBody, at: Vec3) -> Result<solvecraft_doc::EmbossFace> {
+    let cmd = "solid.emboss";
+    let name = selected.definition_name();
+    let original = s.model.state();
+    let owner = s.doc.model_body_component(selected);
+    let paths: Vec<_> = s
+        .doc
+        .placements()
+        .into_iter()
+        .filter(|(comp, path, _)| *comp == owner && s.doc.world_body_name(&original, name, owner, path) == selected.name)
+        .map(|(_, path, _)| path)
+        .collect();
+    if paths.len() != 1 {
+        return Err(bad(cmd, "selected cylinder placement is ambiguous"));
+    }
+    let path = paths.into_iter().next().ok_or_else(|| bad(cmd, "selected cylinder placement"))?;
+    let author_path = s.active_occurrence_path.clone().unwrap_or_else(|| s.doc.first_path(s.active_component));
+    if path.len() > 64 || author_path.len() > 64 {
+        return Err(bad(cmd, "cylinder placement is too deep"));
+    }
+    let inverse = solvecraft_doc::mat_inverse(&s.active_component_frame()).ok_or_else(|| bad(cmd, "invalid active frame"))?;
+    Ok(solvecraft_doc::EmbossFace { body: name.to_owned(), at: solvecraft_doc::apply_point(&inverse, at), path, author_path })
+}
+
+fn check_emboss_positions(s: &Session, sketch: u64, body: &solvecraft_doc::ModelBody, face: &solvecraft_doc::EmbossFace) -> Result<()> {
+    let cmd = "solid.emboss";
+    let owner = s.doc.model_body_component(body);
+    let sketch_owner = s.doc.feature(sketch).map(|f| f.component).ok_or_else(|| bad(cmd, "profile sketch no longer exists"))?;
+    let sketch_path = if sketch_owner == owner {
+        face.path.clone()
+    } else if sketch_owner == s.active_component {
+        face.author_path.clone()
+    } else {
+        s.doc.first_path(sketch_owner)
+    };
+    if face.path.iter().chain(&face.author_path).chain(&sketch_path).any(|id| s.pending_moves.contains_key(id)) {
+        return Err(bad(cmd, "capture pending source, author and profile positions with Capture Position before cylinder emboss"));
+    }
+    Ok(())
+}
+
+fn infer_emboss_selection(
+    s: &Session,
+    sketch: u64,
+    profiles: &solvecraft_doc::ProfileSel,
+    depth: &str,
+    deboss: bool,
+    targets: &[String],
+) -> Result<Option<solvecraft_doc::EmbossFace>> {
+    let cmd = "solid.emboss";
+    let original = s.model.state();
+    let ss = original.sketch(sketch).ok_or_else(|| bad(cmd, "the sketch is not evaluated"))?;
+    let regions = solvecraft_doc::select_profiles(ss, profiles).map_err(|e| bad(cmd, e.to_string()))?;
+    let sketch_owner = s.doc.feature(sketch).map(|f| f.component).ok_or_else(|| bad(cmd, "profile sketch no longer exists"))?;
+    let d = s.doc.eval(&s.doc.with_design_unit(depth, Kind::Length), Kind::Length).map_err(|e| bad(cmd, e.to_string()))?;
+    let world = s.world_state();
+    let placed = s.placed_document();
+    let mut chosen = None;
+    let mut faces = 0usize;
+    for selected in &world.bodies {
+        let name = selected.definition_name();
+        if !targets.is_empty() && !targets.iter().any(|n| n == name || n == &selected.name) {
+            continue;
+        }
+        let raw = original.body(name).ok_or_else(|| bad(cmd, "target definition no longer exists"))?;
+        faces = faces.saturating_add(raw.body.face_count());
+        if faces > 50_000 {
+            return Err(bad(cmd, "cylinder target search exceeds face work limit"));
+        }
+        if !solvecraft_kernel::has_cylinder_emboss_wall(&raw.body).map_err(|e| bad(cmd, e.to_string()))? {
+            continue;
+        }
+        let mut face = emboss_selection(s, selected, Vec3::ZERO)?;
+        let body_frame = face.body_frame(&placed, raw).map_err(|e| bad(cmd, e.to_string()))?;
+        let inverse = solvecraft_doc::mat_inverse(&body_frame).ok_or_else(|| bad(cmd, "invalid cylinder body frame"))?;
+        let displayed = world.sketch(sketch).ok_or_else(|| bad(cmd, "the profile sketch is not displayed"))?;
+        let plane = solvecraft_geom::Plane::new(
+            solvecraft_doc::apply_point(&inverse, displayed.plane.origin),
+            solvecraft_doc::apply_vector(&inverse, displayed.plane.x),
+            solvecraft_doc::apply_vector(&inverse, displayed.plane.y),
+        )
+        .ok_or_else(|| bad(cmd, "invalid cylinder sketch frame"))?;
+        if let Some((_, at)) =
+            solvecraft_kernel::infer_cylinder_emboss(&raw.body, &plane, &regions, if deboss { -d } else { d }).map_err(|e| bad(cmd, e.to_string()))?
+        {
+            face.sketch_frame(&placed, s.active_component, sketch_owner, raw).map_err(|e| bad(cmd, e.to_string()))?;
+            check_emboss_positions(s, sketch, selected, &face)?;
+            let author_inverse = solvecraft_doc::mat_inverse(&s.active_component_frame()).ok_or_else(|| bad(cmd, "invalid author frame"))?;
+            face.at = solvecraft_doc::apply_point(&solvecraft_doc::mat_mul(&author_inverse, &body_frame), at);
+            if chosen.is_some() {
+                return Err(bad(cmd, "multiple tangent cylinders match the selected profiles; select a target face or body"));
+            }
+            chosen = Some(face);
+        }
+    }
+    Ok(chosen)
+}
 fn face_points(p: &Value, k: &str, cmd: &str) -> Result<Vec<Vec3>> {
     let a = p.get(k).and_then(Value::as_array).ok_or_else(|| bad(cmd, format!("`{k}` must list points [x, y, z]")))?;
     if a.is_empty() || a.len() > 1000 {

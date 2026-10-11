@@ -54,7 +54,7 @@ pub static COMMANDS: &[CommandSpec] =
             .at("SKETCH", "CREATE")
             .icon("spline")
             .enabled(in_sketch)
-            .params("points: [[x,y] or point refs…] (2…500): the spline passes through them"),
+            .params("points: [[x,y] or point refs…] (2…500), periodic?: boolean (default false); periodic cubic fit closes smoothly through at least 3 distinct samples"),
         CommandSpec::new("sketch.spline.control_point", "Control Point Spline", spline_cv3)
             .at("SKETCH", "CREATE")
             .icon("spline_cv")
@@ -167,7 +167,7 @@ fn blend(s: &mut Session, p: &Value) -> Result<Value> {
         let first_new = sk.points.len();
         let c1 = sk.add_point(qa + ta * (l / 3.0), None)?;
         let c2 = sk.add_point(qb + tb * (l / 3.0), None)?;
-        let sp = sk.add_curve(CurveKind::Spline { pts: vec![pa, c1, c2, pb], control: true, degree: 3 }, None)?;
+        let sp = sk.add_curve(CurveKind::Spline { pts: vec![pa, c1, c2, pb], control: true, degree: 3, periodic: false }, None)?;
         let cons = vec![add_c(sk, ConstraintKind::Tangent { a: ca, b: sp })?, add_c(sk, ConstraintKind::Tangent { a: cb, b: sp })?];
         solve_new_only(sk, first_new);
         Ok((ids_of(sk, &[sp]), cons))
@@ -252,10 +252,24 @@ fn point_list(sk: &mut Sketch, p: &Value, cmd: &str) -> Result<Vec<usize>> {
 }
 
 fn spline(s: &mut Session, p: &Value, cmd: &str, control: bool, degree: u8) -> Result<Value> {
+    let periodic = match p.get("periodic") {
+        None => false,
+        Some(Value::Bool(v)) => *v,
+        _ => return Err(bad(cmd, "periodic must be boolean")),
+    };
+    if periodic && (control || degree != 3) {
+        return Err(bad(cmd, "periodic mode requires a cubic fit spline"));
+    }
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
-        let pts = point_list(sk, p, cmd)?;
-        let c = sk.add_curve(CurveKind::Spline { pts, control, degree }, None)?;
+        let mut pts = point_list(sk, p, cmd)?;
+        if periodic
+            && sk.point(*pts.first().ok_or_else(|| bad(cmd, "missing first point"))?)
+                != sk.point(*pts.last().ok_or_else(|| bad(cmd, "missing last point"))?)
+        {
+            pts.push(*pts.first().ok_or_else(|| bad(cmd, "missing first point"))?);
+        }
+        let c = sk.add_curve(CurveKind::Spline { pts, control, degree, periodic }, None)?;
         mark_construction(sk, &[c], p);
         Ok((ids_of(sk, &[c]), Vec::new()))
     })?;
@@ -344,12 +358,12 @@ fn leaving_dir(sk: &Sketch, ci: usize, pi: usize) -> Option<Vec2> {
                 None
             }
         }
-        CurveKind::Spline { ref pts, control, .. } => {
+        CurveKind::Spline { ref pts, control, periodic, .. } => {
             let q: Vec<Vec2> = pts.iter().filter_map(|i| sk.point(*i)).collect();
             if pts.last() == Some(&pi) {
-                solvecraft_sketch::spline_end_tangent(&q, control, true)
+                solvecraft_sketch::spline_end_tangent_mode(&q, control, periodic, true)
             } else if pts.first() == Some(&pi) {
-                solvecraft_sketch::spline_end_tangent(&q, control, false).map(|t| -t)
+                solvecraft_sketch::spline_end_tangent_mode(&q, control, periodic, false).map(|t| -t)
             } else {
                 None
             }

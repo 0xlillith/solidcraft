@@ -19,12 +19,12 @@ pub struct Look {
     pub name: String,
     pub category: String,
     pub color: [u8; 3],
-    pub opacity: f32,
+    pub opacity: f64,
 }
 
 /// Built-in looks, used until the engine offers a library (`appearance.library`).
 fn builtin() -> Vec<Look> {
-    let l = |cat: &str, name: &str, c: [u8; 3], o: f32| Look { name: name.into(), category: cat.into(), color: c, opacity: o };
+    let l = |cat: &str, name: &str, c: [u8; 3], o: f64| Look { name: name.into(), category: cat.into(), color: c, opacity: o };
     vec![
         l("Metal", "Aluminum - Satin", [196, 199, 204], 1.0),
         l("Metal", "Steel - Brushed", [160, 164, 170], 1.0),
@@ -63,7 +63,7 @@ pub fn library(app: &mut SolveApp) -> Vec<Look> {
                     name: x.get("name")?.as_str()?.to_string(),
                     category: x.get("category").and_then(Value::as_str).unwrap_or("Library").to_string(),
                     color: parse_color(x.get("color")?)?,
-                    opacity: x.get("opacity").and_then(Value::as_f64).unwrap_or(1.0) as f32,
+                    opacity: x.get("opacity").and_then(Value::as_f64).unwrap_or(1.0),
                 })
             })
             .collect();
@@ -96,27 +96,64 @@ pub struct Ap {
     /// Apply to faces instead of bodies.
     pub faces: bool,
     pub color: [u8; 3],
-    pub opacity: f32,
+    pub opacity: f64,
     /// The look picked last (its name), if the colour came from one.
     pub look: Option<String>,
     /// Library category shown (0: all).
     pub category: usize,
+    /// Library names can be searched without changing the selected look.
+    pub search: String,
+    /// A Browser component target, inherited by its bodies unless they have overrides.
+    pub component: Option<String>,
+    pub remove_override: bool,
+    /// The last successful immediate Apply/drop, so OK does not duplicate its undo step.
+    pub applied: Option<Value>,
     /// What the last drop or Apply did.
     pub note: Option<String>,
 }
 
 /// The dialog for the Appearance command.
-pub fn start(_app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
+pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
     (id == "appearance.assign").then(|| {
+        let faces = app.session.selection.iter().any(|s| matches!(s, Sel::Face { .. }))
+            && !app.session.selection.iter().any(|s| matches!(s, Sel::Body { .. }));
+        let state = app.session.world_state();
+        let body_look = |body: &solvecraft_engine::doc::ModelBody| {
+            app.session.doc.model_body_look(body).or_else(|| {
+                (body.body.paint().is_some() || body.imported.is_some() || body.body.color().is_some()).then(|| {
+                    let color =
+                        app.session.doc.body_color(body).map(|rgb| rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).unwrap_or([196, 199, 204]);
+                    solvecraft_engine::doc::appearance::Look::custom(color, app.session.doc.model_body_opacity(body))
+                })
+            })
+        };
+        let existing = app.session.selection.iter().find_map(|sel| match sel {
+            Sel::Body { name } => state.body(name).and_then(body_look),
+            Sel::Face { body, index, .. } => state
+                .body(body)
+                .and_then(|b| app.session.doc.face_colors(b).into_iter().find(|(i, _)| i == index).map(|(_, look)| look).or_else(|| body_look(b))),
+            _ => None,
+        });
         (
-            Kind::Appearance(Ap { faces: false, color: [196, 199, 204], opacity: 1.0, look: None, category: 0, note: None }),
-            vec![SelInput::new("Objects", BODIES, true)],
+            Kind::Appearance(Ap {
+                faces,
+                color: existing.as_ref().map_or([196, 199, 204], |l| l.color),
+                opacity: existing.as_ref().map_or(1.0, |l| l.opacity),
+                look: existing.map(|l| l.name),
+                category: 0,
+                search: String::new(),
+                component: None,
+                remove_override: false,
+                applied: None,
+                note: None,
+            }),
+            vec![SelInput::new("Objects", if faces { FACES } else { BODIES }, true)],
         )
     })
 }
 
 /// The command giving `targets` (bodies or faces) a look.
-fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f32, look: Option<&str>) -> Option<Value> {
+fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f64, look: Option<&str>) -> Option<Value> {
     let bodies: Vec<String> = targets.iter().filter_map(|x| if let Sel::Body { name } = x { Some(name.clone()) } else { None }).collect();
     let faces: Vec<Value> = targets
         .iter()
@@ -139,9 +176,7 @@ fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f32, look: Option<&str
             p["bodies"] = json!(owners);
         }
     }
-    if opacity < 0.999 {
-        p["opacity"] = json!((opacity * 1000.0).round() / 1000.0);
-    }
+    p["opacity"] = json!(opacity);
     if let Some(n) = look {
         p["appearance"] = json!(n);
     }
@@ -150,8 +185,35 @@ fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f32, look: Option<&str
 
 /// The commands OK runs: the current look on the picked objects (nothing when none are picked).
 pub fn commands(k: &Ap, inputs: &[SelInput]) -> Vec<(String, Value)> {
+    // Remove override already ran immediately; OK closes without creating a second undo step.
+    if k.remove_override {
+        return Vec::new();
+    }
     let items = inputs.first().map(|i| i.items.as_slice()).unwrap_or(&[]);
-    apply_params(items, k.color, k.opacity, k.look.as_deref()).map(|p| vec![("appearance.assign".to_string(), p)]).unwrap_or_default()
+    let p = selected_params(k, items);
+    if p.as_ref().is_some_and(|p| k.applied.as_ref() == Some(p)) {
+        return Vec::new();
+    }
+    p.map(|p| vec![("appearance.assign".to_string(), p)]).unwrap_or_default()
+}
+
+fn selected_params(k: &Ap, items: &[Sel]) -> Option<Value> {
+    if let Some(component) = &k.component {
+        Some(json!({"components": [component], "color": hex(k.color), "opacity": k.opacity, "appearance": k.look}))
+    } else {
+        apply_params(items, k.color, k.opacity, k.look.as_deref())
+    }
+}
+
+/// Removing an override restores the inherited component or material appearance.
+fn clear_params(k: &Ap, items: &[Sel]) -> Option<Value> {
+    let mut p = selected_params(k, items)?;
+    if let Some(obj) = p.as_object_mut() {
+        obj.remove("appearance");
+        obj.remove("color");
+        obj.remove("opacity");
+    }
+    Some(p)
 }
 
 /// What a swatch dropped now would land on: the face or body under the cursor in the viewport,
@@ -166,32 +228,43 @@ fn drop_target(app: &SolveApp, faces: bool) -> Vec<Sel> {
 
 /// The looks in this design (colour and how many items wear it): the engine's list when it has
 /// one, else the body colours.
-fn in_design(app: &mut SolveApp) -> Vec<([u8; 3], usize)> {
+fn in_design(app: &mut SolveApp) -> Vec<(Look, usize)> {
     if let Ok(v) = app.session.execute("appearance.list", &json!({}))
         && let Some(list) = v.get("in_design").and_then(Value::as_array)
     {
         let count = |x: &Value, k: &str| x.get(k).and_then(Value::as_array).map_or(0, Vec::len);
         return list
             .iter()
-            .filter_map(|x| Some((parse_color(x.get("color")?)?, count(x, "bodies") + count(x, "faces") + count(x, "components"))))
+            .filter_map(|x| {
+                Some((
+                    Look {
+                        name: x.get("name").and_then(Value::as_str).unwrap_or("Custom").to_string(),
+                        category: "In This Design".into(),
+                        color: parse_color(x.get("color")?)?,
+                        opacity: x.get("opacity").and_then(Value::as_f64).unwrap_or(1.0),
+                    },
+                    count(x, "bodies") + count(x, "faces") + count(x, "components"),
+                ))
+            })
             .collect();
     }
-    let mut out: Vec<([u8; 3], usize)> = Vec::new();
-    for c in app.session.doc.appearances.bodies.values().map(|l| l.color) {
-        match out.iter_mut().find(|(x, _)| *x == c) {
+    let mut out: Vec<(Look, usize)> = Vec::new();
+    for l in app.session.doc.appearances.bodies.values() {
+        let look = Look { name: l.name.clone(), category: "In This Design".into(), color: l.color, opacity: l.opacity };
+        match out.iter_mut().find(|(x, _)| *x == look) {
             Some(e) => e.1 += 1,
-            None => out.push((c, 1)),
+            None => out.push((look, 1)),
         }
     }
     out
 }
 
-fn c32(c: [u8; 3], opacity: f32) -> Color32 {
+fn c32(c: [u8; 3], opacity: f64) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], (opacity.clamp(0.0, 1.0) * 255.0) as u8)
 }
 
 /// A swatch: a rounded square of the look; returns its response (click, drag).
-fn swatch(ui: &mut egui::Ui, id: egui::Id, color: [u8; 3], opacity: f32, picked: bool, tip: &str, payload: Look) -> egui::Response {
+fn swatch(ui: &mut egui::Ui, id: egui::Id, color: [u8; 3], opacity: f64, picked: bool, tip: &str, payload: Look) -> egui::Response {
     let t = Tokens::get();
     let r = ui
         .dnd_drag_source(id, payload, |ui| {
@@ -200,7 +273,7 @@ fn swatch(ui: &mut egui::Ui, id: egui::Id, color: [u8; 3], opacity: f32, picked:
             if opacity < 0.999 {
                 let h = rect.width() / 2.0;
                 for (dx, dy) in [(0.0, 0.0), (h, h)] {
-                    ui.painter().rect_filled(egui::Rect::from_min_size(rect.min + vec2(dx, dy), vec2(h, h)), 0.0, Color32::from_gray(200));
+                    ui.painter().rect_filled(egui::Rect::from_min_size(rect.min + vec2(dx, dy), vec2(h, h)), 0.0, t.hover);
                 }
             }
             ui.painter().rect(
@@ -238,13 +311,23 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
     let t = Tokens::get();
     // Apply To: bodies or faces (the input follows).
     row_label(ui, "Apply To");
-    let mut mode = usize::from(k.faces);
-    combo(ui, "ap_mode", &["Bodies/Components", "Faces"], &mut mode);
-    ui.end_row();
-    if (mode == 1) != k.faces {
-        k.faces = mode == 1;
-        if let Some(i) = inputs.first_mut() {
-            *i = SelInput::new("Objects", if k.faces { FACES } else { BODIES }, true);
+    if let Some(component) = &k.component {
+        ui.label(format!("Component: {component}"));
+        ui.end_row();
+        row_label(ui, "");
+        if ui.button("Select bodies or faces instead").clicked() {
+            k.component = None;
+        }
+        ui.end_row();
+    } else {
+        let mut mode = usize::from(k.faces);
+        combo(ui, "ap_mode", &["Bodies", "Faces"], &mut mode);
+        ui.end_row();
+        if (mode == 1) != k.faces {
+            k.faces = mode == 1;
+            if let Some(i) = inputs.first_mut() {
+                *i = SelInput::new("Objects", if k.faces { FACES } else { BODIES }, true);
+            }
         }
     }
     // The current look: colour and opacity.
@@ -254,35 +337,72 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
         if ui.color_edit_button_srgb(&mut rgb).changed() {
             k.color = rgb;
             k.look = None;
+            k.remove_override = false;
         }
         ui.label(RichText::new(k.look.clone().unwrap_or_else(|| hex(k.color))).color(t.text_dim));
     });
     ui.end_row();
     row_label(ui, "Opacity");
     ui.spacing_mut().slider_width = 110.0;
-    ui.add(egui::Slider::new(&mut k.opacity, 0.05..=1.0).fixed_decimals(2));
+    // Decimal formatting must not round a saved look merely by drawing its editor.
+    if ui.add(egui::Slider::new(&mut k.opacity, 0.0..=1.0).max_decimals_opt(None).custom_formatter(|value, _| format!("{value:.2}"))).changed() {
+        k.remove_override = false;
+    }
     ui.end_row();
     row_label(ui, "");
     let picked: Vec<Sel> = inputs.first().map(|i| i.items.clone()).unwrap_or_default();
-    if ui.add_enabled(!picked.is_empty(), egui::Button::new("Apply to selection")).clicked()
-        && let Some(p) = apply_params(&picked, k.color, k.opacity, k.look.as_deref())
-    {
-        k.note = Some(match app.run("appearance.assign", p) {
-            Ok(_) => format!("applied to {} item(s)", picked.len()),
-            Err(e) => e,
-        });
-    }
+    ui.horizontal(|ui| {
+        let has_target = !picked.is_empty() || k.component.is_some();
+        if ui.add_enabled(has_target, egui::Button::new("Apply to selection")).clicked()
+            && let Some(p) = selected_params(k, &picked)
+        {
+            k.remove_override = false;
+            k.note = Some(match app.run("appearance.assign", p.clone()) {
+                Ok(_) => {
+                    k.applied = Some(p);
+                    "Appearance applied".into()
+                }
+                Err(e) => e,
+            });
+        }
+        if ui
+            .add_enabled(has_target, egui::Button::new("Remove override"))
+            .on_hover_text("Restore the inherited component or physical material appearance")
+            .clicked()
+            && let Some(p) = clear_params(k, &picked)
+        {
+            k.note = Some(match app.run("appearance.assign", p) {
+                Ok(_) => {
+                    k.remove_override = true;
+                    k.applied = None;
+                    "Inherited appearance restored".into()
+                }
+                Err(e) => e,
+            });
+        }
+    });
     ui.end_row();
     // In this design.
     let used = in_design(app);
     if !used.is_empty() {
         row_label(ui, "In This Design");
-        let items: Vec<(usize, &([u8; 3], usize))> = used.iter().enumerate().collect();
-        swatch_rows(ui, &items, |ui, (i, (c, n))| {
-            let look = Look { name: hex(*c), category: "In This Design".into(), color: *c, opacity: 1.0 };
-            if swatch(ui, egui::Id::new(("ap_used", *i)), *c, 1.0, k.color == *c, &format!("{} · {n} item(s)", hex(*c)), look).clicked() {
-                k.color = *c;
-                k.look = None;
+        let items: Vec<_> = used.iter().enumerate().collect();
+        swatch_rows(ui, &items, |ui, (i, (look, n))| {
+            if swatch(
+                ui,
+                egui::Id::new(("ap_used", *i)),
+                look.color,
+                look.opacity,
+                k.color == look.color && k.opacity == look.opacity,
+                &format!("{} · {n} item(s)", look.name),
+                look.clone(),
+            )
+            .clicked()
+            {
+                k.color = look.color;
+                k.opacity = look.opacity;
+                k.look = Some(look.name.clone());
+                k.remove_override = false;
             }
         });
         ui.end_row();
@@ -299,9 +419,18 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
     row_label(ui, "Library");
     combo(ui, "ap_cat", &refs, &mut k.category);
     ui.end_row();
+    row_label(ui, "Search");
+    let search = ui.add(egui::TextEdit::singleline(&mut k.search).hint_text("Appearance name").desired_width(190.0));
+    crate::scenario::publish_handle("appearance:search", search.rect.center());
+    ui.end_row();
     row_label(ui, "");
     let want = cats.get(k.category).cloned().unwrap_or_default();
-    let shown: Vec<(usize, &Look)> = lib.iter().enumerate().filter(|(_, l)| k.category == 0 || l.category == want).collect();
+    let query = k.search.trim().to_lowercase();
+    let shown: Vec<(usize, &Look)> =
+        lib.iter().enumerate().filter(|(_, l)| (k.category == 0 || l.category == want) && l.name.to_lowercase().contains(&query)).collect();
+    if shown.is_empty() {
+        ui.label(RichText::new("No matching appearances").color(t.text_dim));
+    }
     swatch_rows(ui, &shown, |ui, (i, l)| {
         let picked_look = k.look.as_deref() == Some(l.name.as_str());
         if swatch(ui, egui::Id::new(("ap_lib", *i)), l.color, l.opacity, picked_look, &format!("{} (drag onto a body or face)", l.name), (*l).clone())
@@ -310,6 +439,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
             k.color = l.color;
             k.opacity = l.opacity;
             k.look = Some(l.name.clone());
+            k.remove_override = false;
         }
     });
     ui.end_row();
@@ -319,10 +449,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
         let targets = drop_target(app, k.faces);
         k.color = look.color;
         k.opacity = look.opacity;
-        k.look = (look.category != "In This Design").then(|| look.name.clone());
+        k.look = Some(look.name.clone());
+        k.remove_override = false;
         if let Some(p) = apply_params(&targets, look.color, look.opacity, k.look.as_deref()) {
-            k.note = Some(match app.run("appearance.assign", p) {
-                Ok(_) => format!("{} on {}", look.name, target_names(&targets)),
+            k.note = Some(match app.run("appearance.assign", p.clone()) {
+                Ok(_) => {
+                    k.applied = Some(p);
+                    format!("{} on {}", look.name, target_names(&targets))
+                }
                 Err(e) => e,
             });
         }
@@ -392,7 +526,11 @@ mod tests {
             a.run(&id, p).unwrap();
         }
         assert_eq!(a.session.doc.appearances.bodies.get("Body2").map(|l| l.color), Some([196, 40, 36]));
-        assert_eq!(in_design(&mut a), vec![([196, 40, 36], 2)]);
+        let used = in_design(&mut a);
+        assert_eq!(used.len(), 1);
+        assert_eq!(used[0].0.color, [196, 40, 36]);
+        assert_eq!(used[0].0.name, "Paint - Red");
+        assert_eq!(used[0].1, 2);
     }
 
     /// A swatch dropped on a face in face mode targets the face; otherwise its body.
@@ -410,5 +548,91 @@ mod tests {
         assert_eq!(face["faces"][0]["body"], "Body1");
         assert_eq!(face["opacity"], 0.5);
         assert!(!library(&mut a).is_empty());
+    }
+
+    #[test]
+    fn face_preselection_keeps_the_face_and_remove_survives_ok() {
+        let mut a = app();
+        let point = Vec3::new(5.0, 5.0, 10.0);
+        let selected = vec![Sel::Face { body: "Body1".into(), index: 0, point }];
+        a.session.selection = selected.clone();
+        a.start("appearance.assign");
+        let mut d = a.dialog.clone().unwrap();
+        assert_eq!(d.inputs[0].items, selected);
+        let Kind::Appearance(k) = &mut d.kind else { panic!("appearance dialog") };
+        assert!(k.faces);
+        k.color = [10, 20, 30];
+        k.opacity = 0.25;
+        for (id, p) in commands(k, &d.inputs) {
+            a.run(&id, p).unwrap();
+        }
+        assert_eq!(a.session.doc.appearances.faces.len(), 1);
+        assert!(a.session.doc.appearances.bodies.is_empty());
+        a.run("appearance.assign", clear_params(k, &d.inputs[0].items).unwrap()).unwrap();
+        k.remove_override = true;
+        assert!(commands(k, &d.inputs).is_empty());
+        assert!(a.session.doc.appearances.faces.is_empty());
+        a.run("edit.undo", json!({})).unwrap();
+        assert_eq!(a.session.doc.appearances.faces.len(), 1);
+    }
+
+    #[test]
+    fn reused_design_look_preserves_transparency_and_name() {
+        let mut a = app();
+        a.run("appearance.assign", json!({"bodies": ["Body1"], "color": "#abcdef", "appearance": "Tinted glass", "opacity": 0.25})).unwrap();
+        let used = in_design(&mut a);
+        let look = &used[0].0;
+        assert_eq!(look.opacity, 0.25);
+        assert_eq!(look.name, "Tinted glass");
+        a.session.selection = vec![Sel::Body { name: "Body1".into() }];
+        a.start("appearance.assign");
+        let Kind::Appearance(k) = &a.dialog.as_ref().unwrap().kind else { panic!("appearance dialog") };
+        assert_eq!(k.opacity, 0.25);
+        assert_eq!(k.look.as_deref(), Some("Tinted glass"));
+        let p = apply_params(&[Sel::Body { name: "Body2".into() }], look.color, look.opacity, Some(&look.name)).unwrap();
+        a.run("appearance.assign", p).unwrap();
+        assert_eq!(a.session.doc.appearances.bodies.get("Body1"), a.session.doc.appearances.bodies.get("Body2"));
+    }
+
+    #[test]
+    fn real_frames_and_unchanged_apply_keep_precise_opacity() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+        h.app.run("appearance.assign", json!({"bodies":["Body1"],"color":"#abcdef","opacity":0.123456})).unwrap();
+        for cancel in [true, false] {
+            h.app.session.selection = vec![Sel::Body { name: "Body1".into() }];
+            h.app.start("appearance.assign");
+            h.frames(3);
+            let Kind::Appearance(appearance) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance dialog") };
+            assert_eq!(appearance.opacity, 0.123456);
+            h.step(&json!({"key":if cancel {"Escape"} else {"Enter"}})).unwrap();
+            assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+            assert_eq!(h.app.session.doc.appearances.bodies["Body1"].opacity, 0.123456);
+        }
+    }
+
+    #[test]
+    fn immediate_apply_then_ok_has_one_undo_and_retains_precise_opacity() {
+        let mut a = app();
+        a.run("appearance.assign", json!({"bodies": ["Body1"], "color": "#abcdef", "opacity": 0.123456})).unwrap();
+        a.session.selection = vec![Sel::Body { name: "Body1".into() }];
+        a.start("appearance.assign");
+        let mut d = a.dialog.clone().unwrap();
+        let Kind::Appearance(k) = &mut d.kind else { panic!("appearance dialog") };
+        assert_eq!(commands(k, &d.inputs)[0].1["opacity"], json!(0.123456));
+        k.color = [1, 2, 3];
+        let p = selected_params(k, &d.inputs[0].items).unwrap();
+        a.run("appearance.assign", p.clone()).unwrap();
+        k.applied = Some(p);
+        assert!(commands(k, &d.inputs).is_empty());
+        a.run("edit.undo", json!({})).unwrap();
+        let restored = a.session.doc.appearances.bodies.get("Body1").unwrap();
+        assert_eq!(restored.color, [171, 205, 239]);
+        assert_eq!(restored.opacity, 0.123456);
+        k.opacity = 0.5;
+        assert_eq!(commands(k, &d.inputs).len(), 1, "changed look still applies on OK");
+        k.opacity = 0.123456;
+        d.inputs[0].items = vec![Sel::Body { name: "Body2".into() }];
+        assert_eq!(commands(k, &d.inputs).len(), 1, "changed target still applies on OK");
     }
 }

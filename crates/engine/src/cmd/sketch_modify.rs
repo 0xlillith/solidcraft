@@ -9,15 +9,18 @@ use solvecraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, interse
 
 use super::sketch::{add_c, edit, ids_of};
 use super::{CommandSpec, in_sketch};
-use crate::params::{bad, bool_, expr, num, req_vec2, str_, string_list, vec2};
+use crate::params::{bad, bool_, expr, num, req_vec2, str_, string_list, vec2, vec2_list};
 use crate::{Result, Session};
+
+#[path = "sketch_support.rs"]
+mod support;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.fillet", "Fillet", fillet)
         .at("SKETCH", "MODIFY")
         .icon("sketch_fillet")
         .enabled(in_sketch)
-        .params("point: corner shared by two curves (\"l1.end\") | points: [corners] (all rounded alike: one radius, the rest equal) | a, b: two lines or arcs meeting at a corner; radius: expr"),
+        .params("point: corner shared by two curves (\"l1.end\") | points: [corners] (all rounded alike: one radius, the rest equal) | a, b: two lines or arcs meeting at a corner; radius: expr. A corner that dimensions or constraints measure to stays as a virtual sharp corner on both curves' extensions (`virtual_corners`; the moved ones in `moved_to_virtual_corner`)"),
     CommandSpec::new("sketch.chamfer.equal_distance", "Equal Distance Chamfer", chamfer_equal)
         .at("SKETCH", "MODIFY")
         .icon("sketch_chamfer")
@@ -39,6 +42,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .key("O")
         .enabled(in_sketch)
         .params("curves: [ids], distance: number (positive = left of the chain, or toward `side`), side?: [x,y], chain?: bool (default true: the connected chain)"),
+    CommandSpec::new("sketch.offset.break", "Break Offset Association", break_offset)
+        .enabled(in_sketch)
+        .params("curve: derived offset curve id (retains geometry and makes its points editable)"),
     CommandSpec::new("sketch.trim", "Trim", trim)
         .at("SKETCH", "MODIFY")
         .icon("trim")
@@ -54,7 +60,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("break")
         .enabled(in_sketch)
-        .params("curve: id, at: [x,y] (split at the nearest intersections around it) | params: split at points: [[x,y]…]"),
+        .params("curve: id, at: [x,y] (split at intersections) | points: [[x,y]…] (1…1000 positions projected onto the curve; duplicates are merged)"),
     CommandSpec::new("sketch.scale", "Sketch Scale", scale)
         .at("SKETCH", "MODIFY")
         .icon("scale")
@@ -88,6 +94,9 @@ fn curve_arg(sk: &Sketch, p: &Value, cmd: &str) -> Result<usize> {
     let c = sk.curve_index(id).ok_or_else(|| bad(cmd, format!("unknown curve `{id}`")))?;
     if sk.is_linked_curve(c) {
         return Err(bad(cmd, format!("`{id}` is projected geometry: break its link first")));
+    }
+    if sk.freeform_offsets.iter().any(|offset| offset.output == id) {
+        return Err(bad(cmd, "break the offset association before editing its output"));
     }
     Ok(c)
 }
@@ -133,6 +142,13 @@ fn cut_points(sk: &Sketch, ci: usize) -> Vec<(f64, Vec2, usize)> {
             {
                 out.push((t, q, oi));
             }
+        }
+    }
+    for (q, oi) in super::sketch_freeform::analytic_cut_points(sk, ci) {
+        if let Some(t) = on_bounded(&sh, q)
+            && !out.iter().any(|(_, x, _)| x.dist(q) < TOL * 10.0)
+        {
+            out.push((t, q, oi));
         }
     }
     out
@@ -314,17 +330,24 @@ fn trim(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn break_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.break";
-    let (out, info) = edit(s, p, cmd, false, |sk, _| {
+    let points = if p.get("points").is_some() { Some(vec2_list(cmd, p, "points", 1000)?) } else { None };
+    let (out, info) = edit(s, p, cmd, false, |sk, doc| {
         let ci = curve_arg(sk, p, cmd)?;
         if sk.curves.get(ci).is_some_and(|c| c.kind.is_freeform()) {
-            let at = req_vec2(cmd, p, "at")?;
-            let r = super::sketch_freeform::trim_or_break(sk, ci, at, false, cmd)?;
+            let r = if let Some(points) = &points {
+                super::sketch_freeform::break_at_points(sk, ci, points, cmd)?
+            } else {
+                let at = req_vec2(cmd, p, "at")?;
+                super::sketch_freeform::trim_or_break(sk, ci, at, false, cmd)?
+            };
+            doc.prune_model_params();
             return Ok(r["curves"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default());
         }
         let sh = sk.shape(ci).ok_or_else(|| bad(cmd, "curve"))?;
-        let (ts, cutters): (Vec<f64>, Vec<Option<usize>>) = if let Some(list) = p.get("points").and_then(Value::as_array) {
-            let mut v: Vec<f64> = list.iter().take(1000).filter_map(vec2).map(|q| sh.param(sh.project(q))).collect();
+        let (ts, cutters): (Vec<f64>, Vec<Option<usize>>) = if let Some(list) = &points {
+            let mut v: Vec<f64> = list.iter().map(|q| sh.param(sh.project(*q))).collect();
             v.sort_by(|a, b| a.total_cmp(b));
+            v.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
             let n = v.len();
             (v, vec![None; n])
         } else {
@@ -351,7 +374,12 @@ fn break_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 fn extend(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.extend";
     let at = req_vec2(cmd, p, "at")?;
-    let (out, info) = edit(s, p, cmd, false, |sk, _| {
+    let (out, info) = edit(s, p, cmd, true, |sk, doc| {
+        let (values, _) = doc.param_values();
+        doc.apply_dimension_values(&values, sk)?;
+        if !solvecraft_sketch::solve(sk).ok() {
+            return Err(bad(cmd, "solve the existing sketch constraints before extending"));
+        }
         let ci = curve_arg(sk, p, cmd)?;
         let sh = sk.shape(ci).ok_or_else(|| bad(cmd, "curve"))?;
         let (pa, pb) = match sk.curves.get(ci).map(|c| c.kind.clone()) {
@@ -372,41 +400,62 @@ fn extend(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let (_, t1) = sh.range();
         let mut best: Option<(f64, Vec2, usize)> = None;
+        let mut ambiguous = false;
+        let mut budget = 1_000_000usize;
+        let mut segment_count = 0usize;
         for (oi, _) in sk.curves.iter().enumerate() {
             if oi == ci {
                 continue;
             }
-            // Lines and circles exactly; free-form curves (splines, ellipses, conics) by the
-            // pieces of their polyline.
-            let pieces: Vec<Shape> = match sk.shape(oi) {
-                Some(other) => vec![other],
-                None => sk.polyline(oi).windows(2).map(|w| Shape::Line { a: w[0], b: w[1] }).collect(),
-            };
-            for q in pieces.iter().flat_map(|other| intersections(&unbounded, other).into_iter().filter(|q| on_bounded(other, *q).is_some())) {
-                let t = sh.param(q);
-                let gap = match sh {
-                    Shape::Line { a, b } => {
-                        let l = a.dist(b);
-                        if at_b { (t - 1.0) * l } else { -t * l }
-                    }
-                    Shape::Round { r, .. } => {
-                        if at_b {
-                            (t - t1) * r
-                        } else {
-                            (TAU - t) * r
+            let pieces = sk.exact_segs(oi).unwrap_or_else(|| sk.segs(oi));
+            segment_count += pieces.len();
+            if segment_count > 16_384 {
+                return Err(bad(cmd, "too many exact curve pieces to extend safely"));
+            }
+            for piece in &pieces {
+                for q in support::hits(&unbounded, piece, &mut budget)? {
+                    let t = sh.param(q);
+                    let gap = match sh {
+                        Shape::Line { a, b } => {
+                            let l = a.dist(b);
+                            if at_b { (t - 1.0) * l } else { -t * l }
+                        }
+                        Shape::Round { r, .. } => {
+                            // A hit already inside the arc cannot lengthen either end. In
+                            // particular, extending the start must not turn a quarter into an eighth.
+                            if t <= t1 + TOL / r.max(1e-12) || t >= TAU - TOL / r.max(1e-12) {
+                                continue;
+                            }
+                            if at_b { (t - t1) * r } else { (TAU - t) * r }
+                        }
+                    };
+                    if gap > TOL * 10.0 {
+                        if best.is_none_or(|b| gap < b.0 - TOL) {
+                            best = Some((gap, q, oi));
+                            ambiguous = false;
+                        } else if best.is_some_and(|b| (gap - b.0).abs() <= TOL && (b.2 != oi || b.1.dist(q) > TOL)) {
+                            ambiguous = true;
                         }
                     }
-                };
-                if gap > TOL * 10.0 && best.is_none_or(|b| gap < b.0) {
-                    best = Some((gap, q, oi));
                 }
             }
+        }
+        if ambiguous {
+            return Err(bad(cmd, "multiple curves stop the extension at the same distance"));
         }
         let (_, q, oi) = best.ok_or_else(|| bad(cmd, "nothing to extend to"))?;
         if let Some(pt) = sk.points.get_mut(end) {
             pt.pos = q;
         }
         pin(sk, end, oi)?;
+        let before = sk.points.iter().map(|p| p.pos).collect::<Vec<_>>();
+        let hold = solvecraft_sketch::Hold { points: (0..sk.points.len()).filter(|i| *i != end).collect(), radii: (0..sk.curves.len()).collect() };
+        if !solvecraft_sketch::solve_holding(sk, &hold).ok()
+            || sk.point(end).is_none_or(|point| point.dist(q) > TOL)
+            || sk.points.iter().enumerate().any(|(i, point)| i != end && point.pos.dist(before[i]) > TOL)
+        {
+            return Err(bad(cmd, "the extension conflicts with constraints or cannot preserve its original support"));
+        }
         Ok(sk.points.get(end).map(|x| x.id.clone()).unwrap_or_default())
     })?;
     Ok(json!({"moved": out, "sketch": info}))
@@ -456,8 +505,71 @@ fn reattach(sk: &mut Sketch, l: usize, corner: usize, np: usize) {
     }
 }
 
+/// What became of a rounded or cut corner's point: kept as a virtual sharp corner (its id),
+/// and the constraints and dimensions that now measure to it.
+#[derive(Default)]
+struct CornerKept {
+    virtual_corner: Option<String>,
+    moved: Vec<String>,
+}
+
+/// Keep corner point `c` of curves `ca`, `cb` (whose corner ends were just moved to `na`, `nb`)
+/// when anything measures to it: a constraint or dimension on the point, the length of either
+/// line, or it is the origin or still ends another curve. It stays as a virtual sharp corner,
+/// held on both curves' extensions (their intersection), and the line lengths become distances
+/// from the far end to it, so the part keeps its size, as in Fusion. Otherwise None: the
+/// caller removes the point.
+fn keep_corner(sk: &mut Sketch, c: usize, [(ca, na), (cb, nb)]: [(usize, usize); 2]) -> Result<Option<CornerKept>> {
+    let used = sk.curves.iter().any(|x| uses(x, c));
+    let mut moved: Vec<String> = sk.constraints.iter().filter(|k| k.kind.refers_to_point(c)).map(|k| k.id.clone()).collect();
+    for k in sk.constraints.iter_mut() {
+        let ConstraintKind::Length { l, value } = k.kind else { continue };
+        let new_end = if l == ca {
+            na
+        } else if l == cb {
+            nb
+        } else {
+            continue;
+        };
+        let Some(CurveKind::Line { a, b }) = sk.curves.get(l).map(|x| &x.kind) else { continue };
+        // Same direction as the line, so the dimension keeps its side and text place.
+        k.kind = if *a == new_end { ConstraintKind::Distance { p: c, q: *b, value } } else { ConstraintKind::Distance { p: *a, q: c, value } };
+        moved.push(k.id.clone());
+    }
+    if moved.is_empty() && !used && c != 0 {
+        return Ok(None);
+    }
+    for cu in [ca, cb] {
+        let k = ConstraintKind::PointOnCurve { p: c, c: cu };
+        if !sk.constraints.iter().any(|x| x.kind == k) {
+            add_c(sk, k)?;
+        }
+    }
+    // A point of its own now: `l1.end` names the line's new end, not the virtual corner.
+    let virtual_corner = if used || c == 0 {
+        None
+    } else {
+        let id = sk.fresh("corner");
+        if let Some(pt) = sk.points.get_mut(c) {
+            pt.id = id.clone();
+        }
+        Some(id)
+    };
+    Ok(Some(CornerKept { virtual_corner, moved }))
+}
+
 /// Points at distances `da` along a and `db` along b from the corner; lines shortened to them.
-fn cut_corner(sk: &mut Sketch, la: usize, lb: usize, c: usize, fa: usize, fb: usize, da: f64, db: f64, cmd: &str) -> Result<(usize, usize, Vec2)> {
+fn cut_corner(
+    sk: &mut Sketch,
+    la: usize,
+    lb: usize,
+    c: usize,
+    fa: usize,
+    fb: usize,
+    da: f64,
+    db: f64,
+    cmd: &str,
+) -> Result<(usize, usize, Vec2, CornerKept)> {
     let (pc, pa, pb) = (sk.point(c).unwrap_or_default(), sk.point(fa).unwrap_or_default(), sk.point(fb).unwrap_or_default());
     if !(da > 1e-9 && db > 1e-9 && da < pc.dist(pa) - 1e-9 && db < pc.dist(pb) - 1e-9) {
         return Err(bad(cmd, "too large for these lines"));
@@ -468,13 +580,14 @@ fn cut_corner(sk: &mut Sketch, la: usize, lb: usize, c: usize, fa: usize, fb: us
     let tb = sk.add_point(pc + v * db, None)?;
     reattach(sk, la, c, ta);
     reattach(sk, lb, c, tb);
-    let used = sk.curves.iter().any(|x| uses(x, c));
-    if !used && c != 0 {
+    let kept = keep_corner(sk, c, [(la, ta), (lb, tb)])?;
+    let removed = kept.is_none();
+    if removed {
         sk.remove_points(&[c]);
     }
-    // Indices may have shifted when the corner point was removed.
-    let fix = |i: usize| if !used && c != 0 && i > c { i - 1 } else { i };
-    Ok((fix(ta), fix(tb), pc))
+    // Indices shift when the corner point was removed.
+    let fix = |i: usize| if removed && i > c { i - 1 } else { i };
+    Ok((fix(ta), fix(tb), pc, kept.unwrap_or_default()))
 }
 
 fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
@@ -492,9 +605,10 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
             return Err(bad(cmd, "radius must be positive"));
         }
         let pname = doc.new_model_param(&r_expr, "mm");
-        let (mut arcs, mut cons) = (Vec::new(), Vec::new());
+        let (mut arcs, mut cons, mut kept) = (Vec::new(), Vec::new(), Vec::new());
         for q in &corners {
-            let (arc, mut c) = fillet_corner(sk, q, r, cmd)?;
+            let (arc, mut c, k) = fillet_corner(sk, q, r, cmd)?;
+            kept.push(k);
             // One radius for them all: the first carries the dimension, the rest are equal to it.
             match arcs.first() {
                 None => c.push(sk.add_constraint(ConstraintKind::Radius { c: arc, value: r }, Some(pname.clone()))?),
@@ -503,14 +617,27 @@ fn fillet(s: &mut Session, p: &Value) -> Result<Value> {
             cons.extend(c);
             arcs.push(arc);
         }
-        Ok((ids_of(sk, &arcs), cons, pname))
+        Ok((ids_of(sk, &arcs), cons, pname, kept_json(kept)))
     })?;
-    Ok(json!({"curves": out.0, "constraints": out.1, "param": out.2, "sketch": info}))
+    let (vc, moved) = out.3;
+    Ok(json!({"curves": out.0, "constraints": out.1, "param": out.2, "virtual_corners": vc, "moved_to_virtual_corner": moved, "sketch": info}))
+}
+
+/// The virtual corners kept and the constraints moved to them, for a response.
+fn kept_json(kept: Vec<CornerKept>) -> (Vec<String>, Vec<String>) {
+    let vcs = kept.iter().filter_map(|k| k.virtual_corner.clone()).collect();
+    let mut moved: Vec<String> = Vec::new();
+    for id in kept.into_iter().flat_map(|k| k.moved) {
+        if !moved.contains(&id) {
+            moved.push(id);
+        }
+    }
+    (vcs, moved)
 }
 
 /// Round one corner (`point` or `a`, `b`) with an arc of radius `r` tangent to both curves:
-/// the arc and the tangent constraints.
-fn fillet_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<(usize, Vec<String>)> {
+/// the arc, the tangent constraints and what became of the corner point.
+fn fillet_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<(usize, Vec<String>, CornerKept)> {
     let (la, lb, c, fa, fb) = match corner(sk, p, cmd) {
         Ok(x) => x,
         // Not two lines: a corner with an arc.
@@ -529,7 +656,7 @@ fn fillet_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<(usize
     }
     let bis = (u + v).normalized().ok_or_else(|| bad(cmd, "the lines are parallel"))?;
     let center = pc + bis * (r / half.sin());
-    let (ta, tb, _) = cut_corner(sk, la, lb, c, fa, fb, d, d, cmd)?;
+    let (ta, tb, _, kept) = cut_corner(sk, la, lb, c, fa, fb, d, d, cmd)?;
     let (qa, qb) = (sk.point(ta).unwrap_or_default(), sk.point(tb).unwrap_or_default());
     let ccw = (qa - center).cross(qb - center) > 0.0;
     let arc = if ccw {
@@ -538,13 +665,13 @@ fn fillet_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<(usize
         sk.add_arc(center, qb, qa, [None, Some(tb), Some(ta)], None)?
     };
     let cons = vec![add_c(sk, ConstraintKind::Tangent { a: la, b: arc })?, add_c(sk, ConstraintKind::Tangent { a: lb, b: arc })?];
-    Ok((arc, cons))
+    Ok((arc, cons, kept))
 }
 
 /// Fillet a corner where a line meets an arc, or two arcs meet: the arc of radius `r` touching
 /// both, nearest the corner; both curves are cut back to it. None when the corner is not of
 /// that kind.
-fn round_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<Option<(usize, Vec<String>)>> {
+fn round_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<Option<(usize, Vec<String>, CornerKept)>> {
     let ends = |c: usize| match sk.curves.get(c).map(|c| &c.kind) {
         Some(CurveKind::Line { a, b }) | Some(CurveKind::Arc { a, b, .. }) => Some((*a, *b)),
         _ => None,
@@ -606,14 +733,15 @@ fn round_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<Option<
     let arc =
         if ccw { sk.add_arc(cen, ta, tb, [None, Some(na), Some(nb)], None)? } else { sk.add_arc(cen, tb, ta, [None, Some(nb), Some(na)], None)? };
     let cons = vec![add_c(sk, ConstraintKind::Tangent { a: ca, b: arc })?, add_c(sk, ConstraintKind::Tangent { a: cb, b: arc })?];
-    let used = sk.curves.iter().any(|x| x.kind.uses(q));
-    if !used && q != 0 {
-        let arc_id = sk.curves.get(arc).map(|c| c.id.clone()).unwrap_or_default();
-        sk.remove_points(&[q]);
-        let arc = sk.curve_index(&arc_id).unwrap_or(arc);
-        return Ok(Some((arc, cons)));
+    match keep_corner(sk, q, [(ca, na), (cb, nb)])? {
+        Some(kept) => Ok(Some((arc, cons, kept))),
+        None => {
+            let arc_id = sk.curves.get(arc).map(|c| c.id.clone()).unwrap_or_default();
+            sk.remove_points(&[q]);
+            let arc = sk.curve_index(&arc_id).unwrap_or(arc);
+            Ok(Some((arc, cons, CornerKept::default())))
+        }
     }
-    Ok(Some((arc, cons)))
 }
 
 fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl FnOnce(f64) -> Result<(f64, f64)>) -> Result<Value> {
@@ -623,11 +751,12 @@ fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl FnOnce(f64) -> Res
         let (u, v) = ((pa - pc).normalized().unwrap_or(Vec2::X), (pb - pc).normalized().unwrap_or(Vec2::Y));
         let corner_angle = u.cross(v).atan2(u.dot(v)).abs();
         let (da, db) = dists(corner_angle)?;
-        let (ta, tb, _) = cut_corner(sk, la, lb, c, fa, fb, da, db, cmd)?;
+        let (ta, tb, _, kept) = cut_corner(sk, la, lb, c, fa, fb, da, db, cmd)?;
         let l = sk.add_line_pts(ta, tb, None)?;
-        Ok(ids_of(sk, &[l]))
+        Ok((ids_of(sk, &[l]), kept_json(vec![kept])))
     })?;
-    Ok(json!({"curves": out, "sketch": info}))
+    let (curves, (vc, moved)) = out;
+    Ok(json!({"curves": curves, "virtual_corners": vc, "moved_to_virtual_corner": moved, "sketch": info}))
 }
 
 fn chamfer_equal(s: &mut Session, p: &Value) -> Result<Value> {
@@ -795,7 +924,14 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
     let d0 = num(p, "distance").filter(|d| d.abs() > 1e-9).ok_or_else(|| bad(cmd, "`distance` must be a non-zero number"))?;
     let side = p.get("side").and_then(vec2);
     let use_chain = bool_(p, "chain").unwrap_or(true);
-    let (out, info) = edit(s, p, cmd, false, |sk, _| {
+    let (out, info) = edit(s, p, cmd, true, |sk, doc| {
+        let (values, _) = doc.param_values();
+        doc.apply_dimension_values(&values, sk)?;
+        sk.refresh_offsets()?;
+        if !solvecraft_sketch::solve(sk).ok() {
+            return Err(bad(cmd, "solve existing constraints before offsetting"));
+        }
+        sk.refresh_offsets()?;
         let sel: Vec<usize> = ids.iter().map(|i| sk.curve_index(i).ok_or_else(|| bad(cmd, format!("unknown curve `{i}`")))).collect::<Result<_>>()?;
         let first = *sel.first().ok_or_else(|| bad(cmd, "no curves"))?;
         let mut made = Vec::new();
@@ -841,6 +977,17 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
             }
             None => d0,
         };
+        if order.iter().any(|(i, _)| sk.shape(*i).is_none()) {
+            // A smooth free-form entity is offset from exact pieces. Junctions that
+            // would require trimming/intersecting independent normal offsets are
+            // refused rather than joined by a guessed average point.
+            if order.len() != 1 {
+                return Err(bad(cmd, "offset smooth free-form curves individually; mixed chain junctions are ambiguous"));
+            }
+            let (source, forward) = order[0];
+            let output = sk.add_freeform_offset(source, forward, d)?;
+            return Ok((ids_of(sk, &[output]), cons));
+        }
         let pieces: Vec<Piece> =
             order.iter().map(|(c, f)| offset_piece(sk, *c, *f, d)).collect::<Option<_>>().ok_or_else(|| bad(cmd, "the offset collapses an arc"))?;
         let n = pieces.len();
@@ -903,7 +1050,7 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
                     idx.push(pb);
                     idx.dedup();
                     if idx.len() >= 2 {
-                        made.push(sk.add_curve(CurveKind::Spline { pts: idx, control: false, degree: 3 }, None)?);
+                        made.push(sk.add_curve(CurveKind::Spline { pts: idx, control: false, degree: 3, periodic: false }, None)?);
                     }
                 }
                 Piece::Line(..) => {
@@ -931,6 +1078,41 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
         Ok((outputs, cons))
     })?;
     Ok(json!({"curves": out.0, "constraints": out.1, "sketch": info}))
+}
+
+fn break_offset(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sketch.offset.break";
+    let (out, info) = edit(s, p, cmd, true, |sk, doc| {
+        let output = str_(p, "curve").ok_or_else(|| bad(cmd, "`curve` must name an offset output"))?;
+        let record = sk
+            .freeform_offsets
+            .iter()
+            .position(|record| record.output == output)
+            .ok_or_else(|| bad(cmd, "that curve has no free-form offset association"))?;
+        // A parameter edit may have changed the evaluated source without
+        // rewriting the stored fit points. Break must freeze the displayed,
+        // current dimensioned geometry, rather than its stale stored predecessor.
+        let (values, _) = doc.param_values();
+        doc.apply_dimension_values(&values, sk)?;
+        if !solvecraft_sketch::solve(sk).ok() {
+            return Err(bad(cmd, "cannot break an offset with conflicting source dimensions"));
+        }
+        sk.refresh_offsets()?;
+        if !solvecraft_sketch::solve(sk).ok() {
+            return Err(bad(cmd, "cannot break an offset with conflicting derived dimensions"));
+        }
+        sk.validate_periodic_splines()?;
+        let ci = sk.curve_index(output).ok_or_else(|| bad(cmd, "missing offset output"))?;
+        let indices = sk.curves[ci].kind.point_ids();
+        sk.freeform_offsets.remove(record);
+        for i in indices {
+            if let Some(point) = sk.points.get_mut(i) {
+                point.fixed = false;
+            }
+        }
+        Ok(output.to_string())
+    })?;
+    Ok(json!({"curve":out,"sketch":info}))
 }
 
 // ---------------------------------------------------------------------------------------------

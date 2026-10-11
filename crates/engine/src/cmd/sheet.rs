@@ -45,6 +45,9 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sheet.export_dxf", "Export Flat Pattern as DXF", export_dxf)
         .noundo()
         .params("body?, path? → DXF (mm): OUTLINE, BEND_UP and BEND_DOWN (centre lines) layers"),
+    CommandSpec::new("sheet.export_bend_table", "Export Bend Table", export_bend_table)
+        .noundo()
+        .params("body?, format?: csv|json (default csv), path? → bend table in mm and degrees, including rule and flat centre-line coordinates"),
 ];
 
 fn points(p: &Value, k: &str, cmd: &str) -> Result<Vec<Vec3>> {
@@ -142,8 +145,9 @@ fn fold(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sheet.fold";
     let (sketch, curve, a, b) = match p.get("points") {
         Some(v) => {
-            let pts = v.as_array().map(|a| a.iter().filter_map(vec3).collect::<Vec<Vec3>>()).unwrap_or_default();
-            let [a, b] = pts[..] else { return Err(bad(cmd, "`points` must be two points [x, y, z]")) };
+            let pts = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad(cmd, "`points` must be two points [x, y, z]"))?;
+            let a = pts.first().and_then(vec3).ok_or_else(|| bad(cmd, "`points` must be two finite points [x, y, z]"))?;
+            let b = pts.get(1).and_then(vec3).ok_or_else(|| bad(cmd, "`points` must be two finite points [x, y, z]"))?;
             (None, None, a, b)
         }
         None => {
@@ -270,11 +274,17 @@ fn sheet_of(s: &Session, p: &Value, cmd: &str) -> Result<SheetBody> {
 }
 
 fn flat_json(sh: &SheetBody) -> Result<Value> {
-    let (w, h) = sh.flat_size()?;
-    let loops = sh.outline()?;
+    let regions = sh.flat_regions()?;
+    let loops: Vec<Vec<Vec2>> = regions.iter().map(|r| r.outer.polyline(1e-3)).collect();
+    let (mut lo, mut hi) = (Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN));
+    for p in loops.iter().flatten() {
+        lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Vec2::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let (w, h) = (hi.x - lo.x, hi.y - lo.y);
     let pt = |v: &Vec2| json!([v.x, v.y]);
     let outline: Vec<Value> = loops.iter().map(|l| Value::Array(l.iter().map(pt).collect())).collect();
-    let holes: Vec<Value> = sh.holes.iter().map(|h| Value::Array(h.outer.polyline(1e-3).iter().map(pt).collect())).collect();
+    let holes: Vec<Value> = regions.iter().flat_map(|r| &r.holes).map(|h| Value::Array(h.polyline(1e-3).iter().map(pt).collect())).collect();
     let bends: Vec<Value> = sh
         .bends()
         .iter()
@@ -283,8 +293,24 @@ fn flat_json(sh: &SheetBody) -> Result<Value> {
                 "allowance": b.allowance, "length": b.length, "start": pt(&b.start), "end": pt(&b.end)})
         })
         .collect();
+    let pockets: Vec<Value> = sh
+        .machining()?
+        .iter()
+        .map(|p| {
+            let side = if p.z0 == 0.0 {
+                "bottom"
+            } else if p.z1 == sh.t {
+                "top"
+            } else {
+                "internal"
+            };
+            json!({"outline": p.region.outer.polyline(1e-3).iter().map(pt).collect::<Vec<_>>(),
+            "cutouts": p.region.holes.iter().map(|h| h.polyline(1e-3).iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "side": side, "depth_mm": p.z1-p.z0, "z0_mm": p.z0, "z1_mm": p.z1})
+        })
+        .collect();
     Ok(
-        json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "bends": bends, "unfolded": sh.flat}),
+        json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "pockets": pockets, "bends": bends, "unfolded": sh.flat}),
     )
 }
 
@@ -295,6 +321,22 @@ fn flat_pattern(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A DXF (R12 entities, mm) of the flat pattern on named layers.
 pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
+    let regions = sh.flat_regions()?;
+    let pockets = sh.machining()?;
+    let pocket_layer = |p: &solvecraft_doc::sheet::SheetPocket| {
+        let side = if p.z0 == 0.0 {
+            "BOTTOM"
+        } else if p.z1 == sh.t {
+            "TOP"
+        } else {
+            "INTERNAL"
+        };
+        format!("POCKET_{side}_Z{:.6}_TO_{:.6}_MM", p.z0, p.z1)
+    };
+    let mut layers = std::collections::BTreeSet::from(["OUTLINE".to_string(), "BEND_UP".to_string(), "BEND_DOWN".to_string()]);
+    for p in &pockets {
+        layers.insert(pocket_layer(p));
+    }
     let mut out = String::new();
     let mut w = |c: i32, v: &str| out.push_str(&format!("{c}\n{v}\n"));
     w(0, "SECTION");
@@ -306,7 +348,14 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
     w(2, "TABLES");
     w(0, "TABLE");
     w(2, "LAYER");
-    for (name, colour) in [("OUTLINE", "7"), ("BEND_UP", "1"), ("BEND_DOWN", "5")] {
+    w(70, &layers.len().to_string());
+    for name in &layers {
+        let colour = match name.as_str() {
+            "OUTLINE" => "7",
+            "BEND_UP" => "1",
+            "BEND_DOWN" => "5",
+            _ => "3",
+        };
         w(0, "LAYER");
         w(2, name);
         w(70, "0");
@@ -326,31 +375,51 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
         w(11, &f(b.x));
         w(21, &f(b.y));
     };
-    for l in sh.outline()? {
-        let m = l.len();
-        for i in 0..m {
-            if let (Some(a), Some(b)) = (l.get(i), l.get((i + 1) % m)) {
-                line(&mut w, "OUTLINE", *a, *b);
-            }
+    let mut loops: Vec<_> = regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).map(|lp| (lp, "OUTLINE".to_string())).collect();
+    for p in &pockets {
+        for lp in std::iter::once(&p.region.outer).chain(&p.region.holes) {
+            loops.push((lp, pocket_layer(p)));
         }
     }
-    for h in &sh.holes {
-        for seg in &h.outer.segs {
+    for (h, layer) in loops {
+        // A circle is often represented by two semicircles. Keep the whole analytic
+        // boundary as one CIRCLE rather than approximating outer boundaries with chords.
+        if let Some(solvecraft_geom::Seg2::Arc { center, radius, sweep, .. }) = h.segs.first() {
+            let total: f64 = h.segs.iter().filter_map(|s| if let solvecraft_geom::Seg2::Arc { sweep, .. } = s { Some(*sweep) } else { None }).sum();
+            let circular = h.segs.iter().all(|s| matches!(s, solvecraft_geom::Seg2::Arc { center: c, radius: r, sweep: a, .. } if c.dist(*center) < 1e-9 && (*r-*radius).abs() < 1e-9 && a.signum() == sweep.signum()));
+            if circular && (total.abs() - std::f64::consts::TAU).abs() < 1e-9 {
+                w(0, "CIRCLE");
+                w(8, &layer);
+                w(10, &f(center.x));
+                w(20, &f(center.y));
+                w(40, &f(*radius));
+                continue;
+            }
+        }
+        for seg in &h.segs {
             match *seg {
                 solvecraft_geom::Seg2::Arc { center, radius, start, sweep } => {
+                    if (sweep.abs() - std::f64::consts::TAU).abs() < 1e-9 {
+                        w(0, "CIRCLE");
+                        w(8, &layer);
+                        w(10, &f(center.x));
+                        w(20, &f(center.y));
+                        w(40, &f(radius));
+                        continue;
+                    }
                     let (a0, a1) = if sweep >= 0.0 { (start, start + sweep) } else { (start + sweep, start) };
                     w(0, "ARC");
-                    w(8, "OUTLINE");
+                    w(8, &layer);
                     w(10, &f(center.x));
                     w(20, &f(center.y));
                     w(40, &f(radius));
-                    w(50, &f(a0.to_degrees()));
-                    w(51, &f(a1.to_degrees()));
+                    w(50, &f(a0.to_degrees().rem_euclid(360.0)));
+                    w(51, &f(a1.to_degrees().rem_euclid(360.0)));
                 }
                 other => {
-                    let pts: Vec<Vec2> = (0..=8).map(|k| other.point_at(k as f64 / 8.0)).collect();
+                    let pts = other.polyline(1e-3);
                     for p in pts.windows(2) {
-                        line(&mut w, "OUTLINE", p[0], p[1]);
+                        line(&mut w, &layer, p[0], p[1]);
                     }
                 }
             }
@@ -373,6 +442,50 @@ fn export_dxf(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"path": path, "bends": sh.bends().len()}));
     }
     Ok(json!({"dxf": text, "bends": sh.bends().len()}))
+}
+
+fn export_bend_table(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sheet.export_bend_table";
+    let format = str_(p, "format").unwrap_or("csv").to_ascii_lowercase();
+    if !matches!(format.as_str(), "csv" | "json") {
+        return Err(bad(cmd, "`format` must be csv or json"));
+    }
+    let sh = sheet_of(s, p, cmd)?;
+    let table = flat_json(&sh)?;
+    let text = if format == "json" {
+        serde_json::to_string_pretty(&table).map_err(|e| EngineError::Other(e.to_string()))?
+    } else {
+        // Always quote text fields: body/rule names may include commas, quotes or newlines.
+        let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+        let mut csv =
+            "body,rule,thickness_mm,k_factor,bend,angle_deg,direction,radius_mm,allowance_mm,length_mm,start_x_mm,start_y_mm,end_x_mm,end_y_mm\r\n"
+                .to_string();
+        for b in sh.bends() {
+            csv.push_str(&format!(
+                "{},{},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}\r\n",
+                quote(&sh.body),
+                quote(&sh.rule),
+                sh.t,
+                sh.k,
+                b.index,
+                b.angle_deg,
+                if b.up { "up" } else { "down" },
+                b.radius,
+                b.allowance,
+                b.length,
+                b.start.x,
+                b.start.y,
+                b.end.x,
+                b.end.y
+            ));
+        }
+        csv
+    };
+    if let Some(path) = str_(p, "path").filter(|x| !x.trim().is_empty()) {
+        solvecraft_io::vfs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        return Ok(json!({"path": path, "format": format, "bends": sh.bends().len()}));
+    }
+    Ok(json!({"format": format, "text": text, "bends": sh.bends().len()}))
 }
 
 #[cfg(test)]
