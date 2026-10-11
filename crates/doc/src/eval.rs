@@ -781,13 +781,15 @@ pub fn select_profiles(ss: &SolvedSketch, sel: &ProfileSel) -> Result<Vec<Region
             }
             v
         }
-        ProfileSel::Curves { loops } => {
-            let mut v = Vec::new();
-            for l in loops {
-                let i = solvecraft_sketch::profile_by_curves(ps, l).map_err(|e| curve_pick_error(e, l, &ss.name))?;
-                v.push(ps.get(i).ok_or_else(|| DocError::Unknown(format!("profile {i} of {}", ss.name)))?.region.clone());
-            }
-            v
+        ProfileSel::Curves { .. } | ProfileSel::OffsetBoundaries { .. } | ProfileSel::WholeBoundaries { .. } => {
+            crate::profile_selection_indices(ss, sel)?
+                .into_iter()
+                .map(|index| {
+                    ps.get(index)
+                        .map(|profile| profile.region.clone())
+                        .ok_or_else(|| DocError::Invalid("profile index changed during resolution".into()))
+                })
+                .collect::<Result<Vec<_>>>()?
         }
         ProfileSel::Points { points } => {
             let mut v = Vec::new();
@@ -1583,8 +1585,51 @@ pub fn revolve_extent_with_convention(
     Ok(RevolveExtent { start, sweep, rotation_axis, display_start, curved_to: to.is_some_and(|point| curved_target_any(st, point).is_some()) })
 }
 
+/// The exact input frame and scalar interval of a current, untrimmed constructor.
+struct ExtrudeConstructor {
+    plane: Plane,
+    interval: (f64, f64),
+}
+
+/// Construct planar caps locally before placing the completed tool.
+fn centered_extrude(plane: &Plane, regions: &[Region2], start: f64, end: f64) -> Result<Vec<Body>> {
+    if !plane.origin.is_finite()
+        || !plane.x.is_finite()
+        || !plane.y.is_finite()
+        || (plane.x.len2() - 1.0).abs() > 1e-8
+        || (plane.y.len2() - 1.0).abs() > 1e-8
+        || plane.x.dot(plane.y).abs() > 1e-8
+    {
+        return Err(DocError::Invalid("extrude frame is not finite and orthonormal".into()));
+    }
+    // Fit cap surfaces in their own coordinates. Fitting a distant world-space
+    // wire can tilt an otherwise exact planar cap through numeric cancellation.
+    let bodies = kernel::extrude(&Plane::XY, regions, start, end)?;
+    if *plane == Plane::XY {
+        return Ok(bodies);
+    }
+    let n = plane.normal();
+    let m = [
+        [plane.x.x, plane.x.y, plane.x.z, 0.0],
+        [plane.y.x, plane.y.y, plane.y.z, 0.0],
+        [n.x, n.y, n.z, 0.0],
+        [plane.origin.x, plane.origin.y, plane.origin.z, 1.0],
+    ];
+    bodies.into_iter().map(|body| kernel::transform_matrix(&body, m).map_err(DocError::from)).collect()
+}
+
 /// The tool bodies a feature adds or removes (extrude, revolve, primitives), in the current state.
 fn feature_tools(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &ModelState) -> Result<Vec<Body>> {
+    feature_tools_with_constructor(doc, vals, f, st, &mut None)
+}
+
+fn feature_tools_with_constructor(
+    doc: &Document,
+    vals: &BTreeMap<String, Value>,
+    f: &Feature,
+    st: &ModelState,
+    constructor: &mut Option<ExtrudeConstructor>,
+) -> Result<Vec<Body>> {
     match &f.kind {
         FeatureKind::Extrude { sketch, profiles, extent, operation, targets } => {
             let ss = st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch} (it must come earlier in the timeline)")))?.clone();
@@ -1663,9 +1708,10 @@ fn feature_tools(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st
                 }
             }
             let mut tools = Vec::new();
+            let mut untrimmed = extent.to.is_none() && extent.from.is_none() && !extent.through_all;
             for r in &regions {
                 if *operation == Operation::Join {
-                    let exact = kernel::extrude(&ss.plane, std::slice::from_ref(r), lo + off, hi + off)?;
+                    let exact = centered_extrude(&ss.plane, std::slice::from_ref(r), lo + off, hi + off)?;
                     if exact.iter().all(|tool| {
                         st.bodies
                             .iter()
@@ -1680,12 +1726,17 @@ fn feature_tools(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st
                 }
                 let (l2, h2) = extend_for_coplanar(st, &ss.plane, r, lo + off, hi + off, *operation, targets);
                 let probe = |p: Vec2| (1..4).map(|k| ss.plane.to_world(p) + n * (lo + off + (hi - lo) * k as f64 / 4.0)).collect::<Vec<_>>();
+                let original = r;
                 let r = grow_profile_for_coplanar(st, r, *operation, targets, &probe);
-                tools.extend(kernel::extrude(&ss.plane, std::slice::from_ref(&r), l2, h2)?);
+                untrimmed &= l2 == lo + off && h2 == hi + off && &r == original;
+                tools.extend(centered_extrude(&ss.plane, std::slice::from_ref(&r), l2, h2)?);
             }
             if let Some(tb) = curved.and_then(|bi| st.bodies.get(bi)) {
                 let start = if hi > 0.0 { lo + off } else { hi + off };
                 tools = trim_to_body(tools, &tb.body, |q: Vec3| ((q - ss.plane.origin).dot(n) - start).abs())?;
+            }
+            if untrimmed {
+                *constructor = Some(ExtrudeConstructor { plane: ss.plane, interval: (lo + off, hi + off) });
             }
             if *operation == Operation::NewBody && extent.taper.is_none() {
                 let cap_bindings = crate::config::extrude_cap_bindings(&ss, &tools, 10_000_000);
@@ -2738,10 +2789,11 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         | FeatureKind::Loft { operation, targets, .. }
         | FeatureKind::Coil { operation, targets, .. }
         | FeatureKind::Sweep { operation, targets, .. } => {
-            let tools = feature_tools(doc, vals, f, st)?;
+            let mut constructor = None;
+            let tools = feature_tools_with_constructor(doc, vals, f, st, &mut constructor)?;
             // Cuts through sheet metal become cut-outs of its flat pattern.
             if matches!(operation, Operation::Cut | Operation::Intersect) && matches!(f.kind, FeatureKind::Extrude { .. }) && !st.sheets.is_empty() {
-                let handled = more::sheet_cut(f, st, &tools, targets)?;
+                let handled = more::sheet_cut(f, st, &tools, targets, constructor.as_ref())?;
                 if !handled.is_empty() {
                     let effective = if targets.is_empty() { &f.participants } else { targets };
                     let all = effective.len() == 1 && effective.first().is_some_and(|t| t == "*");

@@ -73,6 +73,26 @@ pub fn grid_step(half_height: f64) -> (f64, f64) {
 
 /// Sketch curves as world polylines with their colour.
 pub fn sketch_lines(sk: &Sketch, plane: &Plane, active: bool, determined: &[bool]) -> Vec<(Vec<Vec3>, Rgb, bool)> {
+    sketch_lines_with_sampler(sk, plane, active, determined, world_curve_parts)
+}
+
+fn world_curve_parts(sk: &Sketch, i: usize, plane: &Plane) -> Vec<Vec<Vec3>> {
+    sk.segs(i).into_iter().map(|seg| seg.polyline(0.02).iter().map(|p| plane.to_world(*p)).collect()).collect()
+}
+
+/// Sketch display paths with the same visibility and styling as [`sketch_lines`].
+///
+/// The sampler receives each visible 2D curve once and returns world-coordinate
+/// parts. Parts remain separate, so a view-dependent sampler can leave clipping
+/// gaps without drawing a line across them. Already placed 3D wires retain their
+/// existing paths. Sampling changes only display geometry, never the sketch.
+pub fn sketch_lines_with_sampler(
+    sk: &Sketch,
+    plane: &Plane,
+    active: bool,
+    determined: &[bool],
+    mut sampler: impl FnMut(&Sketch, usize, &Plane) -> Vec<Vec<Vec3>>,
+) -> Vec<(Vec<Vec3>, Rgb, bool)> {
     let mut out = Vec::new();
     for (i, c) in sk.curves.iter().enumerate() {
         if c.link.is_some() && sk.view.hide_projected && !sk.is_text_curve(i) {
@@ -93,8 +113,8 @@ pub fn sketch_lines(sk: &Sketch, plane: &Plane, active: bool, determined: &[bool
         } else {
             colors::SKETCH
         };
-        for seg in sk.segs(i) {
-            out.push((seg.polyline(0.02).iter().map(|p| plane.to_world(*p)).collect(), col, c.construction || c.centerline));
+        for part in sampler(sk, i, plane) {
+            out.push((part, col, c.construction || c.centerline));
         }
     }
     // Virtual sharp corners (kept by fillets and chamfers): thin extension lines from the
@@ -137,6 +157,23 @@ pub fn scene(s: &Session, cam: &Camera) -> Scene {
 /// the app passes the cut its viewport shows (an open Section Analysis dialog's preview, a
 /// sketch's Slice), so model renders match the window.
 pub fn scene_with_section(s: &Session, cam: &Camera, section: Option<(Vec3, Vec3)>) -> Scene {
+    scene_with_section_and_sketch_sampler(s, cam, section, world_curve_parts)
+}
+
+/// A headless scene using supplied display paths for its visible sketch curves.
+/// Callers can use the same pixel sampler as a GPU viewport without changing the
+/// body, grid, appearance, section or sketch styling policies of [`scene`].
+pub fn scene_with_sketch_sampler(s: &Session, cam: &Camera, sampler: impl FnMut(&Sketch, usize, &Plane) -> Vec<Vec<Vec3>>) -> Scene {
+    scene_with_section_and_sketch_sampler(s, cam, s.section, sampler)
+}
+
+/// A headless scene with an explicit section and supplied sketch display paths.
+pub fn scene_with_section_and_sketch_sampler(
+    s: &Session,
+    cam: &Camera,
+    section: Option<(Vec3, Vec3)>,
+    mut sampler: impl FnMut(&Sketch, usize, &Plane) -> Vec<Vec<Vec3>>,
+) -> Scene {
     let st = s.world_state();
     let section = section.filter(|(o, n)| o.is_finite() && n.is_finite() && n.len() > 1e-9);
     let mut sc = Scene {
@@ -215,7 +252,7 @@ pub fn scene_with_section(s: &Session, cam: &Camera, section: Option<(Vec3, Vec3
         if !sketch_shown(s, ss.feature) {
             continue;
         }
-        for (pts, col, cons) in sketch_lines(&ss.sketch, &ss.plane, active, &ss.report.curve_determined) {
+        for (pts, col, cons) in sketch_lines_with_sampler(&ss.sketch, &ss.plane, active, &ss.report.curve_determined, &mut sampler) {
             sc.lines.push(SceneLine { points: pts, color: col, width: if cons { 1.0 } else { 1.6 }, on_top: active });
         }
     }
@@ -402,3 +439,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "view_display_tests.rs"]
+mod display_tests;

@@ -91,6 +91,36 @@ fn a_point_pick_is_stored_by_curves() {
     assert!((volumes(&s)[0] - 4000.0).abs() < 1.0, "{:?}", volumes(&s));
 }
 
+/// New explicit API lists are sets even when reordered or repeated. Their saved
+/// form must not accidentally become a legacy graph-span multiset.
+#[test]
+fn explicit_curve_pick_normalizes_repeats_before_save_and_parameter_edit() {
+    let mut s = tray();
+    run(&mut s, "solid.extrude", json!({"sketch":"Tray","profiles":[{"curves":["top","bottom","div","left","bottom","top"]}],"distance":10}));
+    let ProfileSel::Curves { loops } = extrude_kind(&s) else { panic!("{:?}", extrude_kind(&s)) };
+    assert_eq!(loops, vec![vec!["top", "bottom", "div", "left"]]);
+    let mut reopened = Session::new(solvecraft_doc::format::read(&s.doc.to_json()).unwrap());
+    run(&mut reopened, "parameters.change", json!({"name":"split","expression":"20 mm"}));
+    assert_eq!(last_error(&reopened), None);
+    assert!((volumes(&reopened)[0] - 4000.0).abs() < 1.0);
+}
+
+#[test]
+fn repeated_explicit_curve_ids_do_not_count_split_graph_spans() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"S"}));
+    run(&mut s, "sketch.line", json!({"points":[[0,0],[10,0],[10,10],[0,10]],"closed":true,"ids":["a","b","c","d"]}));
+    run(&mut s, "sketch.line", json!({"points":[[5,-5],[5,0]],"ids":["stub"]}));
+    run(&mut s, "sketch.finish", json!({}));
+    assert_eq!(s.model.state().sketches[0].profiles[0].outer_curves.iter().filter(|id| *id == "a").count(), 2);
+    run(&mut s, "solid.extrude", json!({"sketch":"S","profiles":[{"curves":["d","a","a","a","c","b"]}],"distance":2}));
+    let ProfileSel::Curves { loops } = extrude_kind(&s) else { panic!("{:?}", extrude_kind(&s)) };
+    assert_eq!(loops, vec![vec!["d", "a", "c", "b"]]);
+    let reopened = Session::new(solvecraft_doc::format::read(&s.doc.to_json()).unwrap());
+    assert_eq!(last_error(&reopened), None);
+    assert!((volumes(&reopened)[0] - 200.0).abs() < 1e-3);
+}
+
 /// Curves cut into several pieces of one loop still name it: a line ending on the square's
 /// bottom from outside cuts the bottom in two, both pieces on the square's loop.
 #[test]

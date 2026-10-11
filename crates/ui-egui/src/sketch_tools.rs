@@ -970,11 +970,16 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     {
         painter.line_segment([*last, hs], stroke);
     }
+    if let Some((h, _)) = t.hover.as_ref()
+        && let Some(curve) = crate::tools::preview_curve(t, *h, None)
+    {
+        crate::tools::paint_preview_curve(&curve, &ss.plane, painter, proj, stroke);
+    }
     // Picked curves highlighted.
+    let mut display_budget = solvecraft_engine::render::SamplingBudget::new(32_768, 65_536);
     for id in t.picks.iter().filter(|x| *x != "|") {
         if let Some(ci) = ss.sketch.curve_index(id) {
-            let v: Vec<Pos2> = ss.sketch.polyline(ci).iter().filter_map(|q| to(*q)).collect();
-            painter.add(egui::Shape::line(v, Stroke::new(3.0, tk.accent.gamma_multiply(0.7))));
+            crate::tools::paint_curve(&ss.sketch, ci, &ss.plane, painter, proj, Stroke::new(3.0, tk.accent.gamma_multiply(0.7)), &mut display_budget);
         }
     }
 }
@@ -1028,9 +1033,9 @@ fn glyphs(app: &SolveApp, painter: &egui::Painter, proj: &Proj, hover: Option<Po
         && let Some(c) = ss.sketch.constraints.iter().find(|c| &c.id == id)
     {
         let (cs, ps) = constraint_entities(&c.kind);
+        let mut display_budget = solvecraft_engine::render::SamplingBudget::new(32_768, 65_536);
         for ci in cs {
-            let pts: Vec<Pos2> = ss.sketch.polyline(ci).iter().filter_map(|q| proj.to_screen(ss.plane.to_world(*q))).collect();
-            painter.add(egui::Shape::line(pts, Stroke::new(3.0, tk.accent.gamma_multiply(0.7))));
+            crate::tools::paint_curve(&ss.sketch, ci, &ss.plane, painter, proj, Stroke::new(3.0, tk.accent.gamma_multiply(0.7)), &mut display_budget);
         }
         for pi in ps {
             if let Some(q) = ss.sketch.point(pi).and_then(|q| proj.to_screen(ss.plane.to_world(q))) {

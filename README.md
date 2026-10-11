@@ -29,12 +29,19 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
   New face attachments retain supported construction identities and chosen occurrences;
   missing sources expose an explicit plane repair workflow. See [face attachments](docs/face-attachments.md).
   Explicitly closed fit splines and closed associative offsets use periodic C2 interpolation.
+  Supported convex line-and-arc offsets retain their identity when an inset consumes corner
+  arcs, and linked extrusions follow the current boundary. Breaking the association freezes
+  the boundary and keeps existing extrusions usable.
+  Curve drawing and picking adapt together to zoom and display scale, including small circles
+  at Fit and sketches in placed components.
 - **Constraints and dimensions** solved by our own solver (damped Gauss–Newton with
   degree-of-freedom analysis): coincident, horizontal/vertical, parallel, perpendicular, tangent,
   equal, concentric, collinear, midpoint, symmetry, fix; linear, aligned, horizontal, vertical,
   radius, diameter and angle dimensions driven by parameters. Over-constraining edits are
   rejected; fully constrained geometry turns black.
 - **Profiles** found automatically, including regions split by lines and holes inside outlines.
+  Newly captured complete adaptive boundaries retain their outer and hole source identities
+  when spline span counts change. Partial or ambiguous boundaries do not qualify.
 - **Features** on a parametric timeline: extrude, revolve, sweep, loft, fillet/chamfer,
   shell, draft, holes, threads, patterns, mirror, split, combine, move and construction geometry.
   The timeline rebuilds incrementally; features can be edited, suppressed, renamed, reordered

@@ -59,7 +59,17 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 | M11 | 2D drawings | deferred | — |
 | M12 | Release: installers, signing, docs, performance | planned | 16 |
 | M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Ordered typed configuration rules, atomic validation and structured rule editing: done. Component appearance and certified semantic face style columns, atomic preview/apply and independent-copy remapping: done. Exact constructed sketch-side and immutable imported-face lineage now preserve legacy names and reject retargeting. Left: ambiguous shifted/two-sided caps | in progress | 4 |
-| M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/11"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
+| M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/12"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
+
+## Next usability work
+
+- Single-line and rectangle-side dimensioning: keep endpoints reachable after Fit when the
+  Sketch Palette is open; support selecting a line or its two endpoints, with typed creation
+  committed as one undo step and cancellation leaving the sketch unchanged.
+- Contextual error reporting: a **Create Issue** action beside feature errors opens a
+  reviewable GitHub issue draft with the error, operation settings, build diagnostics and
+  useful reproduction context. Include relevant screenshots or a small reproduction when
+  they make a geometry failure or unexpected result easier to understand.
 
 ## View navigation
 
@@ -88,7 +98,10 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   blend a rational B-spline through exact arcs), closed or ending at planar faces square to the
   edges.
 - Booleans: prisms along one direction (plates with holes, slots, patterns of them, equal
-  sections stacked end to end) are combined exactly in 2D; bodies touching along one whole face
+  sections stacked end to end) are combined exactly in 2D. Qualified axial cuts preserve
+  annular holes with overrun cutters, including inward Press Pull after a joined extrusion;
+  curved wall qualification rejects false transverse axes instead of filling holes.
+  Bodies touching along one whole face
   (a part and its mirror image) are stitched; coincident planar faces are pushed apart when
   their neighbours are planes or cylinders. Other coincident curved configurations can still
   fail. Bounded containment classification preserves fully internal cavities and nested
@@ -125,9 +138,19 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   closed natural-spline seams remain limitations. New explicitly closed fit splines and closed
   offset outputs use periodic C2 interpolation, supporting repeated certified offsets; older
   natural splines are preserved. Clicking the starting fit point deliberately closes a new loop.
+  Newly captured adaptive profile references with complete source coverage retain their outer
+  and hole identities through span-count changes, including parameter edits after extrusion.
+  Partial, intersected or ambiguous boundaries do not qualify for these whole-source references.
+  Legacy curve-span multisets remain exact and unchanged; already-lost selections may need
+  reselection. Format 12 stores the new bounded whole-boundary references.
   Projected analytic boundaries follow nested loop identities through resizing, including
-  stationary holes and rounded corners. An inset that consumes a corner arc still reports
-  a collapse error; changing the associated output topology remains unfinished.
+  stationary holes and rounded corners. Supported convex, tangent line-and-arc boundaries
+  can lose or regain corner arcs during an inset while preserving reserved curve identities
+  and linked profile selections. Format 12 saves those associations; compatible older closed
+  offsets upgrade structurally without changing their curve IDs. Breaking an association
+  freezes its current boundary and materializes downstream profile references. Child offsets
+  of a boundary with retired arcs still require breaking its association first; mixed or
+  nonconvex junctions and retained references to disappearing individual arcs remain limited.
 - Extrude and Revolve editors retain original direction, extent expressions, explicit targets,
   axes, From/To inputs and All-profile intent. No-op edits preserve downstream dimension names
   and selected occurrence frames; cancel and successful edits preserve one-step undo history.
@@ -153,6 +176,12 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Sketch corner tools: fillet and all three chamfer modes pick a connected corner even when
   its endpoint overlaps the fixed origin or a loose point. Ordinary drawing still snaps to
   the origin; clicked UI regressions verify geometry, closed profiles and undo.
+- Sketch display: drawing, picking, highlighting, tool previews and profile shading share
+  adaptive projected curve boundaries. Fit, zoom, display scale and placed sketch frames
+  invalidate the display cache without changing CAD geometry or timeline history. Work
+  budgets and clipped paths prevent unbounded sampling or invented edges across the eye plane.
+  The Sketch Palette scrolls its options on short windows and enlarged displays while
+  keeping constraint status and Finish Sketch visible.
 - Face projection: closed boundaries have a deterministic outer-first order. Refresh matches
   existing geometry before assigning positions, retaining saved curve IDs and constraints
   across enumeration changes and resize, including concentric circles. Ambiguous identities
@@ -188,7 +217,8 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   Circular cuts crossing bends remain unsupported; free-form bases use bounded sampling.
   Parallel prismatic partial-depth cuts retain pocket side and depth through transfer and
   unfold/refold, with separate pocket contours in preview and DXF. Planar Intersect preserves
-  exact holes and retained islands, including the union of multiple selected profiles. Unsupported
+  exact holes and retained islands, including the union of multiple selected profiles, and
+  records complementary depth layers as pockets while retaining the stock gauge. Unsupported
   tapered or bend-crossing machining refuses atomically instead of restoring material later.
 - Rolling-ball fillet accuracy: independent offset-cylinder tee references check surface
   distance, actual trimmed tessellation, supporting-cylinder contacts and tangency at two

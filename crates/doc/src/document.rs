@@ -71,6 +71,15 @@ pub enum PlaneRef {
     },
 }
 
+/// Complete source curves of an outer boundary and each of its holes. Unlike a
+/// span multiset, this identity is independent of adaptive spline subdivision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WholeProfileBoundary {
+    pub outer: Vec<String>,
+    pub holes: Vec<Vec<String>>,
+}
+
 /// Which closed profiles of a sketch a feature uses.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -84,6 +93,11 @@ pub enum ProfileSel {
     /// again on every evaluation, so stable across parameter changes; no match or several is
     /// an error, never another profile.
     Curves { loops: Vec<Vec<String>> },
+    /// Complete current boundaries of topology-aware analytic offset associations.
+    /// The local association identity survives retirement and resurrection of arc roles.
+    OffsetBoundaries { associations: Vec<String> },
+    /// Exact whole source coverage, including holes; partial source curves do not match.
+    WholeBoundaries { profiles: Vec<WholeProfileBoundary> },
     /// The profile containing each sketch point.
     Points { points: Vec<Vec2> },
 }
@@ -1313,6 +1327,22 @@ impl FeatureKind {
             | FeatureKind::SheetBase { sketch, profiles, .. } => vec![(*sketch, profiles)],
             FeatureKind::Patch { sketch: Some(sk), profiles, .. } => vec![(*sk, profiles)],
             FeatureKind::Loft { sections, .. } => sections.iter_mut().filter(|s| s.point.is_none()).map(|s| (s.sketch, &mut s.profiles)).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Profile selections and their source sketches without cloning feature data.
+    pub fn profile_sels(&self) -> Vec<(u64, &ProfileSel)> {
+        match self {
+            FeatureKind::Extrude { sketch, profiles, .. }
+            | FeatureKind::Revolve { sketch, profiles, .. }
+            | FeatureKind::Sweep { sketch, profiles, .. }
+            | FeatureKind::Emboss { sketch, profiles, .. }
+            | FeatureKind::SheetBase { sketch, profiles, .. } => vec![(*sketch, profiles)],
+            FeatureKind::Patch { sketch: Some(sketch), profiles, .. } => vec![(*sketch, profiles)],
+            FeatureKind::Loft { sections, .. } => {
+                sections.iter().filter(|section| section.point.is_none()).map(|section| (section.sketch, &section.profiles)).collect()
+            }
             _ => Vec::new(),
         }
     }

@@ -7,7 +7,7 @@ use solvecraft_engine::Sel;
 use solvecraft_engine::geom::{Vec2, Vec3};
 use solvecraft_engine::render::{Camera, Mat4, Rgb};
 use solvecraft_engine::sketch::CurveKind;
-use solvecraft_engine::view::{colors, grid_step, sketch_consumed, sketch_lines};
+use solvecraft_engine::view::{colors, grid_step, sketch_consumed, sketch_lines_with_sampler};
 use std::hash::{Hash, Hasher};
 
 use crate::gpu::{GpuScene, GpuTarget, SceneSlot, ViewportCallback};
@@ -36,6 +36,10 @@ pub struct ViewportState {
     pub gpu: Option<GpuTarget>,
     slot: SceneSlot,
     key: u64,
+    sketch_slot: SceneSlot,
+    sketch_key: u64,
+    physical_scale: f32,
+    pub(crate) display: std::sync::Mutex<crate::sketch_display::DisplayCache>,
     hl_slot: SceneSlot,
     hl_key: u64,
     cpu: Option<(u64, egui::TextureHandle)>,
@@ -110,6 +114,20 @@ pub enum Hit {
     Axis {
         name: String,
     },
+}
+
+impl ViewportState {
+    pub fn pixels_per_point(&self) -> f32 {
+        if self.physical_scale > 0.0 { self.physical_scale } else { 1.0 }
+    }
+    #[cfg(test)]
+    pub(crate) fn set_pixels_per_point(&mut self, scale: f32) {
+        self.physical_scale = scale;
+    }
+}
+
+fn display_proj(app: &SolveApp) -> Proj {
+    projection(app, app.viewport.rect.unwrap_or_else(|| Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))))
 }
 
 /// World ↔ screen mapping for the current frame.
@@ -213,6 +231,7 @@ fn visible_sketches(app: &SolveApp) -> Vec<u64> {
 fn scene_key(app: &SolveApp) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.session.revision.hash(&mut h);
+    (std::sync::Arc::as_ptr(&app.session.world_state()) as usize).hash(&mut h);
     app.ui.show_grid.hash(&mut h);
     app.ui.visual_style.hash(&mut h);
     app.ui.ground_shadow.hash(&mut h);
@@ -232,11 +251,20 @@ fn scene_key(app: &SolveApp) -> u64 {
     app.tree.redefine.hash(&mut h);
     crate::theme::is_dark().hash(&mut h);
     app.session.active_sketch.hash(&mut h);
-    let (minor, _) = grid_step(app.cam.half_height());
-    minor.to_bits().hash(&mut h);
-    ((app.cam.target.x / (minor * 5.0)).round() as i64).hash(&mut h);
-    ((app.cam.target.y / (minor * 5.0)).round() as i64).hash(&mut h);
     h.finish()
+}
+
+fn sketch_scene_key(app: &SolveApp, proj: &Proj) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    scene_key(app).hash(&mut h);
+    (std::sync::Arc::as_ptr(&app.session.world_state()) as usize).hash(&mut h);
+    crate::sketch_display::projection_key(proj, app.viewport.pixels_per_point()).hash(&mut h);
+    h.finish()
+}
+
+#[cfg(test)]
+pub(crate) fn display_scene_keys(app: &SolveApp, proj: &Proj) -> (u64, u64) {
+    (scene_key(app), sketch_scene_key(app, proj))
 }
 
 /// A sketch curve colour from the engine, in the current theme.
@@ -258,23 +286,6 @@ fn build_scene(app: &SolveApp) -> GpuScene {
     let s = &app.session;
     // Bodies where their occurrences place them.
     let st = s.world_state();
-    if app.ui.show_grid && !active_view(app).hide_grid {
-        let (minor, major) = grid_step(app.cam.half_height());
-        let ext = (app.cam.half_height() * 3.0 / major).ceil() * major;
-        // The ground plane: XY with Z up, XZ with Y up (laid out in the camera's Z-up frame).
-        let tf = app.cam.to_frame(app.cam.target);
-        let c = Vec3::new((tf.x / major).round() * major, (tf.y / major).round() * major, 0.0);
-        let w3 = |p: Vec3| app.cam.from_frame(p).to_f32();
-        let n = ((ext / minor) as i64).clamp(1, 300);
-        for i in -n..=n {
-            let t = i as f64 * minor;
-            let maj = (t / major).round() * major == t;
-            let col = if maj { c4(tk.grid_major) } else { c4(tk.grid) };
-            let w = if maj { 1.0 } else { 0.7 };
-            sc.under_line(w3(c + Vec3::new(t, -ext, 0.0)), w3(c + Vec3::new(t, ext, 0.0)), col, w);
-            sc.under_line(w3(c + Vec3::new(-ext, t, 0.0)), w3(c + Vec3::new(ext, t, 0.0)), col, w);
-        }
-    }
     let active_bodies = s.active_occurrence_path.as_ref().and_then(|p| s.occurrence_bodies(p, true).ok());
     for b in &st.bodies {
         if !app.session.body_visible(&b.name) || app.preview.replaced.contains(&b.name) {
@@ -351,14 +362,43 @@ fn build_scene(app: &SolveApp) -> GpuScene {
             }
         }
     }
+
+    sc
+}
+
+/// A soft dark ellipse on the ground under the shown bodies (darkest in the middle).
+fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
+    let tk = Tokens::get();
+    let mut sc = GpuScene::default();
+    let s = &app.session;
+    let st = s.world_state();
+    let mut fill_budget = 131_072;
+    if app.ui.show_grid && !active_view(app).hide_grid {
+        let (minor, major) = grid_step(app.cam.half_height());
+        let ext = (app.cam.half_height() * 3.0 / major).ceil() * major;
+        // The ground plane: XY with Z up, XZ with Y up (laid out in the camera's Z-up frame).
+        let tf = app.cam.to_frame(app.cam.target);
+        let c = Vec3::new((tf.x / major).round() * major, (tf.y / major).round() * major, 0.0);
+        let w3 = |p: Vec3| app.cam.from_frame(p).to_f32();
+        let n = ((ext / minor) as i64).clamp(1, 300);
+        for i in -n..=n {
+            let t = i as f64 * minor;
+            let maj = (t / major).round() * major == t;
+            let col = if maj { c4(tk.grid_major) } else { c4(tk.grid) };
+            let w = if maj { 1.0 } else { 0.7 };
+            sc.under_line(w3(c + Vec3::new(t, -ext, 0.0)), w3(c + Vec3::new(t, ext, 0.0)), col, w);
+            sc.under_line(w3(c + Vec3::new(-ext, t, 0.0)), w3(c + Vec3::new(ext, t, 0.0)), col, w);
+        }
+    }
     for sid in visible_sketches(app) {
         let Some(ss) = st.sketch(sid) else { continue };
         let active = s.active_sketch == Some(sid);
         // Closed profiles are shaded (lifted off a face they may lie on).
         let lift = ss.plane.normal() * 0.01;
         let profiles = if app.ui.hidden_profiles.contains(&sid) || ss.sketch.view.hide_profile { &[][..] } else { &ss.profiles[..] };
-        for p in profiles {
-            for tri in p.region.triangulate(0.05) {
+        for (index, _) in profiles.iter().enumerate() {
+            let display = crate::sketch_display::profile_region(app, sid, index, &ss.plane, proj);
+            for tri in display.as_ref().as_ref().map_or_else(Vec::new, |region| crate::sketch_display::fill_triangles(region, &mut fill_budget)) {
                 for q in tri {
                     sc.trans_tri((ss.plane.to_world(q) + lift).to_f32(), [0.0; 3], c4(tk.profile_fill));
                 }
@@ -366,7 +406,9 @@ fn build_scene(app: &SolveApp) -> GpuScene {
         }
         // Construction curves are dashed, centerlines dash-dot (lengths follow the grid).
         let unit = grid_step(app.cam.half_height()).0;
-        for (pts, col, cons) in sketch_lines(&ss.sketch, &ss.plane, active, &ss.report.curve_determined) {
+        for (pts, col, cons) in sketch_lines_with_sampler(&ss.sketch, &ss.plane, active, &ss.report.curve_determined, |_, index, plane| {
+            crate::sketch_display::curve_sample(app, sid, index, plane, proj).parts.clone()
+        }) {
             let segs = if !cons {
                 pts.windows(2).map(|w| (w[0], w[1])).collect()
             } else if col == colors::SKETCH_CENTERLINE {
@@ -380,7 +422,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
         }
     }
     let guide_unit = grid_step(app.cam.half_height()).0;
-    for points in crate::sketch_attachment_ui::guide_lines(app) {
+    for points in crate::sketch_attachment_ui::display_guide_lines(app, proj) {
         for (a, b) in dashes(&points, &[guide_unit * 0.25, guide_unit * 0.15]) {
             sc.line(a.to_f32(), b.to_f32(), c4(tk.warning), 1.5, true);
         }
@@ -388,7 +430,6 @@ fn build_scene(app: &SolveApp) -> GpuScene {
     sc
 }
 
-/// A soft dark ellipse on the ground under the shown bodies (darkest in the middle).
 fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &solvecraft_engine::doc::ModelState) {
     // The bodies' box in the camera's Z-up frame (the ground is its XY plane).
     let mut b = solvecraft_engine::geom::Aabb3::EMPTY;
@@ -638,6 +679,7 @@ fn pick_cached(app: &mut SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     app.session.visibility.hidden_occurrences.hash(&mut h);
     app.ui.perspective.hash(&mut h);
     (proj.rect.width().to_bits(), proj.rect.height().to_bits()).hash(&mut h);
+    crate::sketch_display::projection_key(proj, app.viewport.pixels_per_point()).hash(&mut h);
     let key = h.finish();
     if let Some((k, hits)) = &app.viewport.last_pick
         && *k == key
@@ -684,8 +726,8 @@ pub fn pick(app: &SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
                 continue;
             }
             let straight = matches!(c.kind, CurveKind::Line { .. });
-            for seg in ss.sketch.segs(i) {
-                let pts: Vec<Pos2> = seg.polyline(0.05).iter().filter_map(|q| proj.to_screen(ss.plane.to_world(*q))).collect();
+            for part in &crate::sketch_display::curve_sample(app, sid, i, &ss.plane, proj).parts {
+                let pts: Vec<Pos2> = part.iter().filter_map(|q| proj.to_screen(*q)).collect();
                 for w in pts.windows(2) {
                     let dd = seg_dist(pos, w[0], w[1]) - bonus;
                     if dd < 6.0 && bestc.as_ref().is_none_or(|(b, _)| dd < *b) {
@@ -1096,17 +1138,17 @@ pub(crate) fn profile_fill(sc: &mut GpuScene, app: &SolveApp, sketch: u64, index
     let w = |q: solvecraft_engine::geom::Vec2| (plane.to_world(q) + lift).to_f32();
     let col = c4(fill);
     // In the translucent pass (after the grid and edges) so it covers them.
-    for [a, b, c] in p.region.triangulate(0.02) {
+    let proj = display_proj(app);
+    let display = crate::sketch_display::profile_region(app, sketch, index, &plane, &proj);
+    for [a, b, c] in display.as_ref().as_ref().map_or_else(Vec::new, |region| crate::sketch_display::fill_triangles(region, &mut 65_536)) {
         sc.trans_tri(w(a), [0.0; 3], col);
         sc.trans_tri(w(b), [0.0; 3], col);
         sc.trans_tri(w(c), [0.0; 3], col);
     }
     for lp in std::iter::once(&p.region.outer).chain(&p.region.holes) {
-        let poly = lp.polyline(0.02);
-        let n = poly.len();
-        for i in 0..n {
-            if let (Some(a), Some(b)) = (poly.get(i), poly.get((i + 1) % n)) {
-                sc.line(w(*a), w(*b), c4(edge), 2.0, false);
+        for part in crate::sketch_display::boundary_parts(lp, &plane, &proj, app.viewport.pixels_per_point()) {
+            for pair in part.windows(2) {
+                sc.line((pair[0] + lift).to_f32(), (pair[1] + lift).to_f32(), c4(edge), 2.0, false);
             }
         }
     }
@@ -1140,6 +1182,7 @@ fn highlight_key(app: &SolveApp) -> u64 {
     app.session.visibility.hidden_occurrences.hash(&mut h);
     app.cam.half_height().to_bits().hash(&mut h);
     app.cam.back().x.to_bits().hash(&mut h);
+    crate::sketch_display::projection_key(&display_proj(app), app.viewport.pixels_per_point()).hash(&mut h);
     h.finish()
 }
 
@@ -1258,10 +1301,9 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
                 if let Some(ss) = app.session.active_sketch.and_then(|sid| st.sketch(sid))
                     && let Some(ci) = ss.sketch.curve_index(id)
                 {
-                    for seg in ss.sketch.segs(ci) {
-                        let pts = seg.polyline(0.02);
+                    for pts in &crate::sketch_display::curve_sample(app, ss.feature, ci, &ss.plane, &display_proj(app)).parts {
                         for w in pts.windows(2) {
-                            sc.line(ss.plane.to_world(w[0]).to_f32(), ss.plane.to_world(w[1]).to_f32(), c4(t.sel_edge), 3.5, true);
+                            sc.line(w[0].to_f32(), w[1].to_f32(), c4(t.sel_edge), 3.5, true);
                         }
                     }
                 }
@@ -1540,7 +1582,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.viewport.orbit_snap.is_some() {
         ui.ctx().request_repaint();
     }
+    app.viewport.physical_scale = ui.ctx().pixels_per_point();
     let proj = projection(app, rect);
+    if let Ok(mut cache) = app.viewport.display.lock() {
+        cache.prepare(app.session.world_state(), &proj, app.viewport.pixels_per_point());
+    }
     // Suppress hover for the whole navigation gesture, including frames between pointer
     // events. Testing delta made the highlight reappear whenever a held drag paused.
     // Resolve it before rendering so the GPU scene and screen overlays use the same hit.
@@ -1579,6 +1625,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             app.viewport.key = key;
             app.viewport.build_ms = crate::now_ms() - t0;
         }
+        let sk = sketch_scene_key(app, &proj);
+        if sk != app.viewport.sketch_key {
+            let scene = build_sketch_scene(app, &proj);
+            if let Ok(mut slot) = app.viewport.sketch_slot.lock() {
+                *slot = Some(scene);
+            }
+            app.viewport.sketch_key = sk;
+        }
         let hk = highlight_key(app);
         if hk != app.viewport.hl_key {
             let hl = build_highlight(app);
@@ -1591,6 +1645,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         let cb = ViewportCallback {
             key: app.viewport.key,
             slot: app.viewport.slot.clone(),
+            sketch_key: app.viewport.sketch_key,
+            sketch_slot: app.viewport.sketch_slot.clone(),
             hl_key: app.viewport.hl_key,
             hl_slot: app.viewport.hl_slot.clone(),
             pv_key: app.preview.key,
@@ -1954,8 +2010,20 @@ fn box_select(app: &mut SolveApp, proj: &Proj, bx: BoxSel, add: bool) {
             if c.link.is_some() && ss.sketch.view.hide_projected {
                 continue;
             }
-            let pts: Vec<Vec3> = ss.sketch.segs(i).iter().flat_map(|sg| sg.polyline(0.05)).map(|q| ss.plane.to_world(q)).collect();
-            if bx.takes(&to2(&pts)) {
+            let sampled = if bx.crossing {
+                crate::sketch_display::curve_sample(app, ss.feature, i, &ss.plane, proj)
+            } else {
+                std::sync::Arc::new(crate::sketch_display::curve_unclipped(&ss.sketch, i, &ss.plane, proj, app.viewport.pixels_per_point()))
+            };
+            let parts: Vec<Vec<Pos2>> = sampled.parts.iter().map(|part| to2(part)).collect();
+            let takes = if bx.crossing {
+                parts.iter().any(|part| bx.takes(part))
+            } else {
+                sampled.quality == solvecraft_engine::render::SamplingQuality::Complete
+                    && !parts.is_empty()
+                    && parts.iter().all(|part| bx.takes(part))
+            };
+            if takes {
                 out.push(Sel::SketchCurve { id: c.id.clone() });
             }
         }
@@ -2029,8 +2097,16 @@ fn box_select(app: &mut SolveApp, proj: &Proj, bx: BoxSel, add: bool) {
                 for sid in visible_sketches(app) {
                     let Some(ss) = st.sketch(sid) else { continue };
                     for (pi, p) in ss.profiles.iter().enumerate() {
-                        let pts: Vec<Vec3> = p.region.outer.polyline(0.05).into_iter().map(|q| ss.plane.to_world(q)).collect();
-                        if bx.takes(&to2(&pts)) {
+                        let parts = crate::sketch_display::boundary_parts(&p.region.outer, &ss.plane, proj, app.viewport.pixels_per_point());
+                        let takes = if bx.crossing {
+                            parts.iter().any(|part| bx.takes(&to2(part)))
+                        } else {
+                            crate::sketch_display::profile_region(app, sid, pi, &ss.plane, proj).as_ref().as_ref().is_some_and(|display| {
+                                let points: Vec<_> = display.outer.segs.iter().map(|segment| ss.plane.to_world(segment.start())).collect();
+                                bx.takes(&to2(&points))
+                            })
+                        };
+                        if takes {
                             out.push(Sel::Profile { sketch: sid, index: pi });
                         }
                     }
@@ -2089,8 +2165,8 @@ fn hover_highlight(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
             if let Some(ss) = st.sketch(*sketch)
                 && let Some(ci) = ss.sketch.curve_index(id)
             {
-                for seg in ss.sketch.segs(ci) {
-                    let pts: Vec<Pos2> = seg.polyline(0.05).iter().filter_map(|q| proj.to_screen(ss.plane.to_world(*q))).collect();
+                for part in &crate::sketch_display::curve_sample(app, *sketch, ci, &ss.plane, proj).parts {
+                    let pts: Vec<Pos2> = part.iter().filter_map(|q| proj.to_screen(*q)).collect();
                     painter.add(Shape::line(pts, Stroke::new(3.0, col)));
                 }
             }
@@ -2131,7 +2207,7 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
         };
         if i == 0 {
             painter.circle(sp, 3.5, Color32::from_rgb(240, 200, 60), Stroke::new(1.0, t.body_edge));
-        } else if virtual_corners.contains(&i) {
+        } else if virtual_corners.binary_search(&i).is_ok() {
             // A virtual sharp corner: an open square, it is not on any drawn curve.
             painter.rect_stroke(Rect::from_center_size(sp, vec2(6.0, 6.0)), 0.0, Stroke::new(1.2, c), egui::StrokeKind::Middle);
         } else {
@@ -2157,14 +2233,18 @@ fn cpu_render(app: &mut SolveApp, ctx: &egui::Context, painter: &egui::Painter, 
         return;
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    scene_key(app).hash(&mut h);
+    sketch_scene_key(app, proj).hash(&mut h);
     for v in [proj.cam.yaw, proj.cam.pitch, proj.cam.distance, proj.cam.target.x, proj.cam.target.y, proj.cam.target.z] {
         v.to_bits().hash(&mut h);
     }
     (rect.width() as u32, rect.height() as u32).hash(&mut h);
     let key = h.finish();
     if app.viewport.cpu.as_ref().is_none_or(|(k, _)| *k != key) {
-        let scene = solvecraft_engine::view::scene(&app.session, &proj.cam);
+        let mut budget = solvecraft_engine::render::SamplingBudget::new(131_072, 1_048_576);
+        let scene =
+            solvecraft_engine::view::scene_with_section_and_sketch_sampler(&app.session, &proj.cam, section_plane(app), |sk, index, plane| {
+                crate::sketch_display::curve_with_budget(sk, index, plane, proj, app.viewport.pixels_per_point(), &mut budget).parts
+            });
         let w = (rect.width() as usize).clamp(16, 4096);
         let hh = (rect.height() as usize).clamp(16, 4096);
         let c = solvecraft_engine::render::render(&scene, &proj.cam, w, hh);
@@ -2525,6 +2605,55 @@ fn view_menu(app: &mut SolveApp, ui: &mut egui::Ui, button: Rect) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_viewport_uses_section_preview_and_sketch_slice() {
+        fn pixels(h: &mut crate::scenario::Harness, cam: Camera) -> Vec<Color32> {
+            let rect = Rect::from_min_size(Pos2::ZERO, vec2(320.0, 240.0));
+            let proj = Proj { cam, vp: cam.view_proj(4.0 / 3.0, 100.0), rect };
+            h.app.viewport.no_pixels = false;
+            // Force a texture upload so this test reads the actual CPU rasterizer result.
+            h.app.viewport.cpu = None;
+            let mut out = h.ctx.run_ui(egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ui| {
+                cpu_render(&mut h.app, ui.ctx(), ui.painter(), rect, &proj);
+            });
+            let id = h.app.viewport.cpu.as_ref().unwrap().1.id();
+            let upload = out.textures_delta.set.get(&id).unwrap().iter().find(|delta| delta.pos.is_none()).unwrap();
+            let egui::ImageData::Color(image) = &upload.image;
+            assert_eq!(image.size, [320, 240]);
+            let pixels = image.pixels.clone();
+            out.textures_delta.clear();
+            pixels
+        }
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":40,"width":30,"height":20})).unwrap();
+        let cam = solvecraft_engine::view::home_camera(&h.app.session);
+        let whole = pixels(&mut h, cam);
+        let before = h.app.session.doc.clone();
+        let undo = h.app.session.undo.len();
+        h.app.session.selection = vec![Sel::Plane { name: "XZ".into() }];
+        h.app.start("inspect.section");
+        let Some(crate::dialogs::Kind::Section { offset, .. }) = h.app.dialog.as_mut().map(|d| &mut d.kind) else { panic!("section dialog") };
+        *offset = "15 mm".into();
+        assert!(h.app.session.section.is_none());
+        let preview = pixels(&mut h, cam);
+        assert!(whole.iter().zip(&preview).filter(|(a, b)| a != b).count() > 100, "CPU viewport ignored uncommitted section preview");
+        assert!(std::sync::Arc::ptr_eq(&before, &h.app.session.doc));
+        assert_eq!(h.app.session.undo.len(), undo);
+        h.app.run("inspect.section", json!({"plane":"XZ","offset":15})).unwrap();
+        h.app.dialog = None;
+        assert_eq!(preview, pixels(&mut h, cam), "preview and committed section must rasterize identically");
+
+        h.app.session.section = None;
+        h.app.run("sketch.create", json!({"plane":{"origin":[0,0,10],"x_dir":[1,0,0],"y_dir":[0,1,0]}})).unwrap();
+        let whole = pixels(&mut h, cam);
+        h.app.run("sketch.options", json!({"slice":true})).unwrap();
+        assert!(h.app.session.section.is_none());
+        let sliced = pixels(&mut h, cam);
+        assert!(whole.iter().zip(&sliced).filter(|(a, b)| a != b).count() > 100, "CPU viewport ignored active Sketch Slice");
+        h.app.run("sketch.options", json!({"slice":false})).unwrap();
+        assert_eq!(whole, pixels(&mut h, cam), "disabling Slice restores the whole-body pixels");
+    }
 
     #[test]
     fn timeline_modifiers_highlight_on_hover_and_click() {
