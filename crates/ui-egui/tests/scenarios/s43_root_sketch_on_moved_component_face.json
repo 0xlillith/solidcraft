@@ -78,14 +78,10 @@
  },
  {
   "expect": {
-   "sketch_world": {
-    "sketch": "Sketch1",
-    "point": "p1",
-    "at": [
-     140,
-     0,
-     20
-    ]
+   "linked_world_range": {
+    "x": [100, 140],
+    "y": [0, 30],
+    "z": [20, 20]
    }
   }
  },

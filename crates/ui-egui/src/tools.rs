@@ -31,6 +31,8 @@ pub struct Tool {
     /// Inline dimension boxes for the shape being drawn, the point count they were made for,
     /// and whether the first box should take the keyboard.
     pub dims: Vec<crate::sketch_dims::DimBox>,
+    /// Locked inputs from earlier stages of this shape (arc radius, slot length).
+    pub dim_history: Vec<crate::sketch_dims::DimBox>,
     pub dims_stage: usize,
     pub dims_focus: bool,
 }
@@ -67,7 +69,17 @@ impl Tool {
             "sketch.constraint.symmetry" => ("sketch.constraint.symmetry", Kind::Pick(3)),
             _ => return crate::sketch_tools::tool_for(id),
         };
-        Some(Tool { cmd, kind, pts: Vec::new(), hover: None, picks: Vec::new(), dims: Vec::new(), dims_stage: usize::MAX, dims_focus: false })
+        Some(Tool {
+            cmd,
+            kind,
+            pts: Vec::new(),
+            hover: None,
+            picks: Vec::new(),
+            dims: Vec::new(),
+            dim_history: Vec::new(),
+            dims_stage: usize::MAX,
+            dims_focus: false,
+        })
     }
 }
 
@@ -79,7 +91,7 @@ pub fn hint(id: &str) -> String {
         "sketch.rectangle.three_point" => "3-point rectangle: click two points of one edge, then the width".into(),
         "sketch.circle.center" => "Circle: click the centre, then a point on the circle".into(),
         "sketch.arc.three_point" => "Arc: click start, end, then a point on the arc".into(),
-        "sketch.arc.center_point" => "Arc: click centre, start, then end (counter-clockwise)".into(),
+        "sketch.arc.center_point" => "Arc: click centre and start, then click end or type a signed sweep".into(),
         "sketch.dimension" => "Dimension: pick one or two entities, then click to place the value".into(),
         "sketch.slot.center_to_center" | "sketch.slot.overall" => "Slot: click both ends, then the width".into(),
         _ if id.starts_with("sketch.constraint.") => "Constraint: pick the sketch entities".into(),
@@ -100,7 +112,13 @@ fn xy(p: &(Vec2, Option<String>)) -> Value {
 
 pub fn on_hover(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
     crate::sketch3d::on_hover(app, proj, pos);
-    let h = sketch_point_at(app, proj, pos);
+    let h = if let Some(point) = app.tool.as_ref().and_then(|tool| crate::sketch_tools::periodic_start_snap(app, tool, proj, pos)) {
+        Some((point, Some("Close smooth loop".into())))
+    } else if let Some(tool) = app.tool.as_ref().filter(|t| t.cmd == "sketch.fillet" || t.cmd.starts_with("sketch.chamfer.")) {
+        crate::sketch_tools::corner_point(app, proj, pos, tool.cmd).map(|(at, id)| (at, Some(id)))
+    } else {
+        sketch_point_at(app, proj, pos)
+    };
     if let Some(t) = app.tool.as_mut() {
         t.hover = h;
     }
@@ -171,40 +189,77 @@ pub fn place(app: &mut SolveApp, p: (Vec2, Option<String>)) {
         app.tool = Some(tool);
         return;
     };
+    if let Err(error) = crate::sketch_dims::validate(app, &tool) {
+        app.set_status(error, true);
+        app.tool = Some(tool);
+        return;
+    }
     tool.pts.push(p);
     if tool.cmd == "sketch.line" {
         if tool.pts.len() >= 2 {
             let (a, b) = (tool.pts[tool.pts.len() - 2].clone(), tool.pts[tool.pts.len() - 1].clone());
-            if let Ok(v) = app.run("sketch.line", json!({"points": [arg(&a), arg(&b)], "infer": true})) {
+            let angled = crate::sketch_dims::has_locked(&tool, "Angle");
+            let dimensioned = tool.dims.iter().any(|dimension| dimension.locked);
+            if let Ok(v) = draw(app, &tool, json!({"points": [arg(&a), arg(&b)], "infer": !angled})) {
                 let curves: Vec<String> = v["curves"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect();
-                dimension(app, &tool, &curves);
                 // Chain: the next segment starts at this one's end point.
                 if let Some(id) = curves.first() {
-                    crate::inference::commit(app, id, b.0);
+                    if angled {
+                        crate::inference::clear();
+                    } else {
+                        // Endpoint inference is part of this drawing. Preserve its original
+                        // undo history even when the history is already at the engine's cap.
+                        let history = dimensioned.then(|| std::mem::take(&mut app.session.undo));
+                        crate::inference::commit(app, id, b.0);
+                        if let Some(history) = history {
+                            app.session.undo = history;
+                        }
+                    }
                     let last = tool.pts.len() - 1;
                     tool.pts[last].1 = Some(format!("{id}.end"));
+                    // The chain needs only its current endpoint, even after many segments.
+                    tool.pts = vec![tool.pts[last].clone()];
                 }
+                crate::sketch_dims::reset(&mut tool);
+            } else {
+                tool.pts.pop();
             }
         }
     } else if n > 0 && tool.pts.len() >= n {
-        let curves = run_shape(app, &tool);
-        dimension(app, &tool, &curves);
-        tool.pts.clear();
+        match run_shape(app, &tool) {
+            Ok(_) => {
+                tool.pts.clear();
+                crate::sketch_dims::reset(&mut tool);
+            }
+            Err(error) => {
+                app.set_status(error, true);
+                tool.pts.pop();
+            }
+        }
     }
     app.tool = Some(tool);
 }
 
-/// Typed values become dimension constraints on the new curves.
-fn dimension(app: &mut SolveApp, t: &Tool, curves: &[String]) {
-    for (ents, ty, value) in crate::sketch_dims::constraints(t, curves) {
-        let _ = app.run("sketch.dimension", crate::sketch_dims::dimension_params(&ents, ty, &value));
+/// Geometry and typed constraints are committed atomically, as one undo step.
+fn draw(app: &mut SolveApp, t: &Tool, params: Value) -> Result<Value, String> {
+    let dimensions = crate::sketch_dims::dimensions(t);
+    if dimensions.as_object().is_none_or(|values| values.is_empty()) {
+        app.run(t.cmd, params)
+    } else {
+        let result = app.run("sketch.draw.dimensioned", json!({"command": t.cmd, "params": params, "dimensions": dimensions}))?;
+        // The internal wrapper has no toolbar category; apply the original creator's line
+        // type while retaining the draw's undo history, including at the history limit.
+        let history = std::mem::take(&mut app.session.undo);
+        crate::sketch_palette::apply_mode(app, t.cmd, &result);
+        app.session.undo = history;
+        Ok(result)
     }
 }
 
-fn run_shape(app: &mut SolveApp, t: &Tool) -> Vec<String> {
+fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
     let p = &t.pts;
     let d = |a: usize, b: usize| p[a].0.dist(p[b].0);
-    let sides = crate::sketch_dims::locked_value(app, t, "Sides").map_or(6, |v| v.round().clamp(3.0, 200.0) as usize);
+    let sides = crate::sketch_dims::locked_value(app, t, "Sides").map_or(6, |v| v as usize);
     let params = match t.cmd {
         "sketch.rectangle.two_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1])}),
         "sketch.rectangle.center" => json!({"center": xy(&p[0]), "corner": xy(&p[1])}),
@@ -213,7 +268,10 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Vec<String> {
         "sketch.circle.two_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1])}),
         "sketch.circle.three_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "p2": xy(&p[2])}),
         "sketch.arc.three_point" => json!({"start": arg(&p[0]), "end": arg(&p[1]), "through": xy(&p[2])}),
-        "sketch.arc.center_point" => json!({"center": arg(&p[0]), "start": arg(&p[1]), "end": xy(&p[2])}),
+        "sketch.arc.center_point" => match crate::sketch_dims::locked_value(app, t, "Sweep") {
+            Some(sweep) => json!({"center": arg(&p[0]), "start": arg(&p[1]), "sweep": sweep.to_degrees()}),
+            None => json!({"center": arg(&p[0]), "start": arg(&p[1]), "end": xy(&p[2])}),
+        },
         "sketch.polygon.inscribed" | "sketch.polygon.circumscribed" => {
             let a = (p[1].0 - p[0].0).angle().to_degrees();
             json!({"center": xy(&p[0]), "radius": d(0, 1), "sides": sides, "angle": a})
@@ -225,14 +283,10 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Vec<String> {
             json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "width": w.max(1e-3)})
         }
         "sketch.point" => json!({"point": xy(&p[0])}),
-        _ => return Vec::new(),
+        _ => return Err(format!("drawing {} is not supported", t.cmd)),
     };
-    let curves: Vec<String> = app
-        .run(t.cmd, params)
-        .ok()
-        .map(|v| v["curves"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect())
-        .unwrap_or_default();
-    curves
+    let result = draw(app, t, params)?;
+    Ok(result["curves"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect())
 }
 
 fn run_pick(app: &mut SolveApp, t: &Tool) {
@@ -264,6 +318,7 @@ pub fn finish(app: &mut SolveApp) {
     {
         t.pts.clear();
         t.picks.clear();
+        crate::sketch_dims::reset(t);
         return;
     }
     app.tool = None;

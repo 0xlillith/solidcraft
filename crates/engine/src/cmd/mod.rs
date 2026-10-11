@@ -12,6 +12,8 @@ macro_rules! created_doc {
 mod browser;
 mod clipboard;
 mod component;
+mod component_clone;
+mod component_clone_assembly;
 mod construct;
 mod delete;
 mod edit;
@@ -35,6 +37,7 @@ mod plastic;
 mod sheet;
 mod sketch;
 pub(crate) use sketch::created as sketch_created;
+pub(crate) use sketch::author_path_for_rebind;
 mod sketch_3d;
 mod sketch_canvas;
 mod sketch_constraints;

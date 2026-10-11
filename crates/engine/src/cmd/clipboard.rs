@@ -62,11 +62,68 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     let feats = s.clipboard.clone();
     let comp = s.active_component;
     let mut sketches: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut bodies: BTreeMap<String, String> = BTreeMap::new();
+    let mut used: std::collections::BTreeSet<String> = s.model.state().bodies.iter().map(|body| body.name.clone()).collect();
+    let mut notices = Vec::new();
+    let author_path = s.active_occurrence_path.clone().unwrap_or_else(|| s.doc.first_path(comp));
+    solvecraft_doc::EmbossFace::component_frame(&s.placed_document(), comp, &author_path)?;
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     let mut made = Vec::new();
     for f in feats {
         let mut kind = f.kind.clone();
         kind.remap_refs(&sketches, &names);
+        if let FeatureKind::Sketch { plane, .. } = &mut kind
+            && let Some(anchor) = super::sketch::face::anchor_mut(plane)
+        {
+            let internal = bodies.contains_key(&anchor.target.body);
+            if !internal && translate.is_some_and(|translate| translate.len() > 1e-12) {
+                return Err(bad(cmd, "translated paste retains an external exact face attachment; explicitly convert it to a fixed plane first"));
+            }
+            if !internal {
+                notices.push(format!("pasted sketch retains external exact face attachment to {}", anchor.target.body));
+            }
+            anchor.remap_target(&sketches, &bodies)?;
+            if internal {
+                anchor.component = comp;
+                anchor.path = author_path.clone();
+            }
+            anchor.author_path = author_path.clone();
+            let target = anchor.target.clone();
+            if let FeatureKind::Sketch { sketch, .. } = &mut kind {
+                for link in &mut sketch.links {
+                    if link.auto_face {
+                        if let solvecraft_sketch::LinkSource::Face { body, .. } = &mut link.source
+                            && let Some(mapped) = bodies.get(body)
+                        {
+                            *body = mapped.clone();
+                        }
+                        link.face_name = Some(target.name.clone());
+                    }
+                }
+            }
+        }
+        let outputs = if f.body_names.is_empty() {
+            s.model
+                .result(f.id)
+                .map(|result| result.state.bodies.iter().filter(|body| body.feature == f.id).map(|body| body.name.clone()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else {
+            f.body_names.clone()
+        };
+        let copied_names: Vec<_> = outputs
+            .iter()
+            .map(|original| {
+                let base = format!("{original} (copy)");
+                let mut name = base.clone();
+                let mut suffix = 2usize;
+                while !used.insert(name.clone()) {
+                    name = format!("{base} {suffix}");
+                    suffix += 1;
+                }
+                bodies.insert(original.clone(), name.clone());
+                name
+            })
+            .collect();
         let doc = s.doc_mut();
         if let FeatureKind::Sketch { sketch, .. } = &mut kind {
             // Each dimension of the copy gets its own parameter, with the same expression.
@@ -90,12 +147,10 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
         let id = doc.add_feature(kind, None)?;
         if let Some(nf) = doc.feature_mut(id) {
             nf.component = comp;
-            nf.body_names = f.body_names.iter().map(|b| format!("{b} (copy)")).collect();
+            nf.body_names = copied_names;
         }
         let new_name = doc.feature(id).map(|x| x.name.clone()).unwrap_or_default();
-        if matches!(f.kind, FeatureKind::Sketch { .. }) {
-            sketches.insert(f.id, id);
-        }
+        sketches.insert(f.id, id);
         names.insert(f.name.clone(), new_name.clone());
         made.push(json!({"id": id, "name": new_name, "from": f.name}));
     }
@@ -105,7 +160,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
         .filter_map(|m| m["id"].as_u64())
         .filter_map(|id| s.model.result(id).and_then(|r| r.error.clone()).map(|e| json!({"feature": id, "error": e})))
         .collect();
-    Ok(json!({"pasted": made, "errors": errors}))
+    Ok(json!({"pasted": made, "errors": errors, "notices":notices}))
 }
 
 #[cfg(test)]

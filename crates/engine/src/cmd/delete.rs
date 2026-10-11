@@ -65,8 +65,12 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     let mut features: Vec<u64> = Vec::new();
     let mut bodies: Vec<String> = Vec::new();
     let mut faces: Vec<(String, Vec<Vec3>)> = Vec::new();
+    let mut selected_occurrences = Vec::new();
     for x in &items {
         match x {
+            Sel::Occurrence { path } => {
+                selected_occurrences.push(s.occurrence_placement(path)?.occurrence.to_string());
+            }
             Sel::SketchCurve { id } | Sel::SketchPoint { id } | Sel::SketchConstraint { id } => entities.push(id.clone()),
             Sel::Feature { id } => {
                 if s.doc.feature(*id).is_none() {
@@ -118,7 +122,10 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // An occurrence goes alone while its component has others; the last one takes the component.
     let mut components: Vec<u64> = Vec::new();
-    for k in keys(p, "occurrences") {
+    selected_occurrences.extend(keys(p, "occurrences"));
+    selected_occurrences.sort();
+    selected_occurrences.dedup();
+    for k in selected_occurrences {
         let Some(o) = s.doc.occurrences.iter().find(|o| o.id.to_string() == k || o.name == k).cloned() else {
             return Err(bad(cmd, format!("no occurrence `{k}`")));
         };

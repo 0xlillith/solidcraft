@@ -3,6 +3,7 @@
 //! edges become lines, circular edges circles or arcs, anything else a chain of lines.
 
 use serde_json::{Value, json};
+use solvecraft_doc::{EmbossFace, apply_point, mat_inverse, mat_mul};
 use solvecraft_geom::{Mesh, Vec2, Vec3};
 
 use crate::params::bad;
@@ -19,7 +20,7 @@ fn point_triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
 
 /// The outward normal of the planar body face at `p`.
 pub(super) fn face_normal(s: &Session, p: Vec3) -> Option<Vec3> {
-    let (m, f, d) = face_at(s, p)?;
+    let (m, f, d, _) = face_at(s, p)?;
     let tol = (m.bounds().diagonal() * 1e-3).max(1e-3);
     if d > tol * 10.0 {
         return None;
@@ -34,7 +35,7 @@ pub(super) fn face_normal(s: &Session, p: Vec3) -> Option<Vec3> {
 
 /// Is the body face at `p` planar (`None`: no face there)?
 pub(super) fn face_is_planar(s: &Session, p: Vec3) -> Option<bool> {
-    let (m, f, d) = face_at(s, p)?;
+    let (m, f, d, _) = face_at(s, p)?;
     let tol = (m.bounds().diagonal() * 1e-3).max(1e-3);
     if d > tol * 10.0 {
         return None;
@@ -52,9 +53,10 @@ pub(super) fn face_is_planar(s: &Session, p: Vec3) -> Option<bool> {
 }
 
 /// The body face under a point: (mesh, face index, distance).
-fn face_at(s: &Session, p: Vec3) -> Option<(std::sync::Arc<Mesh>, u32, f64)> {
+fn face_at(s: &Session, p: Vec3) -> Option<(std::sync::Arc<Mesh>, u32, f64, String)> {
     let st = s.model.state();
-    let mut best: Option<(std::sync::Arc<Mesh>, u32, f64)> = None;
+    let mut best: Option<(std::sync::Arc<Mesh>, u32, f64, String)> = None;
+    let mut ambiguous = false;
     for b in &st.bodies {
         let m = b.mesh();
         let mut near: Option<(u32, f64)> = None;
@@ -65,13 +67,16 @@ fn face_at(s: &Session, p: Vec3) -> Option<(std::sync::Arc<Mesh>, u32, f64)> {
                 near = Some((*f, d));
             }
         }
-        if let Some((f, d)) = near
-            && best.as_ref().is_none_or(|x| d < x.2)
-        {
-            best = Some((m.clone(), f, d));
+        if let Some((f, d)) = near {
+            if best.as_ref().is_none_or(|x| d < x.2 - 1e-8) {
+                best = Some((m.clone(), f, d, b.name.clone()));
+                ambiguous = false;
+            } else if best.as_ref().is_some_and(|x| (d - x.2).abs() <= 1e-8) {
+                ambiguous = true;
+            }
         }
     }
-    best
+    if ambiguous { None } else { best }
 }
 
 /// Circle through three points.
@@ -93,7 +98,7 @@ fn xy(v: Vec2) -> Value {
 /// Start a sketch on the planar face at `point` holding a copy of the face boundary. Returns
 /// the sketch id and a point inside the face (sketch coordinates). The sketch is left active.
 pub(super) fn sketch_of_face(s: &mut Session, point: Vec3, cmd: &str) -> Result<(u64, Vec2)> {
-    let (m, f, d) = face_at(s, point).ok_or_else(|| bad(cmd, "no body face at `face`"))?;
+    let (m, f, d, body) = face_at(s, point).ok_or_else(|| bad(cmd, "no body face at `face`"))?;
     let tol = (m.bounds().diagonal() * 1e-3).max(1e-3);
     if d > tol * 10.0 {
         return Err(bad(cmd, "no body face at `face`"));
@@ -118,14 +123,45 @@ pub(super) fn sketch_of_face(s: &mut Session, point: Vec3, cmd: &str) -> Result<
         let spec = crate::find_command(id).ok_or_else(|| bad(cmd, id))?;
         (spec.run)(s, &p)
     };
-    let r = run(s, "sketch.create", json!({"plane": {"face": [inside.x, inside.y, inside.z]}, "project_edges": true}))?;
+    // Command frame normalization already made `point` definition-local. Capture takes
+    // world coordinates; convert exactly once using the picked body's actual occurrence.
+    let state = s.model.state();
+    let doc = s.placed_document();
+    let picked = state.body(&body).ok_or_else(|| bad(cmd, "picked body disappeared"))?;
+    let component = doc.model_body_component(picked);
+    let path = if component == s.active_component {
+        s.active_occurrence_path.clone().unwrap_or_else(|| doc.first_path(component))
+    } else {
+        // The command mapper discarded the original placement when making this pick
+        // definition-local. A repeated cross-owner source cannot be re-found safely.
+        let placements = super::component::properties::placements(&doc, cmd)?;
+        if placements.iter().filter(|(owner, _, _)| *owner == component).count() != 1 {
+            return Err(bad(cmd, "activate the picked occurrence before generating a face profile from a repeated component"));
+        }
+        doc.first_path(component)
+    };
+    let placement = EmbossFace::component_frame(&doc, component, &path)?;
+    let placement = doc.model_body_offset(picked).map(|offset| mat_mul(&placement, offset)).unwrap_or(placement);
+    let world_inside = apply_point(&placement, inside);
+    let world_body = doc.world_body_name(&state, &body, component, &path);
+    let author_path = s.active_occurrence_path.clone().unwrap_or_else(|| doc.first_path(s.active_component));
+    let author = EmbossFace::component_frame(&doc, s.active_component, &author_path)?;
+    let author_inverse = mat_inverse(&author).ok_or_else(|| bad(cmd, "invalid face profile author frame"))?;
+    let author_inside = apply_point(&author_inverse, world_inside);
+    drop(doc);
+    let r = super::sketch::create_face_profile(
+        s,
+        &json!({"plane": {"face": [world_inside.x, world_inside.y, world_inside.z], "body": world_body, "index": f, "path":path}, "project_edges": true}),
+        &body,
+        f as usize,
+    )?;
     let sid = r.get("sketch").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "could not start a sketch on the face"))?;
     s.refresh();
     let plane = s.model.state().sketch(sid).map(|ss| ss.plane).ok_or_else(|| bad(cmd, "could not start a sketch on the face"))?;
     // The face's edges came in as linked projections: they follow the face when earlier
     // features change, so nothing is copied.
     if r.get("projected").is_some_and(|x| !x.is_null()) {
-        return Ok((sid, plane.to_local(inside)));
+        return Ok((sid, plane.to_local(author_inside)));
     }
     for e in &edges {
         let pts: Vec<Vec2> = e.iter().map(|p| plane.to_local(*p)).collect();
@@ -163,5 +199,9 @@ pub(super) fn sketch_of_face(s: &mut Session, point: Vec3, cmd: &str) -> Result<
             }
         };
     }
-    Ok((sid, plane.to_local(inside)))
+    Ok((sid, plane.to_local(author_inside)))
 }
+
+#[cfg(test)]
+#[path = "face_tests.rs"]
+mod tests;

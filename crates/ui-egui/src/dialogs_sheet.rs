@@ -360,7 +360,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     }
                     row_label(ui, "");
                     if ui.button("Export DXF…").clicked() {
-                        *status = Some(export_dxf(app, v["body"].as_str().unwrap_or("")));
+                        *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "dxf"));
+                    }
+                    ui.end_row();
+                    row_label(ui, "");
+                    if ui.button("Export Bend Table…").clicked() {
+                        *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "csv"));
                     }
                     ui.end_row();
                     if let Some(s) = status {
@@ -381,12 +386,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     enter
 }
 
-fn export_dxf(app: &mut SolveApp, body: &str) -> String {
-    let name = format!("{}-{body}.dxf", app.session.doc.name);
-    let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&name, &["dxf"])) else {
+fn export_flat(app: &mut SolveApp, body: &str, extension: &str) -> String {
+    let name = format!("{}-{body}.{extension}", app.session.doc.name);
+    let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&name, &[extension])) else {
         return "Export cancelled".into();
     };
-    match app.run("sheet.export_dxf", json!({"body": body, "path": path})) {
+    let command = if extension == "csv" { "sheet.export_bend_table" } else { "sheet.export_dxf" };
+    match app.run(command, json!({"body": body, "path": path})) {
         Ok(_) => {
             app.set_status(format!("Exported {path}"), false);
             format!("Saved {path}")
@@ -708,9 +714,17 @@ pub fn overlay(painter: &egui::Painter, rect: Rect, d: &Dialog) -> bool {
     if !(lo.0.is_finite() && hi.0 > lo.0 && hi.1 > lo.1) {
         return true;
     }
-    // Fit with a margin, leaving the dialog's side free.
-    let area = Rect::from_min_max(rect.min + vec2(40.0, 60.0), rect.max - vec2(320.0, 60.0));
-    let area = if area.width() < 100.0 { rect.shrink(40.0) } else { area };
+    // Fit all retained islands to the exposed viewport. The command panel can grow
+    // to its width limit, so its actual edge, rather than a fixed reserve, bounds the view.
+    let panel_left = painter
+        .ctx()
+        .memory(|m| m.area_rect(egui::Id::new(("sc_dialog", "FLAT PATTERN"))))
+        .map(|panel| panel.left())
+        .unwrap_or(rect.right() - crate::frame::DIALOG_MAX_W);
+    let area = Rect::from_min_max(rect.min + vec2(40.0, 60.0), pos2(panel_left.min(rect.right()) - 20.0, rect.bottom() - 60.0));
+    if area.width() <= 0.0 || area.height() <= 0.0 {
+        return true;
+    }
     let scale = (f64::from(area.width()) / (hi.0 - lo.0)).min(f64::from(area.height()) / (hi.1 - lo.1));
     let ox = f64::from(area.center().x) - (lo.0 + hi.0) * 0.5 * scale;
     let oy = f64::from(area.center().y) + (lo.1 + hi.1) * 0.5 * scale;
@@ -727,6 +741,26 @@ pub fn overlay(painter: &egui::Painter, rect: Rect, d: &Dialog) -> bool {
             painter.add(egui::Shape::closed_line(pts, Stroke::new(1.4, t.text)));
         }
     }
+    // A pocket retains material below (or above) the cut. Dashed contours and a depth
+    // annotation distinguish it from the solid through-cut boundaries.
+    let pockets: Vec<&Value> = v["pockets"].as_array().into_iter().flatten().collect();
+    for pocket in &pockets {
+        let outer: Vec<(f64, f64)> = pocket["outline"].as_array().into_iter().flatten().filter_map(read).collect();
+        for contour in std::iter::once(&pocket["outline"]).chain(pocket["cutouts"].as_array().into_iter().flatten()) {
+            let mut pts: Vec<Pos2> = contour.as_array().into_iter().flatten().filter_map(read).map(to).collect();
+            if pts.len() >= 3 {
+                pts.push(pts[0]);
+                painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.6, t.accent), 3.0, 3.0));
+            }
+        }
+        if !outer.is_empty() {
+            let bounds = outer.iter().map(|p| to(*p)).fold(Rect::NOTHING, |r, p| r.union(Rect::from_min_max(p, p)));
+            let anchor = bounds.center_top() - vec2(0.0, 6.0);
+            if let Some(label) = pocket_label(pocket) {
+                painter.text(anchor, Align2::CENTER_BOTTOM, label, FontId::proportional(12.0), t.accent);
+            }
+        }
+    }
     for b in v["bends"].as_array().into_iter().flatten() {
         let (Some(a), Some(e)) = (read(&b["start"]), read(&b["end"])) else { continue };
         let col = if b["direction"] == "up" { up_col } else { down_col };
@@ -740,7 +774,31 @@ pub fn overlay(painter: &egui::Painter, rect: Rect, d: &Dialog) -> bool {
         painter.line_segment([pos2(rect.left() + 14.0, y + 7.0), pos2(rect.left() + 38.0, y + 7.0)], Stroke::new(2.0, col));
         painter.text(pos2(rect.left() + 44.0, y), Align2::LEFT_TOP, label, FontId::proportional(12.0), t.text_dim);
     }
+    if !pockets.is_empty() {
+        y += 20.0;
+        painter.extend(egui::Shape::dashed_line(
+            &[pos2(rect.left() + 14.0, y + 7.0), pos2(rect.left() + 38.0, y + 7.0)],
+            Stroke::new(1.6, t.accent),
+            3.0,
+            3.0,
+        ));
+        painter.text(pos2(rect.left() + 44.0, y), Align2::LEFT_TOP, "Pocket boundary (material remains)", FontId::proportional(12.0), t.text_dim);
+    }
     true
+}
+
+fn pocket_label(pocket: &Value) -> Option<String> {
+    let depth = pocket["depth_mm"].as_f64()?;
+    if !depth.is_finite() || depth <= 0.0 {
+        return None;
+    }
+    let side = match pocket["side"].as_str()? {
+        "top" => "Top",
+        "bottom" => "Bottom",
+        "internal" => "Internal",
+        _ => return None,
+    };
+    Some(format!("{side} pocket: {depth} mm deep"))
 }
 
 #[cfg(test)]

@@ -157,6 +157,7 @@ fn errors_are_reported_not_fatal() {
             targets: vec![],
             angle2: None,
             symmetric: false,
+            convention: Default::default(),
             to: None,
         },
         None,

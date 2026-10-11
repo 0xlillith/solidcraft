@@ -112,6 +112,7 @@ fn drawing_commands_return_the_ids_they_create() {
         ("sketch.line.midpoint", json!({"mid": [0, 0], "end": [10, 5]})),
         ("sketch.ellipse", json!({"center": [0, 0], "major": [10, 0], "minor_radius": 4})),
         ("sketch.spline.fit_point", json!({"points": [[0, 0], [5, 5], [10, 0]]})),
+        ("sketch.spline.fit_point", json!({"points": [[0, 0], [5, 5], [10, 0]], "periodic": true})),
         ("sketch.spline.control_point", json!({"points": [[0, 0], [5, 5], [10, 0], [15, 5]]})),
         ("sketch.spline.control_point_5", json!({"points": [[0, 0], [3, 5], [6, 0], [9, 5], [12, 0], [15, 5]]})),
         ("sketch.conic", json!({"start": [0, 0], "end": [10, 0], "apex": [5, 6]})),
@@ -199,6 +200,37 @@ fn modify_commands_return_the_ids_they_create() {
     made(&mut s, "sketch.circle.two_tangent", json!({"curves": [x[0], y[0]], "radius": 5, "near": [106, 4]}));
     let z = strs(&made(&mut s, "sketch.line", json!({"points": [[100, 40], [140, 40]], "connect": false}))["curves"]);
     made(&mut s, "sketch.circle.three_tangent", json!({"curves": [x[0], y[0], z[0]], "near": [120, 20]}));
+}
+
+#[test]
+fn dimensioned_drawing_reports_its_geometry_and_driving_dimensions() {
+    // The creator runs nested inside sketch.draw.dimensioned; `created` must still cover the
+    // dimensions the wrapper adds afterwards, not just the nested creator's geometry.
+    for (cmd, p, dims) in [
+        ("sketch.line", json!({"points": [[0, 0], [5, 5]]}), json!({"length": 10, "angle": 45})),
+        ("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [20, 10]}), json!({"width": 30, "height": 15})),
+        ("sketch.circle.center", json!({"center": [0, 0], "radius": 3}), json!({"diameter": 12})),
+        ("sketch.polygon.inscribed", json!({"center": [0, 0], "radius": 10, "sides": 6}), json!({"radius": 8})),
+    ] {
+        let mut s = new_sketch();
+        let c = made(&mut s, "sketch.draw.dimensioned", json!({"command": cmd, "params": p, "dimensions": dims}));
+        let n = dims.as_object().map_or(0, |d| d.len());
+        assert_eq!(strs(&c["dimensions"]).len(), n, "{cmd}: {c}");
+        assert!(!strs(&c["curves"]).is_empty(), "{cmd}: {c}");
+    }
+}
+
+#[test]
+fn breaking_an_offset_association_creates_nothing() {
+    let mut s = new_sketch();
+    let e = strs(&made(&mut s, "sketch.ellipse", json!({"center": [0, 0], "major": [10, 0], "minor_radius": 5, "connect": false}))["curves"]);
+    let c = made(&mut s, "sketch.offset", json!({"curves": [e[0]], "distance": -1, "chain": false}));
+    let out = strs(&c["curves"]);
+    let r = run(&mut s, "sketch.offset.break", json!({"curve": out[0]}));
+    let c = &r["created"];
+    for k in ["points", "curves", "constraints", "dimensions"] {
+        assert_eq!(c[k], json!([]), "{r}");
+    }
 }
 
 #[test]

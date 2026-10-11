@@ -12,6 +12,7 @@ pub mod frames;
 pub mod fuzz;
 pub mod legacy_ids;
 pub mod licences;
+pub mod occurrences;
 pub mod params;
 pub mod recovery;
 pub mod sample;
@@ -74,6 +75,10 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Sel {
+    /// An exact placement, including its containing occurrence placements.
+    Occurrence {
+        path: Vec<u64>,
+    },
     Body {
         name: String,
     },
@@ -128,6 +133,7 @@ pub struct Snapshot {
     pub label: String,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
+    pub pending_moves: std::collections::BTreeMap<u64, solvecraft_doc::Mat>,
 }
 
 /// What some commands would make, evaluated on a scratch copy of a session
@@ -159,9 +165,12 @@ pub struct Session {
     pub auto_project: bool,
     /// The component new sketches and features go into (0 = the root).
     pub active_component: u64,
+    /// The placement used when authoring shared component geometry.
+    pub active_occurrence_path: Option<Vec<u64>>,
     /// Occurrence moves not captured yet (Capture Position keeps them, a recompute drops them).
     pub pending_moves: std::collections::BTreeMap<u64, solvecraft_doc::Mat>,
     world_cache: std::sync::Mutex<Option<(u64, Arc<solvecraft_doc::ModelState>)>>,
+    occurrence_visibility_cache: std::sync::Mutex<Option<occurrences::VisibilityCache>>,
     /// Features copied with `timeline.copy` (pasted by `timeline.paste`).
     pub clipboard: Vec<solvecraft_doc::Feature>,
     /// Section Analysis: a view cut by a plane (origin, unit normal; the normal side is hidden).
@@ -176,12 +185,13 @@ pub struct Session {
     next_checkpoint: u64,
 }
 
-/// The design, active sketch and undo history at an `edit.checkpoint`.
+/// The design, active sketch, pending positions and undo history at an `edit.checkpoint`.
 #[derive(Clone, Debug)]
 pub(crate) struct Checkpoint {
     pub id: u64,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
+    pub pending_moves: std::collections::BTreeMap<u64, solvecraft_doc::Mat>,
     pub undo: Vec<Snapshot>,
     pub redo: Vec<Snapshot>,
 }
@@ -192,6 +202,8 @@ pub(crate) struct Checkpoint {
 pub struct Visibility {
     /// Bodies by name.
     pub hidden_bodies: Vec<String>,
+    /// Exact occurrence placements hidden with all descendants.
+    pub hidden_occurrences: Vec<Vec<u64>>,
     /// Origin items (O, X, Y, Z, XY, XZ, YZ) and construction geometry, by name.
     pub hidden_origin: Vec<String>,
     /// Sketches by feature id.
@@ -246,8 +258,10 @@ impl Session {
             revision: 1,
             auto_project: true,
             active_component: 0,
+            active_occurrence_path: None,
             pending_moves: Default::default(),
             world_cache: Default::default(),
+            occurrence_visibility_cache: Default::default(),
             clipboard: Vec::new(),
             section: None,
             analysis: None,
@@ -295,7 +309,7 @@ impl Session {
         {
             return w.clone();
         }
-        let w = if self.pending_moves.is_empty() {
+        let mut w = if self.pending_moves.is_empty() {
             solvecraft_doc::world_state(&self.doc, &st)
         } else {
             let mut d = (*self.doc).clone();
@@ -306,6 +320,30 @@ impl Session {
             }
             solvecraft_doc::world_state(&d, &st)
         };
+        // Sketch definitions are displayed once, at the placement currently being authored.
+        if self.active_occurrence_path.is_some() && self.active_component != 0 {
+            let first = self.occurrence_placement(&self.doc.first_path(self.active_component)).map(|p| p.world).unwrap_or(solvecraft_doc::IDENTITY);
+            if let Some(inverse) = solvecraft_doc::mat_inverse(&first) {
+                let delta = solvecraft_doc::mat_mul(&self.active_component_frame(), &inverse);
+                for sketch in w.sketches.iter_mut().filter(|sk| self.doc.feature(sk.feature).is_some_and(|f| f.component == self.active_component)) {
+                    let plane = sketch.plane;
+                    if let Some(mapped) = solvecraft_geom::Plane::new(
+                        solvecraft_doc::apply_point(&delta, plane.origin),
+                        solvecraft_doc::apply_vector(&delta, plane.x),
+                        solvecraft_doc::apply_vector(&delta, plane.y),
+                    ) {
+                        sketch.plane = mapped;
+                    }
+                    for wire in &mut sketch.sketch.wires {
+                        if wire.space == solvecraft_doc::sketch::WireSpace::Component {
+                            for point in wire.pts.iter_mut().chain(&mut wire.fit) {
+                                *point = solvecraft_doc::apply_point(&delta, *point);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let w = Arc::new(w);
         if let Ok(mut c) = self.world_cache.lock() {
             *c = Some((self.revision, w.clone()));
@@ -316,6 +354,7 @@ impl Session {
     pub fn refresh(&mut self) {
         self.model.evaluate(&self.doc);
         self.revision += 1;
+        self.prune_occurrence_state();
         // Joints follow the geometry their origins snap to.
         if !self.doc.assembly.joints.is_empty() {
             cmd::joints::resolve(self);
@@ -332,7 +371,12 @@ impl Session {
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         (spec.enabled)(self).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
-        let before = Snapshot { label: spec.label.to_string(), doc: self.doc.clone(), active_sketch: self.active_sketch };
+        let before = Snapshot {
+            label: spec.label.to_string(),
+            doc: self.doc.clone(),
+            active_sketch: self.active_sketch,
+            pending_moves: self.pending_moves.clone(),
+        };
         let null = Value::Object(Default::default());
         let params = if params.is_null() { &null } else { params };
         // Picks in the world go into their component's frame (once: commands run by commands
@@ -365,9 +409,10 @@ impl Session {
                 Ok(v)
             }
             Err(e) => {
-                if changed {
+                if changed || self.pending_moves != before.pending_moves {
                     self.doc = before.doc;
                     self.active_sketch = before.active_sketch;
+                    self.pending_moves = before.pending_moves;
                     self.refresh();
                 }
                 Err(e)
@@ -377,15 +422,14 @@ impl Session {
 
     /// A sketch command's result gets `created`: the ids of the points, curves, constraints and
     /// dimensions it added to its sketch (the `sketch` param, else the active sketch), so every
-    /// drawing and modify command reports them the same way (see `cmd::sketch_created`).
+    /// drawing and modify command reports them the same way (see `cmd::sketch_created`). A command
+    /// that runs another one (`sketch.draw.dimensioned`) gets the whole diff, replacing the nested
+    /// command's narrower `created`.
     fn with_created(&self, id: &str, params: &Value, before: &Snapshot, mut v: Value) -> Value {
         if !id.starts_with("sketch.") {
             return v;
         }
         let Some(out) = v.as_object_mut() else { return v };
-        if out.contains_key("created") {
-            return v;
-        }
         let named = match params.get("sketch") {
             Some(Value::Number(n)) => self.doc.find_feature(&n.to_string()).map(|f| f.id),
             Some(Value::String(x)) => self.doc.find_feature(x).map(|f| f.id),
@@ -397,7 +441,7 @@ impl Session {
         v
     }
 
-    /// Remember the design, active sketch and undo history; returns the checkpoint's id.
+    /// Remember the design, active sketch, pending positions and undo history; returns the checkpoint's id.
     pub fn checkpoint(&mut self) -> u64 {
         let id = self.next_checkpoint;
         self.next_checkpoint += 1;
@@ -406,6 +450,7 @@ impl Session {
             doc: self.doc.clone(),
             active_sketch: self.active_sketch,
             undo: self.undo.clone(),
+            pending_moves: self.pending_moves.clone(),
             redo: self.redo.clone(),
         });
         if self.checkpoints.len() > MAX_CHECKPOINTS {
@@ -421,6 +466,7 @@ impl Session {
         let Some(c) = self.checkpoints.drain(i..).next() else { return Err(EngineError::Other(format!("no checkpoint {id}"))) };
         self.doc = c.doc;
         self.active_sketch = c.active_sketch;
+        self.pending_moves = c.pending_moves;
         self.undo = c.undo;
         self.redo = c.redo;
         self.selection.clear();
@@ -444,21 +490,23 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             active_sketch: self.active_sketch,
-            selection: Vec::new(),
+            selection: self.selection.clone(),
             path: None,
             saved: self.saved.clone(),
             log: Vec::new(),
             revision: self.revision,
             auto_project: self.auto_project,
             active_component: self.active_component,
+            active_occurrence_path: self.active_occurrence_path.clone(),
             pending_moves: self.pending_moves.clone(),
             world_cache: Default::default(),
+            occurrence_visibility_cache: Default::default(),
             clipboard: self.clipboard.clone(),
             section: None,
             analysis: None,
             checkpoints: Vec::new(),
             next_checkpoint: 1,
-            visibility: Visibility::default(),
+            visibility: self.visibility.clone(),
         }
     }
 
@@ -492,6 +540,7 @@ impl Session {
         self.revision = computed.revision;
         self.invalidate_view(previous_revision);
         self.active_component = computed.active_component;
+        self.active_occurrence_path = computed.active_occurrence_path;
         self.pending_moves = computed.pending_moves;
         for message in computed.log {
             self.echo(message);
@@ -503,10 +552,26 @@ impl Session {
     /// A `timeline.redefine` is shown even while the timeline is rolled back to the feature
     /// being edited.
     pub fn preview(&self, commands: &[(String, Value)]) -> Result<Preview> {
-        self.scratch().preview_in_place(commands).map(|after| Preview { before: self.model.state(), after })
+        self.scratch().preview_in_place(commands).map(|after| Preview { before: self.model.state(), after: after.model.state() })
     }
 
-    fn preview_in_place(mut self, commands: &[(String, Value)]) -> Result<Arc<ModelState>> {
+    /// The same evaluated preview in occurrence coordinates, including uncaptured moves.
+    pub fn preview_world(&self, commands: &[(String, Value)]) -> Result<Preview> {
+        self.scratch().preview_in_place(commands).map(|after| Preview { before: self.world_state(), after: after.world_state() })
+    }
+
+    /// World preview with each session's visibility applied, including new body placements.
+    pub fn preview_visible_world(&self, commands: &[(String, Value)]) -> Result<Preview> {
+        let visible = |session: &Session| {
+            let world = session.world_state();
+            let mut shown = (*world).clone();
+            shown.bodies.retain(|body| session.body_visible(&body.name));
+            Arc::new(shown)
+        };
+        self.scratch().preview_in_place(commands).map(|after| Preview { before: visible(self), after: visible(&after) })
+    }
+
+    fn preview_in_place(mut self, commands: &[(String, Value)]) -> Result<Self> {
         if commands.is_empty() {
             return Err(EngineError::Other("nothing to preview".into()));
         }
@@ -524,7 +589,7 @@ impl Session {
                 }
             }
         }
-        Ok(self.model.state())
+        Ok(self)
     }
 
     /// Measure one or two selections (see `inspect.measure` with `items`); errors come back as
