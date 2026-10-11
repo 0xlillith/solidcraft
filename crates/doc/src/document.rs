@@ -88,8 +88,10 @@ pub enum ProfileSel {
     All,
     /// Profiles by index in the solved sketch's profile list.
     Indices { indices: Vec<usize> },
-    /// Profiles whose outer loop is made of exactly these curves (order-insensitive); stable
-    /// across parameter changes.
+    /// Profiles whose outer loop is made of exactly these curves, or pieces of them where other
+    /// curves cut them (order and repeats don't matter; see `sketch::profile_by_curves`). Found
+    /// again on every evaluation, so stable across parameter changes; no match or several is
+    /// an error, never another profile.
     Curves { loops: Vec<Vec<String>> },
     /// Complete current boundaries of topology-aware analytic offset associations.
     /// The local association identity survives retirement and resurrection of arc roles.

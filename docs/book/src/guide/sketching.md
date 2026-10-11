@@ -105,3 +105,12 @@ constraint while you drag.
 
 Closed loops become profiles automatically, including regions split by crossing lines and
 islands inside outlines. Extrude, revolve, sweep and loft pick profiles.
+
+A feature remembers a picked profile by the curves around it, not by where it was clicked:
+`"profiles": [{"curves": ["l1", "l2", "a1", "l3"]}]` (or `[{"curves": ["c1"]}]` for a circle)
+picks the region whose outer loop is made of exactly those curves, or the pieces of them that
+other curves cut off. It is found again on every recompute, so the feature keeps the same region
+when a parameter moves the geometry. Islands inside the region are its holes. When no region, or
+more than one (both halves of a circle cut by a line), is bounded by exactly those curves, the
+feature reports an error rather than taking another region. Profiles picked by index or by point
+(`[{"point": [x, y]}]`) are stored the same way when the feature is made.

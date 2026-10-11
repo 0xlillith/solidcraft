@@ -13,7 +13,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "CREATE")
         .icon("extrude")
         .key("E")
-        .params("distance: expr (or through_all: true); taper?: angle expr; sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [[curve ids]] | [{point:[x,y]}]; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); direction?: positive|negative|symmetric; distance2?; start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body]; name?; body_name?"),
+        .params("distance: expr (or through_all: true); taper?: angle expr; sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [{curves: [ids]}] (the profile whose outer loop is made of exactly these curves, or pieces of them; found again on every recompute, so it follows parameter changes; islands inside are its holes; an error when no profile or several match) | [{point:[x,y]}] (index and point picks are stored by their curves when that finds the same profile); face?: [x,y,z] (extrude a planar body face instead of a sketch profile); direction?: positive|negative|symmetric; distance2?; start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body]; name?; body_name?"),
     CommandSpec::new("solid.revolve", "Revolve", revolve)
         .at("SOLID", "CREATE")
         .icon("revolve")
@@ -204,31 +204,54 @@ pub(super) fn feature_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
         .ok_or_else(|| bad(cmd, "there is no sketch to use (create one first)"))
 }
 
-/// Profile indices become the curve ids of each profile's loops as the sketch is now solved.
-fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
+/// Profiles picked by index or point are stored by the curve ids of each profile's outer loop
+/// as the sketch is now solved, so they follow the geometry when parameters move it. A pick
+/// whose curves would not find that same profile again (two profiles bounded by the same
+/// curves) stays as given. Curve picks are checked: one that names no profile, or several, is
+/// refused now rather than failing later.
+pub(super) fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
+    use solvecraft_doc::sketch::profile_at_point;
     let st = s.model.state();
-    'sels: for (sketch, sel) in kind.profile_sels_mut() {
+    for (sketch, sel) in kind.profile_sels_mut() {
         let Some(ss) = st.sketch(sketch) else { continue };
-        if !matches!(
-            sel,
-            ProfileSel::Indices { .. } | ProfileSel::Curves { .. } | ProfileSel::OffsetBoundaries { .. } | ProfileSel::WholeBoundaries { .. }
-        ) {
-            continue;
-        }
-        let indices = solvecraft_doc::profile_selection_indices(ss, sel)?;
-        for i in indices.iter() {
-            let pr = ss
-                .profiles
-                .get(*i)
-                .ok_or_else(|| EngineError::Other(format!("no profile {i} in sketch `{}` (it has {})", ss.name, ss.profiles.len())))?;
-            // Two profiles with the same outer curves (one inside the other's holes cannot be):
-            // keep the index then.
-            if !matches!(sel, ProfileSel::WholeBoundaries { .. })
-                && (pr.outer_curves.is_empty() || ss.profiles.iter().filter(|q| same_loop(&q.outer_curves, &pr.outer_curves)).count() != 1)
-            {
-                continue 'sels;
+        let indices = match sel {
+            ProfileSel::Indices { .. } => solvecraft_doc::profile_selection_indices(ss, sel)?,
+            ProfileSel::Points { points } => {
+                let Some(indices) = points.iter().map(|point| profile_at_point(&ss.profiles, *point)).collect::<Option<Vec<_>>>() else { continue };
+                indices
             }
-        }
+            ProfileSel::Curves { loops } => {
+                // The command's ordinary curve lists are sets, including repeated
+                // caller IDs. Saved graph-span multisets retain their legacy meaning.
+                // Reserved offset roles never use this ordinary normalization.
+                let mut normalized = loops.clone();
+                let reserved = ss
+                    .sketch
+                    .offsets
+                    .iter()
+                    .filter_map(|offset| offset.topology.as_ref())
+                    .flat_map(|topology| topology.roles.iter().map(|role| role.output.as_str()))
+                    .collect::<std::collections::BTreeSet<_>>();
+                for curves in &mut normalized {
+                    let dynamic = curves.iter().any(|curve| reserved.contains(curve.as_str()));
+                    if !dynamic {
+                        let mut seen = std::collections::BTreeSet::new();
+                        curves.retain(|curve| seen.insert(curve.clone()));
+                    }
+                }
+                let selection = ProfileSel::Curves { loops: normalized };
+                solvecraft_doc::profile_selection_indices(ss, &selection)?;
+                *sel = selection;
+                continue;
+            }
+            ProfileSel::OffsetBoundaries { .. } | ProfileSel::WholeBoundaries { .. } => {
+                // Explicit identities retain the caller's semantics. Validate through the
+                // same resolver as recomputation, including reserved-role precedence.
+                solvecraft_doc::profile_selection_indices(ss, sel)?;
+                continue;
+            }
+            ProfileSel::All => continue,
+        };
         let captured = solvecraft_doc::capture_profile_selection(ss, &indices)?;
         *sel = match captured {
             ProfileSel::OffsetBoundaries { associations }
@@ -258,13 +281,6 @@ fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
         };
     }
     Ok(())
-}
-
-fn same_loop(a: &[String], b: &[String]) -> bool {
-    let (mut a, mut b) = (a.to_vec(), b.to_vec());
-    a.sort();
-    b.sort();
-    a == b
 }
 
 pub(super) fn profiles(p: &Value, cmd: &str) -> Result<ProfileSel> {

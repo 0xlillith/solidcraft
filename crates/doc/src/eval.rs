@@ -795,7 +795,7 @@ pub fn select_profiles(ss: &SolvedSketch, sel: &ProfileSel) -> Result<Vec<Region
             let mut v = Vec::new();
             for p in points {
                 // Innermost profile containing the point.
-                let found = ps.iter().filter(|q| q.region.contains(*p)).min_by(|a, b| a.area.total_cmp(&b.area));
+                let found = solvecraft_sketch::profile_at_point(ps, *p).and_then(|i| ps.get(i));
                 v.push(found.ok_or_else(|| DocError::Unknown(format!("profile at {:?} in {}", [p.x, p.y], ss.name)))?.region.clone());
             }
             v
@@ -805,6 +805,18 @@ pub fn select_profiles(ss: &SolvedSketch, sel: &ProfileSel) -> Result<Vec<Region
         return Err(DocError::Invalid("no profile selected".into()));
     }
     Ok(out)
+}
+
+/// The error for a profile picked by curves that no longer names exactly one profile.
+pub fn curve_pick_error(e: solvecraft_sketch::CurvePick, ids: &[String], sketch: &str) -> DocError {
+    match e {
+        solvecraft_sketch::CurvePick::Missing => DocError::Invalid(format!(
+            "no profile of {sketch} is bounded by exactly the curves {ids:?} (a curve was deleted, or another curve now cuts the region)"
+        )),
+        solvecraft_sketch::CurvePick::Ambiguous(n) => DocError::Invalid(format!(
+            "{n} profiles of {sketch} are bounded by exactly the curves {ids:?}; add a curve that tells them apart, or pick by index or point"
+        )),
+    }
 }
 
 fn new_name(state: &mut ModelState, f: &Feature, k: usize) -> String {

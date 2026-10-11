@@ -2932,7 +2932,7 @@ pub(crate) fn profile_indices(ss: &solvecraft_engine::doc::SolvedSketch, sel: &P
                 solvecraft_engine::doc::profile_selection_indices(ss, &ProfileSel::Curves { loops: vec![l.clone()] }).ok()?.first().copied()
             })
             .collect(),
-        ProfileSel::Points { points } => points.iter().filter_map(|q| ps.iter().position(|p| p.region.contains(*q))).collect(),
+        ProfileSel::Points { points } => points.iter().filter_map(|q| solvecraft_engine::doc::sketch::profile_at_point(ps, *q)).collect(),
     }
 }
 

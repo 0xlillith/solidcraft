@@ -112,12 +112,16 @@ pub fn profile_selection_indices(ss: &SolvedSketch, selection: &ProfileSel) -> R
                     }
                     indices.push(unique_profile(ss, &ss.sketch.offset_boundary(id)?)?);
                 } else {
-                    // Preserve the historical first exact ordinary-loop match.
+                    // Repeated saved IDs identify exact graph spans. Their multiplicity
+                    // must not silently turn into a whole-source certificate on resize.
+                    if curves.iter().collect::<BTreeSet<_>>().len() != curves.len()
+                        && !ss.profiles.iter().any(|profile| same_ids(curves, &profile.outer_curves))
+                    {
+                        return Err(crate::curve_pick_error(solvecraft_sketch::CurvePick::Missing, curves, &ss.name));
+                    }
                     indices.push(
-                        ss.profiles
-                            .iter()
-                            .position(|profile| same_ids(curves, &profile.outer_curves))
-                            .ok_or_else(|| DocError::Unknown(format!("profile bounded by {curves:?} in {}", ss.name)))?,
+                        solvecraft_sketch::profile_by_curves(&ss.profiles, curves)
+                            .map_err(|error| crate::curve_pick_error(error, curves, &ss.name))?,
                     );
                 }
             }
