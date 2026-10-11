@@ -104,7 +104,10 @@ fn generated_profiles_and_press_pull_convert_rotated_occurrence_picks_once() {
             // Curved coincident Cut is an existing kernel limit; it must be atomic.
             let before = s.doc.to_json();
             let error = s.execute("solid.press_pull", &json!({"face":[35,-15,15],"distance":-5})).unwrap_err();
-            assert!(error.to_string().contains("coincident faces on curved bodies"), "{error}");
+            let message = error.to_string();
+            assert!(message.contains("takes planar faces only"), "{error}");
+            assert!(message.contains("the target has 2 curved faces (cylinder)"), "{error}");
+            assert!(message.contains("the tool has 2 curved faces (cylinder)"), "{error}");
             assert_eq!(s.doc.to_json(), before);
             check(&mut s, area * 35.0, hole, 35.0);
             35.0

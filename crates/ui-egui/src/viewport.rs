@@ -342,7 +342,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
     if let Some((o, n)) = section_plane(app) {
         let col = c4(tk.text.gamma_multiply(0.9));
         for b in st.bodies.iter().filter(|b| app.session.body_visible(&b.name)) {
-            for (a, c) in section_segments(&b.mesh(), o, n) {
+            for (a, c) in solvecraft_engine::view::section_segments(&b.mesh(), o, n) {
                 sc.line(a.to_f32(), c.to_f32(), col, 1.8, false);
             }
         }
@@ -435,28 +435,6 @@ fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &solvecraft_engine::doc:
             }
         }
     }
-}
-
-/// Where the plane through `o` with normal `n` cuts a mesh: one segment per crossed triangle,
-/// nudged a hair to the kept side (so the clip leaves them drawn).
-pub(crate) fn section_segments(m: &solvecraft_engine::geom::Mesh, o: Vec3, n: Vec3) -> Vec<(Vec3, Vec3)> {
-    let eps = 1e-4 * (1.0 + m.bounds().diagonal());
-    let mut out = Vec::new();
-    for t in &m.triangles {
-        let Some(p) = m.tri(t) else { continue };
-        let d = p.map(|q| n.dot(q - o));
-        let mut pts = Vec::with_capacity(2);
-        for (i, j) in [(0, 1), (1, 2), (2, 0)] {
-            if (d[i] < 0.0) != (d[j] < 0.0) {
-                let s = d[i] / (d[i] - d[j]);
-                pts.push(p[i] + (p[j] - p[i]) * s - n * eps);
-            }
-        }
-        if let [a, b] = pts[..] {
-            out.push((a, b));
-        }
-    }
-    out
 }
 
 /// The drawn pieces of a polyline in a dash pattern (on, off, on, off… lengths).
@@ -2112,6 +2090,7 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
     let Some(ss) = st.sketch(sid) else { return };
     let sk = &ss.sketch;
     let locked = sk.locked_points();
+    let virtual_corners: Vec<usize> = sk.virtual_corners().into_iter().map(|(i, _)| i).collect();
     for (i, p) in sk.points.iter().enumerate() {
         if !solvecraft_engine::view::sketch_point_visible(sk, i) {
             continue;
@@ -2128,6 +2107,9 @@ fn overlays(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
         };
         if i == 0 {
             painter.circle(sp, 3.5, Color32::from_rgb(240, 200, 60), Stroke::new(1.0, t.body_edge));
+        } else if virtual_corners.contains(&i) {
+            // A virtual sharp corner: an open square, it is not on any drawn curve.
+            painter.rect_stroke(Rect::from_center_size(sp, vec2(6.0, 6.0)), 0.0, Stroke::new(1.2, c), egui::StrokeKind::Middle);
         } else {
             painter.rect_filled(Rect::from_center_size(sp, vec2(5.0, 5.0)), 0.0, c);
         }
@@ -3012,7 +2994,7 @@ mod tests {
         let st = s.model.state();
         let m = st.bodies[0].mesh();
         let (o, n) = (Vec3::new(0.0, 15.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
-        let segs = section_segments(&m, o, n);
+        let segs = solvecraft_engine::view::section_segments(&m, o, n);
         assert!(segs.len() >= 4, "{segs:?}");
         // On the plane (a hair to the kept side) and around the 40 x 20 cut.
         let mut len = 0.0;
@@ -3022,7 +3004,7 @@ mod tests {
         }
         assert!((len - 120.0).abs() < 0.5, "outline length {len}");
         // A plane that misses the body cuts nothing.
-        assert!(section_segments(&m, Vec3::new(0.0, 99.0, 0.0), n).is_empty());
+        assert!(solvecraft_engine::view::section_segments(&m, Vec3::new(0.0, 99.0, 0.0), n).is_empty());
     }
 
     #[test]

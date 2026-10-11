@@ -395,6 +395,7 @@ impl Session {
         let changed = !Arc::ptr_eq(&self.doc, &before.doc);
         match r {
             Ok(v) => {
+                let v = if changed { self.with_created(spec.id, params, &before, v) } else { v };
                 if changed {
                     if spec.undoable {
                         self.undo.push(before);
@@ -417,6 +418,27 @@ impl Session {
                 Err(e)
             }
         }
+    }
+
+    /// A sketch command's result gets `created`: the ids of the points, curves, constraints and
+    /// dimensions it added to its sketch (the `sketch` param, else the active sketch), so every
+    /// drawing and modify command reports them the same way (see `cmd::sketch_created`). A command
+    /// that runs another one (`sketch.draw.dimensioned`) gets the whole diff, replacing the nested
+    /// command's narrower `created`.
+    fn with_created(&self, id: &str, params: &Value, before: &Snapshot, mut v: Value) -> Value {
+        if !id.starts_with("sketch.") {
+            return v;
+        }
+        let Some(out) = v.as_object_mut() else { return v };
+        let named = match params.get("sketch") {
+            Some(Value::Number(n)) => self.doc.find_feature(&n.to_string()).map(|f| f.id),
+            Some(Value::String(x)) => self.doc.find_feature(x).map(|f| f.id),
+            _ => None,
+        };
+        let Some(sk) = named.or(self.active_sketch).or(before.active_sketch) else { return v };
+        let Ok(after) = self.doc.sketch(sk) else { return v };
+        out.insert("created".into(), cmd::sketch_created(before.doc.sketch(sk).ok(), after));
+        v
     }
 
     /// Remember the design, active sketch, pending positions and undo history; returns the checkpoint's id.

@@ -311,7 +311,14 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
             t.app_bar
         },
     );
-    ui.painter().text(home.center(), Align2::CENTER_CENTER, "Home", FontId::proportional(13.0), if app.home.open { t.text } else { t.app_bar_text });
+    let home_text = app.tr("ui.home");
+    ui.painter().text(
+        home.center(),
+        Align2::CENTER_CENTER,
+        home_text,
+        FontId::proportional(13.0),
+        if app.home.open { t.text } else { t.app_bar_text },
+    );
     crate::scenario::publish_handle("tab:home", home.center());
     if response.clicked() {
         app.home.show(app.session.revision);
@@ -346,7 +353,8 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         };
         ui.painter().rect_filled(tr, egui::CornerRadius { nw: 5, ne: 5, sw: 0, se: 0 }, fill);
         let ink = if active { t.text } else { t.app_bar_text };
-        let label = format!("{name}{}", if *dirty { " •" } else { "" });
+        let name_display = if name == "Untitled" { app.tr("ui.untitled") } else { name };
+        let label = format!("{name_display}{}", if *dirty { " •" } else { "" });
         let g = ui.painter().layout_no_wrap(label, FontId::proportional(13.0), ink);
         let text_w = (tr.width() - 30.0).max(10.0);
         let clip = Rect::from_min_size(tr.min, vec2(text_w + 10.0, tr.height()));
@@ -448,26 +456,29 @@ pub enum Answer {
 
 /// The "save changes?" prompt for a tab being closed, or for each unsaved design when quitting.
 pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
+    let _language = crate::i18n::scope(&app.preferences.language);
     quit_step(app);
     let Some(i) = app.docs.closing else { return };
     let name = tabs_info(app).get(i).map(|x| x.0.clone()).unwrap_or_default();
+    let name_display = if name == "Untitled" { crate::i18n::tr("ui.untitled") } else { &name };
     let mut answer: Option<Answer> = None;
-    crate::frame::window(ctx, format!("Save changes to {name}?"), crate::frame::Width::Normal)
+    let title = crate::i18n::format("document.save_changes", &[("name", name_display)]);
+    crate::frame::window(ctx, title, crate::frame::Width::Normal)
         .id(egui::Id::new("sc_close_prompt"))
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
         .show(ctx, |ui| {
-            ui.label(format!("{name} has unsaved changes. If you don't save, they are lost."));
+            ui.label(crate::i18n::format("document.unsaved_changes", &[("name", name_display)]));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
+                if ui.button(crate::i18n::tr("ui.save")).clicked() {
                     answer = Some(Answer::Save);
                 }
-                if ui.button("Don't Save").clicked() {
+                if ui.button(crate::i18n::tr("ui.don_t_save")).clicked() {
                     answer = Some(Answer::DontSave);
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(crate::i18n::tr("ui.cancel")).clicked() {
                     answer = Some(Answer::Cancel);
                 }
             });

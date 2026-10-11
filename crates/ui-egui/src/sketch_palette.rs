@@ -167,6 +167,7 @@ pub fn set_linetype(app: &mut SolveApp, kind: u8) {
 
 /// Draw the palette (while sketching and no command dialog is open).
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
+    let _language = crate::i18n::scope(&app.preferences.language);
     if app.dialog.is_some() {
         return;
     }
@@ -201,7 +202,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut finish = false;
     let has_curves = !selected_curves(app).is_empty();
     crate::frame::docked(
-        "SKETCH PALETTE",
+        app.tr("ui.heading_sketch_palette"),
         egui::Id::new("sc_sketch_palette"),
         anchor,
         ctx.content_rect().bottom() - anchor.y - 8.0,
@@ -215,39 +216,47 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             if ui.add(egui::Button::new(RichText::new(if folded { "+" } else { "−" }).size(14.0)).frame(false)).clicked() {
                 FOLDED.with(|f| f.set(!folded));
             }
-            ui.label(RichText::new("SKETCH PALETTE").strong().size(12.5));
+            ui.label(RichText::new(app.tr("ui.heading_sketch_palette")).strong().size(12.5));
         });
         if FOLDED.with(Cell::get) {
             return;
         }
         let ofold = OPTIONS_FOLDED.with(Cell::get);
-        if ui.add(egui::Button::new(RichText::new(format!("{} Options", if ofold { "+" } else { "−" })).size(12.0)).frame(false)).clicked() {
+        if ui
+            .add(egui::Button::new(RichText::new(format!("{} {}", if ofold { "+" } else { "−" }, app.tr("ui.options"))).size(12.0)).frame(false))
+            .clicked()
+        {
             OPTIONS_FOLDED.with(|f| f.set(!ofold));
         }
         if !ofold {
             egui::Grid::new("sc_palette_grid").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
-                ui.label("Linetype");
+                ui.label(app.tr("ui.linetype"));
                 ui.horizontal(|ui| {
                     // With a selection: convert it; without: the mode new curves are drawn in.
                     let current = mode(app);
                     for (i, (label, tip)) in [("—", "Normal"), ("- -", "Construction"), ("-·-", "Centerline")].iter().enumerate() {
                         let on = !has_curves && current == i as u8;
-                        let tip = if has_curves { format!("Make the selection {tip}") } else { format!("Draw {tip} curves") };
-                        if ui.add(egui::Button::new(*label).selected(on).min_size(vec2(30.0, 20.0))).on_hover_text(tip).clicked() {
+                        let tr_tip = app.tr_label(tip);
+                        let tip_str = if has_curves {
+                            crate::i18n::format("sketch.make_selection", &[("linetype", tr_tip)])
+                        } else {
+                            crate::i18n::format("sketch.draw_curves", &[("linetype", tr_tip)])
+                        };
+                        if ui.add(egui::Button::new(*label).selected(on).min_size(vec2(30.0, 20.0))).on_hover_text(tip_str).clicked() {
                             linetype = Some(i as u8);
                         }
                     }
                 });
                 ui.end_row();
-                ui.label("Look At");
-                if ui.button("Look At").clicked() {
+                ui.label(app.tr("ui.look_at"));
+                if ui.button(app.tr("ui.look_at")).clicked() {
                     look = true;
                 }
                 ui.end_row();
                 for (k, label) in TOGGLES {
                     // The label is part of the checkbox: clicking it toggles too.
                     let mut on = shown(k);
-                    if ui.checkbox(&mut on, label).changed() {
+                    if ui.checkbox(&mut on, app.tr_label(label)).changed() {
                         set = Some((k.to_string(), on));
                     }
                     ui.end_row();
@@ -255,11 +264,12 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             });
         }
         ui.add_space(4.0);
-        ui.label(RichText::new(dof_line.as_str()).color(if ok { t.sketch_accent } else { t.text_dim }));
+        let tr_dof = crate::i18n::tr_dyn(&dof_line);
+        ui.label(RichText::new(tr_dof).color(if ok { t.sketch_accent } else { t.text_dim }));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(WIDTH - 100.0);
-            if ui.add(egui::Button::new(RichText::new("Finish Sketch").color(Color32::WHITE)).fill(t.accent)).clicked() {
+            if ui.add(egui::Button::new(RichText::new(app.tr("ui.finish_sketch")).color(Color32::WHITE)).fill(t.accent)).clicked() {
                 finish = true;
             }
         });

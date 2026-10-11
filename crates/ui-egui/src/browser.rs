@@ -367,7 +367,8 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
         x += 21.0;
     }
     let col = row.color.unwrap_or(if row.dim { t.text_dim } else { t.text });
-    let galley = ui.painter().layout_no_wrap(row.label.to_string(), FontId::proportional(12.5), col);
+    let label_display = crate::i18n::tr_dyn(row.label);
+    let galley = ui.painter().layout_no_wrap(label_display, FontId::proportional(12.5), col);
     let lw = galley.size().x;
     ui.painter().galley(pos2(x, cy - galley.size().y / 2.0), galley, col);
     let mut bx = (x + lw + 6.0).min(r.right() - 16.0);
@@ -378,9 +379,9 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
     }
     crate::scenario::publish_handle(&format!("row:{}", row.label), r.center());
     let tip = match hover_on {
-        1 => Some(if row.fold == Some(true) { "Collapse" } else { "Expand" }),
-        2 => Some(if row.eye == Some(true) { "Hide" } else { "Show" }),
-        3 => Some(if row.radio == Some(true) { "Active component" } else { "Activate" }),
+        1 => Some(if row.fold == Some(true) { crate::i18n::tr("ui.collapse") } else { crate::i18n::tr("ui.expand") }),
+        2 => Some(if row.eye == Some(true) { crate::i18n::tr("ui.hide") } else { crate::i18n::tr("ui.show") }),
+        3 => Some(if row.radio == Some(true) { crate::i18n::tr("ui.active_component") } else { crate::i18n::tr("ui.activate") }),
         _ => None,
     };
     let resp = match tip {

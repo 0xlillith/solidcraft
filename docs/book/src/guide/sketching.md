@@ -15,6 +15,11 @@ fillet, chamfer, offset (O), mirror, patterns, move/copy and scale.
 **Project** (P) and **Intersect** bring model edges into the sketch as linked geometry that
 follows later changes. Sketching on a face projects its edges automatically.
 
+Run from a script or the control channel, every command that adds sketch geometry returns the
+ids of what it added (`created: {points, curves, constraints, dimensions}`). Ids are stable and
+never reused within a sketch, even after a delete, so a script can dimension or constrain the new
+geometry right away.
+
 Extend finds intersections with exact ellipses, rational conics and spline spans. It keeps the
 original line or circular support and extends only beyond the selected endpoint; conflicting
 constraints or an ambiguous overlap leave the sketch unchanged.
@@ -54,11 +59,20 @@ fresh link once the source is available; their stored point values are preserved
 
 ## Constraints and dimensions
 
+**Horizontal/Vertical** accepts a click on a line or clicks on two distinct sketch points,
+including the origin, endpoints and circle centres. For two points, it chooses horizontal
+or vertical alignment from their current positions. Esc cancels a pending first point.
+
 The solver is SolveCraft's own (damped Gauss–Newton with degree-of-freedom analysis). Constraints:
 coincident, horizontal/vertical, parallel, perpendicular, tangent, equal, concentric, collinear,
 midpoint, symmetry, fix, curvature (G2) and polygon. **Sketch Dimension** (D) adds linear,
 aligned, horizontal, vertical, radius, diameter and angle dimensions. Each is a parameter
 (`d1`, `d2`, …), so it can hold an expression.
+
+For Parallel, Perpendicular, Equal, Tangent, Concentric and Collinear, select exactly two
+sketch curves (Shift-click to add the second) and choose the constraint to apply it immediately.
+You can also start the constraint first and then pick its curves. An incomplete or mixed
+selection starts that pick workflow; a rejected constraint keeps the selection for correction.
 
 Under-constrained geometry is blue and fully constrained geometry turns dark, and the status
 shows the remaining degrees of freedom. A constraint or dimension that would over-constrain the
