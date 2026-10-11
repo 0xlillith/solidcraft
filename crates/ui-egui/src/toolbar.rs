@@ -45,10 +45,47 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
             crate::titlebar::drag_area(ui, r);
         }
         let left = r.left() + if app.integrated_titlebar { crate::titlebar::TRAFFIC_LIGHTS } else { 0.0 };
-        // Brand mark: a small solid block drawn in code.
-        let logo = Rect::from_center_size(pos2(left + 20.0, r.center().y), vec2(20.0, 20.0));
-        icons::paint(ui.painter(), logo, "box", Color32::from_rgb(220, 226, 236), Color32::from_rgb(90, 160, 240), Color32::WHITE);
-        ui.painter().text(pos2(left + 36.0, r.center().y), Align2::LEFT_CENTER, "SolveCraft", FontId::proportional(14.0), t.app_bar_text);
+
+        // Brand mark: the SolveCraft logo, drawn in code from the SVG's own coordinates
+        // (viewBox 357 x 412). Same 20 px height and centre as the old block.
+        {
+            let c = pos2(left + 20.0, r.center().y);
+            let s = 20.0 / 412.217;
+            let m = |pts: &[(f32, f32)]| -> Vec<egui::Pos2> {
+                pts.iter().map(|&(x, y)| pos2(c.x + (x - 178.5) * s, c.y + (y - 206.1) * s)).collect()
+            };
+            let p = ui.painter();
+            // egui only fills convex shapes, so each face is a few overlapping convex pieces.
+            let face = |col: Color32, pts: &[(f32, f32)]| {
+                p.add(egui::Shape::convex_polygon(m(pts), col, Stroke::NONE));
+            };
+            let (light, mid, dark) = (Color32::from_rgb(96, 158, 236), Color32::from_rgb(58, 136, 238), Color32::from_rgb(55, 108, 197));
+            face(light, &[(3.5, 105.9), (177.0, 5.8), (263.4, 55.6), (263.8, 156.0), (177.0, 406.4)]);
+            face(light, &[(177.0, 206.1), (263.8, 156.0), (350.5, 206.2), (350.5, 306.3), (177.0, 406.4)]);
+            face(mid, &[(3.5, 105.9), (177.0, 206.1), (177.0, 406.4)]);
+            face(mid, &[(3.5, 105.9), (3.5, 205.7), (90.3, 256.2), (177.0, 206.1)]);
+            face(mid, &[(177.0, 206.1), (90.3, 256.2), (90.0, 356.2), (177.0, 406.4)]);
+            face(dark, &[(264.1, 155.8), (177.0, 206.1), (177.0, 406.4), (263.8, 256.2)]);
+            face(dark, &[(263.8, 256.2), (350.5, 206.2), (350.5, 306.3), (177.0, 406.4)]);
+            face(dark, &[(177.0, 206.1), (177.0, 406.4), (350.5, 306.3)]);
+            face(dark, &[(263.8, 55.9), (263.8, 156.0), (177.1, 105.9)]);
+            // White edge lines.
+            let edge = Stroke::new(10.0 * s, Color32::WHITE);
+            let line = |pts: &[(f32, f32)]| {
+                p.add(egui::Shape::line(m(pts), edge));
+            };
+            line(&[(263.8, 55.9), (177.1, 105.9), (263.8, 156.0), (263.8, 256.2), (350.6, 206.1)]);
+            line(&[(5.0, 105.9), (178.5, 206.1), (178.5, 406.4)]);
+            line(&[(177.0, 206.1), (263.8, 156.0)]);
+            p.add(egui::Shape::closed_line(
+                m(&[
+                    (178.5, 5.8), (5.0, 105.9), (5.0, 206.1), (91.7, 256.2), (91.7, 356.4),
+                    (178.5, 406.4), (352.0, 306.3), (352.0, 206.1), (265.2, 156.0), (265.2, 55.9),
+                ]),
+                edge,
+            ));
+        }
+
         let mut x = left + 128.0;
         let mut click = |ui: &mut egui::Ui, icon: &str, tip: &str| -> bool {
             let br = Rect::from_center_size(pos2(x, r.center().y), vec2(26.0, 26.0));
