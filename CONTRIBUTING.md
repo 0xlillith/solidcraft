@@ -168,6 +168,23 @@ install. If you work on geometry and want to check against it, ask in an issue.
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
 
+Words alone can leave a change hard to picture. When a screenshot, short demo, diagram or
+before/after model view helps explain what is broken or changed, please include that concrete
+context in the issue or PR. This applies to kernel, geometry, assembly and backend work as well
+as the UI. Coding agents should run the relevant example and capture the actual reproduction
+or result themselves, with a brief expected/actual explanation and annotations where useful;
+please don't ask a human for evidence the agent can produce. Changes with no useful visual
+explanation do not need media. Use a small example without private designs or sensitive
+details; attach the media or link to an accessible recording rather than committing generated
+review artifacts.
+
+Keep checking upstream commits and the relevant PR's merge status throughout the work and
+before handoff. Integrate upstream merges, resolve conflicts without losing others' changes,
+and validate the integrated result. Before pushing, run `git pull --rebase origin main`, re-run
+CI if it brought changes, and push without force. Report the upstream/PR state you checked,
+any conflicts resolved and validation results. While a task remains active, follow an open
+PR through its status changes; at handoff, clearly identify anything still awaiting merge.
+
 Much of SolveCraft so far was written by AI coding agents (Claude) working in parallel, each
 owning one area, with a human setting direction and reporting bugs. Their working notes are in
 [AGENTS.md](AGENTS.md). Human contributors are just as welcome. Use whatever tools you like, as

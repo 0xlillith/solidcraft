@@ -71,6 +71,25 @@ People trust SolveCraft with their designs; a crash loses their work. **This out
 - **Never break wasm**: everything below the apps must build for `wasm32-unknown-unknown`
   (`cargo xtask wasm`, part of `cargo xtask ci`).
 
+## Showing and following through on changes
+
+- Give issues and PRs concrete visual context whenever it helps explain what is broken or
+  changed, including kernel, geometry, assembly and backend work. Coding agents should run
+  the relevant example and capture a screenshot, short recording, diagram or before/after
+  model view themselves. Show the actual reproduction/result, annotate the focus when useful,
+  and pair it with brief expected/actual behavior; do not ask a human for evidence the agent
+  can produce. Changes with no useful visual explanation do not need media.
+- Use a small public-safe example and check for private designs, paths, account details or
+  other sensitive content before sharing. Attach media to the issue/PR or link to an accessible
+  recording; do not commit generated screenshots or videos just to provide review evidence.
+- Throughout the work and before handoff, check current upstream commits and the relevant
+  PR's merge status. Keep your branch current with upstream merges, resolve conflicts without
+  discarding others' work, and re-run validation when integration changes the result. Use
+  `git pull --rebase origin main` before pushing as above; never force-push. Report the checked
+  upstream/PR state, any conflicts resolved and the validation performed. If a PR remains open,
+  keep monitoring it while the task is active and make its pending status clear at handoff;
+  do not claim it merged without checking.
+
 ## Application releases
 Development pushes are not application releases. Follow `docs/releasing.md` when asked to
 prepare or ship a release: choose the version from the actual changes, update Cargo.toml and
