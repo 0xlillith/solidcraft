@@ -139,7 +139,8 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   than retarget. General free-form profiles, seams, stepped cylinders and other curved surfaces
   remain unsupported. STEP round-trip and independent radial/volume checks cover this subset.
 - Shell and offset faces work on bodies of planes, cylinders, cones and spheres (convex or not:
-  filleted boxes, bosses, domes, countersinks); draft on convex planar bodies and on walls (planes, cylinders → cones) between caps; lofts through three or more sections are smooth (B-spline sides through every section), two
+  filleted boxes, bosses, domes, countersinks; corners where four or more planes meet, such as a
+  floor falling to a drain, as long as the corner's edges are all convex or all concave); draft on convex planar bodies and on walls (planes, cylinders → cones) between caps; lofts through three or more sections are smooth (B-spline sides through every section), two
   sections ruled.
 
 - Sketch corner tools: fillet and all three chamfer modes pick a connected corner even when
