@@ -12,7 +12,7 @@ needed most.
 
 ## Get it running (about 10 minutes on a fast machine)
 
-You need stable Rust 1.90 or newer. For the web
+You need stable Rust 1.95 or newer (required by egui/eframe 0.36). For the web
 build you also need `rustup target add wasm32-unknown-unknown` and [`trunk`](https://trunkrs.dev).
 
 ```sh
