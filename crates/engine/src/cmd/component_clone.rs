@@ -232,20 +232,29 @@ pub(super) fn paste(
     }
     // Body assignment may put externally authored geometry into this graph. Freeze it explicitly.
     let owned_features: BTreeSet<_> = feats.iter().map(|f| f.id).collect();
-    for body in state.bodies.iter().filter(|b| selected.contains(&source.body_component(&b.name, b.feature)) && !owned_features.contains(&b.feature))
-    {
+    for body in state.bodies.iter().filter(|b| selected.contains(&source.model_body_component(b)) && !owned_features.contains(&b.feature)) {
         if body.body.is_mesh() {
             return Err(bad(CMD, "Paste New of a reassigned mesh body is not supported yet"));
         }
-        let comp = source.body_component(&body.name, body.feature);
-        let offset = source.body_offsets.get(&body.name).copied().unwrap_or(solvecraft_doc::IDENTITY);
+        let offset = source.model_body_offset(body).copied().unwrap_or(solvecraft_doc::IDENTITY);
+        // An external transfer establishes the local baseline in this graph.
+        // Freeze AFTER that boundary, then replay it as an identity ownership event.
+        let entry = feats.iter().find(|f| {
+            !f.suppressed
+                && matches!(&f.kind, FeatureKind::BodyTransfer { bodies, from, to, .. }
+            if !selected.contains(from) && bodies.contains(&body.name)
+                && s.model.result(f.id).is_some_and(|result| !result.skipped && result.error.is_none()
+                    && result.state.body(&body.name).is_some_and(|entered| source.model_body_component(entered) == *to)))
+        });
         let before = feats.iter().find_map(|f| {
             let before = s.model.state_before(f.id);
             let prior = before.body(&body.name)?;
             let after = s.model.result(f.id)?.state.body(&body.name);
             if after.is_none_or(|after| !prior.body.same(&after.body)) { Some(before) } else { None }
         });
-        let base = before.as_ref().and_then(|st| st.body(&body.name)).unwrap_or(body);
+        let entered = entry.and_then(|f| s.model.result(f.id)).map(|r| r.state.clone());
+        let base = entered.as_ref().and_then(|st| st.body(&body.name)).or_else(|| before.as_ref().and_then(|st| st.body(&body.name))).unwrap_or(body);
+        let baseline_component = source.model_body_component(base);
         let geometry = solvecraft_kernel::transform_matrix(&base.body, offset)?;
         let step = solvecraft_kernel::step_export(&[&geometry], "SolveCraft independent reassigned body")?;
         let new_name = unique(&body.name, &mut used);
@@ -256,7 +265,7 @@ pub(super) fn paste(
             Some(&feature_name),
         )?;
         if let Some(f) = scratch.doc_mut().feature_mut(id) {
-            f.component = *components.get(&comp).ok_or_else(|| bad(CMD, "missing assigned component"))?;
+            f.component = *components.get(&baseline_component).ok_or_else(|| bad(CMD, "reassigned baseline is outside copied component graph"))?;
             f.body_names = vec![new_name];
         }
         new_ids.push(id);
@@ -316,6 +325,15 @@ pub(super) fn paste(
             f.body_names = outputs.get(&old.id).cloned().unwrap_or_default();
         }
         f.remap_clone(&features, &names, &bodies, &parameters)?;
+        if let FeatureKind::BodyTransfer { from, to, transform, .. } = &mut f.kind {
+            *to = *components.get(to).ok_or_else(|| bad(CMD, "transfer destination is outside the copied graph"))?;
+            if let Some(mapped) = components.get(from) {
+                *from = *mapped;
+            } else {
+                *from = *to;
+                *transform = solvecraft_doc::IDENTITY;
+            }
+        }
         if let FeatureKind::Emboss { face: Some(face), .. } = &mut f.kind
             && !face.path.is_empty()
             && let FeatureKind::Emboss { face: Some(old_face), .. } = &old.kind
@@ -361,7 +379,7 @@ pub(super) fn paste(
     let moved_out: Vec<_> = state
         .bodies
         .iter()
-        .filter(|b| owned_features.contains(&b.feature) && !selected.contains(&source.body_component(&b.name, b.feature)))
+        .filter(|b| owned_features.contains(&b.feature) && !selected.contains(&source.model_body_component(b)))
         .filter_map(|b| bodies.get(&b.name).cloned())
         .collect();
     if !moved_out.is_empty() {
@@ -376,17 +394,24 @@ pub(super) fn paste(
         if let Some(new) = bodies.get(&face.body) {
             let mut face = face.clone();
             if frozen.contains(&face.body) {
+                if face.strict_name {
+                    return Err(bad(CMD, "cannot copy strict face paint through uncertified foreign re-export"));
+                }
                 if let Some(name) = &face.name {
                     face.point = solvecraft_doc::naming::point_on_face(&state, name, face.point)
                         .map(|(point, _)| point)
                         .ok_or_else(|| bad(CMD, "source frozen face appearance lost its identity"))?;
                 }
-                face.point = solvecraft_doc::apply_point(source.body_offsets.get(&face.body).unwrap_or(&solvecraft_doc::IDENTITY), face.point);
+                let source_body = state.body(&face.body).ok_or_else(|| bad(CMD, "source frozen face appearance lost its body"))?;
+                face.point = solvecraft_doc::apply_point(source.model_body_offset(source_body).unwrap_or(&solvecraft_doc::IDENTITY), face.point);
                 face.name = None;
             } else if let Some(name) = &mut face.name {
                 *name = solvecraft_doc::remap_topology(name, &features, &bodies);
             }
             face.body = new.clone();
+            if let Some(certificate) = &mut face.certificate {
+                certificate.remap_features(&features);
+            }
             scratch.doc_mut().appearances.faces.push(face);
         }
     }
@@ -519,9 +544,9 @@ pub(super) fn paste(
     scratch.doc_mut().configs.columns = all_columns;
     style_validation?;
     let mut proof_work = 0usize;
-    let expected_count = state.bodies.iter().filter(|b| selected.contains(&source.body_component(&b.name, b.feature))).count();
+    let expected_count = state.bodies.iter().filter(|b| selected.contains(&source.model_body_component(b))).count();
     let copied_components: BTreeSet<_> = components.values().copied().collect();
-    let actual_count = copied.bodies.iter().filter(|b| copied_components.contains(&scratch.doc.body_component(&b.name, b.feature))).count();
+    let actual_count = copied.bodies.iter().filter(|b| copied_components.contains(&scratch.doc.model_body_component(b))).count();
     if actual_count != expected_count {
         return Err(bad(CMD, "copy produced an incomplete or unexpected set of bodies"));
     }
@@ -533,11 +558,11 @@ pub(super) fn paste(
             return Err(bad(CMD, "copy would modify a source body; external destructive dependencies are not supported"));
         }
     }
-    for body in state.bodies.iter().filter(|b| selected.contains(&source.body_component(&b.name, b.feature))) {
+    for body in state.bodies.iter().filter(|b| selected.contains(&source.model_body_component(b))) {
         let new = bodies.get(&body.name).ok_or_else(|| bad(CMD, format!("body {} has no clone identity", body.name)))?;
         let cloned = copied_bodies.get(new.as_str()).ok_or_else(|| bad(CMD, format!("copy did not reproduce body {}", body.name)))?;
-        let a = solvecraft_kernel::transform_matrix(&body.body, *source.body_offsets.get(&body.name).unwrap_or(&solvecraft_doc::IDENTITY))?;
-        let b = solvecraft_kernel::transform_matrix(&cloned.body, *scratch.doc.body_offsets.get(new).unwrap_or(&solvecraft_doc::IDENTITY))?;
+        let a = solvecraft_kernel::transform_matrix(&body.body, *source.model_body_offset(body).unwrap_or(&solvecraft_doc::IDENTITY))?;
+        let b = solvecraft_kernel::transform_matrix(&cloned.body, *scratch.doc.model_body_offset(cloned).unwrap_or(&solvecraft_doc::IDENTITY))?;
         let ma = solvecraft_kernel::measure(&a)?;
         let mb = solvecraft_kernel::measure(&b)?;
         let tolerance = 1e-5 * (1.0 + (ma.bbox.max - ma.bbox.min).len()) + 64.0 * f64::EPSILON * (ma.bbox.min.len() + ma.bbox.max.len());

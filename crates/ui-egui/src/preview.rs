@@ -103,6 +103,28 @@ impl PreviewState {
             Err(e) => self.error = Some(e),
         }
     }
+
+    /// Errors validate only the current inputs. Keep the last good geometry while
+    /// computing new inputs, but never let an obsolete result block their Apply.
+    fn poll(&mut self, key: u64) {
+        if self.shown_key != Some(key) {
+            self.error = None;
+        }
+        if let Some((k, rx)) = &self.running {
+            let k = *k;
+            let job = match rx.try_recv() {
+                Ok(job) => Some(job),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err("the preview failed".into())),
+            };
+            if let Some(job) = job {
+                self.running = None;
+                if k == key {
+                    self.apply(k, job);
+                }
+            }
+        }
+    }
 }
 
 /// Keep the preview in step with the open dialog: start a computation when its inputs changed,
@@ -127,20 +149,7 @@ pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
     format!("{colors:?}").hash(&mut h);
     let key = h.finish();
     let pv = &mut app.preview;
-    if let Some((k, rx)) = &pv.running {
-        let k = *k;
-        match rx.try_recv() {
-            Ok(job) => {
-                pv.running = None;
-                pv.apply(k, job);
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                pv.running = None;
-                pv.apply(k, Err("the preview failed".into()));
-            }
-        }
-    }
+    pv.poll(key);
     if pv.running.is_none() && pv.shown_key != Some(key) {
         pv.started = crate::now_ms();
         let scratch = app.session.scratch();
@@ -365,6 +374,41 @@ mod tests {
 
     fn colors() -> Colors {
         Colors { body: [1, 1, 1, 255], added: [2, 2, 2, 255], removed: [3, 3, 3, 100], edge: [0, 0, 0, 255] }
+    }
+
+    #[test]
+    fn correcting_inputs_clears_old_errors_and_discards_late_old_jobs() {
+        let mut pv = PreviewState {
+            shown_key: Some(1),
+            error: Some("unknown_angle".into()),
+            active: true,
+            replaced: vec!["Turn".into()],
+            key: 9,
+            ..PreviewState::default()
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        pv.running = Some((1, rx));
+        pv.poll(2);
+        assert!(pv.error.is_none(), "the corrected inputs can Apply while their preview computes");
+        assert!(pv.running.is_some());
+        assert!(pv.active);
+        assert_eq!(pv.replaced, ["Turn"]);
+        assert_eq!(pv.key, 9, "the last good geometry stays visible");
+        tx.send(Err("unknown_angle".into())).unwrap();
+        pv.poll(2);
+        assert!(pv.error.is_none(), "a late obsolete result cannot disable Apply again");
+        assert!(pv.running.is_none());
+        assert_eq!(pv.shown_key, Some(1));
+        assert_eq!(pv.key, 9);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        pv.running = Some((2, rx));
+        tx.send(Err("current invalid expression".into())).unwrap();
+        pv.poll(2);
+        assert_eq!(pv.error.as_deref(), Some("current invalid expression"));
+        assert_eq!(pv.shown_key, Some(2));
+        pv.poll(2);
+        assert_eq!(pv.error.as_deref(), Some("current invalid expression"), "current errors still prevent invalid Apply");
     }
 
     fn count(bytes: &[u8], stride: usize, col: [u8; 4]) -> usize {

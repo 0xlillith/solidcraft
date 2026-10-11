@@ -304,7 +304,8 @@ impl crate::Feature {
             | K::Align { bodies: list, .. }
             | K::Remove { bodies: list }
             | K::Stitch { bodies: list, .. }
-            | K::Move { bodies: list, .. } => {
+            | K::Move { bodies: list, .. }
+            | K::BodyTransfer { bodies: list, .. } => {
                 for n in list {
                     mapped_name(n, bodies);
                 }

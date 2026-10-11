@@ -39,9 +39,12 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Parameters and configurations** with unit-aware expressions (`2 * width + 5 mm`,
   `angle / 2`), ordered rules, feature suppression and per-row body materials/appearances.
 - **Assemblies** with nested components and occurrences, joints, motion studies, contact sets,
-  interference and material-aware mass properties.
+  interference and material-aware mass properties. Recorded body transfers preserve modelling
+  history and world placement; 3D sketch wires retain their coordinate frames through edits.
 - **Sheet metal** with flanges, hems, fold/unfold/refold, material cutouts, flat patterns,
-  exact line/arc/circle DXF outlines and bend tables; plastic enclosure features and rules.
+  retained shallow prismatic pockets, exact line/arc/circle DXF outlines and bend tables;
+  plastic enclosure features and rules. Pocket depth and side survive unfold/refold and appear
+  separately from through-hole outlines in the flat preview and DXF.
 - **Files**: designs as JSON (`.solvecraft`), export to STEP (AP242 with body names, colours and
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;

@@ -65,7 +65,7 @@ impl ContactGeometry {
             if !sets.iter().any(|set| path.iter().any(|id| set.contains(id))) {
                 continue;
             }
-            for body in state.bodies.iter().filter(|b| s.doc.body_component(&b.name, b.feature) == component) {
+            for body in state.bodies.iter().filter(|b| s.doc.model_body_component(b) == component) {
                 if body.body.is_mesh() {
                     return Err(limit("contact sweep does not support mesh bodies; disable their contact set to move them"));
                 }
@@ -113,7 +113,7 @@ impl ContactGeometry {
                 };
                 out.bodies.push(CachedBody {
                     path: path.clone(),
-                    offset: s.doc.body_offsets.get(&body.name).copied().unwrap_or(IDENTITY),
+                    offset: s.doc.model_body_offset(body).copied().unwrap_or(IDENTITY),
                     mesh,
                     size: body.body.size(),
                 });

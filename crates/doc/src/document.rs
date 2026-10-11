@@ -174,8 +174,8 @@ pub struct EmbossFace {
 
 impl EmbossFace {
     /// The selected sketch placement, shared by evaluation and interactive guides.
-    pub fn sketch_frame(&self, doc: &Document, author: u64, sketch_owner: u64, body_feature: u64) -> Result<crate::Mat> {
-        let owner = doc.body_component(&self.body, body_feature);
+    pub fn sketch_frame(&self, doc: &Document, author: u64, sketch_owner: u64, body: &crate::ModelBody) -> Result<crate::Mat> {
+        let owner = doc.model_body_component(body);
         if sketch_owner == owner {
             return Self::component_frame(doc, owner, &self.path);
         }
@@ -202,10 +202,10 @@ impl EmbossFace {
     }
 
     /// Resolve this exact placement without expanding every assembly instance.
-    pub fn body_frame(&self, doc: &Document, feature: u64) -> Result<crate::Mat> {
-        let owner = doc.body_component(&self.body, feature);
+    pub fn body_frame(&self, doc: &Document, body: &crate::ModelBody) -> Result<crate::Mat> {
+        let owner = doc.model_body_component(body);
         let mut frame = Self::component_frame(doc, owner, &self.path)?;
-        if let Some(offset) = doc.body_offsets.get(&self.body) {
+        if let Some(offset) = doc.model_body_offset(body) {
             frame = crate::mat_mul(&frame, offset);
         }
         Ok(frame)
@@ -244,6 +244,14 @@ impl EmbossFace {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FeatureKind {
+    /// A recorded timeline ownership boundary. Geometry is converted from its
+    /// current local frame into the destination component frame exactly once.
+    BodyTransfer {
+        bodies: Vec<String>,
+        from: u64,
+        to: u64,
+        transform: crate::Mat,
+    },
     Sketch {
         plane: PlaneRef,
         sketch: Sketch,
@@ -1121,7 +1129,8 @@ impl FeatureKind {
             | K::SurfaceTrim { .. }
             | K::Move { .. }
             | K::Import { .. }
-            | K::MeshImport { .. } => Vec::new(),
+            | K::MeshImport { .. }
+            | K::BodyTransfer { .. } => Vec::new(),
         }
     }
 
@@ -1146,6 +1155,7 @@ impl FeatureKind {
     /// Fusion-like type name (timeline tooltip, `inspect`).
     pub fn type_name(&self) -> &'static str {
         match self {
+            FeatureKind::BodyTransfer { .. } => "BodyTransferFeature",
             FeatureKind::Sketch { .. } => "Sketch",
             FeatureKind::Extrude { .. } => "ExtrudeFeature",
             FeatureKind::Revolve { .. } => "RevolveFeature",
@@ -1210,6 +1220,7 @@ impl FeatureKind {
     /// Default name prefix (`Extrude` → `Extrude1`).
     pub fn base_name(&self) -> &'static str {
         match self {
+            FeatureKind::BodyTransfer { .. } => "BodyTransfer",
             FeatureKind::Sketch { .. } => "Sketch",
             FeatureKind::Extrude { .. } => "Extrude",
             FeatureKind::Revolve { .. } => "Revolve",
@@ -1465,7 +1476,7 @@ impl FeatureKind {
             FeatureKind::SurfaceTrim { plane, .. } => plane_exprs(plane, &mut v),
             FeatureKind::SurfaceExtend { distance, .. } => v.push(distance),
             FeatureKind::Patch { .. } => {}
-            FeatureKind::Import { .. } | FeatureKind::MeshImport { .. } => {}
+            FeatureKind::Import { .. } | FeatureKind::MeshImport { .. } | FeatureKind::BodyTransfer { .. } => {}
         }
         v
     }
@@ -1701,7 +1712,34 @@ impl Document {
 
     /// The component a body belongs to: where it was moved, else its feature's.
     pub fn body_component(&self, body: &str, feature: u64) -> u64 {
+        self.features
+            .iter()
+            .take(self.marker.unwrap_or(usize::MAX))
+            .rev()
+            .find_map(|f| {
+                if f.suppressed {
+                    return None;
+                }
+                match &f.kind {
+                    FeatureKind::BodyTransfer { bodies, to, .. } if bodies.iter().any(|b| b == body) => Some(*to),
+                    _ => None,
+                }
+            })
+            .unwrap_or_else(|| self.legacy_body_component(body, feature))
+    }
+
+    pub fn legacy_body_component(&self, body: &str, feature: u64) -> u64 {
         self.body_components.get(body).copied().unwrap_or_else(|| self.feature(feature).map(|f| f.component).unwrap_or(0))
+    }
+
+    /// Ownership in this evaluated timeline state, rather than a later transfer.
+    pub fn model_body_component(&self, body: &crate::ModelBody) -> u64 {
+        if body.transferred || body.source_name.is_some() { body.component } else { self.legacy_body_component(&body.name, body.feature) }
+    }
+
+    /// Recorded transfers already converted geometry into the new local frame.
+    pub fn model_body_offset(&self, body: &crate::ModelBody) -> Option<&crate::Mat> {
+        if body.transferred { None } else { self.body_offsets.get(&body.name) }
     }
 
     /// Add a component under `parent` and return its id.
@@ -1784,6 +1822,12 @@ impl Document {
         if self.features.len() >= MAX_FEATURES {
             return Err(DocError::Invalid("too many features".into()));
         }
+        let component = if let FeatureKind::BodyTransfer { bodies, from, to, transform } = &kind {
+            crate::validate_body_transfer(self, bodies, *from, *to, transform)?;
+            *to
+        } else {
+            0
+        };
         let id = self.next_id.max(1);
         self.next_id = id + 1;
         let name = match name {
@@ -1796,7 +1840,7 @@ impl Document {
             suppressed: false,
             body_names: Vec::new(),
             param_names: Vec::new(),
-            component: 0,
+            component,
             edge_refs: Vec::new(),
             edge_names: Vec::new(),
             face_names: Vec::new(),

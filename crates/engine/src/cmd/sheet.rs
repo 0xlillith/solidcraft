@@ -293,8 +293,24 @@ fn flat_json(sh: &SheetBody) -> Result<Value> {
                 "allowance": b.allowance, "length": b.length, "start": pt(&b.start), "end": pt(&b.end)})
         })
         .collect();
+    let pockets: Vec<Value> = sh
+        .machining()?
+        .iter()
+        .map(|p| {
+            let side = if p.z0 == 0.0 {
+                "bottom"
+            } else if p.z1 == sh.t {
+                "top"
+            } else {
+                "internal"
+            };
+            json!({"outline": p.region.outer.polyline(1e-3).iter().map(pt).collect::<Vec<_>>(),
+            "cutouts": p.region.holes.iter().map(|h| h.polyline(1e-3).iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "side": side, "depth_mm": p.z1-p.z0, "z0_mm": p.z0, "z1_mm": p.z1})
+        })
+        .collect();
     Ok(
-        json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "bends": bends, "unfolded": sh.flat}),
+        json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "pockets": pockets, "bends": bends, "unfolded": sh.flat}),
     )
 }
 
@@ -305,6 +321,22 @@ fn flat_pattern(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// A DXF (R12 entities, mm) of the flat pattern on named layers.
 pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
+    let regions = sh.flat_regions()?;
+    let pockets = sh.machining()?;
+    let pocket_layer = |p: &solvecraft_doc::sheet::SheetPocket| {
+        let side = if p.z0 == 0.0 {
+            "BOTTOM"
+        } else if p.z1 == sh.t {
+            "TOP"
+        } else {
+            "INTERNAL"
+        };
+        format!("POCKET_{side}_Z{:.6}_TO_{:.6}_MM", p.z0, p.z1)
+    };
+    let mut layers = std::collections::BTreeSet::from(["OUTLINE".to_string(), "BEND_UP".to_string(), "BEND_DOWN".to_string()]);
+    for p in &pockets {
+        layers.insert(pocket_layer(p));
+    }
     let mut out = String::new();
     let mut w = |c: i32, v: &str| out.push_str(&format!("{c}\n{v}\n"));
     w(0, "SECTION");
@@ -316,8 +348,14 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
     w(2, "TABLES");
     w(0, "TABLE");
     w(2, "LAYER");
-    w(70, "3");
-    for (name, colour) in [("OUTLINE", "7"), ("BEND_UP", "1"), ("BEND_DOWN", "5")] {
+    w(70, &layers.len().to_string());
+    for name in &layers {
+        let colour = match name.as_str() {
+            "OUTLINE" => "7",
+            "BEND_UP" => "1",
+            "BEND_DOWN" => "5",
+            _ => "3",
+        };
         w(0, "LAYER");
         w(2, name);
         w(70, "0");
@@ -337,8 +375,13 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
         w(11, &f(b.x));
         w(21, &f(b.y));
     };
-    let regions = sh.flat_regions()?;
-    for h in regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)) {
+    let mut loops: Vec<_> = regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).map(|lp| (lp, "OUTLINE".to_string())).collect();
+    for p in &pockets {
+        for lp in std::iter::once(&p.region.outer).chain(&p.region.holes) {
+            loops.push((lp, pocket_layer(p)));
+        }
+    }
+    for (h, layer) in loops {
         // A circle is often represented by two semicircles. Keep the whole analytic
         // boundary as one CIRCLE rather than approximating outer boundaries with chords.
         if let Some(solvecraft_geom::Seg2::Arc { center, radius, sweep, .. }) = h.segs.first() {
@@ -346,7 +389,7 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
             let circular = h.segs.iter().all(|s| matches!(s, solvecraft_geom::Seg2::Arc { center: c, radius: r, sweep: a, .. } if c.dist(*center) < 1e-9 && (*r-*radius).abs() < 1e-9 && a.signum() == sweep.signum()));
             if circular && (total.abs() - std::f64::consts::TAU).abs() < 1e-9 {
                 w(0, "CIRCLE");
-                w(8, "OUTLINE");
+                w(8, &layer);
                 w(10, &f(center.x));
                 w(20, &f(center.y));
                 w(40, &f(*radius));
@@ -358,7 +401,7 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
                 solvecraft_geom::Seg2::Arc { center, radius, start, sweep } => {
                     if (sweep.abs() - std::f64::consts::TAU).abs() < 1e-9 {
                         w(0, "CIRCLE");
-                        w(8, "OUTLINE");
+                        w(8, &layer);
                         w(10, &f(center.x));
                         w(20, &f(center.y));
                         w(40, &f(radius));
@@ -366,7 +409,7 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
                     }
                     let (a0, a1) = if sweep >= 0.0 { (start, start + sweep) } else { (start + sweep, start) };
                     w(0, "ARC");
-                    w(8, "OUTLINE");
+                    w(8, &layer);
                     w(10, &f(center.x));
                     w(20, &f(center.y));
                     w(40, &f(radius));
@@ -376,7 +419,7 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
                 other => {
                     let pts = other.polyline(1e-3);
                     for p in pts.windows(2) {
-                        line(&mut w, "OUTLINE", p[0], p[1]);
+                        line(&mut w, &layer, p[0], p[1]);
                     }
                 }
             }

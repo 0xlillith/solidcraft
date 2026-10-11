@@ -44,13 +44,13 @@ feature that produces that body, and become visible when it returns.
 body and semantic role. You can also select a viewport face before opening the menu and use
 **Selected face on ...**. These assignments affect every occurrence sharing the definition.
 Component columns use stable component IDs, so renaming a component preserves its rows.
-Face columns use a definition body and semantic lineage, never a saved display face index.
+Face columns resolve a definition body through certified lineage, never through a saved display face index.
 
 ```json
 {"command":"config.configure","params":{"component_appearances":["Part"],"face_appearances":[{"body":"Box1","point":[5,5,10]}]}}
 ```
 
-Use a point on the current surface to capture a face. World occurrence picks are converted
+Use a point on the current surface to capture a face. The menu carries its already certified target directly, avoiding a second nearest-face pick on thin concentric walls. World occurrence picks are converted
 to the shared definition coordinates. `config.table` returns canonical keys and readable
 target labels. Use its returned face key when editing a row or deleting a face column:
 `config.column` accepts `face_appearance: "<returned key>"` with `delete: true`.
@@ -60,7 +60,11 @@ Supported stable face roles are box axis faces, cylinder caps and unsplit side, 
 extrude caps, and one-sided revolve caps. From/nonzero or variable Start Offset/Two Sides extrude caps and
 symmetric/Two Sides revolve caps are not yet certified. Mesh faces, ambiguous cap names,
 generic index-derived names, and sketch side names based on nearest-curve heuristics are
-rejected. Coplanar split pieces of one supported semantic face share
+rejected. Untapered New Body extrusions additionally support line, circle and arc sides
+with exact source-edge construction certificates. Ordinary face names and saved sketch or Emboss anchors retain their legacy naming; strict styles resolve separate source metadata and also require the original producing feature. All constructed pieces of the same
+sketch curve share one appearance, including split circle seams; distinct coincident
+curves are ambiguous and cannot be selected. Unsupported downstream modifiers remove
+the certificate rather than transferring paint by proximity. Coplanar split pieces of one supported semantic face share
 the configured appearance. If that lineage disappears while its body remains, Apply and
 Preview reject the row atomically. There is no nearest-face substitution; later ordinary
 topology edits also cannot transfer its paint to a replacement face. A suppressed owning
@@ -72,9 +76,17 @@ clearing it reveals inherited or imported paint. Body renames maintain face targ
 Deleting a component or originating feature removes its configured targets and row cells.
 Deleting one occurrence preserves the shared definition configuration.
 
+Embedded STEP faces use certificates bound to the exact stored payload, source item and
+original STEP face entity. Kernel seam pieces of that same source face share the override.
+Replacing the embedded payload invalidates the old face target, even when the replacement
+has identical geometry or reuses entity numbers. Body renames and exact rigid placements
+preserve source identity; ordinary parameter edits rebuild construction certificates.
+
 Independent component copies duplicate mapped configuration columns, row values, and rules
-without retargeting the source. Copying a strict configured face from a foreign body frozen
-as an import currently fails explicitly because imported face lineage is not certified.
+without retargeting the source. An independent copy of the same embedded STEP payload
+preserves its source certificate under the new feature. Copying strict paint on a foreign
+body that requires re-export still fails explicitly because that exporter cannot yet
+certify the source-to-output face mapping.
 
 Activation evaluates all row parameter expressions together, so column order does not create
 temporary dependency cycles. Preview and activation reject new or changed geometry errors
@@ -134,6 +146,6 @@ value lists support up to 128 expressions. These bounds are checked before saved
 decoded. Driven appearance/material rules and repeated fixed-point evaluation are outside
 the current rule scope.
 
-Designs saved with component or strict face styles use file format 9. Older designs upgrade on opening without
+Designs saved with source-certified face styles use file format 10. Older designs upgrade on opening without
 changing their existing configuration values. Older SolveCraft versions must be updated to
 open newly saved designs.

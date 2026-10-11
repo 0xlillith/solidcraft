@@ -305,7 +305,12 @@ fn hostile_moves_copies_and_reused_ids_do_not_leak_state() {
     run(&mut s, "component.capture_position", json!({}));
     assert!(s.pending_moves.is_empty());
     run(&mut s, "edit.undo", json!({}));
-    assert_eq!(s.occurrence_placement(&[other]).unwrap().world[3][0], 0.0);
+    assert_eq!(s.pending_moves.get(&other).unwrap()[3][0], 20.0);
+    assert_eq!(s.doc.occurrences.iter().find(|occurrence| occurrence.id == other).unwrap().transform[3][0], 0.0);
+    assert_eq!(s.occurrence_placement(&[other]).unwrap().world[3][0], 20.0);
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.pending_moves.is_empty());
+    assert_eq!(s.doc.occurrences.iter().find(|occurrence| occurrence.id == other).unwrap().transform[3][0], 20.0);
 }
 
 #[test]

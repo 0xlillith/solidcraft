@@ -133,6 +133,7 @@ pub struct Snapshot {
     pub label: String,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
+    pub pending_moves: std::collections::BTreeMap<u64, solvecraft_doc::Mat>,
 }
 
 /// What some commands would make, evaluated on a scratch copy of a session
@@ -184,12 +185,13 @@ pub struct Session {
     next_checkpoint: u64,
 }
 
-/// The design, active sketch and undo history at an `edit.checkpoint`.
+/// The design, active sketch, pending positions and undo history at an `edit.checkpoint`.
 #[derive(Clone, Debug)]
 pub(crate) struct Checkpoint {
     pub id: u64,
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
+    pub pending_moves: std::collections::BTreeMap<u64, solvecraft_doc::Mat>,
     pub undo: Vec<Snapshot>,
     pub redo: Vec<Snapshot>,
 }
@@ -332,6 +334,13 @@ impl Session {
                     ) {
                         sketch.plane = mapped;
                     }
+                    for wire in &mut sketch.sketch.wires {
+                        if wire.space == solvecraft_doc::sketch::WireSpace::Component {
+                            for point in wire.pts.iter_mut().chain(&mut wire.fit) {
+                                *point = solvecraft_doc::apply_point(&delta, *point);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -362,7 +371,12 @@ impl Session {
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         (spec.enabled)(self).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
-        let before = Snapshot { label: spec.label.to_string(), doc: self.doc.clone(), active_sketch: self.active_sketch };
+        let before = Snapshot {
+            label: spec.label.to_string(),
+            doc: self.doc.clone(),
+            active_sketch: self.active_sketch,
+            pending_moves: self.pending_moves.clone(),
+        };
         let null = Value::Object(Default::default());
         let params = if params.is_null() { &null } else { params };
         // Picks in the world go into their component's frame (once: commands run by commands
@@ -394,9 +408,10 @@ impl Session {
                 Ok(v)
             }
             Err(e) => {
-                if changed {
+                if changed || self.pending_moves != before.pending_moves {
                     self.doc = before.doc;
                     self.active_sketch = before.active_sketch;
+                    self.pending_moves = before.pending_moves;
                     self.refresh();
                 }
                 Err(e)
@@ -404,7 +419,7 @@ impl Session {
         }
     }
 
-    /// Remember the design, active sketch and undo history; returns the checkpoint's id.
+    /// Remember the design, active sketch, pending positions and undo history; returns the checkpoint's id.
     pub fn checkpoint(&mut self) -> u64 {
         let id = self.next_checkpoint;
         self.next_checkpoint += 1;
@@ -413,6 +428,7 @@ impl Session {
             doc: self.doc.clone(),
             active_sketch: self.active_sketch,
             undo: self.undo.clone(),
+            pending_moves: self.pending_moves.clone(),
             redo: self.redo.clone(),
         });
         if self.checkpoints.len() > MAX_CHECKPOINTS {
@@ -428,6 +444,7 @@ impl Session {
         let Some(c) = self.checkpoints.drain(i..).next() else { return Err(EngineError::Other(format!("no checkpoint {id}"))) };
         self.doc = c.doc;
         self.active_sketch = c.active_sketch;
+        self.pending_moves = c.pending_moves;
         self.undo = c.undo;
         self.redo = c.redo;
         self.selection.clear();

@@ -12,6 +12,9 @@ pub use rules::*;
 #[path = "config_styles.rs"]
 mod styles;
 pub use styles::*;
+#[path = "config_certificates.rs"]
+mod certificates;
+pub use certificates::*;
 #[path = "config_clone.rs"]
 mod clone;
 pub use clone::*;
@@ -235,6 +238,7 @@ impl Document {
                             look,
                             name: Some(target.name.clone()),
                             strict_name: true,
+                            certificate: target.certificate.clone(),
                         });
                     }
                 }

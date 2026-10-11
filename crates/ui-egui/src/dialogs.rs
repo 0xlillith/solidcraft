@@ -1054,9 +1054,10 @@ fn input_rows(d: &mut Dialog, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let active = i == d.active;
             // A chip: "↖ Select" (outlined) while empty, "N selected" (filled) once picked.
-            let filled = !inp.items.is_empty();
+            let custom_axis = i == 1 && inp.items.is_empty() && matches!(d.kind, Kind::Revolve { axis: Some(_), .. });
+            let filled = !inp.items.is_empty() || custom_axis;
             let text = if filled {
-                RichText::new(format!("↖ {} selected", inp.items.len())).color(Color32::WHITE)
+                RichText::new(if custom_axis { "↖ Custom Axis".into() } else { format!("↖ {} selected", inp.items.len()) }).color(Color32::WHITE)
             } else {
                 RichText::new("↖ Select").color(t.text)
             };
@@ -1069,7 +1070,20 @@ fn input_rows(d: &mut Dialog, ui: &mut egui::Ui) {
                 .sense(egui::Sense::CLICK);
             let chip = ui.add(b);
             publish_row(&chip);
-            if chip.on_hover_text(format!("{} (click to pick into this input)", hint(inp))).clicked() {
+            let tooltip = if custom_axis {
+                if let Kind::Revolve { axis: Some(axis), .. } = &d.kind {
+                    format!(
+                        "Custom axis\nOrigin: {}\nDirection: {}\nClick to select a replacement axis",
+                        axis.get("origin").map(ToString::to_string).unwrap_or_default(),
+                        axis.get("dir").map(ToString::to_string).unwrap_or_default()
+                    )
+                } else {
+                    hint(inp).to_string()
+                }
+            } else {
+                format!("{} (click to pick into this input)", hint(inp))
+            };
+            if chip.on_hover_text(tooltip).clicked() {
                 activate = Some(i);
             }
             if !inp.items.is_empty() && ui.small_button("×").on_hover_text("Clear the selection").clicked() {
@@ -1600,7 +1614,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     ui.end_row();
                     ui.label("");
                     ui.add(
-                        egui::Label::new("Pick a cylinder wall to wrap the profiles around it. Leave Target Face empty for planar embossing.").wrap(),
+                        egui::Label::new(
+                            "Orthogonal line profiles tangent to one supported cylinder wrap automatically. Pick a wall to choose a target.",
+                        )
+                        .wrap(),
                     );
                     ui.end_row();
                 }
@@ -2259,7 +2276,7 @@ pub(crate) fn emboss_profile_plane(app: &SolveApp, sketch: u64) -> Result<Option
     let body = model.body(&face.body).ok_or("the Emboss target body is missing")?;
     let owner = app.session.doc.feature(sketch.feature).map(|feature| feature.component).unwrap_or(0);
     let plane = sketch.plane;
-    let frame = face.sketch_frame(&app.session.doc, feature.component, owner, body.feature).map_err(|error| error.to_string())?;
+    let frame = face.sketch_frame(&app.session.doc, feature.component, owner, body).map_err(|error| error.to_string())?;
     solvecraft_engine::geom::Plane::new(
         solvecraft_engine::doc::apply_point(&frame, plane.origin),
         solvecraft_engine::doc::apply_vector(&frame, plane.x),
@@ -2953,7 +2970,7 @@ fn emboss_face_sel(s: &Session, component: u64, face: &solvecraft_engine::doc::E
     let source = s.model.state();
     let body = source.body(&face.body)?;
     let index = solvecraft_engine::doc::naming::face_names(body).iter().position(|name| name == persistent)?;
-    let owner = s.doc.body_component(&face.body, body.feature);
+    let owner = s.doc.model_body_component(body);
     let world_name = s.doc.world_body_name(&source, &face.body, owner, &face.path);
     let author = solvecraft_engine::doc::EmbossFace::component_frame(&s.doc, component, &face.author_path).ok()?;
     let point = solvecraft_engine::doc::apply_point(&author, face.at);

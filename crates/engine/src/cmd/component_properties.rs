@@ -26,7 +26,7 @@ fn placed_doc(s: &Session) -> Document {
 
 /// A property total must cover the entire assembly. The display traversal intentionally
 /// truncates hostile designs, so use an explicit error instead of accepting its prefix.
-fn placements(doc: &Document, cmd: &str) -> Result<Vec<(u64, Vec<u64>, Mat)>> {
+pub(super) fn placements(doc: &Document, cmd: &str) -> Result<Vec<(u64, Vec<u64>, Mat)>> {
     let mut out = vec![(0, Vec::new(), solvecraft_doc::IDENTITY)];
     let mut stack = vec![(0, Vec::<u64>::new(), solvecraft_doc::IDENTITY)];
     while let Some((component, path, transform)) = stack.pop() {
@@ -112,8 +112,8 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
     };
     for (component, path, transform) in selected_placements {
         placement_count += 1;
-        for body in state.bodies.iter().filter(|b| doc.body_component(&b.name, b.feature) == component) {
-            let transform: Mat = doc.body_offsets.get(&body.name).map(|offset| solvecraft_doc::mat_mul(&transform, offset)).unwrap_or(transform);
+        for body in state.bodies.iter().filter(|b| doc.model_body_component(b) == component) {
+            let transform: Mat = doc.model_body_offset(body).map(|offset| solvecraft_doc::mat_mul(&transform, offset)).unwrap_or(transform);
             let placed = solvecraft_kernel::transform_matrix(&body.body, transform)?;
             let measured = solvecraft_kernel::measure(&placed)?;
             let density = doc.density(&body.name);

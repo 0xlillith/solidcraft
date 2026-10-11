@@ -29,6 +29,18 @@ Smooth open offsets can be offset again, including bounded refinement after a so
 A closed offset uses a natural cubic spline whose seam can have different end tangents;
 offsetting that result again is refused when the seam has no unique normal.
 
+Enable **3D Sketch** in the Sketch Palette to draw lines, fit splines and points off the plane.
+New 3D geometry follows its sketch's component placement, including the selected occurrence
+and pending position changes. Click a drawn fit point to show its move triad; its arrows move
+along world X, Y and Z. Scripts also supply world coordinates to `sketch.line3d`,
+`sketch.spline3d`, `sketch.point3d` and `sketch.move3d`. Activate the desired occurrence before
+editing an explicit sketch belonging to a component with multiple placements.
+
+Older drawn or detached 3D wires keep their saved world positions. Included and surface-linked
+wires with an explicit component marker keep that meaning after the link is broken. Old files
+whose links became lost after an incorrectly scoped cross-component refresh may require a
+fresh link once the source is available; their stored point values are preserved on opening.
+
 ## Constraints and dimensions
 
 The solver is SolveCraft's own (damped Gauss–Newton with degree-of-freedom analysis). Constraints:

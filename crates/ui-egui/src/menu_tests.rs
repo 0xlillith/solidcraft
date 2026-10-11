@@ -309,10 +309,33 @@ fn delete_key_handles_every_kind_and_asks_about_dependents() {
 fn menu_delete_items_use_the_same_path() {
     let mut app = sample_app();
     let b = body(&app);
-    app.run("component.from_bodies", json!({"bodies": [b]})).unwrap();
+    let original_volume = solvecraft_engine::kernel::measure(&app.session.world_state().body(&b).unwrap().body).unwrap().volume;
+    let created = app.run("component.from_bodies", json!({"bodies": [b]})).unwrap();
     let c = app.session.doc.components[0].id;
+    let transfer = created["components"][0]["feature"].as_u64().unwrap();
+    let transfer_name = app.session.doc.feature(transfer).unwrap().name.clone();
+    let saved = app.session.doc.to_json();
     act(&mut app, &Target::Component { id: c }, "Delete");
+    let confirmation = app.menu.confirm.as_ref().expect("recorded transfer history needs confirmation");
+    assert!(confirmation.report["deleted"].as_array().unwrap().iter().any(|name| name.as_str() == Some(transfer_name.as_str())));
+    assert!(crate::delete::confirm(&mut app, false));
+    assert_eq!(app.session.doc.to_json(), saved, "cancel keeps component and transfer history");
+    act(&mut app, &Target::Component { id: c }, "Delete");
+    assert!(crate::delete::confirm(&mut app, true));
     assert!(app.session.doc.components.is_empty());
+    assert!(app.session.doc.feature(transfer).is_none());
+    let restored = app.session.world_state();
+    assert_eq!(restored.bodies.len(), 1, "the original joined plate stays intact");
+    let plate = restored.body(&b).unwrap();
+    assert_eq!(plate.component, 0);
+    assert!((solvecraft_engine::kernel::measure(&plate.body).unwrap().volume - original_volume).abs() < 1e-6);
+    assert!(plate.mesh().contains(solvecraft_engine::geom::Vec3::new(40.0, 35.0, 12.0)));
+    let mut reopened = solvecraft_engine::Session::new(solvecraft_engine::doc::Document::from_json(&app.session.doc.to_json()).unwrap());
+    reopened.refresh();
+    let reopened_state = reopened.world_state();
+    assert_eq!(reopened_state.bodies.len(), 1);
+    assert_eq!(reopened_state.body(&b).unwrap().component, 0);
+    assert!((solvecraft_engine::kernel::measure(&reopened_state.body(&b).unwrap().body).unwrap().volume - original_volume).abs() < 1e-6);
     // A sketch from the browser: asks, since its features go too.
     let id = app.session.doc.features.iter().find(|f| f.name == "Base").unwrap().id;
     act(&mut app, &Target::Sketch { id }, "Delete");

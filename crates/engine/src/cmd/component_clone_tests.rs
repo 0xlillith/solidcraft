@@ -238,6 +238,7 @@ fn configuration_rows_follow_copied_parameters_material_and_strict_face_lineage(
         origin_feature: source,
         name: format!("F{source}:+z"),
         point: solvecraft_geom::Vec3::new(1.0, 1.0, 2.0),
+        certificate: None,
     };
     run(&mut s, "config.configure", json!({"params":[length],"materials":["Cube"],"component_appearances":[part],"face_appearances":[target]}));
     let face_key = s.doc.config_key(&solvecraft_doc::config::Column::FaceAppearance(target.clone()));
@@ -275,6 +276,7 @@ fn configured_extrude_cap_copy_keeps_independent_semantic_lineage() {
         origin_feature: feature,
         name: format!("F{feature}:top"),
         point: solvecraft_geom::Vec3::new(1.0, 1.0, 2.0),
+        certificate: None,
     };
     run(&mut s, "config.configure", json!({"face_appearances":[target]}));
     let key = s.doc.config_key(&solvecraft_doc::config::Column::FaceAppearance(target));
@@ -390,4 +392,76 @@ fn generated_copy_parameters_cannot_heal_an_unrelated_missing_reference() {
     assert_eq!((s.active_component, s.active_occurrence_path.clone(), s.active_sketch), context);
     assert_eq!(s.selection, selection);
     assert_eq!(s.pending_moves, pending);
+}
+
+#[test]
+fn external_transfer_entry_and_internal_rotated_transfer_clone_once() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":4,"width":3,"height":2,"body_name":"Foreign"}));
+    let parent = component(&mut s, "Assembly");
+    let a = component(&mut s, "A");
+    let ao = s.doc.occurrence_of(a).unwrap().id;
+    run(&mut s, "occurrence.move", json!({"occurrence":ao,"translate":[10,0,0],"angle":90,"axis":[0,0,1],"capture":true}));
+    run(&mut s, "component.move_bodies", json!({"component":a,"bodies":["Foreign"]}));
+    run(&mut s, "component.activate", json!({"component":parent}));
+    let b = component(&mut s, "B");
+    let bo = s.doc.occurrence_of(b).unwrap().id;
+    run(&mut s, "occurrence.move", json!({"occurrence":bo,"translate":[0,20,0],"angle":90,"axis":[1,0,0],"capture":true}));
+    run(&mut s, "component.move_bodies", json!({"component":b,"bodies":["Foreign"]}));
+    run(&mut s, "solid.move", json!({"bodies":["Foreign"],"translate":[0,0,5]}));
+    let before = s.model.state().body("Foreign").unwrap().mesh().bounds();
+    let copied = copy(&mut s, parent);
+    assert_eq!(copied["frozen_bodies"], json!(["Foreign"]));
+    let state = s.model.state();
+    let body = state.body("Foreign (copy)").unwrap();
+    let after = body.mesh().bounds();
+    assert!(before.min.dist(after.min) < 1e-6);
+    assert!(before.max.dist(after.max) < 1e-6);
+    assert!(body.transferred);
+    let mut reopened = Session { doc: solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap().into(), ..Session::default() };
+    reopened.refresh();
+    assert!(reopened.model.state().body("Foreign (copy)").unwrap().mesh().bounds().min.dist(before.min) < 1e-6);
+}
+
+#[test]
+fn suppressed_external_entry_does_not_supply_clone_baseline() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":4,"width":3,"height":2,"body_name":"Foreign"}));
+    let part = component(&mut s, "Part");
+    let occurrence = s.doc.occurrence_of(part).unwrap().id;
+    run(&mut s, "occurrence.move", json!({"occurrence":occurrence,"translate":[25,0,0],"angle":90,"axis":[0,0,1],"capture":true}));
+    let skipped = s
+        .doc_mut()
+        .add_feature(
+            solvecraft_doc::FeatureKind::BodyTransfer { bodies: vec!["Foreign".into()], from: 0, to: part, transform: solvecraft_doc::IDENTITY },
+            None,
+        )
+        .unwrap();
+    s.doc_mut().feature_mut(skipped).unwrap().suppressed = true;
+    s.refresh();
+    run(&mut s, "component.move_bodies", json!({"component":part,"bodies":["Foreign"]}));
+    let before = s.model.state().body("Foreign").unwrap().mesh().bounds();
+    copy(&mut s, part);
+    let after = s.model.state().body("Foreign (copy)").unwrap().mesh().bounds();
+    assert!(before.min.dist(after.min) < 1e-6);
+    assert!(before.max.dist(after.max) < 1e-6);
+}
+
+#[test]
+fn transferred_frozen_face_paint_ignores_consumed_legacy_offset() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":2,"width":2,"height":2,"body_name":"Foreign"}));
+    run(&mut s, "appearance.assign", json!({"body":"Foreign","faces":[[1,1,2]],"color":"#00ff00"}));
+    s.doc_mut().body_offsets.insert(
+        "Foreign".into(),
+        solvecraft_doc::rigid(solvecraft_geom::Vec3::new(7.0, 0.0, 0.0), solvecraft_geom::Vec3::ZERO, solvecraft_geom::Vec3::Z, 0.0),
+    );
+    s.refresh();
+    let part = component(&mut s, "Part");
+    run(&mut s, "component.move_bodies", json!({"component":part,"bodies":["Foreign"]}));
+    let original = s.doc.appearances.faces.iter().find(|face| face.body == "Foreign").unwrap();
+    let expected = solvecraft_doc::naming::point_on_face(&s.model.state(), original.name.as_ref().unwrap(), original.point).unwrap().0;
+    copy(&mut s, part);
+    let paint = s.doc.appearances.faces.iter().find(|face| face.body == "Foreign (copy)").unwrap();
+    assert!(paint.point.dist(expected) < 1e-6, "{:?} versus {expected:?}", paint.point);
 }

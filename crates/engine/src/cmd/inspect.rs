@@ -401,7 +401,7 @@ fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(cmd, "too many face appearances"));
             }
             let name = st_names.iter().find(|(b, p, _)| b == body && p.dist(*pt) < 1e-12).and_then(|(_, _, n)| n.clone());
-            a.faces.push(FaceLook { body: body.clone(), point: *pt, look: l.clone(), name, strict_name: false });
+            a.faces.push(FaceLook { body: body.clone(), point: *pt, look: l.clone(), name, strict_name: false, certificate: None });
         }
     }
     for c in &comps {

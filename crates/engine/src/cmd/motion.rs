@@ -89,11 +89,11 @@ fn placed(s: &Session) -> Vec<(Vec<u64>, Body)> {
         if comp == 0 {
             continue;
         }
-        for b in st.bodies.iter().filter(|b| s.doc.body_component(&b.name, b.feature) == comp && !b.body.is_mesh()) {
+        for b in st.bodies.iter().filter(|b| s.doc.model_body_component(b) == comp && !b.body.is_mesh()) {
             // Moving a body into another component preserves its world placement using an
             // offset from its authoring frame. Contact and explode centres must use that
             // same offset as display and physical properties.
-            let frame = s.doc.body_offsets.get(&b.name).map(|offset| solvecraft_doc::mat_mul(&m, offset)).unwrap_or(m);
+            let frame = s.doc.model_body_offset(b).map(|offset| solvecraft_doc::mat_mul(&m, offset)).unwrap_or(m);
             if let Ok(t) = solvecraft_kernel::transform_matrix(&b.body, frame) {
                 out.push((path.clone(), t));
             }

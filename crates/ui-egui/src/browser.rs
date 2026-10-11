@@ -1120,7 +1120,7 @@ fn entries(app: &SolveApp, comp: u64, folder: &str) -> Vec<Entry> {
             .state()
             .bodies
             .iter()
-            .filter(|b| doc.body_component(&b.name, b.feature) == comp)
+            .filter(|b| doc.model_body_component(b) == comp)
             .map(|b| Entry {
                 key: b.name.clone(),
                 row_key: format!("b:{}", b.name),

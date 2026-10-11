@@ -3,6 +3,28 @@ use crate::scenario::Harness;
 use serde_json::json;
 use solvecraft_engine::Sel;
 
+#[test]
+fn replaced_body_name_uses_evaluated_owner_in_browser_and_component_actions() {
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Block"})).unwrap();
+    let transferred = h.app.run("component.from_bodies", json!({"bodies":["Block"]})).unwrap();
+    let owner = transferred["components"][0]["component"].as_u64().unwrap();
+    assert_eq!(context_menu::component_bodies(&h.app, owner), ["Block"]);
+    h.app.run("solid.remove", json!({"bodies":["Block"]})).unwrap();
+    h.app.run("solid.box", json!({"corner":[30,0,0],"length":5,"width":5,"height":5,"body_name":"Block"})).unwrap();
+    h.frames(2);
+    let state = h.app.session.model.state();
+    let body = state.body("Block").unwrap();
+    assert_eq!(h.app.session.doc.model_body_component(body), 0);
+    assert_eq!(context_menu::component_bodies(&h.app, 0), ["Block"]);
+    assert!(context_menu::component_bodies(&h.app, owner).is_empty());
+    assert_eq!(super::entries(&h.app, 0, "bodies").iter().map(|entry| entry.key.as_str()).collect::<Vec<_>>(), ["Block"]);
+    assert!(super::entries(&h.app, owner, "bodies").is_empty());
+    let bounds = h.app.session.world_state().body("Block").unwrap().mesh().bounds();
+    assert!((bounds.min.x - 30.0).abs() < 1e-9);
+    assert!((bounds.max.x - 35.0).abs() < 1e-9);
+}
+
 fn fixture() -> (Harness, u64, u64, u64) {
     let mut h = Harness::new();
     let part = h.app.run("component.create", json!({"name":"Block"})).unwrap();

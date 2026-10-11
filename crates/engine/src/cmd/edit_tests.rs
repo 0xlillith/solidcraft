@@ -170,11 +170,31 @@ fn redefine_keeps_allocator_above_component_and_occurrence_ids() {
     run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "body_name": "Base"}));
     run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "corner": [10, 0, 0], "body_name": "Tool"}));
     run(&mut s, "solid.combine", json!({"target": "Base", "tools": ["Tool"], "name": "Join"}));
+    let original = s.doc.clone();
+    let original_feature = s.doc.find_feature("Join").unwrap().id;
     run(
         &mut s,
         "timeline.redefine",
         json!({"feature": "Join", "command": "solid.combine", "params": {"target": "Base", "tools": ["Tool"], "new_component": true, "component_name": "Merged"}}),
     );
+    let destination = s.doc.find_component("Merged").unwrap();
+    assert_eq!(s.model.state().body("Base").unwrap().component, destination);
+    assert_eq!(s.doc.find_feature("Join").unwrap().id, original_feature);
+    let combine_index = s.doc.feature_index(original_feature).unwrap();
+    assert!(
+        matches!(&s.doc.features[combine_index + 1].kind, solvecraft_doc::FeatureKind::BodyTransfer { bodies, to, .. } if bodies == &["Base"] && *to == destination)
+    );
+    assert!((solvecraft_kernel::measure(&s.world_state().body("Base").unwrap().body).unwrap().volume - 6000.0).abs() < 1e-6);
+    assert_eq!(s.world_state().bodies.len(), 1);
+    run(&mut s, "timeline.rollback", json!({"position":combine_index + 1}));
+    assert_eq!(s.world_state().body("Base").unwrap().component, 0, "the result transfers only AFTER Combine");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(*s.doc, *original);
+    run(&mut s, "edit.redo", json!({}));
+    let reopened = Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(reopened.world_state().body("Base").unwrap().component, destination);
+    assert!((solvecraft_kernel::measure(&reopened.world_state().body("Base").unwrap().body).unwrap().volume - 6000.0).abs() < 1e-6);
     let max_id =
         s.doc.components.iter().map(|c| c.id).chain(s.doc.occurrences.iter().map(|o| o.id)).chain(s.doc.features.iter().map(|f| f.id)).max().unwrap();
     assert!(s.doc.next_id > max_id);
@@ -184,6 +204,30 @@ fn redefine_keeps_allocator_above_component_and_occurrence_ids() {
         s.doc.components.iter().map(|c| c.id).chain(s.doc.occurrences.iter().map(|o| o.id)).chain(s.doc.features.iter().map(|f| f.id)).collect();
     let unique: std::collections::BTreeSet<u64> = ids.iter().copied().collect();
     assert_eq!(ids.len(), unique.len(), "feature, component and occurrence ids must remain unique: {ids:?}");
+}
+
+#[test]
+fn redefine_cannot_publish_a_second_transfer_that_breaks_existing_ownership() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":2,"width":2,"height":2,"body_name":"Base"}));
+    run(&mut s, "solid.box", json!({"length":2,"width":2,"height":2,"corner":[1,0,0],"body_name":"Tool"}));
+    run(&mut s, "solid.combine", json!({"target":"Base","tools":["Tool"],"name":"Join","new_component":true,"component_name":"Original"}));
+    let full = s.doc.to_json();
+    let join_index = s.doc.features.iter().position(|feature| feature.name == "Join").unwrap();
+    for marker in [None, Some(join_index), Some(join_index + 1)] {
+        let mut s = Session::new(solvecraft_doc::Document::from_json(&full).unwrap());
+        s.doc_mut().marker = marker;
+        s.refresh();
+        let before = s.doc.to_json();
+        let pending = s.pending_moves.clone();
+        let error = s.execute("timeline.redefine", &json!({"feature":"Join","command":"solid.combine","params":{"target":"Base","tools":["Tool"],"new_component":true,"component_name":"Duplicate"}})).unwrap_err();
+        assert!(error.to_string().contains("transfer source component"), "marker {marker:?}: {error}");
+        assert_eq!(s.doc.to_json(), before);
+        assert_eq!(s.pending_moves, pending);
+    }
+    let reopened = Session::new(solvecraft_doc::Document::from_json(&full).unwrap());
+    assert_eq!(reopened.world_state().body("Base").unwrap().component, reopened.doc.find_component("Original").unwrap());
+    assert!(reopened.doc.features.iter().all(|feature| reopened.model.result(feature.id).is_some_and(|result| result.error.is_none())));
 }
 
 #[test]

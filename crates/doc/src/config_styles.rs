@@ -13,6 +13,8 @@ pub struct ConfigFaceTarget {
     pub name: String,
     /// Definition-frame point for diagnostics and rendering; never a resolver fallback.
     pub point: Vec3,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<super::FaceCertificate>,
 }
 impl ConfigFaceTarget {
     pub fn key(&self) -> String {
@@ -23,6 +25,9 @@ impl ConfigFaceTarget {
         face.body == self.body && face.name.as_ref().is_some_and(|name| crate::naming::strip_piece(name) == self.name)
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(certificate) = &self.certificate {
+            certificate.validate()?;
+        }
         if self.body.is_empty()
             || self.body.len() > 128
             || self.name.is_empty()
@@ -36,6 +41,25 @@ impl ConfigFaceTarget {
     }
 }
 
+pub fn validate_face_target_json(target: &Value) -> Result<()> {
+    let fields = target.as_object().ok_or_else(|| DocError::Invalid("face target must be an object".into()))?;
+    if !(4..=5).contains(&fields.len())
+        || fields.keys().any(|key| !["body", "origin_feature", "name", "point", "certificate"].contains(&key.as_str()))
+        || fields.get("body").and_then(Value::as_str).is_none_or(|body| body.is_empty() || body.len() > 128)
+        || fields.get("name").and_then(Value::as_str).is_none_or(|name| name.is_empty() || name.len() > 512)
+        || fields.get("origin_feature").and_then(Value::as_u64).is_none_or(|id| id == 0)
+        || fields.get("point").and_then(Value::as_array).is_none_or(|point| {
+            point.len() != 3 || point.iter().any(|value| value.as_f64().is_none_or(|value| !value.is_finite() || value.abs() > 1e9))
+        })
+    {
+        return Err(DocError::Invalid("invalid or oversized configuration face target".into()));
+    }
+    if let Some(certificate) = fields.get("certificate") {
+        super::validate_certificate_json(certificate)?;
+    }
+    Ok(())
+}
+
 /// Budget malformed style nodes before decoding their typed representation.
 pub fn validate_styles_json(value: &Value) -> Result<()> {
     if let Some(columns) = value.get("configs").and_then(|v| v.get("columns")).and_then(Value::as_array) {
@@ -44,23 +68,29 @@ pub fn validate_styles_json(value: &Value) -> Result<()> {
         }
         for column in columns {
             if let Some(target) = column.get("face_appearance") {
-                let fields = target.as_object().ok_or_else(|| DocError::Invalid("face target must be an object".into()))?;
-                if fields.len() != 4
-                    || fields.keys().any(|key| !["body", "origin_feature", "name", "point"].contains(&key.as_str()))
-                    || fields.get("body").and_then(Value::as_str).is_none_or(|body| body.is_empty() || body.len() > 128)
-                    || fields.get("name").and_then(Value::as_str).is_none_or(|name| name.is_empty() || name.len() > 512)
-                    || fields.get("origin_feature").and_then(Value::as_u64).is_none_or(|id| id == 0)
-                    || fields.get("point").and_then(Value::as_array).is_none_or(|point| {
-                        point.len() != 3 || point.iter().any(|value| value.as_f64().is_none_or(|value| !value.is_finite() || value.abs() > 1e9))
-                    })
-                {
-                    return Err(DocError::Invalid("invalid or oversized configuration face target".into()));
-                }
+                validate_face_target_json(target)?;
             }
             if let Some(id) = column.get("component_appearance")
                 && id.as_u64().is_none_or(|id| id == 0)
             {
                 return Err(DocError::Invalid("configuration component ID must be nonzero".into()));
+            }
+        }
+    }
+    if let Some(faces) = value.get("appearances").and_then(|value| value.get("faces")).and_then(Value::as_array) {
+        for face in faces {
+            if let Some(certificate) = face.get("certificate") {
+                super::validate_certificate_json(certificate)?;
+                if !certificate.is_null()
+                    && (face.get("strict_name").and_then(Value::as_bool) != Some(true)
+                        || face.get("body").and_then(Value::as_str).is_none_or(|body| body.is_empty() || body.len() > 128)
+                        || face.get("name").and_then(Value::as_str).is_none_or(|name| name.is_empty() || name.len() > 512)
+                        || face.get("point").and_then(Value::as_array).is_none_or(|point| {
+                            point.len() != 3 || point.iter().any(|value| value.as_f64().is_none_or(|value| !value.is_finite() || value.abs() > 1e9))
+                        }))
+                {
+                    return Err(DocError::Invalid("invalid certified face appearance".into()));
+                }
             }
         }
     }
@@ -77,6 +107,17 @@ impl Document {
             return Err(DocError::Invalid("configure a face lineage, not a numbered split piece".into()));
         }
         let feature = self.feature(target.origin_feature).ok_or_else(|| DocError::Unknown("face origin feature is gone".into()))?;
+        if let Some(certificate) = &target.certificate {
+            let valid = match (certificate, &feature.kind) {
+                (super::FaceCertificate::ExtrudeSide { sketch, curve }, FeatureKind::Extrude { sketch: producer_sketch, extent, operation: crate::Operation::NewBody, .. }) => {
+                    sketch == producer_sketch && extent.taper.is_none() && role == format!("side:{curve}")
+                        && self.feature(*sketch).is_some_and(|feature| matches!(&feature.kind, FeatureKind::Sketch { sketch, .. } if sketch.curves.iter().any(|candidate| candidate.id == *curve && !candidate.construction && matches!(candidate.kind, solvecraft_sketch::CurveKind::Line { .. } | solvecraft_sketch::CurveKind::Circle { .. } | solvecraft_sketch::CurveKind::Arc { .. }))))
+                }
+                (super::FaceCertificate::Imported { .. }, FeatureKind::Import { .. }) => role.strip_prefix("face:").is_some_and(|index| index.parse::<usize>().is_ok()),
+                _ => false,
+            };
+            return if valid { Ok(()) } else { Err(DocError::Invalid("face certificate no longer matches its producer".into())) };
+        }
         let valid = match &feature.kind {
             FeatureKind::Box { .. } => ["+x", "-x", "+y", "-y", "+z", "-z"].contains(&role),
             FeatureKind::Cylinder { .. } => ["top", "bottom", "side"].contains(&role),
@@ -108,11 +149,37 @@ impl Document {
         if body.body.is_mesh() || body.definition_name() != target.body {
             return Err(DocError::Invalid("configured face definition does not match".into()));
         }
+        if let Some(super::FaceCertificate::ExtrudeSide { sketch, curve }) = &target.certificate {
+            let indices: Vec<_> = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
+                matches!(source, Some(solvecraft_kernel::FaceSource::CertifiedExtrudeSide { producer, sketch: current_sketch, curve: current_curve }) if *producer == target.origin_feature && current_sketch == sketch && current_curve == curve).then_some(index)
+            }).collect();
+            if indices.is_empty() {
+                return Err(DocError::Unknown("constructed side certificate no longer exists".into()));
+            }
+            return Ok(indices);
+        }
+        if let Some(super::FaceCertificate::Imported { payload_sha256, item, face }) = &target.certificate {
+            let indices: Vec<_> = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
+                matches!(source, Some(solvecraft_kernel::FaceSource::Imported { item: current_item, face: current_face, payload_sha256: Some(digest), producer: Some(producer) }) if current_item == item && current_face == face && digest == payload_sha256 && *producer == target.origin_feature).then_some(index)
+            }).collect();
+            if indices.is_empty() {
+                return Err(DocError::Unknown("immutable import face certificate no longer exists".into()));
+            }
+            return Ok(indices);
+        }
         let names = crate::naming::face_names(body);
         let indices: Vec<usize> =
             names.iter().enumerate().filter(|(_, name)| crate::naming::strip_piece(name) == target.name).map(|(index, _)| index).collect();
         if indices.is_empty() {
             return Err(DocError::Unknown(format!("configured face `{}` on `{}` no longer exists", target.name, target.body)));
+        }
+        if let Some(certificate) = &target.certificate {
+            for index in &indices {
+                if self.configuration_face_certificate(body, *index)?.as_ref() != Some(certificate) {
+                    return Err(DocError::Invalid("face pieces do not share the exact certified source".into()));
+                }
+            }
+            return Ok(indices);
         }
         if target.name.ends_with(":side") {
             if indices.len() != 1 {

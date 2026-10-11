@@ -31,6 +31,363 @@ fn base(s: &mut Session, w: f64, h: f64) {
     run(s, "sheet.flange", json!({"sketch": "Base"}));
 }
 
+fn rectangle_tool(s: &mut Session, name: &str, p0: [f64; 2], p1: [f64; 2]) {
+    run(s, "sketch.create", json!({"plane":"XY","name":name}));
+    run(s, "sketch.rectangle.two_point", json!({"p0":p0,"p1":p1}));
+    run(s, "sketch.finish", json!({}));
+}
+
+#[test]
+fn shallow_sheet_pocket_preserves_material_depth_export_undo_and_reopen() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Pocket", [20.0, 20.0], [30.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Pocket","distance":1,"operation":"cut"}));
+    assert!((volume(&mut s) - 14900.0).abs() < 1e-6);
+    let f = flat(&mut s);
+    assert_eq!(f["cutouts"], json!([]));
+    assert_eq!(f["pockets"][0]["side"], "bottom");
+    assert_eq!(f["pockets"][0]["depth_mm"], 1.0);
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    assert!(dxf.contains("POCKET_BOTTOM_Z0.000000_TO_1.000000_MM"));
+    assert_eq!(solvecraft_io::read_dxf(&dxf).unwrap().len(), 8);
+    run(&mut s, "edit.undo", json!({}));
+    assert!((volume(&mut s) - 15000.0).abs() < 1e-6);
+    run(&mut s, "edit.redo", json!({}));
+    for command in ["sheet.unfold", "sheet.refold"] {
+        run(&mut s, command, json!({}));
+        assert!((volume(&mut s) - 14900.0).abs() < 1e-6);
+        let state = s.model.state();
+        let body = &state.bodies[0].body;
+        assert!(!body.contains(solvecraft_geom::Vec3::new(25.0, 25.0, 0.5)));
+        assert!(body.contains(solvecraft_geom::Vec3::new(25.0, 25.0, 1.5)));
+    }
+    let mut reopened = Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!((volume(&mut reopened) - 14900.0).abs() < 1e-6);
+    assert_eq!(flat(&mut reopened)["pockets"], f["pockets"]);
+}
+
+#[test]
+fn planar_sheet_intersection_retains_exact_outline_and_islands() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Retain", [20.0, 20.0], [30.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Retain","through_all":true,"direction":"symmetric","operation":"intersect"}));
+    for command in [None, Some("sheet.unfold"), Some("sheet.refold")] {
+        if let Some(command) = command {
+            run(&mut s, command, json!({}));
+        }
+        assert!((volume(&mut s) - 250.0).abs() < 1e-6);
+        assert_eq!(flat(&mut s)["flat_size_mm"], json!([10.0, 10.0, 2.5]));
+    }
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    assert_eq!(solvecraft_io::read_dxf(&dxf).unwrap().len(), 4);
+    let mut imported = Session::default();
+    run(&mut imported, "sketch.insert_dxf", json!({"name":"Retained","text":dxf}));
+    run(&mut imported, "sketch.finish", json!({}));
+    run(&mut imported, "solid.extrude", json!({"sketch":"Retained","distance":2.5}));
+    assert!((volume(&mut imported) - 250.0).abs() < 1e-6);
+    // An annular retained region keeps its central hole, with no first-solid shortcut.
+    let mut annulus = Session::default();
+    base(&mut annulus, 100.0, 60.0);
+    run(&mut annulus, "sketch.create", json!({"plane":"XY","name":"Ring"}));
+    run(&mut annulus, "sketch.circle.center", json!({"center":[50,30],"radius":10}));
+    run(&mut annulus, "sketch.circle.center", json!({"center":[50,30],"radius":5}));
+    run(&mut annulus, "sketch.finish", json!({}));
+    run(
+        &mut annulus,
+        "solid.extrude",
+        json!({"sketch":"Ring","profiles":[{"point":[57,30]}],"through_all":true,"direction":"symmetric","operation":"intersect"}),
+    );
+    run(&mut annulus, "sheet.unfold", json!({}));
+    let area: f64 = annulus.model.state().sheets[0].flat_regions().unwrap().iter().map(|r| r.area()).sum();
+    assert!((area - PI * 75.0).abs() < 1e-8, "exact retained area: {area}");
+    // inspect.measure integrates a tessellation; exact arc area is checked above.
+    let measured = volume(&mut annulus);
+    assert!((measured - PI * 75.0 * 2.5).abs() < 0.1, "measured={measured}");
+    assert_eq!(flat(&mut annulus)["cutouts"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn overlapping_opposite_side_pockets_become_true_through_material() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Bottom", [20.0, 20.0], [30.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Bottom","distance":1.5,"operation":"cut"}));
+    rectangle_tool(&mut s, "Top", [25.0, 20.0], [35.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Top","start_offset":2.5,"direction":"negative","distance":1.5,"operation":"cut"}));
+    let expected = 15000.0 - 100.0 * 1.5 * 2.0 + 50.0 * 0.5;
+    for command in [None, Some("sheet.unfold"), Some("sheet.refold")] {
+        if let Some(command) = command {
+            run(&mut s, command, json!({}));
+        }
+        assert!((volume(&mut s) - expected).abs() < 1e-6);
+        assert_eq!(flat(&mut s)["cutouts"].as_array().unwrap().len(), 1);
+        assert_eq!(flat(&mut s)["pockets"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn pockets_survive_forming_away_from_bends_and_refuse_bend_overlap_atomically() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Pocket", [20.0, 20.0], [30.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Pocket","distance":1,"operation":"cut"}));
+    run(&mut s, "sheet.flange", json!({"edges":[[50,0,2.5]],"height":20}));
+    assert!((volume(&mut s) - (18972.62196081845 - 100.0)).abs() < 0.2);
+    run(&mut s, "sheet.unfold", json!({}));
+    let unfolded = volume(&mut s);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - (18972.62196081845 - 100.0)).abs() < 0.2);
+    assert!(unfolded > 14900.0);
+    let mut cross = Session::default();
+    base(&mut cross, 100.0, 60.0);
+    rectangle_tool(&mut cross, "Pocket", [45.0, 20.0], [55.0, 30.0]);
+    run(&mut cross, "solid.extrude", json!({"sketch":"Pocket","distance":1,"operation":"cut"}));
+    let before = cross.doc.to_json();
+    let undo = cross.undo.len();
+    let error = cross.execute("sheet.fold", &json!({"points":[[50,0,2.5],[50,60,2.5]]})).unwrap_err().to_string();
+    assert!(error.contains("pocket") && error.contains("bend"), "{error}");
+    assert_eq!(cross.doc.to_json(), before);
+    assert_eq!(cross.undo.len(), undo);
+    assert!((volume(&mut cross) - 14900.0).abs() < 1e-6);
+}
+
+#[test]
+fn unsupported_sheet_machining_is_atomic_but_true_no_change_is_allowed() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Taper", [20.0, 20.0], [30.0, 30.0]);
+    let before = s.doc.to_json();
+    let undo = s.undo.len();
+    let error = s.execute("solid.extrude", &json!({"sketch":"Taper","distance":1,"operation":"cut","taper":"5 deg"})).unwrap_err().to_string();
+    assert!(error.contains("sheet") && error.contains("preserv"), "{error}");
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(s.undo.len(), undo);
+    rectangle_tool(&mut s, "Outside", [120.0, 20.0], [130.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Outside","distance":1,"operation":"cut","taper":"5 deg"}));
+    assert!((volume(&mut s) - 15000.0).abs() < 1e-6);
+    rectangle_tool(&mut s, "All", [-20.0, -20.0], [120.0, 80.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"All","through_all":true,"direction":"symmetric","operation":"intersect"}));
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - 15000.0).abs() < 1e-6);
+}
+
+#[test]
+fn empty_sheet_intersection_removes_geometry_and_metadata_together() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Outside", [120.0, 20.0], [130.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Outside","through_all":true,"direction":"symmetric","operation":"intersect"}));
+    assert!(s.model.state().bodies.is_empty());
+    assert!(s.model.state().sheets.is_empty());
+    assert!(s.execute("sheet.unfold", &json!({})).is_err());
+    run(&mut s, "edit.undo", json!({}));
+    assert!((volume(&mut s) - 15000.0).abs() < 1e-6);
+}
+
+#[test]
+fn intersect_preserves_both_material_regions_of_a_logical_ring_sheet() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"Ring"}));
+    for radius in [10.0, 5.0] {
+        run(&mut s, "sketch.circle.center", json!({"center":[50,30],"radius":radius}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    run(
+        &mut s,
+        "solid.extrude",
+        json!({"sketch":"Ring","profiles":[{"point":[57,30]}],"through_all":true,"direction":"symmetric","operation":"cut"}),
+    );
+    rectangle_tool(&mut s, "Crop", [35.0, 15.0], [65.0, 45.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Crop","through_all":true,"direction":"symmetric","operation":"intersect"}));
+    for command in [None, Some("sheet.unfold"), Some("sheet.refold")] {
+        if let Some(command) = command {
+            run(&mut s, command, json!({}));
+        }
+        let state = s.model.state();
+        let regions = state.sheets[0].flat_regions().unwrap();
+        assert_eq!(regions.len(), 2);
+        let area: f64 = regions.iter().map(|r| r.area()).sum();
+        assert!((area - (900.0 - PI * 75.0)).abs() < 1e-8, "area={area}");
+        let body = &state.bodies[0].body;
+        assert!(body.contains(solvecraft_geom::Vec3::new(50.0, 30.0, 1.0)));
+        assert!(!body.contains(solvecraft_geom::Vec3::new(57.0, 30.0, 1.0)));
+        assert!(body.contains(solvecraft_geom::Vec3::new(64.0, 30.0, 1.0)));
+        assert!(!body.contains(solvecraft_geom::Vec3::new(70.0, 30.0, 1.0)));
+        assert!((volume(&mut s) - (900.0 - PI * 75.0) * 2.5).abs() < 0.2);
+    }
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    assert_eq!(solvecraft_io::read_dxf(&dxf).unwrap().len(), 6);
+}
+
+#[test]
+fn machining_a_folded_parallel_panel_preserves_its_pocket_on_unfold() {
+    use solvecraft_doc::{apply_point, apply_vector};
+    use solvecraft_geom::Vec3;
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges":[[50,0,2.5]],"height":20}));
+    let sh = s.model.state().sheets[0].clone();
+    let points = sh.panel(&sh.flanges[0]).outer.polyline(1e-3);
+    let c = points.iter().copied().fold(solvecraft_geom::Vec2::ZERO, |sum, p| sum + p) / (points.len() as f64);
+    let w = sh.world(Some(0));
+    let origin = apply_point(&w, Vec3::ZERO);
+    let x = apply_vector(&w, Vec3::X);
+    let y = apply_vector(&w, Vec3::Y);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name":"PanelPocket","plane":{"origin":[origin.x,origin.y,origin.z],"x_dir":[x.x,x.y,x.z],"y_dir":[y.x,y.y,y.z]}}),
+    );
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[c.x-2.0,c.y-2.0],"p1":[c.x+2.0,c.y+2.0]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch":"PanelPocket","distance":1,"operation":"cut"}));
+    assert!((volume(&mut s) - (18972.62196081845 - 16.0)).abs() < 0.2);
+    run(&mut s, "sheet.unfold", json!({}));
+    let state = s.model.state();
+    let body = &state.bodies[0].body;
+    assert!(!body.contains(Vec3::new(c.x, c.y, 0.5)));
+    assert!(body.contains(Vec3::new(c.x, c.y, 1.5)));
+    assert_eq!(flat(&mut s)["pockets"][0]["depth_mm"], 1.0);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - (18972.62196081845 - 16.0)).abs() < 0.2);
+}
+
+#[test]
+fn flipped_sheet_pocket_keeps_depth_in_the_local_thickness_direction() {
+    let mut s = Session::default();
+    rectangle_tool(&mut s, "Base", [0.0, 0.0], [100.0, 60.0]);
+    run(&mut s, "sheet.flange", json!({"sketch":"Base","flip":true}));
+    rectangle_tool(&mut s, "Pocket", [20.0, 20.0], [30.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Pocket","distance":1,"direction":"negative","operation":"cut"}));
+    for command in [None, Some("sheet.unfold"), Some("sheet.refold")] {
+        if let Some(command) = command {
+            run(&mut s, command, json!({}));
+        }
+        assert!((volume(&mut s) - 14900.0).abs() < 1e-6);
+        let state = s.model.state();
+        assert!(!state.bodies[0].body.contains(solvecraft_geom::Vec3::new(25.0, 25.0, -0.5)));
+        assert!(state.bodies[0].body.contains(solvecraft_geom::Vec3::new(25.0, 25.0, -1.5)));
+    }
+}
+
+#[test]
+fn multiple_profile_intersect_keeps_tool_union_for_solids_and_sheet_groups() {
+    for sheet in [false, true] {
+        let mut s = Session::default();
+        if sheet {
+            base(&mut s, 100.0, 60.0);
+        } else {
+            run(&mut s, "solid.box", json!({"length":100,"width":60,"height":2.5,"body_name":"Blank"}));
+        }
+        let target = s.model.state().bodies[0].name.clone();
+        run(&mut s, "solid.box", json!({"corner":[200,0,0],"length":10,"width":10,"height":10,"body_name":"Control"}));
+        run(&mut s, "sketch.create", json!({"plane":"XY","name":"TwoIslands"}));
+        for x in [20.0, 60.0] {
+            run(&mut s, "sketch.rectangle.two_point", json!({"p0":[x,20],"p1":[x+10.0,30]}));
+        }
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch":"TwoIslands","operation":"intersect","distance":3,"targets":[target]}));
+        assert!((volume(&mut s) - 1500.0).abs() < 1e-6);
+        if sheet {
+            for command in ["sheet.unfold", "sheet.refold"] {
+                run(&mut s, command, json!({"body":target}));
+                assert!((volume(&mut s) - 1500.0).abs() < 1e-6);
+                assert_eq!(flat(&mut s)["outline"].as_array().unwrap().len(), 2);
+            }
+        }
+        let state = s.model.state();
+        for x in [25.0, 65.0] {
+            assert!(state.bodies.iter().any(|b| b.body.contains(solvecraft_geom::Vec3::new(x, 25.0, 1.0))));
+        }
+        assert!(!state.bodies.iter().any(|b| b.body.contains(solvecraft_geom::Vec3::new(50.0, 25.0, 1.0))));
+        assert!(state.bodies.iter().any(|b| b.name == "Control" && b.body.contains(solvecraft_geom::Vec3::new(205.0, 5.0, 5.0))));
+    }
+}
+
+#[test]
+fn deleting_sheet_material_prunes_cosmetic_threads_and_undo_restores_them() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":"XY","name":"ThreadPlate"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[100,60]}));
+    run(&mut s, "sketch.circle.center", json!({"center":[50,30],"radius":5}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sheet.flange", json!({"sketch":"ThreadPlate","profiles":[{"point":[10,10]}]}));
+    run(&mut s, "solid.thread", json!({"face":[55,30,1],"designation":"M10"}));
+    assert_eq!(s.model.state().threads.len(), 1);
+    rectangle_tool(&mut s, "Outside", [120.0, 20.0], [130.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Outside","through_all":true,"direction":"symmetric","operation":"intersect"}));
+    assert!(s.model.state().bodies.is_empty());
+    assert!(s.model.state().sheets.is_empty());
+    assert!(s.model.state().threads.is_empty());
+    assert!(solvecraft_doc::world_state(&s.doc, &s.model.state()).threads.is_empty());
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.model.state().threads.len(), 1);
+}
+
+#[test]
+fn sheet_pocket_transfer_keeps_local_depth_world_pose_and_history() {
+    use solvecraft_geom::Vec3;
+    fn check(s: &Session, name: &str, owner: u64, local_origin: Vec3, local_y: Vec3, transferred: bool) {
+        let state = s.model.state();
+        let mb = state.body(name).unwrap();
+        assert_eq!(mb.component, owner);
+        assert_eq!(mb.transferred, transferred);
+        let sh = state.sheets.iter().find(|sh| sh.body == name).unwrap();
+        assert!(sh.frame.origin.dist(local_origin) < 1e-8, "{:?}", sh.frame);
+        assert!(sh.frame.x.dist(Vec3::X) < 1e-8);
+        assert!(sh.frame.y.dist(local_y) < 1e-8);
+        assert_eq!(sh.pockets.len(), 1);
+        assert_eq!((sh.pockets[0].z0, sh.pockets[0].z1), (0.0, 1.0));
+        let cut = sh.frame.to_world(solvecraft_geom::Vec2::new(25.0, 25.0)) + sh.frame.normal() * 0.5;
+        let floor = sh.frame.to_world(solvecraft_geom::Vec2::new(25.0, 25.0)) + sh.frame.normal() * 1.5;
+        assert!(!mb.body.contains(cut));
+        assert!(mb.body.contains(floor));
+        let world = s.world_state();
+        let body = &world.body(name).unwrap().body;
+        let bounds = body.tessellate(1e-3).unwrap().bounds();
+        assert!(bounds.min.dist(Vec3::ZERO) < 1e-6, "{bounds:?}");
+        assert!(bounds.max.dist(Vec3::new(100.0, 60.0, 2.5)) < 1e-6, "{bounds:?}");
+        assert!(!body.contains(Vec3::new(25.0, 25.0, 0.5)));
+        assert!(body.contains(Vec3::new(25.0, 25.0, 1.5)));
+        assert!((solvecraft_kernel::measure(body).unwrap().volume - 14900.0).abs() < 1e-6);
+    }
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    rectangle_tool(&mut s, "Pocket", [20.0, 20.0], [30.0, 30.0]);
+    run(&mut s, "solid.extrude", json!({"sketch":"Pocket","distance":1,"operation":"cut"}));
+    let name = s.model.state().sheets[0].body.clone();
+    check(&s, &name, 0, Vec3::ZERO, Vec3::Y, false);
+    let destination = run(&mut s, "component.create", json!({"name":"Machined","parent":0}));
+    let component = destination["component"].as_u64().unwrap();
+    let occurrence = destination["occurrence"].as_u64().unwrap();
+    run(&mut s, "occurrence.move", json!({"occurrence":occurrence,"translate":[30,20,10],"axis":[1,0,0],"angle":"90 deg","capture":true}));
+    run(&mut s, "component.move_bodies", json!({"component":component,"bodies":[name]}));
+    assert!(!s.doc.body_offsets.contains_key(&name), "recorded transfer must not leave a legacy placement offset");
+    let origin = Vec3::new(-30.0, -10.0, 20.0);
+    let y = Vec3::new(0.0, 0.0, -1.0);
+    check(&s, &name, component, origin, y, true);
+    run(&mut s, "edit.undo", json!({}));
+    check(&s, &name, 0, Vec3::ZERO, Vec3::Y, false);
+    run(&mut s, "edit.redo", json!({}));
+    check(&s, &name, component, origin, y, true);
+    run(&mut s, "component.activate", json!({"component":component}));
+    for command in ["sheet.unfold", "sheet.refold"] {
+        run(&mut s, command, json!({"body":name}));
+        check(&s, &name, component, origin, y, true);
+        let f = run(&mut s, "sheet.flat_pattern", json!({"body":name}));
+        assert_eq!(f["pockets"][0]["side"], "bottom");
+        assert_eq!(f["pockets"][0]["depth_mm"], 1.0);
+    }
+    let mut reopened = Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    check(&reopened, &name, component, origin, y, true);
+    run(&mut reopened, "component.activate", json!({"component":component}));
+    run(&mut reopened, "sheet.unfold", json!({"body":name}));
+    check(&reopened, &name, component, origin, y, true);
+}
+
 #[test]
 fn base_and_edge_flange_follow_the_k_factor() {
     let mut s = Session::default();

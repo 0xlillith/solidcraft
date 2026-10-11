@@ -864,7 +864,14 @@ fn holes_at_sketch_points_threads_and_components() {
     let text = s.doc.to_json();
     let back = solvecraft_doc::Document::from_json(&text).unwrap();
     assert_eq!(back.components.len(), 2);
-    assert_eq!(back.body_components.len(), 1);
+    let assigned = r["components"][0]["component"].as_u64().unwrap();
+    let transfer = r["components"][0]["feature"].as_u64().unwrap();
+    assert!(
+        matches!(&back.feature(transfer).unwrap().kind, solvecraft_doc::FeatureKind::BodyTransfer { bodies, to, .. } if bodies == &["Shaft"] && *to == assigned)
+    );
+    let reopened = Session::new(back);
+    assert_eq!(reopened.model.state().body("Shaft").unwrap().component, assigned);
+    assert_eq!(reopened.world_state().threads.len(), s.world_state().threads.len());
 }
 
 #[test]
@@ -985,11 +992,22 @@ fn components_occurrences_and_world_placement() {
     run(&mut s, "component.capture_position", json!({}));
     assert!(s.pending_moves.is_empty());
     assert!((bbox(&mut s, "ArmBody")["min"][2].as_f64().unwrap() - 5.0).abs() < 1e-9);
-    // Bodies and sketches move between components.
-    run(&mut s, "component.move_bodies", json!({"bodies": ["Base"], "component": "Arm"}));
+    // A definition placed twice cannot receive one world body without duplicating it.
+    let document = s.doc.to_json();
+    let pending = s.pending_moves.clone();
+    let error = s.execute("component.move_bodies", &json!({"bodies": ["Base"], "component": "Arm"})).unwrap_err();
+    assert!(error.to_string().contains("one source and destination placement"), "{error}");
+    assert_eq!(s.doc.to_json(), document);
+    assert_eq!(s.pending_moves, pending);
+    // The independent Paste New result has one placement and can receive it.
+    let copied = pn["component"].as_u64().unwrap();
+    run(&mut s, "component.move_bodies", json!({"bodies": ["Base"], "component": copied}));
     let l = run(&mut s, "component.list", json!({}));
     let arm = l["components"].as_array().unwrap().iter().find(|x| x["id"] == cid).unwrap().clone();
-    assert!(arm["bodies"].as_array().unwrap().iter().any(|b| b == "Base"), "{arm}");
+    assert!(!arm["bodies"].as_array().unwrap().iter().any(|b| b == "Base"), "{arm}");
+    let receiver = l["components"].as_array().unwrap().iter().find(|x| x["id"] == copied).unwrap();
+    assert!(receiver["bodies"].as_array().unwrap().iter().any(|b| b == "Base"), "{receiver}");
+    assert_eq!(bbox(&mut s, "Base")["min"], json!([0.0, 0.0, 0.0]));
     run(&mut s, "sketch.create", json!({"plane": "XY", "name": "S1"}));
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "component.move_sketches", json!({"sketches": ["S1"], "component": cid}));
@@ -999,8 +1017,9 @@ fn components_occurrences_and_world_placement() {
     assert_eq!(s.doc.find_feature("S1").unwrap().component, 0);
     run(&mut s, "edit.redo", json!({}));
     run(&mut s, "timeline.roll_to", json!({"position": 1}));
-    // Only Base is left; it now lives in Arm, which is placed twice (original and instance).
-    assert_eq!(s.world_state().bodies.len(), 2);
+    // The ownership boundary is later: before it Base remains the sole root body.
+    assert_eq!(s.world_state().bodies.len(), 1);
+    assert_eq!(s.world_state().body("Base").unwrap().component, 0);
     run(&mut s, "timeline.roll_to", json!({}));
     // Saved and loaded; older designs get occurrences.
     let back = solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap();

@@ -79,7 +79,7 @@ impl Session {
         let bodies = state
             .bodies
             .iter()
-            .filter(|b| self.doc.body_component(&b.name, b.feature) == component)
+            .filter(|b| self.doc.model_body_component(b) == component)
             .map(|b| OccurrenceBody { source: b.name.clone(), world: self.doc.world_body_name(&state, &b.name, component, path) })
             .collect();
         Ok(OccurrencePlacement {

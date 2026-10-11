@@ -28,13 +28,16 @@
 //! - 9: configured component/semantic-face styles, associative free-form offsets and
 //!   explicit cylindrical emboss targets. Existing version 8 geometry and rules are
 //!   preserved; new fields use defaults rather than guessing a target or an association.
+//! - 10: timeline body transfers, explicit 3D wire coordinate spaces and certified face
+//!   bindings. Legacy ownership maps remain unchanged. Retained wire associations determine
+//!   their space; saved coordinates are never rewritten during migration.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 9;
+pub const FORMAT: u32 = 10;
 
 pub fn format_string(n: u32) -> String {
     format!("solvecraft/{n}")
@@ -47,7 +50,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 8] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(()), |_| Ok(())];
+const JSON_STEPS: [JsonStep; 9] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(()), |_| Ok(()), |_| Ok(())];
 
 /// Old XZ references retain their exact frame, including nested offset and angled planes.
 /// New origin references use +Y; freezing the old frame avoids changing sketch coordinates,
@@ -142,10 +145,29 @@ pub fn read(s: &str) -> Result<Document> {
     crate::config::validate_styles_json(&v)?;
     validate_emboss_targets(&v)?;
     validate_freeform_offsets(&v)?;
+    let legacy_wires = validate_wires(&v, version)?;
+    validate_body_transfers(&v)?;
     for step in JSON_STEPS.iter().skip(version as usize - 1).take((FORMAT - version) as usize) {
         step(&mut v)?;
     }
     let mut d: Document = serde_json::from_value(v).map_err(|e| DocError::Invalid(format!("design file: {e}")))?;
+    let mut legacy_by_feature = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+    for (feature, wire) in legacy_wires {
+        legacy_by_feature.entry(feature).or_default().push(wire);
+    }
+    for (feature_index, wire_indices) in legacy_by_feature {
+        if let Some(crate::Feature { kind: crate::FeatureKind::Sketch { sketch, .. }, .. }) = d.features.get_mut(feature_index) {
+            let mut spaces = std::collections::BTreeMap::new();
+            for link in &sketch.links {
+                spaces.entry(link.id.as_str()).or_insert_with(|| solvecraft_sketch::WireSpace::from_legacy_link(link));
+            }
+            for wire_index in wire_indices {
+                if let Some(wire) = sketch.wires.get_mut(wire_index) {
+                    wire.space = wire.link.as_deref().and_then(|id| spaces.get(id)).copied().unwrap_or_default();
+                }
+            }
+        }
+    }
     if d.features.len() > crate::document::MAX_FEATURES
         || d.params.len() > crate::document::MAX_PARAMS
         || d.components.len() > crate::document::MAX_FEATURES
@@ -157,15 +179,133 @@ pub fn read(s: &str) -> Result<Document> {
             return Err(DocError::Invalid(format!("damaged design: occurrence `{}` has an invalid placement", o.name)));
         }
     }
+    let component_ids: std::collections::BTreeSet<_> = d.components.iter().map(|component| component.id).chain(std::iter::once(0)).collect();
     for feature in &d.features {
         if let crate::FeatureKind::Sketch { sketch, .. } = &feature.kind {
             sketch.validate_freeform_offsets().map_err(|e| DocError::Invalid(format!("damaged design: {e}")))?;
+            sketch.validate_wires().map_err(|e| DocError::Invalid(format!("damaged design: {e}")))?;
+        }
+        if let crate::FeatureKind::BodyTransfer { from, to, .. } = &feature.kind
+            && [from, to].into_iter().any(|id| !component_ids.contains(id))
+        {
+            return Err(DocError::Invalid("damaged design: body transfer references an unknown component".into()));
+        }
+        if let crate::FeatureKind::BodyTransfer { to, .. } = &feature.kind
+            && feature.component != *to
+        {
+            return Err(DocError::Invalid("damaged design: body transfer owner must match its destination".into()));
         }
     }
     // Fill in what older designs (and hand-edited files) may lack; a no-op otherwise.
     normalise(&mut d)?;
     d.format = format_string(FORMAT);
     Ok(d)
+}
+
+/// Bound arrays before typed allocation; only old files with absent markers need migration.
+fn validate_wires(value: &Value, version: u32) -> Result<Vec<(usize, usize)>> {
+    let invalid = || DocError::Invalid("damaged design: 3D curve arrays, ids or coordinate spaces are invalid".into());
+    let mut legacy = Vec::new();
+    let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(legacy) };
+    if features.len() > crate::document::MAX_FEATURES {
+        return Err(invalid());
+    }
+    for (feature_index, feature) in features.iter().enumerate() {
+        if feature.get("type").and_then(Value::as_str) != Some("sketch") {
+            continue;
+        }
+        let Some(wires) = feature.get("sketch").and_then(|sketch| sketch.get("wires")) else { continue };
+        let wires = wires.as_array().ok_or_else(invalid)?;
+        if wires.len() > 20_000 {
+            return Err(invalid());
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut work = 0usize;
+        for (wire_index, wire) in wires.iter().enumerate() {
+            let id = wire.get("id").and_then(Value::as_str).ok_or_else(invalid)?;
+            if id.is_empty() || id.len() > 512 || !ids.insert(id) {
+                return Err(invalid());
+            }
+            if let Some(link) = wire.get("link").filter(|link| !link.is_null())
+                && link.as_str().is_none_or(|link| link.is_empty() || link.len() > 512)
+            {
+                return Err(invalid());
+            }
+            match wire.get("space") {
+                None if version < 10 => legacy.push((feature_index, wire_index)),
+                None => {}
+                Some(Value::String(space)) if matches!(space.as_str(), "world" | "component") => {}
+                _ => return Err(invalid()),
+            }
+            let pts = wire.get("pts").and_then(Value::as_array).ok_or_else(invalid)?;
+            let fit = match wire.get("fit") {
+                None => &[][..],
+                Some(fit) => fit.as_array().ok_or_else(invalid)?.as_slice(),
+            };
+            work = work.saturating_add(pts.len()).saturating_add(fit.len());
+            if work > 1_000_000 || pts.is_empty() || pts.len() > 100_000 || fit.len() > 500 || (pts.len() == 1 && fit.len() != 1) {
+                return Err(invalid());
+            }
+            for point in pts.iter().chain(fit) {
+                let point = point.as_array().ok_or_else(invalid)?;
+                if point.len() != 3 || point.iter().any(|coordinate| coordinate.as_f64().is_none_or(|n| !n.is_finite() || n.abs() >= MAX_REAL)) {
+                    return Err(invalid());
+                }
+            }
+        }
+    }
+    Ok(legacy)
+}
+
+fn validate_body_transfers(value: &Value) -> Result<()> {
+    let invalid = || DocError::Invalid("damaged design: body transfer needs bounded unique bodies, components and a rigid placement".into());
+    let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(()) };
+    for feature in features {
+        if feature.get("type").and_then(Value::as_str) != Some("body_transfer") {
+            continue;
+        }
+        let bodies = feature.get("bodies").and_then(Value::as_array).ok_or_else(invalid)?;
+        if bodies.is_empty() || bodies.len() > 1000 {
+            return Err(invalid());
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for body in bodies {
+            let body = body.as_str().ok_or_else(invalid)?;
+            if body.trim().is_empty() || body.len() > 512 || body.chars().any(char::is_control) || !names.insert(body) {
+                return Err(invalid());
+            }
+        }
+        for key in ["from", "to"] {
+            if feature.get(key).and_then(Value::as_u64).is_none() {
+                return Err(invalid());
+            }
+        }
+        let owner = match feature.get("component") {
+            None => 0,
+            Some(value) => value.as_u64().ok_or_else(invalid)?,
+        };
+        if feature.get("to").and_then(Value::as_u64) != Some(owner) {
+            return Err(DocError::Invalid("damaged design: body transfer owner must match its destination".into()));
+        }
+        let matrix = feature.get("transform").and_then(Value::as_array).ok_or_else(invalid)?;
+        if matrix.len() != 4 {
+            return Err(invalid());
+        }
+        let mut placement = [[0.0; 4]; 4];
+        for (out, column) in placement.iter_mut().zip(matrix) {
+            let column = column.as_array().ok_or_else(invalid)?;
+            if column.len() != 4 {
+                return Err(invalid());
+            }
+            for (out, number) in out.iter_mut().zip(column) {
+                *out = number.as_f64().ok_or_else(invalid)?;
+            }
+        }
+        if !crate::body_transfer::valid_transfer_matrix(&placement) {
+            return Err(invalid());
+        }
+    }
+    Ok(())
 }
 
 /// Validate new explicit targets before typed decoding. Older planar features have none.
@@ -334,6 +474,99 @@ fn normalise(d: &mut Document) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_nine_wire_spaces_preserve_saved_points_and_explicit_markers() {
+        use solvecraft_geom::Vec3;
+        use solvecraft_sketch::{LinkKind, LinkSource, Sketch, WireSpace};
+        let mut sketch = Sketch::new();
+        sketch.add_drawn_wire(&[Vec3::new(12.0, 3.0, 4.0)]).unwrap();
+        let link = sketch
+            .add_link_with_wires(
+                LinkKind::Include,
+                LinkSource::Edge { body: "Missing".into(), at: Vec3::ZERO },
+                &[],
+                &[vec![Vec3::new(2.0, 7.0, 9.0), Vec3::new(2.0, 8.0, 9.0)]],
+            )
+            .unwrap();
+        sketch.set_link_lost(&link, true);
+        let mut doc = Document::new("legacy wire spaces");
+        doc.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, None).unwrap();
+        let mut json: Value = serde_json::from_str(&doc.to_json()).unwrap();
+        json["format"] = Value::from("solvecraft/9");
+        for wire in json["features"][0]["sketch"]["wires"].as_array_mut().unwrap() {
+            wire.as_object_mut().unwrap().remove("space");
+        }
+        let old = json["features"][0]["sketch"]["wires"].clone();
+        let migrated = read(&json.to_string()).unwrap();
+        let crate::FeatureKind::Sketch { sketch, .. } = &migrated.features[0].kind else { panic!("sketch") };
+        assert_eq!(sketch.wires[0].space, WireSpace::World);
+        assert_eq!(sketch.wires[1].space, WireSpace::Component);
+        let saved: Value = serde_json::from_str(&migrated.to_json()).unwrap();
+        for (a, b) in old.as_array().unwrap().iter().zip(saved["features"][0]["sketch"]["wires"].as_array().unwrap()) {
+            assert_eq!(a["pts"], b["pts"]);
+            assert_eq!(a["fit"], b["fit"]);
+            assert_eq!(a["link"], b["link"]);
+        }
+        assert_eq!(read(&migrated.to_json()).unwrap(), migrated);
+        json["features"][0]["sketch"]["wires"][1]["space"] = Value::from("world");
+        let explicit = read(&json.to_string()).unwrap();
+        let crate::FeatureKind::Sketch { sketch, .. } = &explicit.features[0].kind else { panic!("sketch") };
+        assert_eq!(sketch.wires[1].space, WireSpace::World);
+    }
+
+    #[test]
+    fn hostile_wire_and_transfer_shapes_are_refused_before_typed_decode() {
+        let base: Value = serde_json::from_str(&Document::new("bounds").to_json()).unwrap();
+        let wire = serde_json::json!({"id":"w1", "pts":[[1,2,3],[4,5,6]],"space":"world"});
+        for damaged in [
+            serde_json::json!({"space":"guess"}),
+            serde_json::json!({"pts":[[1,2]]}),
+            serde_json::json!({"pts":[[1e9,2,3],[4,5,6]]}),
+            serde_json::json!({"fit": vec![[1,2,3];501]}),
+        ] {
+            let mut changed = wire.clone();
+            for (key, value) in damaged.as_object().unwrap() {
+                changed[key] = value.clone();
+            }
+            let mut file = base.clone();
+            file["features"] = serde_json::json!([{"type":"sketch","sketch":{"wires":[changed]}}]);
+            assert!(validate_wires(&file, FORMAT).is_err());
+        }
+        let transfer = serde_json::json!({"type":"body_transfer","component":1,"bodies":["Body1"],"from":0,"to":1,"transform":crate::IDENTITY});
+        for damaged in [
+            serde_json::json!({"bodies":["Body1","Body1"]}),
+            serde_json::json!({"from":-1}),
+            serde_json::json!({"component":0}),
+            serde_json::json!({"transform":[[2,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]}),
+            serde_json::json!({"bodies":["\n"]}),
+        ] {
+            let mut changed = transfer.clone();
+            for (key, value) in damaged.as_object().unwrap() {
+                changed[key] = value.clone();
+            }
+            let mut file = base.clone();
+            file["features"] = serde_json::json!([changed]);
+            assert!(validate_body_transfers(&file).is_err());
+        }
+    }
+
+    #[test]
+    fn recorded_transfer_roundtrips_and_unknown_component_is_refused() {
+        let mut doc = Document::new("recorded ownership boundary");
+        doc.add_feature(crate::FeatureKind::BodyTransfer { bodies: vec!["Body1".into()], from: 0, to: 0, transform: crate::IDENTITY }, None).unwrap();
+        assert_eq!(read(&doc.to_json()).unwrap(), doc);
+        let mut json: Value = serde_json::from_str(&doc.to_json()).unwrap();
+        assert_eq!(json["features"][0]["type"], "body_transfer");
+        json["features"][0]["to"] = Value::from(12345);
+        json["features"][0]["component"] = Value::from(12345);
+        assert!(read(&json.to_string()).unwrap_err().to_string().contains("unknown component"));
+        json["features"][0]["to"] = Value::from(0);
+        assert!(read(&json.to_string()).unwrap_err().to_string().contains("owner must match"));
+        json["features"][0]["component"] = Value::from(0);
+        json["features"][0]["transform"][0][0] = Value::from(2);
+        assert!(read(&json.to_string()).unwrap_err().to_string().contains("rigid placement"));
+    }
 
     #[test]
     fn version_eight_to_object_offset_keeps_existing_model_parameter_names() {

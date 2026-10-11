@@ -38,3 +38,18 @@ Cuts can leave separate material pieces, including the centre of a ring cut. The
 remain one logical sheet group through Unfold / Refold and export as separate flat outlines.
 Large profiles that exceed the geometry processing budget report an error instead of
 exporting a partial outline.
+
+Parallel, untapered extrude cuts also preserve shallow pockets through Unfold / Refold.
+The pocket floor and side walls remain solid geometry; overlapping cuts from opposite sides
+become a through hole wherever they remove the whole thickness. Flat-pattern JSON lists
+`pockets` with their side, depth and bottom/top thickness coordinates in millimetres.
+DXF pocket boundaries use `POCKET_BOTTOM_Z…_TO_…_MM`, `POCKET_TOP_Z…_TO_…_MM`, or
+`POCKET_INTERNAL_Z…_TO_…_MM` layers. These are machining operations, so do not treat every
+pocket layer as a through-cut contour when importing the drawing into a CAM tool.
+
+Extrude Intersect on a straight base or an unfolded sheet retains the exact planar material,
+including interior holes and detached islands. A completely empty intersection removes the
+sheet and its metadata together. Pocket profiles can move with planar panels when forming,
+but a pocket crossing a bend zone cannot yet be refolded. Machining folded bend material,
+tapered sheet cuts and other unsupported 3D sheet Cut/Intersect operations report an error before changing
+the design; they cannot silently restore removed material during a later sheet rebuild.

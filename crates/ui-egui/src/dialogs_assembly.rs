@@ -273,7 +273,7 @@ fn pt(v: Vec3) -> Value {
 fn occurrence_of_body(s: &Session, body: &str) -> Option<u64> {
     let st = s.world_state();
     let b = st.body(body)?;
-    let comp = s.doc.body_component(&b.name, b.feature);
+    let comp = s.doc.model_body_component(b);
     if comp == 0 { Some(0) } else { s.doc.occurrence_of(comp).map(|o| o.id) }
 }
 

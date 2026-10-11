@@ -13,6 +13,8 @@ use crate::{Result, Session};
 
 #[path = "component_properties.rs"]
 mod properties;
+#[path = "component_transfer.rs"]
+mod transfer;
 
 #[cfg(test)]
 #[path = "occurrence_tests.rs"]
@@ -133,25 +135,7 @@ fn new_component(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn from_bodies(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "component.from_bodies";
-    let bodies = string_list(p, "bodies");
-    if bodies.is_empty() || bodies.len() > 1000 {
-        return Err(bad(cmd, "`bodies` must list 1…1000 body names"));
-    }
-    let st = s.model.state();
-    for b in &bodies {
-        if st.body(b).is_none() {
-            return Err(bad(cmd, format!("no body `{b}`")));
-        }
-    }
-    let parent = s.active_component;
-    let mut made = Vec::new();
-    for b in bodies {
-        let id = s.doc_mut().add_component(Some(&b), parent)?;
-        s.doc_mut().body_components.insert(b.clone(), id);
-        made.push(json!({"component": id, "body": b}));
-    }
-    Ok(json!({ "components": made }))
+    transfer::from_bodies(s, p)
 }
 
 fn activate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -176,7 +160,7 @@ fn list(s: &mut Session, _p: &Value) -> Result<Value> {
     let st = s.model.state();
     let doc = &s.doc;
     let node = |id: u64, name: &str, parent: Option<u64>| {
-        let bodies: Vec<&str> = st.bodies.iter().filter(|b| doc.body_component(&b.name, b.feature) == id).map(|b| b.name.as_str()).collect();
+        let bodies: Vec<&str> = st.bodies.iter().filter(|b| doc.model_body_component(b) == id).map(|b| b.name.as_str()).collect();
         let features: Vec<&str> = doc
             .features
             .iter()
@@ -223,6 +207,15 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "the design itself can't be deleted"));
     }
     let gone: Vec<u64> = s.doc.components.iter().filter(|c| s.doc.component_within(c.id, id)).map(|c| c.id).collect();
+    if s.doc.features.iter().any(|feature| {
+        !gone.contains(&feature.component)
+            && matches!(&feature.kind, FeatureKind::BodyTransfer { from, to, .. } if gone.contains(from) || gone.contains(to))
+    }) {
+        return Err(bad(
+            cmd,
+            "component supplies a recorded body transfer outside this subtree; remove that transfer history before deleting its source",
+        ));
+    }
     let feats: Vec<u64> = s.doc.features.iter().filter(|f| gone.contains(&f.component)).map(|f| f.id).collect();
     let d = s.doc_mut();
     for f in &feats {
@@ -241,36 +234,11 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn move_bodies(s: &mut Session, p: &Value) -> Result<Value> {
-    let cmd = "component.move_bodies";
-    let to = component(s, p, "component", cmd)?;
-    let bodies = string_list(p, "bodies");
-    let st = s.model.state();
-    if bodies.is_empty() || bodies.iter().any(|b| st.body(b).is_none()) {
-        return Err(bad(cmd, "`bodies` must list existing bodies"));
-    }
-    for b in &bodies {
-        let feature = st.body(b).map(|x| x.feature).unwrap_or(0);
-        let own = s.doc.feature(feature).map(|f| f.component).unwrap_or(0);
-        // The body keeps its place in the world: where it is shown now (its component's frame and
-        // any earlier offset), seen from the new component's frame.
-        let from = s.doc.body_component(b, feature);
-        let now = solvecraft_doc::mat_mul(&s.doc.component_transform(from), s.doc.body_offsets.get(b).unwrap_or(&solvecraft_doc::IDENTITY));
-        let offset = solvecraft_doc::mat_inverse(&s.doc.component_transform(to))
-            .map(|inv| solvecraft_doc::mat_mul(&inv, &now))
-            .unwrap_or(solvecraft_doc::IDENTITY);
-        let doc = s.doc_mut();
-        if own == to {
-            doc.body_components.remove(b);
-        } else {
-            doc.body_components.insert(b.clone(), to);
-        }
-        if solvecraft_doc::is_identity(&offset) {
-            doc.body_offsets.remove(b);
-        } else {
-            doc.body_offsets.insert(b.clone(), offset);
-        }
-    }
-    Ok(json!({"bodies": bodies, "component": to}))
+    transfer::move_bodies(s, p)
+}
+
+pub(crate) fn transfer_constructor_result(s: &mut Session, p: &Value) -> Result<Value> {
+    transfer::move_result(s, p)
 }
 
 fn move_sketches(s: &mut Session, p: &Value) -> Result<Value> {

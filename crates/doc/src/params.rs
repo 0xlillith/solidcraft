@@ -274,7 +274,8 @@ impl FeatureKind {
             | FeatureKind::Loft { .. }
             | FeatureKind::Sweep { .. }
             | FeatureKind::Import { .. }
-            | FeatureKind::MeshImport { .. } => {}
+            | FeatureKind::MeshImport { .. }
+            | FeatureKind::BodyTransfer { .. } => {}
         }
         v
     }

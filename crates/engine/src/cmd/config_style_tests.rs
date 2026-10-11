@@ -133,6 +133,7 @@ fn strict_face_missing_lineage_never_retargets_and_rolls_back() {
         point: solvecraft_geom::Vec3::new(5., 5., 10.),
         name: Some(format!("F{other}:+z")),
         strict_name: true,
+        certificate: None,
         look,
     });
     assert!(s.doc.face_colors(s.model.state().body(&body).unwrap()).is_empty());
@@ -175,7 +176,7 @@ fn extrude_cap_certification_follows_actual_positive_negative_and_symmetric_name
         for face in faces {
             let name = solvecraft_doc::naming::strip_piece(&names[face.index]);
             let origin = name.strip_prefix('F').unwrap().split_once(':').unwrap().0.parse().unwrap();
-            let target = ConfigFaceTarget { body: "Pad".into(), origin_feature: origin, name: name.into(), point: face.centroid };
+            let target = ConfigFaceTarget { body: "Pad".into(), origin_feature: origin, name: name.into(), point: face.centroid, certificate: None };
             if name.ends_with(":start") || name.ends_with(":top") || name.ends_with(":bottom") {
                 s.doc.certify_config_face(&target).unwrap();
                 s.doc.configuration_face_indices(body, &target).unwrap();
@@ -211,7 +212,13 @@ fn hostile_and_uncertified_face_targets_are_rejected() {
     let mut s = Session::default();
     let body = block(&mut s);
     let id = s.doc.features[0].id;
-    let target = ConfigFaceTarget { body: body.clone(), origin_feature: id, name: format!("F{id}:face:0"), point: solvecraft_geom::Vec3::ZERO };
+    let target = ConfigFaceTarget {
+        body: body.clone(),
+        origin_feature: id,
+        name: format!("F{id}:face:0"),
+        point: solvecraft_geom::Vec3::ZERO,
+        certificate: None,
+    };
     assert!(s.doc.certify_config_face(&target).is_err());
     for value in [
         json!({"body":body,"origin_feature":id,"name":"x".repeat(1_000_000),"point":[0,0,0]}),

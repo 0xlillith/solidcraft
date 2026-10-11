@@ -63,6 +63,15 @@ fn column_of(s: &Session, p: &Value, cmd: &str) -> Result<Column> {
                 .cloned()
                 .ok_or_else(|| bad(cmd, "no face column"));
         }
+        if let Some(target) = value.get("target") {
+            solvecraft_doc::config::validate_face_target_json(target).map_err(|error| bad(cmd, error.to_string()))?;
+            let target: solvecraft_doc::config::ConfigFaceTarget =
+                serde_json::from_value(target.clone()).map_err(|error| bad(cmd, error.to_string()))?;
+            let state = s.model.state();
+            let body = state.body(&target.body).ok_or_else(|| bad(cmd, "no face definition"))?;
+            s.doc.configuration_face_indices(body, &target).map_err(|error| bad(cmd, error.to_string()))?;
+            return Ok(Column::FaceAppearance(target));
+        }
         let body_name = value.get("body").and_then(Value::as_str).ok_or_else(|| bad(cmd, "face body required"))?;
         let point = value.get("point").and_then(crate::params::vec3).ok_or_else(|| bad(cmd, "finite face point required"))?;
         let world = s.world_state();
@@ -71,20 +80,7 @@ fn column_of(s: &Session, p: &Value, cmd: &str) -> Result<Column> {
             return Err(bad(cmd, "mesh faces have no supported semantic lineage"));
         }
         let index = solvecraft_doc::appearance::face_index_at(body, point).ok_or_else(|| bad(cmd, "no face at picked point"))?;
-        let names = solvecraft_doc::naming::face_names(body);
-        let name = names.get(index).map(|name| solvecraft_doc::naming::strip_piece(name).to_string()).ok_or_else(|| bad(cmd, "face name missing"))?;
-        let origin_feature = name
-            .strip_prefix('F')
-            .and_then(|name| name.split_once(':'))
-            .and_then(|(id, _)| id.parse::<u64>().ok())
-            .ok_or_else(|| bad(cmd, "face lineage missing"))?;
-        let inverse = solvecraft_doc::mat_inverse(&body.source_transform).ok_or_else(|| bad(cmd, "invalid definition placement transform"))?;
-        let target = solvecraft_doc::config::ConfigFaceTarget {
-            body: body.definition_name().into(),
-            origin_feature,
-            name,
-            point: solvecraft_doc::apply_point(&inverse, point),
-        };
+        let target = s.doc.configuration_face_target(body, index, point).map_err(|error| bad(cmd, error.to_string()))?;
         s.doc.certify_config_face(&target).map_err(|error| bad(cmd, error.to_string()))?;
         s.doc.configuration_face_indices(body, &target).map_err(|error| bad(cmd, error.to_string()))?;
         return Ok(Column::FaceAppearance(target));
@@ -415,6 +411,10 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(out)
 }
 
+#[cfg(test)]
+#[path = "config_certificate_tests.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod certificate_tests;
 #[cfg(test)]
 #[path = "config_style_tests.rs"]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

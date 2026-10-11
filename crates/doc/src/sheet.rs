@@ -83,24 +83,32 @@ fn planar_region(region: &Region2) -> Result<Region2> {
 }
 
 fn region_complexity(regions: &[Region2]) -> Result<(usize, usize)> {
-    if regions.len() > MAX_FLAT_PIECES {
-        return Err(flat_budget_error());
-    }
+    regions_complexity(regions.iter())
+}
+
+fn regions_complexity<'a>(regions: impl Iterator<Item = &'a Region2>) -> Result<(usize, usize)> {
     let (mut edges, mut points) = (0usize, 0usize);
-    for lp in regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)) {
-        edges = edges.saturating_add(lp.segs.len());
-        if edges > MAX_FLAT_POINTS {
+    let mut pieces = 0usize;
+    for region in regions {
+        pieces += 1;
+        if pieces > MAX_FLAT_PIECES || region.holes.len() > MAX_FLAT_PIECES {
             return Err(flat_budget_error());
         }
-        points = points.saturating_add(flat_polyline(lp)?.len());
-        if points > MAX_FLAT_POINTS {
-            return Err(flat_budget_error());
+        for lp in std::iter::once(&region.outer).chain(&region.holes) {
+            edges = edges.saturating_add(lp.segs.len());
+            if edges > MAX_FLAT_POINTS {
+                return Err(flat_budget_error());
+            }
+            points = points.saturating_add(flat_polyline(lp)?.len());
+            if points > MAX_FLAT_POINTS {
+                return Err(flat_budget_error());
+            }
         }
     }
     Ok((edges, points))
 }
 
-fn material_boolean(a: &[Region2], b: &[Region2], op: kernel::BoolOp, work: &mut FlatWork) -> Result<Vec<Region2>> {
+pub(crate) fn material_boolean(a: &[Region2], b: &[Region2], op: kernel::BoolOp, work: &mut FlatWork) -> Result<Vec<Region2>> {
     let (ae, ap) = region_complexity(a)?;
     let (be, bp) = region_complexity(b)?;
     let edges = ae.saturating_add(be);
@@ -112,7 +120,7 @@ fn material_boolean(a: &[Region2], b: &[Region2], op: kernel::BoolOp, work: &mut
 
 // Merge in balanced rounds so hundreds of disjoint holes or adjoining panels do not
 // repeatedly arrange a growing accumulated boundary against just one small region.
-fn material_union(regions: Vec<Region2>, work: &mut FlatWork) -> Result<Vec<Region2>> {
+pub(crate) fn material_union(regions: Vec<Region2>, work: &mut FlatWork) -> Result<Vec<Region2>> {
     region_complexity(&regions)?;
     let mut groups: Vec<Vec<Region2>> = regions.into_iter().map(|r| vec![r]).collect();
     while groups.len() > 1 {
@@ -290,6 +298,10 @@ pub struct SheetBody {
     pub flanges: Vec<SheetFlange>,
     /// Cut-outs (flat coordinates) through the sheet.
     pub holes: Vec<Region2>,
+    /// Planar machining in flat coordinates, with depths measured from the flat bottom.
+    /// Derived from feature history; these records are not a document schema change.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pockets: Vec<SheetPocket>,
     /// Unfolded.
     pub flat: bool,
     /// Gap between flanges that meet at a corner.
@@ -297,6 +309,13 @@ pub struct SheetBody {
     /// The base sketch's lines (id, ends in flat coordinates), naming the base panel's edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_curves: Vec<(String, Vec2, Vec2)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SheetPocket {
+    pub region: Region2,
+    pub z0: f64,
+    pub z1: f64,
 }
 
 /// A piece of the sheet: a panel (None = the base) or a flange's bend zone.
@@ -564,6 +583,7 @@ impl SheetBody {
             }
             cuts.push(region);
         }
+        cuts.extend(self.through_pocket_regions(work)?);
         let cuts = material_union(cuts, work)?;
         let mut out = Vec::new();
         let mut points = 0usize;
@@ -734,20 +754,148 @@ impl SheetBody {
         }
         let mut work = FlatWork::new();
         let cells = self.cells_with_work(&mut work)?;
-        Ok(kernel::sew(&self.faces(&cells, 0.0, self.t, &mut work)?)?)
+        let body = kernel::sew(&self.faces(&cells, 0.0, self.t, &mut work)?)?;
+        self.machine_pockets(body, &mut work)
     }
 
     /// The flat pattern as one extrusion (outline with its cut-outs).
     pub fn flat_solid(&self) -> Result<Body> {
         let regions = self.flat_regions()?;
         let pl = plane_of(&self.frame_mat(), Vec3::ZERO, Vec3::X, Vec3::Y)?;
-        Ok(kernel::extrude_planar_regions(&pl, &regions, 0.0, self.t)?)
+        let body = kernel::extrude_planar_regions(&pl, &regions, 0.0, self.t)?;
+        self.machine_pockets(body, &mut FlatWork::new())
+    }
+
+    /// Replay exact planar machining after forming the full-thickness material.
+    fn machine_pockets(&self, mut body: Body, work: &mut FlatWork) -> Result<Body> {
+        if self.pockets.len() > 1000 {
+            return Err(flat_budget_error());
+        }
+        regions_complexity(self.pockets.iter().map(|p| &p.region))?;
+        let panels = if self.flat {
+            vec![(None, self.flat_regions()?)]
+        } else {
+            self.material_panels(None, work)?.into_iter().map(|(pi, r)| (pi, vec![r])).collect()
+        };
+        for pocket in &self.pockets {
+            if !pocket.z0.is_finite() || !pocket.z1.is_finite() || pocket.z0 < 0.0 || pocket.z1 > self.t || pocket.z0 >= pocket.z1 {
+                return Err(DocError::Invalid("invalid sheet pocket depth".into()));
+            }
+            if !self.flat {
+                for flange in &self.flanges {
+                    if flat_regions_overlap(&pocket.region, &self.zone(flange), work)? {
+                        return Err(DocError::Invalid(
+                            "a sheet pocket crosses a bend zone; planar pocket machining cannot yet preserve curved bend material".into(),
+                        ));
+                    }
+                }
+            }
+            for (pi, panel) in &panels {
+                let clipped = material_boolean(panel, std::slice::from_ref(&pocket.region), kernel::BoolOp::Intersect, work)?;
+                if clipped.is_empty() {
+                    continue;
+                }
+                let w = if self.flat { self.frame_mat() } else { self.world(*pi) };
+                let plane = plane_of(&w, Vec3::ZERO, Vec3::X, Vec3::Y)?;
+                // BRep replay is costlier than planar clipping; share the command budget.
+                work.charge(100_000)?;
+                let tool = kernel::extrude_planar_regions(&plane, &clipped, pocket.z0, pocket.z1)?;
+                body = kernel::boolean(&body, &tool, kernel::BoolOp::Cut)?
+                    .ok_or_else(|| DocError::Invalid("sheet pocket removes all sheet material".into()))?;
+            }
+        }
+        Ok(body)
+    }
+
+    /// Actual curved material, used to certify unsupported folded machining before mutation.
+    pub(crate) fn unmodeled_solid(&self, plane: &Plane) -> Result<Option<Body>> {
+        if self.flat || self.flanges.is_empty() {
+            return Ok(None);
+        }
+        let mut work = FlatWork::new();
+        let cells: Vec<_> = self
+            .cells_with_work(&mut work)?
+            .into_iter()
+            .filter(|c| match c.piece {
+                Piece::Zone(_) => true,
+                Piece::Panel(pi) => apply_vector(&self.world(pi), Vec3::Z).cross(plane.normal()).len() > 1e-6,
+            })
+            .collect();
+        if cells.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(kernel::sew(&self.faces(&cells, 0.0, self.t, &mut work)?)?))
+    }
+
+    fn through_pocket_regions(&self, work: &mut FlatWork) -> Result<Vec<Region2>> {
+        if self.pockets.is_empty() {
+            return Ok(Vec::new());
+        }
+        if self.pockets.len() > 1000 {
+            return Err(flat_budget_error());
+        }
+        regions_complexity(self.pockets.iter().map(|p| &p.region))?;
+        let mut levels = vec![0.0, self.t];
+        for p in &self.pockets {
+            if !p.z0.is_finite() || !p.z1.is_finite() || p.z0 < 0.0 || p.z1 > self.t || p.z0 >= p.z1 {
+                return Err(DocError::Invalid("invalid sheet pocket depth".into()));
+            }
+            levels.extend([p.z0, p.z1]);
+        }
+        levels.sort_by(f64::total_cmp);
+        levels.dedup();
+        work.charge(levels.len().saturating_mul(self.pockets.len()))?;
+        // Most pockets leave an untouched thickness layer. Certify that cheap case
+        // before arranging hundreds of unrelated profiles at every depth level.
+        if levels.windows(2).any(|zs| !self.pockets.iter().any(|p| p.z0 <= zs[0] && p.z1 >= zs[1])) {
+            return Ok(Vec::new());
+        }
+        let mut through: Option<Vec<Region2>> = None;
+        for zs in levels.windows(2) {
+            let active: Vec<_> = self.pockets.iter().filter(|p| p.z0 <= zs[0] && p.z1 >= zs[1]).map(|p| p.region.clone()).collect();
+            if active.is_empty() {
+                return Ok(Vec::new());
+            }
+            let removed = material_union(active, work)?;
+            through = Some(match through {
+                None => removed,
+                Some(previous) => material_boolean(&previous, &removed, kernel::BoolOp::Intersect, work)?,
+            });
+            if through.as_ref().is_some_and(Vec::is_empty) {
+                return Ok(Vec::new());
+            }
+        }
+        Ok(through.unwrap_or_default())
+    }
+
+    /// Pocket operations clipped to the surviving flat material, with exact depth intervals.
+    pub fn machining(&self) -> Result<Vec<SheetPocket>> {
+        let material = self.flat_regions()?;
+        let mut work = FlatWork::new();
+        let mut out = Vec::new();
+        for pocket in &self.pockets {
+            for region in material_boolean(&material, std::slice::from_ref(&pocket.region), kernel::BoolOp::Intersect, &mut work)? {
+                if out.len() >= 1000 {
+                    return Err(flat_budget_error());
+                }
+                out.push(SheetPocket { region, z0: pocket.z0, z1: pocket.z1 });
+            }
+        }
+        Ok(out)
     }
 
     /// Actual flat material boundaries after cut-outs. The same panel and cut regions build
     /// the folded solid; planar unions remove panel/bend seams and turn edge-crossing cuts
     /// into notches. Lines and circular arcs remain exact through clipping and merging.
     pub fn flat_regions(&self) -> Result<Vec<Region2>> {
+        let regions = self.flat_material()?;
+        if regions.is_empty() {
+            return Err(DocError::Invalid("empty flat pattern".into()));
+        }
+        Ok(regions)
+    }
+
+    pub(crate) fn flat_material(&self) -> Result<Vec<Region2>> {
         let mut work = FlatWork::new();
         // Merge structural pieces before cutting: clipping each panel first introduces
         // coincident notch endpoints at seams, while a single material cut has no seams.
@@ -783,11 +931,9 @@ impl SheetBody {
             }
             cuts.push(region);
         }
+        cuts.extend(self.through_pocket_regions(&mut work)?);
         let cuts = material_union(cuts, &mut work)?;
         let regions = if cuts.is_empty() { regions } else { material_boolean(&regions, &cuts, kernel::BoolOp::Cut, &mut work)? };
-        if regions.is_empty() {
-            return Err(DocError::Invalid("empty flat pattern".into()));
-        }
         Ok(regions)
     }
     /// Outline loops of the flat pattern (flat coordinates): the pieces' edges, shared ones left out.
@@ -1332,6 +1478,22 @@ impl SheetBody {
             })
             .collect()
     }
+
+    pub(crate) fn material_panels(&self, plane: Option<&Plane>, work: &mut FlatWork) -> Result<Vec<(Option<usize>, Region2)>> {
+        Ok(self
+            .cells_with_work(work)?
+            .into_iter()
+            .filter_map(|c| {
+                let Piece::Panel(pi) = c.piece else {
+                    return None;
+                };
+                if plane.is_some_and(|p| apply_vector(&self.world(pi), Vec3::Z).cross(p.normal()).len() > 1e-6) {
+                    return None;
+                }
+                Some((pi, Region2 { outer: Loop2 { segs: c.outer }, holes: c.holes.into_iter().map(|segs| Loop2 { segs }).collect() }))
+            })
+            .collect())
+    }
 }
 
 fn point_in(poly: &[Vec2], p: Vec2) -> bool {
@@ -1465,6 +1627,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         base: Region2 { outer: region.outer, holes: Vec::new() },
         flanges: Vec::new(),
         holes,
+        pockets: Vec::new(),
         flat: false,
         gap: rv.gap,
         base_curves: Vec::new(),
@@ -1516,6 +1679,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         base: Region2 { outer: Loop2 { segs: Vec::new() }, holes: Vec::new() },
         flanges: Vec::new(),
         holes: Vec::new(),
+        pockets: Vec::new(),
         flat: false,
         gap: rv.gap,
         base_curves: Vec::new(),
@@ -1779,5 +1943,24 @@ mod tests {
             .collect();
         assert!(s.faces(&cells, 0.0, 2.5, &mut FlatWork::new()).unwrap_err().to_string().contains("budget"));
         assert!(s.faces(&cells[..1], 0.0, 2.5, &mut FlatWork(0)).unwrap_err().to_string().contains("budget"));
+    }
+
+    #[test]
+    fn pocket_geometry_and_depth_budgets_are_checked_before_replay() {
+        let pocket = SheetPocket {
+            region: rect(Vec2::new(20.0, 20.0), Vec2::new(30.0, 20.0), Vec2::new(30.0, 30.0), Vec2::new(20.0, 30.0)),
+            z0: 0.0,
+            z1: 1.0,
+        };
+        let mut s = plate(100.0, 60.0);
+        s.pockets = vec![pocket.clone(); 1001];
+        assert!(s.flat_solid().unwrap_err().to_string().contains("budget"));
+        s.pockets = vec![pocket.clone()];
+        s.pockets[0].region.outer.segs = vec![Seg2::Line { a: Vec2::ZERO, b: Vec2::X }; MAX_FLAT_POINTS + 1];
+        assert!(s.flat_solid().unwrap_err().to_string().contains("budget"));
+        for (z0, z1) in [(f64::NAN, 1.0), (-1.0, 1.0), (0.0, 3.0), (1.0, 1.0)] {
+            s.pockets = vec![SheetPocket { z0, z1, ..pocket.clone() }];
+            assert!(s.flat_solid().unwrap_err().to_string().contains("depth"));
+        }
     }
 }

@@ -67,10 +67,14 @@ pub mod recovery_ui;
 pub mod ref_images;
 #[cfg(test)]
 mod revolve_edit_tests;
+#[cfg(test)]
+mod revolve_manipulator_tests;
 pub mod scenario;
 pub mod selection;
 pub mod shortcut_box;
 pub mod sketch3d;
+#[cfg(test)]
+mod sketch3d_frame_ui_tests;
 pub mod sketch_dims;
 #[cfg(test)]
 mod sketch_edit_tests;

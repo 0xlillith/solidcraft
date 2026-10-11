@@ -328,7 +328,8 @@ impl FeatureKind {
             | FeatureKind::Stitch { .. }
             | FeatureKind::Thicken { .. }
             | FeatureKind::Import { .. }
-            | FeatureKind::MeshImport { .. } => {}
+            | FeatureKind::MeshImport { .. }
+            | FeatureKind::BodyTransfer { .. } => {}
             FeatureKind::Patch { edges, .. } | FeatureKind::SurfaceExtend { edges, .. } => edges.iter_mut().for_each(pt),
             FeatureKind::SurfaceTrim { plane, tool, keep, .. } => {
                 map_plane_ref(m, plane);
@@ -392,9 +393,9 @@ impl Document {
     pub fn body_frames_with_source(&self, st: &crate::ModelState) -> Vec<(String, String, u64, Vec<u64>, Mat)> {
         let mut out = Vec::new();
         for (comp, path, m) in self.placements() {
-            for b in st.bodies.iter().filter(|b| self.body_component(&b.name, b.feature) == comp) {
+            for b in st.bodies.iter().filter(|b| self.model_body_component(b) == comp) {
                 let name = self.world_body_name(st, &b.name, comp, &path);
-                let w = match self.body_offsets.get(&b.name) {
+                let w = match self.model_body_offset(b) {
                     Some(o) => mat_mul(&m, o),
                     None => m,
                 };

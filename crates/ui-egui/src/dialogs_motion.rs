@@ -807,28 +807,35 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                     continue;
                                 }
                                 ui.menu_button(format!("Faces on {}", body.name), |ui| {
-                                    let names = solvecraft_engine::doc::naming::face_names(body);
                                     if let Ok(faces) = body.body.faces((body.body.size() * 2e-3).max(1e-3)) {
                                         let mut seen = std::collections::BTreeSet::new();
+                                        let mesh = body.mesh();
+                                        let mut points = std::collections::BTreeMap::new();
+                                        for (triangle, index) in mesh.triangles.iter().zip(&mesh.tri_face) {
+                                            if let std::collections::btree_map::Entry::Vacant(entry) = points.entry(*index as usize)
+                                                && let Some([a, b, c]) = mesh.tri(triangle)
+                                            {
+                                                entry.insert((a + b + c) * (1. / 3.));
+                                            }
+                                        }
                                         for face in faces {
-                                            let Some(name) = names.get(face.index) else { continue };
-                                            let name = solvecraft_engine::doc::naming::strip_piece(name);
-                                            if !seen.insert(name.to_string()) {
-                                                continue;
-                                            }
-                                            let Some((id, role)) = name.strip_prefix('F').and_then(|name| name.split_once(':')) else { continue };
-                                            let Ok(origin_feature) = id.parse() else { continue };
-                                            let target = solvecraft_engine::doc::config::ConfigFaceTarget {
-                                                body: body.name.clone(),
-                                                origin_feature,
-                                                name: name.into(),
-                                                point: face.centroid,
+                                            // A curved face centroid can lie on another surface.
+                                            // Pick an interior triangle point on this actual face.
+                                            let Some(point) = points.get(&face.index).copied() else { continue };
+                                            let Ok(target) = app.session.doc.configuration_face_target(body, face.index, point) else { continue };
+                                            let supported = if target.certificate.is_some() {
+                                                // Capture read this exact face's current source certificate.
+                                                // Enumerate its pieces once in the command, not per menu face.
+                                                app.session.doc.certify_config_face(&target).is_ok()
+                                            } else {
+                                                app.session.doc.configuration_face_indices(body, &target).is_ok()
                                             };
-                                            if app.session.doc.certify_config_face(&target).is_err() {
+                                            if !supported || !seen.insert(target.name.clone()) {
                                                 continue;
                                             }
+                                            let Some((_, role)) = target.name.split_once(':') else { continue };
                                             if ui.button(role).clicked() {
-                                                pick = Some(json!({"face_appearance":{"body":body.name,"point":face.centroid}}));
+                                                pick = Some(json!({"face_appearance":{"target":target}}));
                                                 ui.close();
                                             }
                                         }
@@ -926,7 +933,7 @@ pub fn commands(app: &SolveApp, k: &Mo, inputs: &[SelInput]) -> Result<Vec<(Stri
                 if let solvecraft_engine::Sel::Body { name } = x
                     && let Some(b) = app.session.world_state().body(name)
                 {
-                    let comp = app.session.doc.body_component(&b.name, b.feature);
+                    let comp = app.session.doc.model_body_component(b);
                     if let Some(o) = app.session.doc.occurrence_of(comp).map(|o| o.id)
                         && !occs.contains(&o)
                     {
@@ -1125,6 +1132,33 @@ mod tests {
             assert!(h.app.session.doc.appearances.faces.is_empty());
             crate::scenario::check(&mut h, &json!({"windows_fit":{"max_width":560}})).unwrap();
         }
+    }
+
+    #[test]
+    fn configuration_annulus_picker_exposes_both_certificates_despite_shared_legacy_name() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.resize", json!({"width":1400,"height":900}));
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"sketch.create","params":{"plane":"XY"}}},
+            {"call":"engine.execute","params":{"command":"sketch.circle.center","params":{"center":[0,0],"radius":10,"id":"outer"}}},
+            {"call":"engine.execute","params":{"command":"sketch.circle.center","params":{"center":[0,0],"radius":9.999,"id":"inner"}}},
+            {"call":"engine.execute","params":{"command":"sketch.finish","params":{}}},
+            {"call":"engine.execute","params":{"command":"solid.extrude","params":{"distance":10,"profiles":[{"point":[9.9995,0]}],"body_name":"Ring"}}},
+            {"start":"config.table"},{"widget":"Add Column"},{"widget":"Face Appearance"},{"widget":"Faces on Ring"}
+        ]))
+        .unwrap();
+        assert!(h.widget("side:outer").is_some());
+        assert!(h.widget("side:inner").is_some());
+        h.run(&json!([{"widget":"side:outer"},{"widget":"Library"},{"widget":"ABS - Red"},{"widget":"Apply"}])).unwrap();
+        let solvecraft_engine::doc::config::Column::FaceAppearance(target) = &h.app.session.doc.configs.columns[0] else { panic!() };
+        assert!(matches!(&target.certificate, Some(solvecraft_engine::doc::config::FaceCertificate::ExtrudeSide { curve, .. }) if curve == "outer"));
+        let state = h.app.session.model.state();
+        let body = state.body("Ring").unwrap();
+        let indices = h.app.session.doc.configuration_face_indices(body, target).unwrap();
+        assert_eq!(indices.len(), 2);
+        let painted = h.app.session.doc.face_colors(body);
+        assert_eq!(painted.len(), 2);
+        assert!(painted.iter().all(|(index, _)| indices.contains(index)));
     }
 
     #[test]

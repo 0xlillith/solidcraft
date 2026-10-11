@@ -47,9 +47,10 @@ pub static COMMANDS: &[CommandSpec] = &[
 fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
     let Some(prev) = s.undo.pop() else { return Err(EngineError::Other("nothing to undo".into())) };
     let label = prev.label.clone();
-    s.redo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch });
+    s.redo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch, pending_moves: s.pending_moves.clone() });
     s.doc = prev.doc;
     s.active_sketch = prev.active_sketch;
+    s.pending_moves = prev.pending_moves;
     s.selection.clear();
     s.refresh();
     Ok(json!({"undone": label}))
@@ -58,9 +59,10 @@ fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
 fn redo(s: &mut Session, _p: &Value) -> Result<Value> {
     let Some(next) = s.redo.pop() else { return Err(EngineError::Other("nothing to redo".into())) };
     let label = next.label.clone();
-    s.undo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch });
+    s.undo.push(Snapshot { label: label.clone(), doc: s.doc.clone(), active_sketch: s.active_sketch, pending_moves: s.pending_moves.clone() });
     s.doc = next.doc;
     s.active_sketch = next.active_sketch;
+    s.pending_moves = next.pending_moves;
     s.selection.clear();
     s.refresh();
     Ok(json!({"redone": label}))
@@ -199,6 +201,10 @@ fn edit_feature(s: &mut Session, p: &Value) -> Result<Value> {
     nf.id = f.id;
     if std::mem::discriminant(&nf.kind) != std::mem::discriminant(&f.kind) {
         return Err(bad(cmd, "the feature type cannot change"));
+    }
+    if let FeatureKind::BodyTransfer { bodies, from, to, transform } = &nf.kind {
+        solvecraft_doc::validate_body_transfer(&s.doc, bodies, *from, *to, transform)?;
+        nf.component = *to;
     }
     if let (FeatureKind::Sketch { sketch: a, .. }, FeatureKind::Sketch { sketch: b, .. }) = (&nf.kind, &f.kind)
         && a != b
@@ -360,7 +366,13 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     }
     trial.active_sketch = None;
     trial.selection = s.selection.clone();
-    trial.doc_mut().marker = Some(idx);
+    // Keep the original identity as a suppressed placeholder. The constructor and
+    // any ownership boundary it adds go AFTER this slot, so discarding its temporary
+    // feature leaves auxiliary history after the rewritten original.
+    if let Some(slot) = trial.doc_mut().feature_mut(id) {
+        slot.suppressed = true;
+    }
+    trial.doc_mut().marker = Some(idx + 1);
     trial.refresh();
     (spec.enabled)(&trial).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
     let r = (spec.run)(&mut trial, &params)?;
@@ -399,6 +411,7 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
         trial.doc_mut().next_id = s.doc.next_id;
     }
     if let Some(slot) = trial.doc_mut().feature_mut(id) {
+        slot.suppressed = old.suppressed;
         slot.kind = new.kind;
         slot.edge_refs = new.edge_refs;
         slot.edge_names = new.edge_names;
@@ -414,6 +427,40 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(e) = trial.model.result(id).and_then(|r| r.error.clone()) {
         return Err(EngineError::Other(e));
     }
+    let original_ids: std::collections::BTreeSet<u64> = s.doc.features.iter().map(|feature| feature.id).collect();
+    let added_ids: std::collections::BTreeSet<u64> =
+        trial.doc.features.iter().filter(|feature| !original_ids.contains(&feature.id)).map(|feature| feature.id).collect();
+    let adds_transfer =
+        trial.doc.features.iter().any(|feature| added_ids.contains(&feature.id) && matches!(feature.kind, FeatureKind::BodyTransfer { .. }));
+    let baseline = if adds_transfer && s.doc.marker.is_some() {
+        let mut baseline = s.scratch();
+        baseline.doc_mut().marker = None;
+        baseline.refresh();
+        Some(baseline)
+    } else {
+        None
+    };
+    let proof = if (adds_transfer && trial.doc.marker.is_some()) || added_ids.iter().any(|id| trial.model.result(*id).is_none()) {
+        let mut proof = trial.scratch();
+        proof.doc_mut().marker = None;
+        proof.refresh();
+        Some(proof)
+    } else {
+        None
+    };
+    let validated = proof.as_ref().map(|proof| &proof.model).unwrap_or(&trial.model);
+    let original_model = baseline.as_ref().map(|baseline| &baseline.model).unwrap_or(&s.model);
+    for feature in &trial.doc.features {
+        let auxiliary = added_ids.contains(&feature.id);
+        let protected_transfer = matches!(feature.kind, FeatureKind::BodyTransfer { .. })
+            && original_model.result(feature.id).is_some_and(|result| !result.skipped && result.error.is_none());
+        if (auxiliary || protected_transfer)
+            && let Some(error) = validated.result(feature.id).and_then(|result| result.error.as_ref())
+        {
+            return Err(bad(cmd, format!("{}: {error}", feature.name)));
+        }
+    }
+    s.pending_moves = trial.pending_moves;
     s.doc = trial.doc;
     s.refresh();
     if let Some(e) = s.model.result(id).and_then(|r| r.error.clone()) {

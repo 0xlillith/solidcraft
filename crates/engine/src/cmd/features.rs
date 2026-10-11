@@ -158,7 +158,7 @@ pub fn auto_operation(s: &Session, p: &Value) -> Option<&'static str> {
     let bodies: Vec<_> = st
         .bodies
         .iter()
-        .filter(|b| if parts.is_empty() { s.doc.body_component(&b.name, b.feature) == s.active_component } else { parts.contains(&b.name) })
+        .filter(|b| if parts.is_empty() { s.doc.model_body_component(b) == s.active_component } else { parts.contains(&b.name) })
         .collect();
     if bodies.is_empty() {
         return Some("new");
@@ -324,7 +324,7 @@ pub(super) fn add_feature(s: &mut Session, p: &Value, kind: FeatureKind) -> Resu
         if let FeatureKind::Emboss { face: Some(face), .. } = &kind {
             let state = s.model.state();
             let body = state.body(&face.body).ok_or_else(|| EngineError::Other("selected cylinder body no longer exists".into()))?;
-            let frame = face.body_frame(&s.doc, body.feature).map_err(|e| EngineError::Other(e.to_string()))?;
+            let frame = face.body_frame(&s.doc, body).map_err(|e| EngineError::Other(e.to_string()))?;
             let inverse = solvecraft_doc::mat_inverse(&frame).ok_or_else(|| EngineError::Other("invalid cylinder placement".into()))?;
             let at = solvecraft_doc::apply_point(&solvecraft_doc::mat_mul(&inverse, &s.active_component_frame()), face.at);
             let mut scoped = solvecraft_doc::ModelState::default();
@@ -727,7 +727,7 @@ fn combine(s: &mut Session, p: &Value) -> Result<Value> {
     if bool_(p, "new_component").unwrap_or(false) {
         let name = str_(p, "component_name").map(str::to_string).unwrap_or_else(|| format!("{target} Combined"));
         let c = s.execute("component.create", &json!({"name": name, "activate": false}))?;
-        s.execute("component.move_bodies", &json!({"bodies": [target], "component": c["component"]}))?;
+        super::component::transfer_constructor_result(s, &json!({"bodies": [target], "component": c["component"]}))?;
         out["component"] = c["component"].clone();
     }
     Ok(out)

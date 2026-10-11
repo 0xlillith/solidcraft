@@ -18,7 +18,11 @@ replaced version is kept as `<file>.bak`. Unsaved changes are autosaved to a rec
 and the next launch offers to recover them. Older design files are upgraded on open, and files
 from a newer version are refused with a message.
 
-Current designs use format 9 for semantic configuration styles, associative free-form offsets
-and explicit cylindrical emboss selections. Older geometry and expressions retain their
-meaning during upgrade; missing new fields use defaults. Association records and occurrence
-paths are bounded and checked before they can alter geometry.
+Current designs use format 10 for recorded body transfers, explicit 3D curve coordinate
+spaces and certified face bindings, alongside semantic configuration styles, associative
+free-form offsets and cylindrical emboss selections. Older ownership maps, geometry and
+expressions retain their saved meaning. Legacy 3D curves with retained associations receive
+their producer's coordinate-space marker without changing any saved points; detached curves
+retain world coordinates. A lost cross-component association refreshed by an older build may
+need an explicit relink or refresh when its source returns. Loading never guesses a numerical
+correction. Association records, coordinate arrays and placements are bounded and checked.

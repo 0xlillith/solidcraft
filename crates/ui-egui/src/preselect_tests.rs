@@ -9,6 +9,58 @@ use crate::dialogs::{Dialog, Kind, apply_commands};
 use crate::{Services, SolveApp};
 
 #[test]
+fn cylinder_emboss_empty_target_face_applies_automatic_wrap_and_deboss() {
+    for deboss in [false, true] {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();
+        let initial = h.app.session.model.state().body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume;
+        let sketch =
+            h.app.run("sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"})).unwrap()["sketch"]
+                .as_u64()
+                .unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.session.selection = vec![Sel::Profile { sketch, index: 0 }];
+        h.app.start("solid.emboss");
+        h.frames(2);
+        if deboss {
+            h.settle();
+            h.step(&json!({"click":{"handle":"dialog:Type"}})).unwrap();
+            h.step(&json!({"click":{"handle":"dialog:Type:Deboss"}})).unwrap();
+        }
+        let dialog = h.app.dialog.as_ref().unwrap();
+        assert!(dialog.inputs[1].items.is_empty());
+        let commands = apply_commands(&h.app, dialog).unwrap();
+        assert!(commands[0].1.get("face").is_none());
+        let preview = h.app.session.preview_world(&commands).unwrap();
+        let expected = if deboss { -19.0 } else { 21.0 };
+        let preview_delta = preview.after.body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume - initial;
+        assert!(
+            (preview_delta - expected).abs() < 0.05,
+            "deboss={deboss}, preview delta={preview_delta}, expected={expected}, commands={commands:?}"
+        );
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+        let feature = h.app.session.doc.features.last().unwrap().clone();
+        let solvecraft_engine::doc::FeatureKind::Emboss { face: Some(face), deboss: actual, .. } = &feature.kind else {
+            panic!("automatic Apply must save its cylinder anchor: {:?}", feature.kind)
+        };
+        assert_eq!(*actual, deboss);
+        assert_eq!(face.body, "Sleeve");
+        assert!(
+            (h.app.session.model.state().body("Sleeve").unwrap().body.tessellate_with(1e-4, true).unwrap().measure().volume - initial - expected)
+                .abs()
+                < 0.05
+        );
+        h.app.edit_feature(feature.id);
+        h.frames(2);
+        assert!(matches!(h.app.dialog.as_ref().unwrap().inputs[1].items.first(), Some(Sel::Face { body, .. }) if body == "Sleeve"));
+        h.step(&json!({"key":"Escape"})).unwrap();
+        assert_eq!(h.app.session.doc.feature(feature.id).unwrap().kind, feature.kind);
+    }
+}
+
+#[test]
 fn cylinder_emboss_target_face_and_edit_keep_the_anchored_operation() {
     let mut h = crate::scenario::Harness::new();
     h.app.run("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();

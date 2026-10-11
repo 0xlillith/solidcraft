@@ -75,6 +75,9 @@ impl ConfigTable {
                             .map(|role| format!("F{origin}:{role}"))
                             .unwrap_or_else(|| target.name.clone());
                         target.origin_feature = *origin;
+                        if let Some(certificate) = &mut target.certificate {
+                            certificate.remap_features(&maps.features);
+                        }
                         Column::FaceAppearance(target)
                     })
                 }
@@ -140,6 +143,7 @@ mod tests {
                     origin_feature: 3,
                     name: "F3:+z".into(),
                     point: solvecraft_geom::Vec3::new(1., 1., 2.),
+                    certificate: None,
                 }),
             ],
             rows: vec![ConfigRow {
@@ -196,6 +200,7 @@ mod tests {
                     origin_feature: 3,
                     name: "F3:+z".into(),
                     point: solvecraft_geom::Vec3::ZERO,
+                    certificate: None,
                 }),
             ],
             rows: vec![ConfigRow { name: "Default".into(), cells: vec!["2 mm".into(), String::new()] }],

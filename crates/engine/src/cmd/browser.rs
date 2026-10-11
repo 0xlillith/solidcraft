@@ -235,7 +235,7 @@ fn visibility(s: &mut Session, p: &Value) -> Result<Value> {
                 }
             }
             let mut root_bodies: Vec<String> =
-                s.model.state().bodies.iter().filter(|b| s.doc.body_component(&b.name, b.feature) == 0).map(|b| b.name.clone()).collect();
+                s.model.state().bodies.iter().filter(|b| s.doc.model_body_component(b) == 0).map(|b| b.name.clone()).collect();
             root_bodies.extend(ancestor_bodies);
             s.visibility.hidden_occurrences = hidden;
             s.visibility.hidden_bodies = root_bodies;

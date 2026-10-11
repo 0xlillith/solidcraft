@@ -123,27 +123,49 @@ fn sketch_plane(doc: &Document, id: u64) -> Result<Plane> {
     }
 }
 
+/// Keep candidate feature edits while overlaying uncommitted occurrence placements.
+fn placed_candidate<'a>(s: &Session, doc: &'a Document) -> std::borrow::Cow<'a, Document> {
+    if s.pending_moves.is_empty() {
+        return std::borrow::Cow::Borrowed(doc);
+    }
+    let mut placed = doc.clone();
+    for o in &mut placed.occurrences {
+        if let Some(m) = s.pending_moves.get(&o.id) {
+            o.transform = *m;
+        }
+    }
+    std::borrow::Cow::Owned(placed)
+}
+
+fn owner_frame(s: &Session, doc: &Document, comp: u64) -> solvecraft_doc::Mat {
+    if comp == s.active_component { s.active_component_frame() } else { doc.component_transform(comp) }
+}
+
 /// Re-resolve the links of a sketch being edited against the model before it, so edits see
 /// current reference geometry. Returns warnings.
 pub(super) fn refresh(s: &Session, doc: &Document, id: u64, sk: &mut Sketch) -> Vec<String> {
     if sk.links.is_empty() {
         return Vec::new();
     }
-    let Ok(plane) = sketch_plane(doc, id) else { return Vec::new() };
+    let doc = placed_candidate(s, doc);
+    let Ok(plane) = sketch_plane(&doc, id) else { return Vec::new() };
     let (vals, _) = doc.param_values();
     let st = s.model.state_before(id);
-    solvecraft_doc::project::refresh_links(doc, &vals, &st, &plane, sk)
+    let comp = doc.feature(id).map(|f| f.component).unwrap_or(0);
+    let st = solvecraft_doc::state_in_frame_at(&doc, &st, comp, owner_frame(s, &doc, comp));
+    solvecraft_doc::project::refresh_links(&doc, &vals, &st, &plane, sk)
 }
 
 /// Add a link for `src` to sketch `id` in `doc` (not stored in the session). Returns the link id.
 pub(super) fn add_link(s: &Session, doc: &Document, id: u64, sk: &mut Sketch, kind: LinkKind, src: LinkSource) -> Result<String> {
-    let plane = sketch_plane(doc, id)?;
+    let doc = placed_candidate(s, doc);
+    let plane = sketch_plane(&doc, id)?;
     let (vals, _) = doc.param_values();
     let st = s.model.state_before(id);
     // The model as the sketch's component sees it.
     let comp = doc.feature(id).map(|f| f.component).unwrap_or(0);
-    let st = solvecraft_doc::state_in_frame(doc, &st, comp);
-    let r = resolve(doc, &vals, &st, &plane, kind, &src)?;
+    let st = solvecraft_doc::state_in_frame_at(&doc, &st, comp, owner_frame(s, &doc, comp));
+    let r = resolve(&doc, &vals, &st, &plane, kind, &src)?;
     let name = if let LinkSource::Face { at, .. } = &r.source {
         solvecraft_doc::naming::face_names_at(&st, &[*at]).into_iter().next().filter(|n| !n.is_empty())
     } else {

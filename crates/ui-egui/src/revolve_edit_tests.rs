@@ -109,6 +109,12 @@ fn second_active_occurrence_noop_preserves_definition_axis_target_and_instances(
     let (origin, _) = crate::canvas::revolve_axis(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
     assert!((origin - expected_origin).len() < 1e-8);
     assert!(origin.len() > 50.0, "fixture must distinguish first and second placements");
+    let commands = crate::dialogs::apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    let preview = h.app.session.preview_world(&commands).unwrap();
+    let placed = preview.after.bodies.iter().find(|body| body.mesh().bounds().center().x > 50.0).unwrap();
+    assert!(placed.mesh().triangles.len() > 10);
+    assert_eq!(placed.mesh().bounds(), before.iter().find(|(_, bounds)| bounds.center().x > 50.0).unwrap().1);
+    assert!(h.widget("↖ Custom Axis").is_some());
     h.step(&json!({"widget":"OK"})).unwrap();
     assert_eq!(serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap(), original);
     let after: Vec<_> = h.app.session.world_state().bodies.iter().map(|b| (b.name.clone(), b.mesh().bounds())).collect();

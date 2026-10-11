@@ -48,6 +48,8 @@ pub struct FaceLook {
     /// Strict semantic assignments never transfer to a nearby replacement face.
     #[serde(default, skip_serializing_if = "is_false")]
     pub strict_name: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<crate::config::FaceCertificate>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -139,7 +141,13 @@ pub fn material_look(material: &str) -> Option<Look> {
 impl Document {
     /// Shared definition appearance for a computed occurrence body.
     pub fn model_body_look(&self, body: &crate::ModelBody) -> Option<Look> {
-        self.body_look(body.definition_name(), body.feature)
+        let name = body.definition_name();
+        self.appearances
+            .bodies
+            .get(name)
+            .cloned()
+            .or_else(|| self.appearances.components.get(&self.model_body_component(body)).cloned())
+            .or_else(|| self.materials.get(name).and_then(|material| material_look(material)))
     }
     /// Effective body opacity, including paint carried from an imported body.
     pub fn model_body_opacity(&self, body: &crate::ModelBody) -> f64 {
@@ -198,6 +206,7 @@ impl Document {
                     origin_feature,
                     name: crate::naming::strip_piece(name).into(),
                     point: f.point,
+                    certificate: f.certificate.clone(),
                 };
                 let Ok(indices) = self.configuration_face_indices(b, &target) else { continue };
                 for index in indices {

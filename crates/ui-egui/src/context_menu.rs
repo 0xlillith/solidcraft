@@ -248,14 +248,7 @@ pub fn target_bodies(app: &SolveApp, target: &Target) -> Vec<String> {
 /// Bodies in a component and its subcomponents.
 pub fn component_bodies(app: &SolveApp, id: u64) -> Vec<String> {
     let doc = &app.session.doc;
-    app.session
-        .model
-        .state()
-        .bodies
-        .iter()
-        .filter(|b| doc.component_within(doc.body_component(&b.name, b.feature), id))
-        .map(|b| b.name.clone())
-        .collect()
+    app.session.model.state().bodies.iter().filter(|b| doc.component_within(doc.model_body_component(b), id)).map(|b| b.name.clone()).collect()
 }
 
 /// The eight radial commands, clockwise from the top.
