@@ -10,7 +10,7 @@ third-party material under an open licence. Screenshots of Autodesk software are
 
 Generated-in-code assets are original and have no file to list:
 - the UI icon set (`crates/ui-egui/src/icons.rs`);
-- the view cube, navigation bar and timeline glyphs (`crates/ui-egui/src/viewport.rs`,
+- the axis view, navigation bar and timeline glyphs (`crates/ui-egui/src/viewport.rs`,
   `crates/ui-egui/src/timeline.rs`).
 
 ## Files
@@ -46,7 +46,7 @@ Generated-in-code assets are original and have no file to list:
 
 | SolveCraft file | Original contribution | Licence |
 |---|---|---|
-| crates/ui-egui/src/viewport.rs (`nearest_quarter_turn`, `view_cube_orbit`) | N3MI-DG's [PR #101](https://github.com/bherbruck/solvecraft/pull/101): [minimal TOP/BOTTOM turns](https://github.com/bherbruck/solvecraft/commit/c28e780f52490784ef5886f094b9d3f6d10c3e3f) and [drag-to-orbit](https://github.com/bherbruck/solvecraft/commit/f30b30be6ecc4e2e6544a851243137c01a354934), adapted to the 14-target cube | MIT OR Apache-2.0 |
+| crates/ui-egui/src/viewport.rs (`nearest_quarter_turn`, `axis_view_orbit`) | N3MI-DG's [PR #101](https://github.com/bherbruck/solvecraft/pull/101): [minimal TOP/BOTTOM turns](https://github.com/bherbruck/solvecraft/commit/c28e780f52490784ef5886f094b9d3f6d10c3e3f) and [drag-to-orbit](https://github.com/bherbruck/solvecraft/commit/f30b30be6ecc4e2e6544a851243137c01a354934), adapted to the axis gizmo | MIT OR Apache-2.0 |
 
 ## Vendored third-party code
 

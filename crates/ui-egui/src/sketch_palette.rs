@@ -178,7 +178,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     };
     let t = Tokens::get();
     let vp = app.viewport.rect.unwrap_or_else(|| ctx.content_rect());
-    let anchor = egui::pos2(vp.right(), vp.top() + crate::viewport::VIEW_CUBE_CLEARANCE);
+    let anchor = egui::pos2(vp.right(), vp.top() + crate::viewport::AXIS_VIEW_CLEARANCE);
     let frame = egui::Frame::window(&ctx.global_style())
         .fill(t.dialog_bg)
         .stroke(Stroke::new(1.0, t.dialog_border))

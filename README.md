@@ -60,7 +60,7 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
   that later features build on — open a `.step`/`.stp`/`.igs`/`.iges` file, insert one into a
   design, or drop it on the window ([docs/step-import.md](docs/step-import.md)).
 - **Desktop app** (egui + wgpu): toolbar with workspace tabs, browser, timeline, 3D viewport with
-  view cube and navigation bar, sketch tools, feature dialogs, command palette, and a JSON-lines
+  axis view and navigation bar, sketch tools, feature dialogs, command palette, and a JSON-lines
   control channel so agents and tests can drive it.
 - **Headless CLI** `solvecraft-cli`: run command scripts, measure (volume, area, centre of mass,
   face/edge/vertex counts), export, render PNG snapshots, replay Fusion oracle recipes.

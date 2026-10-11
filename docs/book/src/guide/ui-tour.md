@@ -13,11 +13,13 @@
   hides an item, a component's radio button makes it the active component, and right-clicking any
   row gives that item's menu. Rows drag into groups and other components.
 - **Viewport.** Click to select, Shift or Ctrl to add, drag for a window or crossing box. The
-  wheel zooms at the cursor, the middle button pans and Shift+middle orbits (the mouse preset in
-  Preferences switches to SolidWorks or Inventor style). The view cube and the navigation bar
-  change the view: a cube face turns to look straight at it (TOP and BOTTOM keep the nearest
-  quarter-turn heading), a chamfered corner to that corner's
-  iso view, and the house goes home. Drag the cube to orbit around the view centre.
+  wheel zooms at the cursor, the middle button pans and right-drag orbits freely (the mouse
+  preset in Preferences switches to SolidWorks or Inventor style). Hold Shift during an orbit
+  to snap to the nearest standard or diagonal view; the default Shift+middle gesture also snaps.
+  The axis view shows the world's X/Y/Z directions in SolveCraft's colors. Click a signed
+  axis tip to look along that axis; click the aligned tip again to look from the opposite side.
+  Drag the axis view to orbit around the view centre, with Shift for snapping. Top and bottom
+  keep the nearest quarter-turn heading. The house and navigation bar's Home button go home.
   Right-click for the marking menu: eight commands around the cursor, plus a
   menu for whatever is under it.
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
@@ -30,3 +32,6 @@
 Preferences (File › Preferences) hold the theme, the units of new designs, the mouse preset, the
 visual style and autosave. Help › Keyboard Shortcuts lists every key, and File › Keyboard
 Shortcuts changes them.
+
+Shift-orbit snapping includes 45-degree edge views and isometric corner views, with a
+lightly damped spring transition and a small boundary margin to prevent flicker.

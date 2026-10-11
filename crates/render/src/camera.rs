@@ -525,7 +525,7 @@ mod tests {
                 c
             })
             .collect();
-        // Corners and edges of the view cube, and a fit (new target and distance).
+        // Corners and edges of the axis view, and a fit (new target and distance).
         cams.push(base.looking_from(Vec3::new(1.0, -1.0, 1.0)));
         cams.push(base.looking_from(Vec3::new(-1.0, 0.0, 1.0)));
         cams.push(base.looking_from(Vec3::new(0.0, 0.0, 1.0)));

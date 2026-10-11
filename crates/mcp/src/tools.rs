@@ -469,7 +469,7 @@ fn screenshot(b: &mut dyn Backend, a: &Map<String, Value>) -> Value {
 fn capture(b: &mut dyn Backend, a: &Map<String, Value>) -> Result<(Vec<u8>, Value), String> {
     if let Some(v) = str_arg(a, "view") {
         b.call("ui.view", json!({"view": v}))?;
-        // Turning to a standard view also frames the model (like a view cube click).
+        // Turning to a standard view also frames the model (like a axis view click).
         if v != "fit" && v != "home" {
             b.call("ui.view", json!({"view": "fit"}))?;
         }

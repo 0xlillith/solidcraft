@@ -190,6 +190,8 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
         }
         "ui.view" => {
             let v = s("view").unwrap_or("home");
+            app.viewport.orbit_snap = None;
+            app.viewport.orbit_free = None;
             if p.get("animate").and_then(Value::as_bool).unwrap_or(false) {
                 if v != "fit" && v != "home" && StandardView::parse(v).is_none() {
                     return err(format!("unknown view `{v}`"));
@@ -343,12 +345,6 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
                 };
             }
             let Some(rect) = app.viewport.rect else { return err("no viewport") };
-            if let Some(c) = p.get("cube") {
-                // A point on the view cube, in cube units (faces at ±1).
-                let n = |i: usize| c.get(i).and_then(Value::as_f64).unwrap_or(0.0);
-                let q = crate::viewport::cube_point(app, rect, solvecraft_engine::geom::Vec3::new(n(0), n(1), n(2)));
-                return ok(json!([q.x, q.y]));
-            }
             let proj = crate::viewport::projection(app, rect);
             let num = |v: &Value, i: usize| v.get(i).and_then(Value::as_f64).unwrap_or(0.0);
             let world = if let Some(w) = p.get("world") {

@@ -1263,7 +1263,7 @@ fn auto_operation(app: &SolveApp, d: &mut Dialog) {
 }
 
 /// Show the active dialog (if any), docked flush to the right edge of the viewport just below
-/// the view cube, sized to its content.
+/// the axis view, sized to its content.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.dialog.take() else { return };
     let _language = crate::i18n::scope(&app.preferences.language);
@@ -1272,7 +1272,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     update_fill_cells(app, &mut d);
     let t = Tokens::get();
     let vp = app.viewport.rect.unwrap_or_else(|| ctx.content_rect());
-    let anchor = egui::pos2(vp.right(), vp.top() + crate::viewport::VIEW_CUBE_CLEARANCE);
+    let anchor = egui::pos2(vp.right(), vp.top() + crate::viewport::AXIS_VIEW_CLEARANCE);
     let mut keep = true;
     let mut ok = false;
     let mut applied = false;
