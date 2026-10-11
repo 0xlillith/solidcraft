@@ -11,8 +11,8 @@ Rectangular Pattern dialog, then width and wall changed in the Parameters dialog
 
 Modelling steps go through the app's UI over its control channel: the pointer glides to a
 toolbar button and clicks it (the real dialog opens), glides to the face or point it picks and
-clicks, and values are typed into the dialog, as by hand. The port and boss sketches use
-parametric datum planes (YZ + width/2 and XY + wall), so both follow the edited enclosure.
+clicks, and values are typed into the dialog, as by hand. The port and boss sketches attach
+directly to the enclosure's side face and inner floor, as in the original demo.
 The camera follows like a user's would (Look At on a new sketch, back out to a 3/4 view on
 Finish Sketch, a little orbit between features). The parameters and the dimensions that use them
 are MCP `execute` calls through `solvecraft-cli mcp --connect` (enclosure_mcp.py's client).
@@ -138,6 +138,15 @@ class Demo:
         self.wait(settle)
         self.settle_camera()
 
+        if v == "home":
+            # Original Home also fitted the model. The current Axis View only
+            # rotates: retaining the close sketch camera crops the first extrusion.
+            self.ui("ui.view", {"view": "fit"})
+            self.settle_camera()
+            vp = self.ui("ui.inspect")["viewport"]
+            self.ui("ui.scroll", {"x": vp[0] + vp[2] / 2, "y": vp[1] + vp[3] / 2, "delta": -250})
+            self.settle_camera()
+
     def orbit(self, dx, dy=0, steps=40):
         """A right-button drag in the viewport, as a user orbits."""
         vp = self.ui("ui.inspect").get("viewport") or [250, 126, 1350, 800]
@@ -231,6 +240,11 @@ def build_box(d, params):
     d.view("home", 0.6)
 
     d.caption("Extrude: height", "UI click")
+    # The first Fit framed a flat sketch at z=0. Leave room for the upcoming
+    # 30 mm height instead of letting its far corner grow above the viewport.
+    vp = d.ui("ui.inspect")["viewport"]
+    d.ui("ui.scroll", {"x": vp[0] + vp[2] / 2, "y": vp[1] + vp[3] / 2, "delta": -250})
+    d.settle_camera()
     d.tool("solid.extrude")
     d.wait(0.3)
     d.type("height")
@@ -250,8 +264,10 @@ def build_box(d, params):
     d.click(d.at(world=[0, 0, 30]), settle=0.3)
     d.type("wall")
 
-    d.caption("USB port datum: YZ + width/2", "UI click · parametric plane")
-    datum_sketch(d, "YZ", "width/2")
+    d.caption("Sketch on the side face for a USB port", "UI click")
+    d.tool("sketch.create")
+    d.click(d.at(world=[40, 10, 20]), settle=0.9)
+    d.settle_camera()
     d.tool("sketch.rectangle.center")
     d.click(d.at(world=[40, 0, 12]), settle=0.15)
     d.click(d.at(world=[40, 6, 15.5]), dur=0.4, settle=0.2)
@@ -269,8 +285,10 @@ def build_box(d, params):
 def run_v2(d):
     """v2: four standoffs from one sketch, then the width changed over MCP."""
     build_box(d, [("width", "80 mm"), ("depth", "60 mm"), ("height", "30 mm"), ("wall", "2 mm")])
-    d.caption("Four screw bosses datum: XY + wall", "UI click · parametric plane")
-    datum_sketch(d, "XY", "wall")
+    d.caption("Sketch on the inner floor: four standoffs", "UI click")
+    d.tool("sketch.create")
+    d.click(d.at(world=[6, -9, 2]), settle=0.9)
+    d.settle_camera()
     d.tool("sketch.circle.center")
     for x, y in [(-30, -20), (30, -20), (30, 20), (-30, 20)]:
         d.click(d.at(world=[x, y, 2]), dur=0.3, settle=0.1)
@@ -306,8 +324,10 @@ def run_v3(d):
     dialog, then width and wall changed in the Parameters dialog."""
     build_box(d, [("width", "80 mm"), ("depth", "60 mm"), ("height", "30 mm"), ("wall", "2 mm"), ("inset", "10 mm")])
 
-    d.caption("Screw boss datum: XY + wall", "UI click · parametric plane")
-    datum_sketch(d, "XY", "wall")
+    d.caption("Sketch one standoff on the inner floor", "UI click")
+    d.tool("sketch.create")
+    d.click(d.at(world=[6, -9, 2]), settle=0.9)
+    d.settle_camera()
     d.tool("sketch.circle.center")
     d.click(d.at(world=[-30, 20, 2]), dur=0.3, settle=0.1)
     d.click(d.at(world=[-26.5, 20, 2]), dur=0.2, settle=0.15)
@@ -347,19 +367,17 @@ def run_v3(d):
     select_all_and_type(d, d.at(handle="dialog:Spacing 2"), "-(depth - 2*inset)", enter=False)
     d.wait(0.4)
     d.click(d.at(handle="dialog:OK"), settle=0.4)
-    # Up a little, so the corners behind the walls show.
+    # The original small orbit reveals the corners behind the walls.
     d.orbit(-60, 45)
+    # Raise the view enough to see all four 12 mm bosses behind the 30 mm walls.
+    d.orbit(0, 35)
 
-    # Hide the datum planes with their actual browser eye buttons.
-    for plane in d.datums:
-        x, y = d.at(handle=f"row:{plane}")
-        d.click((x - 66.5, y), settle=0.2)
     d.key("Escape")
 
     d.caption("Parameters dialog: width 80 → 100 mm", "UI click")
     d.tool("parameters.change", panel="panel:SOLID:MODIFY")
     d.wait(0.3)
-    # Move the dialog aside and the model over, so both show.
+    # Original framing: move the dialog aside and pan the model beside it.
     title = d.at(handle="params:title")
     d.drag(title, (title[0] - 330, title[1] + 20), steps=25)
     vp = d.ui("ui.inspect").get("viewport") or [250, 126, 1350, 800]
@@ -372,11 +390,8 @@ def run_v3(d):
     d.click(d.at(handle="params:close"), settle=0.4)
 
     d.caption("", "")
-    d.orbit(300, 0, steps=45)
-    # End on a high 3/4 view: all four standoffs in sight.
+    # Keep the original demo's lower three-quarter silhouette.
     d.view("home", 0.5)
-    d.orbit(0, 80, steps=40)
-    d.view("fit", 0.5)
     d.wait(1.5)
 
 
@@ -411,6 +426,8 @@ def main():
     except StopIteration:
         pass
     if a.save and a.until == 10**6:
+        # Keep this health/save/reopen proof in the raw take, outside public playback.
+        d.mark(private_start=True)
         d.settle_camera()
         design = d.ui("document.inspect", {"measure": True})
         if len(design.get("bodies", [])) != 1 or any(f.get("error") or f.get("warning") for f in design.get("timeline", [])):
@@ -430,6 +447,29 @@ def main():
             raise RuntimeError("the enclosure did not retain all four selected corner fillets")
         with open(a.save + ".measure.json", "w") as proof:
             json.dump(design, proof, indent=2)
+        # Reopen the saved design for the ending: the live pattern preview can leave
+        # stale display edges behind. This is the actual app, not a rendered substitute.
+        d.ui("ui.documents", {"action": "close", "force": True})
+        d.ui("ui.file", {"path": a.save})
+        for _ in range(1200):
+            if not d.ui("ui.inspect").get("file_busy", False):
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("the saved enclosure did not reopen")
+        d.ui("ui.home", {"open": False})
+        d.settle_camera()
+        d.ui("ui.set", {"showOrigin": False, "showSketches": False})
+        d.mark(private_end=True)
+        d.ui("ui.view", {"view": "home"})
+        d.settle_camera()
+        d.orbit(0, 80)
+        d.ui("ui.view", {"view": "fit"})
+        d.settle_camera()
+        vp = d.ui("ui.inspect")["viewport"]
+        d.ui("ui.scroll", {"x": vp[0] + vp[2] / 2, "y": vp[1] + vp[3] / 2, "delta": -120})
+        d.settle_camera()
+        d.glide((1500, 730), 0.4)
     d.mark(caption="", via="")
     mcp.close()
     print(f"done in {time.time() - t0:.1f}s", file=sys.stderr)

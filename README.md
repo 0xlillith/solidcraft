@@ -7,9 +7,9 @@ Sketch, constrain, and build solids with a parametric feature timeline. Change a
 and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
 model through the built-in MCP server. Part of the storytold "craft" family.
 
-![SolveCraft 0.2.0: build a rounded electronics enclosure with a USB port and four mounting bosses, then resize it through Parameters](docs/screenshots/demo.gif)
+![SolveCraft: draw a rounded electronics enclosure, sketch its USB port directly on a face, add four mounting bosses and resize it through Parameters](docs/screenshots/enclosure-demo-0.2.1.gif)
 
-*An AI agent builds a parametric electronics enclosure in the actual 0.2.0 desktop UI: rounded corners, a shell, a USB port and a four-boss pattern. Change width from 80 → 100 mm and wall thickness from 2 → 3 mm in Parameters and watch it rebuild. Original animated pointer and click cues; 4× playback. [Full video](https://github.com/bherbruck/solvecraft/raw/refs/heads/main/docs/screenshots/enclosure-demo-0.2.0.mp4), generated with the [demo script](examples/demo/record_ui.sh).*
+*Start with an empty design and draw the original parametric electronics enclosure in the English desktop UI: rounded corners, a shell, a USB port sketched directly on the wall and a four-boss pattern. Change width from 80 → 100 mm and wall thickness from 2 → 3 mm in Parameters and watch it rebuild. Original animated pointer and click cues; 4× playback. [Full video](https://github.com/bherbruck/solvecraft/raw/refs/heads/main/docs/screenshots/enclosure-demo-0.2.1.mp4), generated with the [demo script](examples/demo/record_ui.sh).*
 
 **Documentation:** the [SolveCraft book](https://bherbruck.github.io/solvecraft/) (user guide,
 developer guide and command reference; sources in [docs/book](docs/book)), and the
