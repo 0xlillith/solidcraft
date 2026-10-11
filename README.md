@@ -7,9 +7,9 @@ Sketch, constrain, and build solids with a parametric feature timeline. Change a
 and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
 model through the built-in MCP server. Part of the storytold "craft" family.
 
-![SolveCraft 0.2.0: dimension a line, extrude a plate with an elliptical hole, and change its width while preserving the hole](docs/screenshots/demo.gif)
+![SolveCraft 0.2.0: build a rounded electronics enclosure with a USB port and four mounting bosses, then resize it through Parameters](docs/screenshots/demo.gif)
 
-*The actual 0.2.0 desktop UI: dimension a line from its endpoints, build a plate with an elliptical hole, then change its width from 25 → 35 mm and watch it rebuild. Includes the new axis navigation. 2× GIF preview; [full video at real-time speed](https://github.com/bherbruck/solvecraft/releases/download/v0.2.0/solvecraft-0.2.0-demo.mp4).*
+*An AI agent builds a parametric electronics enclosure in the actual 0.2.0 desktop UI: rounded corners, a shell, a USB port and a four-boss pattern. Change width from 80 → 100 mm and wall thickness from 2 → 3 mm in Parameters and watch it rebuild. Original animated pointer and click cues; 4× playback. [Full video](https://github.com/bherbruck/solvecraft/raw/refs/heads/main/docs/screenshots/enclosure-demo-0.2.0.mp4), generated with the [demo script](examples/demo/record_ui.sh).*
 
 **Documentation:** the [SolveCraft book](https://bherbruck.github.io/solvecraft/) (user guide,
 developer guide and command reference; sources in [docs/book](docs/book)), and the

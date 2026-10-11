@@ -11,8 +11,9 @@ Rectangular Pattern dialog, then width and wall changed in the Parameters dialog
 
 Modelling steps go through the app's UI over its control channel: the pointer glides to a
 toolbar button and clicks it (the real dialog opens), glides to the face or point it picks and
-clicks, and values are typed into the dialog, as by hand. Sketches go on the model's faces and
-the camera follows like a user's would (Look At on a new sketch, back out to a 3/4 view on
+clicks, and values are typed into the dialog, as by hand. The port and boss sketches use
+parametric datum planes (YZ + width/2 and XY + wall), so both follow the edited enclosure.
+The camera follows like a user's would (Look At on a new sketch, back out to a 3/4 view on
 Finish Sketch, a little orbit between features). The parameters and the dimensions that use them
 are MCP `execute` calls through `solvecraft-cli mcp --connect` (enclosure_mcp.py's client).
 
@@ -37,8 +38,9 @@ MIN_CAPTION = 1.4
 
 
 class Demo:
-    def __init__(self, port, mcp, log, speed):
+    def __init__(self, port, mcp, log, speed, minimum_caption=MIN_CAPTION):
         self.port, self.mcp, self.log, self.speed = port, mcp, log, speed
+        self.minimum_caption = minimum_caption
         self.pos = None
         self.stop = 10**6
 
@@ -54,8 +56,8 @@ class Demo:
             raise StopIteration
         # Every caption stays up long enough to read.
         shown = time.time() - getattr(self, "shown_at", 0.0)
-        if shown < MIN_CAPTION:
-            time.sleep(MIN_CAPTION - shown)
+        if shown < self.minimum_caption:
+            time.sleep(self.minimum_caption - shown)
         self.shown_at = time.time()
         print(f"  {text}  [{via}]", file=sys.stderr)
         self.mark(caption=text, via=via)
@@ -71,8 +73,16 @@ class Demo:
         return r.get("result")
 
     def at(self, **where):
-        p = self.ui("ui.at", where)
-        return (p[0], p[1])
+        # A clicked combo publishes its popup handles on the next rendered frame.
+        # Observe that bounded transition; never substitute a command for the click.
+        for attempt in range(50 if "handle" in where else 1):
+            r = control(self.port, "ui.at", where)
+            if r.get("ok", False):
+                p = r["result"]
+                return (p[0], p[1])
+            if attempt + 1 < 50 and "handle" in where:
+                time.sleep(0.1)
+        raise RuntimeError(f"ui.at {where}: {r.get('error')}")
 
     def glide(self, to, dur=0.3):
         """Move the pointer to `to` along an eased path (the app sees every step: hover
@@ -93,10 +103,16 @@ class Demo:
         self.ui("ui.click", {"x": to[0], "y": to[1]})
         self.mark(cursor=list(to), click=True)
         self.wait(settle)
+        self.settle_camera()
 
     def tool(self, command, panel=None):
         """Click a toolbar button (opening its panel's drop-down first when it's in one)."""
-        if panel:
+        self.settle_camera()
+        dialog = self.ui("ui.inspect").get("dialog") or ""
+        if "error: Some(" in dialog:
+            raise RuntimeError(f"the previous UI operation was refused: {dialog}")
+        handles = self.ui("ui.handles")
+        if panel and not any(h["name"] == f"toolbar:{command}" for h in handles):
             self.click(self.at(handle=panel), settle=0.3)
         self.click(self.at(handle=f"toolbar:{command}"), settle=0.35)
 
@@ -106,13 +122,19 @@ class Demo:
         if enter:
             self.ui("ui.key", {"key": "Enter"})
             self.wait(0.5)
+            self.settle_camera()
 
     def key(self, k):
         self.ui("ui.key", {"key": k})
         self.wait(0.15)
+        self.settle_camera()
 
     def view(self, v, settle=0.7):
-        self.ui("ui.view", {"view": v, "animate": True})
+        if v == "home":
+            # The shipping Axis View's Home button, with the same camera/style as v3.
+            self.click(self.at(handle="axis_view:home"), settle=0.3)
+        else:
+            self.ui("ui.view", {"view": v, "animate": True})
         self.wait(settle)
         self.settle_camera()
 
@@ -139,18 +161,38 @@ class Demo:
         self.pos = tuple(to)
 
     def settle_camera(self):
-        """Wait until the app has played queued pointer events (the camera stops moving)."""
+        """Wait for queued pointer events, moving dialogs and geometry previews."""
         last, still = None, 0
-        for _ in range(80):
+        for _ in range(1200):
             time.sleep(0.1)
-            cam = json.dumps(self.ui("ui.inspect").get("camera"))
-            still = still + 1 if cam == last else 0
-            last = cam
-            if still >= 2:
+            state = self.ui("ui.inspect")
+            current = json.dumps([state.get("camera"), state.get("tool"), self.ui("ui.handles")], sort_keys=True)
+            busy = state.get("preview", {}).get("busy", False)
+            still = still + 1 if current == last and not busy else 0
+            last = current
+            if still >= 3:
                 return
+        raise RuntimeError("the camera/dialog/preview did not settle within 120 seconds")
 
     def execute(self, command, params):
+        self.settle_camera()
         self.mcp.tool("execute", {"command": command, "params": params})
+        self.settle_camera()
+
+
+def datum_sketch(d, base, offset):
+    """Create a parametric datum in the real dialog, then select its browser row."""
+    d.ui("ui.set", {"showOrigin": True})
+    d.tool("construct.plane.offset", panel="panel:SOLID:CONSTRUCT")
+    d.click(d.at(plane=base), settle=0.3)
+    d.type(offset)
+    names = [h["name"] for h in d.ui("ui.handles") if h["name"].startswith("timeline:")]
+    plane = names[-1].split(":", 1)[1]
+    d.datums = getattr(d, "datums", []) + [plane]
+    d.tool("sketch.create")
+    d.click(d.at(handle=f"row:{plane}"), settle=0.8)
+    d.settle_camera()
+    d.ui("ui.set", {"showOrigin": False})
 
 
 def build_box(d, params):
@@ -195,10 +237,11 @@ def build_box(d, params):
 
     d.caption("Fillet the four vertical edges: 6 mm", "UI click")
     d.tool("solid.fillet")
-    for p in ([40, -30, 15], [-40, -30, 15], [40, 30, 15]):
+    for p in ([40, -30, 15], [-40, -30, 15]):
         d.click(d.at(world=p), settle=0.15)
     d.orbit(-260, 20)
-    d.click(d.at(world=[-40, 30, 15]), settle=0.2)
+    for p in ([40, 30, 15], [-40, 30, 15]):
+        d.click(d.at(world=p), settle=0.2)
     d.type("6")
     d.view("home", 0.5)
 
@@ -207,10 +250,8 @@ def build_box(d, params):
     d.click(d.at(world=[0, 0, 30]), settle=0.3)
     d.type("wall")
 
-    d.caption("Sketch on the side face for a USB port", "UI click")
-    d.tool("sketch.create")
-    d.click(d.at(world=[40, 10, 20]), settle=0.9)
-    d.settle_camera()
+    d.caption("USB port datum: YZ + width/2", "UI click · parametric plane")
+    datum_sketch(d, "YZ", "width/2")
     d.tool("sketch.rectangle.center")
     d.click(d.at(world=[40, 0, 12]), settle=0.15)
     d.click(d.at(world=[40, 6, 15.5]), dur=0.4, settle=0.2)
@@ -228,10 +269,8 @@ def build_box(d, params):
 def run_v2(d):
     """v2: four standoffs from one sketch, then the width changed over MCP."""
     build_box(d, [("width", "80 mm"), ("depth", "60 mm"), ("height", "30 mm"), ("wall", "2 mm")])
-    d.caption("Sketch on the inner floor: four standoffs", "UI click")
-    d.tool("sketch.create")
-    d.click(d.at(world=[6, -9, 2]), settle=0.9)
-    d.settle_camera()
+    d.caption("Four screw bosses datum: XY + wall", "UI click · parametric plane")
+    datum_sketch(d, "XY", "wall")
     d.tool("sketch.circle.center")
     for x, y in [(-30, -20), (30, -20), (30, 20), (-30, 20)]:
         d.click(d.at(world=[x, y, 2]), dur=0.3, settle=0.1)
@@ -267,10 +306,8 @@ def run_v3(d):
     dialog, then width and wall changed in the Parameters dialog."""
     build_box(d, [("width", "80 mm"), ("depth", "60 mm"), ("height", "30 mm"), ("wall", "2 mm"), ("inset", "10 mm")])
 
-    d.caption("Sketch one standoff on the inner floor", "UI click")
-    d.tool("sketch.create")
-    d.click(d.at(world=[6, -9, 2]), settle=0.9)
-    d.settle_camera()
+    d.caption("Screw boss datum: XY + wall", "UI click · parametric plane")
+    datum_sketch(d, "XY", "wall")
     d.tool("sketch.circle.center")
     d.click(d.at(world=[-30, 20, 2]), dur=0.3, settle=0.1)
     d.click(d.at(world=[-26.5, 20, 2]), dur=0.2, settle=0.15)
@@ -313,6 +350,12 @@ def run_v3(d):
     # Up a little, so the corners behind the walls show.
     d.orbit(-60, 45)
 
+    # Hide the datum planes with their actual browser eye buttons.
+    for plane in d.datums:
+        x, y = d.at(handle=f"row:{plane}")
+        d.click((x - 66.5, y), settle=0.2)
+    d.key("Escape")
+
     d.caption("Parameters dialog: width 80 → 100 mm", "UI click")
     d.tool("parameters.change", panel="panel:SOLID:MODIFY")
     d.wait(0.3)
@@ -332,7 +375,8 @@ def run_v3(d):
     d.orbit(300, 0, steps=45)
     # End on a high 3/4 view: all four standoffs in sight.
     d.view("home", 0.5)
-    d.orbit(0, 45, steps=25)
+    d.orbit(0, 80, steps=40)
+    d.view("fit", 0.5)
     d.wait(1.5)
 
 
@@ -344,17 +388,48 @@ def main():
     ap.add_argument("--story", choices=["v2", "v3"], default="v3", help="v2: standoffs from one sketch, width over MCP; v3: one standoff patterned, Parameters dialog")
     ap.add_argument("--until", type=int, default=10**6, help="stop before step N (trying the script out)")
     ap.add_argument("--speed", type=float, default=0.55, help="scale the pauses (2 = twice as long)")
+    ap.add_argument("--save", help="save the completed healthy enclosure and measured proof")
+    ap.add_argument("--minimum-caption", type=float, default=MIN_CAPTION, help="minimum real-time caption duration before playback acceleration")
     a = ap.parse_args()
+    if not math.isfinite(a.speed) or a.speed <= 0 or not math.isfinite(a.minimum_caption) or a.minimum_caption < 0:
+        ap.error("pause scale must be positive and caption duration nonnegative")
     mcp = Mcp([a.cli, "mcp", "--connect", f"127.0.0.1:{a.port}"])
     mcp.send("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "enclosure-demo-v2", "version": "2"}})
     mcp.send("notifications/initialized", notify=True)
-    d = Demo(a.port, mcp, open(a.log, "w") if a.log else None, a.speed)
+    d = Demo(a.port, mcp, open(a.log, "w") if a.log else None, a.speed, a.minimum_caption)
+    d.ui("ui.prefs", {"language": "en", "theme": "dark", "ui_scale": 1, "nav": "fusion", "button": "apply"})
+    d.ui("ui.resize", {"width": 1920, "height": 1080})
+    d.ui("ui.home", {"open": False})
+    d.ui("ui.documents", {"action": "new"})
+    d.ui("ui.home", {"open": False})
+    d.ui("ui.set", {"showOrigin": True})
+    d.settle_camera()
     d.stop = a.until - 1
     t0 = time.time()
     try:
         run_v3(d) if a.story == "v3" else run_v2(d)
     except StopIteration:
         pass
+    if a.save and a.until == 10**6:
+        d.settle_camera()
+        design = d.ui("document.inspect", {"measure": True})
+        if len(design.get("bodies", [])) != 1 or any(f.get("error") or f.get("warning") for f in design.get("timeline", [])):
+            raise RuntimeError(f"the completed enclosure is unhealthy: {design}")
+        expected_width = 100
+        bbox = design["bodies"][0]["bbox"]
+        if any(abs(v - want) > 1e-5 for side, expected in [("min", [-expected_width / 2, -30, 0]), ("max", [expected_width / 2, 30, 30])] for v, want in zip(bbox[side], expected)):
+            raise RuntimeError(f"the enclosure did not rebuild to 100 x 60 x 30 mm: {design}")
+        values = {p["name"]: p.get("value") for p in design.get("params", []) if not p.get("error")}
+        for name, expected in [("width", 100), ("wall", 3 if a.story == "v3" else 2)]:
+            if values.get(name) != expected:
+                raise RuntimeError(f"the final {name} parameter is not {expected}: {design}")
+        d.execute("file.save_as", {"path": a.save})
+        saved = json.load(open(a.save))
+        fillets = [f for f in saved["features"] if f.get("type") == "fillet"]
+        if len(fillets) != 1 or len(fillets[0].get("edges", [])) != 4:
+            raise RuntimeError("the enclosure did not retain all four selected corner fillets")
+        with open(a.save + ".measure.json", "w") as proof:
+            json.dump(design, proof, indent=2)
     d.mark(caption="", via="")
     mcp.close()
     print(f"done in {time.time() - t0:.1f}s", file=sys.stderr)
