@@ -1,6 +1,6 @@
 # SolidCraft — instructions for agents
 
-SolidCraft is an independent, clean-room, open-source, pure-Rust parametric 3D CAD application:
+SolidCraft is a clean-room, open-source, pure-Rust parametric 3D CAD application:
 sketches with a constraint solver, a parametric timeline of features, a B-rep
 kernel, and a desktop UI that agents can drive. Siblings with the same conventions live next to
 it in `storytold/`: `cadcraft` (AutoCAD-style, the closest relative), `photocraft`, `vectorcraft`,
