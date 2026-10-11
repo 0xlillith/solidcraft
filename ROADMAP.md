@@ -250,6 +250,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   record their coordinate frame; legacy wires migrate from known provenance without changing
   coordinates. Broken legacy links with missing provenance can require explicit refresh or relink.
   See [occurrence workflows](docs/occurrence-workflows.md).
+- Parameters and Configurations have distinct actions in the SOLID toolbar's CONFIGURE panel.
+  Parameters opens the user/model variable editor; Configurations opens the configuration table.
+  Configure remains available in the panel dropdown.
 - Configuration rules: ordered typed conditions can drive parameters and suppressions or
   restrict values. Preview explains effective values without modifying the document; applying
   rules validates rows atomically. Length expressions retain their authoring units across

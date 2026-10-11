@@ -5,6 +5,10 @@ are ones you add yourself, with a unit, an expression and an optional comment. C
 **Change Parameters** (`parameters.change`). The timeline rebuilds from the first feature that
 uses them.
 
+In the SOLID toolbar's CONFIGURE panel, click **Parameters** to open the user and model
+parameter editor. The separate **Configurations** button opens the configuration table;
+**Configure** remains in the dropdown for configuring columns.
+
 Expressions are unit-aware: `2 * width + 5 mm`, `angle / 2`, `sqrt(area)`, `1 in + 3 mm`, using
 `+ - * / ^`, parentheses, `sin cos tan asin acos atan atan2 sqrt abs min max floor ceil round mod
 trunc` and unit conversion. A length where an angle is expected (or the other way round) is an
