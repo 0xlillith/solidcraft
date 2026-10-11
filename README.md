@@ -150,6 +150,10 @@ configuration and an example session: [docs/mcp.md](docs/mcp.md).
 
 ## Contributing
 
+Coming from Autodesk Fusion? SolidCraft uses familiar parametric CAD workflows: constrained
+sketches, solid features, an editable timeline, parameters and assemblies. See the
+[roadmap](ROADMAP.md) for supported operations and current limitations.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md): how to build and test, the code map, the clean-room
 and licence rules, and where help is wanted most.
 
