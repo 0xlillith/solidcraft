@@ -167,6 +167,7 @@ pub fn set_linetype(app: &mut SolveApp, kind: u8) {
 
 /// Draw the palette (while sketching and no command dialog is open).
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
+    app.viewport.palette_rect = None;
     let _language = crate::i18n::scope(&app.preferences.language);
     if app.dialog.is_some() {
         return;
@@ -204,7 +205,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut look = false;
     let mut finish = false;
     let has_curves = !selected_curves(app).is_empty();
-    crate::frame::docked(
+    let response = crate::frame::docked(
         app.tr("ui.heading_sketch_palette"),
         egui::Id::new("sc_sketch_palette"),
         anchor,
@@ -213,8 +214,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     )
     .frame(frame)
     .show(ctx, |ui| {
-        let width = WIDTH.min((vp.width() - 24.0).max(120.0));
+        let width = WIDTH.min((vp.width() * 0.46 - 16.0).max(120.0));
         ui.set_width(width);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
         ui.horizontal(|ui| {
             let folded = FOLDED.with(Cell::get);
             if ui.add(egui::Button::new(RichText::new(if folded { "+" } else { "−" }).size(14.0)).frame(false)).clicked() {
@@ -236,7 +238,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             let options_height = (bottom - ui.cursor().top() - 68.0).max(24.0);
             let options =
                 egui::ScrollArea::vertical().id_salt("sc_palette_options").max_height(options_height).auto_shrink([false, true]).show(ui, |ui| {
-                    egui::Grid::new("sc_palette_grid").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
+                    ui.vertical(|ui| {
                         ui.label(app.tr("ui.linetype"));
                         ui.horizontal(|ui| {
                             // With a selection: convert it; without: the mode new curves are drawn in.
@@ -254,21 +256,18 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                                 }
                             }
                         });
-                        ui.end_row();
                         ui.label(app.tr("ui.look_at"));
                         if ui.button(app.tr("ui.look_at")).clicked() {
                             look = true;
                         }
-                        ui.end_row();
-                        for (k, label) in TOGGLES {
-                            // The label is part of the checkbox: clicking it toggles too.
-                            let mut on = shown(k);
-                            if ui.checkbox(&mut on, app.tr_label(label)).changed() {
-                                set = Some((k.to_string(), on));
-                            }
-                            ui.end_row();
-                        }
                     });
+                    for (k, label) in TOGGLES {
+                        // The label is part of the checkbox: clicking it toggles too.
+                        let mut on = shown(k);
+                        if ui.checkbox(&mut on, app.tr_label(label)).changed() {
+                            set = Some((k.to_string(), on));
+                        }
+                    }
                 });
             crate::scenario::publish_rect("sketch_palette:options", options.inner_rect);
         }
@@ -284,6 +283,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
         });
     });
+    app.viewport.palette_rect = response.map(|r| r.response.rect);
+    if let Some(r) = app.viewport.palette_rect {
+        crate::scenario::publish_rect("sketch_palette:outer", r);
+    }
     if let Some((k, on)) = set {
         let mut p = serde_json::Map::new();
         p.insert(k, Value::Bool(on));

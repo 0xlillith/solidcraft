@@ -33,6 +33,7 @@ pub fn docked<'a>(title: impl Into<WidgetText>, id: egui::Id, anchor: Pos2, max_
         Width::Wide => DIALOG_WIDE_MAX_W,
     };
     egui::Window::new(title)
+        .enabled(!crate::issue_report::cad_input_blocked())
         .id(id)
         .title_bar(false)
         .pivot(Align2::RIGHT_TOP)
@@ -52,7 +53,17 @@ pub fn window<'a>(ctx: &egui::Context, title: impl Into<WidgetText>, width: Widt
         Width::Wide => WINDOW_WIDE_MAX_W,
     };
     let c = ctx.content_rect().center();
-    egui::Window::new(title).collapsible(false).pivot(Align2::CENTER_CENTER).default_pos(c - vec2(0.0, 60.0)).max_width(max)
+    egui::Window::new(title)
+        .enabled(!crate::issue_report::cad_input_blocked())
+        .collapsible(false)
+        .pivot(Align2::CENTER_CENTER)
+        .default_pos(c - vec2(0.0, 60.0))
+        .max_width(max)
+}
+
+/// Floating model controls share the report's read-only drawing boundary with windows.
+pub fn area(id: egui::Id) -> egui::Area {
+    egui::Area::new(id).enabled(!crate::issue_report::cad_input_blocked())
 }
 
 /// The width a window's content had last frame (at least `min`), for laying out rows that end at

@@ -73,12 +73,16 @@ People trust SolveCraft with their designs; a crash loses their work. **This out
 
 ## Showing and following through on changes
 
-- Give issues and PRs concrete visual context whenever it helps explain what is broken or
-  changed, including kernel, geometry, assembly and backend work. Coding agents should run
-  the relevant example and capture a screenshot, short recording, diagram or before/after
-  model view themselves. Show the actual reproduction/result, annotate the focus when useful,
-  and pair it with brief expected/actual behavior; do not ask a human for evidence the agent
-  can produce. Changes with no useful visual explanation do not need media.
+- Help reviewers see what is broken or changed. For observable CAD, UI or model behavior,
+  issues and PRs must include actual descriptive screenshots or a short recording from a
+  small reproduction. This includes kernel, geometry, assembly and backend changes whose
+  effects can be shown in the app. Coding agents should run the app and capture this evidence
+  themselves; do not ask a human for evidence the agent can produce. Show the actual failure
+  or result, preferably before and after, with brief reproduction steps, expected/actual
+  behavior and annotations that point out the relevant detail.
+- Flowcharts and Mermaid diagrams cannot substitute for screenshots or recordings of visible
+  behavior. Use diagrams for architectural reasoning when actual screenshots cannot illustrate
+  the point. Changes with no useful observable behavior do not need screenshot or video evidence.
 - Use a small public-safe example and check for private designs, paths, account details or
   other sensitive content before sharing. Attach media to the issue/PR or link to an accessible
   recording; do not commit generated screenshots or videos just to provide review evidence.

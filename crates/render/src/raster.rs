@@ -359,6 +359,8 @@ mod tests {
             tri_face: vec![0],
             edges: vec![],
             seams: vec![],
+            smooth_edges: vec![],
+            sharp_edges: vec![],
             edge_faces: vec![],
         };
         let scene = Scene {

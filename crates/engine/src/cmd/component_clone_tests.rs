@@ -519,3 +519,36 @@ fn frozen_bore_boundary_copy_preserves_stock_void_and_reopen() {
     check(&s);
     check(&Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap()));
 }
+
+#[test]
+fn frozen_r6_bore_copy_uses_current_geometry_despite_mesh_measure_bias() {
+    use solvecraft_geom::Vec3;
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Drilled"}));
+    run(&mut s, "solid.cylinder", json!({"base":[10,10,0],"radius":6,"height":10,"operation":"cut"}));
+    let source = s.model.state().body("Drilled").unwrap().body.clone();
+    let original = solvecraft_kernel::step_export(&[&source], "source").unwrap();
+    let created = run(&mut s, "component.from_bodies", json!({"bodies":["Drilled"]}));
+    let part = created["components"][0]["component"].as_u64().unwrap();
+    let before = s.doc.to_json();
+    let copied = copy(&mut s, part)["component"].as_u64().unwrap();
+    let check = |session: &Session| {
+        let state = session.model.state();
+        let body = state.bodies.iter().find(|b| session.doc.model_body_component(b) == copied).unwrap();
+        assert_eq!(solvecraft_kernel::certified_prism_equivalent(&source, &body.body).unwrap(), Some(true));
+        let mesh = body.body.tessellate(1e-3).unwrap();
+        for (point, material) in
+            [(Vec3::new(3., 10., 5.), true), (Vec3::new(5., 10., 5.), false), (Vec3::new(10., 10., 5.), false), (Vec3::new(18., 10., 5.), true)]
+        {
+            assert_eq!(mesh.contains(point), material, "{point:?}");
+        }
+        let original_body = state.body("Drilled").unwrap();
+        assert_eq!(solvecraft_kernel::step_export(&[&original_body.body], "source").unwrap(), original);
+    };
+    check(&s);
+    check(&Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap()));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before);
+    run(&mut s, "edit.redo", json!({}));
+    check(&s);
+}

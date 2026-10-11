@@ -148,7 +148,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let mut close = false;
-    let resp = egui::Area::new(egui::Id::new("sc_file_area"))
+    let resp = crate::frame::area(egui::Id::new("sc_file_area"))
         .fixed_pos(pos2(100.0 + if app.integrated_titlebar { crate::titlebar::TRAFFIC_LIGHTS } else { 0.0 }, 34.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -432,7 +432,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             let open = ui.ctx().data(|d| d.get_temp::<egui::Id>(egui::Id::new("sc_panel_open"))) == Some(popup_id);
             if open {
-                let area = egui::Area::new(popup_id).fixed_pos(lr.left_bottom()).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+                let area = crate::frame::area(popup_id).fixed_pos(lr.left_bottom()).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.set_min_width(200.0);
                         if *panel == "SELECT" {

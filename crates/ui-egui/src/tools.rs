@@ -132,6 +132,11 @@ pub fn on_hover(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
 }
 
 pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
+    // A click away dismisses the inline editor; it must not also pick the first entity of
+    // the next dimension before that cancellation has been processed.
+    if crate::dim_view::editing() {
+        return;
+    }
     let Some(mut tool) = app.tool.take() else { return };
     // In a 3D sketch the drawing tools take points off the plane.
     if crate::sketch3d::on_click(app, &mut tool, proj, pos) {
@@ -199,12 +204,11 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
                 }
             } else if !tool.picks.is_empty()
                 && let Some((at, _)) = sketch_point_at(app, proj, pos)
-                && let Ok(v) = app.run("sketch.dimension", json!({"entities": tool.picks, "text_at": [at.x, at.y]}))
             {
-                if let Some(p) = v["param"].as_str() {
-                    crate::dim_view::edit_param(app, p);
+                match crate::dim_view::begin_dimension(app, tool.picks.clone(), at) {
+                    Ok(()) => tool.picks.clear(),
+                    Err(error) => app.set_status(error, true),
                 }
-                tool.picks.clear();
             }
         }
     }
@@ -333,6 +337,7 @@ fn run_pick(app: &mut SolveApp, t: &Tool) {
 
 /// Right click / Esc: end the current chain (line) or cancel the tool.
 pub fn finish(app: &mut SolveApp) {
+    crate::dim_view::cancel();
     if crate::sketch3d::finish(app) {
         return;
     }
