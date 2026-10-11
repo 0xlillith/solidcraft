@@ -829,6 +829,69 @@ pub fn find_profiles(sk: &Sketch) -> Vec<Profile> {
     out
 }
 
+/// Why no single profile is bounded by a list of curves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurvePick {
+    /// No profile's outer loop is made of exactly those curves.
+    Missing,
+    /// This many profiles are (e.g. both halves of a circle cut by a line).
+    Ambiguous(usize),
+}
+
+/// The profile picked by the curves around it, by index into `profiles`. A profile matches when
+/// its outer loop is made of the listed curves and no others: every listed curve, or a piece of
+/// it where other curves cut it, lies on the loop, and every piece of the loop belongs to a
+/// listed curve. Order and repeats don't matter. Holes don't take part (islands inside a profile
+/// are its holes, as for a profile picked by a point). When several profiles match, one whose
+/// loop has exactly the listed pieces (a curve listed twice for two pieces) wins; otherwise the
+/// pick is ambiguous, never a guess.
+pub fn profile_by_curves(profiles: &[Profile], ids: &[String]) -> Result<usize, CurvePick> {
+    use std::collections::BTreeSet;
+    let want: BTreeSet<&str> = ids.iter().map(String::as_str).collect();
+    if want.is_empty() {
+        return Err(CurvePick::Missing);
+    }
+    let hits: Vec<usize> = profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.outer_curves.iter().map(String::as_str).collect::<BTreeSet<_>>() == want)
+        .map(|(i, _)| i)
+        .collect();
+    match hits.as_slice() {
+        [] => Err(CurvePick::Missing),
+        [i] => Ok(*i),
+        _ => {
+            fn sorted(v: &[String]) -> Vec<&str> {
+                let mut v: Vec<&str> = v.iter().map(String::as_str).collect();
+                v.sort_unstable();
+                v
+            }
+            let exact = sorted(ids);
+            let same: Vec<usize> = hits.iter().copied().filter(|i| profiles.get(*i).is_some_and(|p| sorted(&p.outer_curves) == exact)).collect();
+            match same.as_slice() {
+                [i] => Ok(*i),
+                _ => Err(CurvePick::Ambiguous(hits.len())),
+            }
+        }
+    }
+}
+
+/// The innermost profile containing a sketch point, by index into `profiles`.
+pub fn profile_at_point(profiles: &[Profile], p: Vec2) -> Option<usize> {
+    profiles.iter().enumerate().filter(|(_, q)| q.region.contains(p)).min_by(|a, b| a.1.area.total_cmp(&b.1.area)).map(|(i, _)| i)
+}
+
+/// The distinct curve ids of a loop, in loop order (a curve cut into pieces is listed once).
+pub fn distinct_curves(ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(ids.len());
+    for id in ids {
+        if !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
 fn same_seg(a: &Seg2, b: &Seg2, tol: f64) -> bool {
     match (*a, *b) {
         (Seg2::Line { a: p, b: q }, Seg2::Line { a: r, b: s }) => p.dist(r) <= tol && q.dist(s) <= tol,
