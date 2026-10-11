@@ -234,7 +234,7 @@ mod web {
                     self.app.insert_path(&path);
                     self.files.panel.set(false);
                 }
-                "download" => match vfs::read(&path) {
+                "download" => match vfs::read(&path, solvecraft_engine::io::MAX_DESIGN_BYTES) {
                     Ok(b) => {
                         if let Err(e) = files::download(&name, &b) {
                             self.app.set_status(e, true);

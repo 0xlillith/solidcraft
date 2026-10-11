@@ -6,6 +6,14 @@ line `{"id": …, "ok": true, "result": …}` or `{"id": …, "ok": false, "erro
 handled on the UI thread between frames; pointer and keyboard input is injected as real egui
 events, one pointer event per frame.
 
+The channel is untrusted input. A request line may be at most 16 MiB; a longer one is answered
+with `{"ok": false, "error": "request too large"}` and the connection is closed, as are
+connections that send eight lines that are not JSON. At most 16 connections are served at once
+(further ones get `{"ok": false, "error": "too many connections"}`), at most 64 queued requests
+run per frame so a flood cannot starve drawing, and a request that the UI thread has not
+answered within 60 seconds is replied to with `{"ok": false, "error": "timeout"}`. The same
+16 MiB line limit applies to the MCP server.
+
 ## Engine
 
 | Method | Params | Result |
