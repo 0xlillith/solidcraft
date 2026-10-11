@@ -9,6 +9,64 @@ use solvecraft_doc::{Document, Feature, FeatureKind, Mat, Occurrence};
 const CMD: &str = "component.paste_new";
 const MAX_WORK: usize = 10_000;
 
+fn mesh_distance(mesh: &solvecraft_geom::Mesh, point: solvecraft_geom::Vec3) -> f64 {
+    mesh.triangles
+        .iter()
+        .filter_map(|triangle| mesh.tri(triangle))
+        .map(|[a, b, c]| {
+            let normal = (b - a).cross(c - a);
+            let squared = normal.dot(normal);
+            let projected = if squared > 0. { point - normal * ((point - a).dot(normal) / squared) } else { point };
+            if squared > 0. && [(a, b), (b, c), (c, a)].iter().all(|(start, end)| (*end - *start).cross(projected - *start).dot(normal) >= 0.) {
+                return point.dist(projected);
+            }
+            [(a, b), (b, c), (c, a)]
+                .iter()
+                .map(|(start, end)| {
+                    let edge = *end - *start;
+                    let t = if edge.dot(edge) > 0. { ((point - *start).dot(edge) / edge.dot(edge)).clamp(0., 1.) } else { 0. };
+                    point.dist(*start + edge * t)
+                })
+                .fold(f64::INFINITY, f64::min)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn material_probe_matches(a: &solvecraft_geom::Mesh, b: &solvecraft_geom::Mesh, point: solvecraft_geom::Vec3, tol_a: f64, tol_b: f64) -> bool {
+    if !point.is_finite() || !tol_a.is_finite() || !tol_b.is_finite() || tol_a <= 0. || tol_b <= 0. {
+        return false;
+    }
+    if a.contains(point) == b.contains(point) {
+        return true;
+    }
+    // A chord approximation does not define material ON a boundary. Certify
+    // nearby stock and void instead, outside both meshes' approximation strips.
+    if mesh_distance(a, point) > tol_a || mesh_distance(b, point) > tol_b {
+        return false;
+    }
+    let offset = 4. * tol_a.max(tol_b);
+    let mut material = false;
+    let mut void = false;
+    for axis in [solvecraft_geom::Vec3::X, solvecraft_geom::Vec3::Y, solvecraft_geom::Vec3::Z] {
+        for sign in [-1., 1.] {
+            let q = point + axis * (sign * offset);
+            if !q.is_finite() {
+                return false;
+            }
+            if mesh_distance(a, q) <= tol_a || mesh_distance(b, q) <= tol_b {
+                continue;
+            }
+            let inside = a.contains(q);
+            if inside != b.contains(q) {
+                return false;
+            }
+            material |= inside;
+            void |= !inside;
+        }
+    }
+    material && void
+}
+
 fn cloned_path(source: &Document, path: &[u64], root: u64, destination: &[u64], occurrences: &BTreeMap<u64, u64>) -> Result<Vec<u64>> {
     let start = path
         .iter()
@@ -586,9 +644,13 @@ pub(super) fn paste(
         let mb = solvecraft_kernel::measure(&b)?;
         let tolerance = 1e-5 * (1.0 + (ma.bbox.max - ma.bbox.min).len()) + 64.0 * f64::EPSILON * (ma.bbox.min.len() + ma.bbox.max.len());
         let mut material_matches = true;
-        let mesh_a = a.display_mesh((a.size() * 1e-3).max(1e-3))?;
-        let mesh_b = b.display_mesh((b.size() * 1e-3).max(1e-3))?;
-        proof_work = proof_work.saturating_add(mesh_a.triangles.len().saturating_add(mesh_b.triangles.len()).saturating_mul(27));
+        let tol_a = (a.size() * 1e-3).max(1e-3).max(a.size() * 1e-6);
+        let tol_b = (b.size() * 1e-3).max(1e-3).max(b.size() * 1e-6);
+        let mesh_a = a.display_mesh(tol_a)?;
+        let mesh_b = b.display_mesh(tol_b)?;
+        // Precharge all 27 candidates, six possible replacements, their triangle
+        // distances and the three containment rays before any proof traversal.
+        proof_work = proof_work.saturating_add(mesh_a.triangles.len().saturating_add(mesh_b.triangles.len()).saturating_mul(27 * 7 * 4));
         if proof_work > 50_000_000 {
             return Err(bad(CMD, "geometry verification exceeds copy work limit"));
         }
@@ -597,7 +659,8 @@ pub(super) fn paste(
                 for z in [0.2, 0.5, 0.8] {
                     let d = ma.bbox.max - ma.bbox.min;
                     let p = ma.bbox.min + solvecraft_geom::Vec3::new(d.x * x, d.y * y, d.z * z);
-                    material_matches &= mesh_a.contains(p) == mesh_b.contains(p);
+                    let roundoff = 64. * f64::EPSILON * (1. + p.len());
+                    material_matches &= material_probe_matches(&mesh_a, &mesh_b, p, tol_a + roundoff, tol_b + roundoff);
                 }
             }
         }

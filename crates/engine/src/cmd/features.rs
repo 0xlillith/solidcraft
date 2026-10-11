@@ -124,17 +124,9 @@ fn extrude_base(s: &Session, p: &Value) -> Option<(Vec3, Vec3)> {
         ProfileSel::All => ps.first()?.region.interior_point(),
         ProfileSel::Indices { indices } => ps.get(*indices.first()?)?.region.interior_point(),
         ProfileSel::Points { points } => *points.first()?,
-        ProfileSel::Curves { loops } => {
-            let mut want: Vec<&String> = loops.first()?.iter().collect();
-            want.sort();
-            ps.iter()
-                .find(|x| {
-                    let mut have: Vec<&String> = x.outer_curves.iter().collect();
-                    have.sort();
-                    have == want
-                })?
-                .region
-                .interior_point()
+        selection @ (ProfileSel::Curves { .. } | ProfileSel::OffsetBoundaries { .. } | ProfileSel::WholeBoundaries { .. }) => {
+            let indices = solvecraft_doc::profile_selection_indices(ss, &selection).ok()?;
+            ps.get(*indices.first()?)?.region.interior_point()
         }
     };
     Some((ss.plane.to_world(q), ss.plane.normal()))
@@ -216,9 +208,14 @@ pub(super) fn feature_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
 fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
     let st = s.model.state();
     'sels: for (sketch, sel) in kind.profile_sels_mut() {
-        let ProfileSel::Indices { indices } = sel else { continue };
         let Some(ss) = st.sketch(sketch) else { continue };
-        let mut loops = Vec::with_capacity(indices.len());
+        if !matches!(
+            sel,
+            ProfileSel::Indices { .. } | ProfileSel::Curves { .. } | ProfileSel::OffsetBoundaries { .. } | ProfileSel::WholeBoundaries { .. }
+        ) {
+            continue;
+        }
+        let indices = solvecraft_doc::profile_selection_indices(ss, sel)?;
         for i in indices.iter() {
             let pr = ss
                 .profiles
@@ -226,12 +223,39 @@ fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
                 .ok_or_else(|| EngineError::Other(format!("no profile {i} in sketch `{}` (it has {})", ss.name, ss.profiles.len())))?;
             // Two profiles with the same outer curves (one inside the other's holes cannot be):
             // keep the index then.
-            if pr.outer_curves.is_empty() || ss.profiles.iter().filter(|q| same_loop(&q.outer_curves, &pr.outer_curves)).count() != 1 {
+            if !matches!(sel, ProfileSel::WholeBoundaries { .. })
+                && (pr.outer_curves.is_empty() || ss.profiles.iter().filter(|q| same_loop(&q.outer_curves, &pr.outer_curves)).count() != 1)
+            {
                 continue 'sels;
             }
-            loops.push(pr.outer_curves.clone());
         }
-        *sel = ProfileSel::Curves { loops };
+        let captured = solvecraft_doc::capture_profile_selection(ss, &indices)?;
+        *sel = match captured {
+            ProfileSel::OffsetBoundaries { associations }
+                if associations.iter().any(|id| {
+                    s.doc
+                        .sketch(sketch)
+                        .is_ok_and(|raw| !raw.offsets.iter().filter_map(|offset| offset.topology.as_ref()).any(|topology| topology.id == *id))
+                }) =>
+            {
+                // Legacy upgrade descriptors belong to the solved copy. Persist the
+                // complete original role IDs instead of an unsaved association ID.
+                let loops = associations
+                    .iter()
+                    .map(|id| {
+                        ss.sketch
+                            .offsets
+                            .iter()
+                            .filter_map(|offset| offset.topology.as_ref())
+                            .find(|topology| topology.id == *id)
+                            .map(|topology| topology.roles.iter().map(|role| role.output.clone()).collect())
+                            .ok_or_else(|| EngineError::Other(format!("offset association `{id}` changed during profile capture")))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                ProfileSel::Curves { loops }
+            }
+            captured => captured,
+        };
     }
     Ok(())
 }
@@ -246,6 +270,32 @@ fn same_loop(a: &[String], b: &[String]) -> bool {
 pub(super) fn profiles(p: &Value, cmd: &str) -> Result<ProfileSel> {
     let Some(v) = p.get("profiles") else { return Ok(ProfileSel::All) };
     match v {
+        Value::Object(fields) => {
+            if fields.get("type").and_then(Value::as_str) == Some("whole_boundaries") {
+                return solvecraft_doc::whole_profile_selection_from_value(v).map_err(|error| bad(cmd, error.to_string()));
+            }
+            let associations = fields
+                .get("offset_boundaries")
+                .or_else(|| (fields.get("type").and_then(Value::as_str) == Some("offset_boundaries")).then(|| fields.get("associations")).flatten())
+                .and_then(Value::as_array)
+                .ok_or_else(|| bad(cmd, "profile object must provide `offset_boundaries: [association ids]`"))?;
+            if associations.is_empty() || associations.len() > 128 {
+                return Err(bad(cmd, "offset profile selection needs 1 to 128 association ids"));
+            }
+            let associations = associations
+                .iter()
+                .map(|id| {
+                    id.as_str()
+                        .filter(|id| !id.is_empty() && id.len() <= 512)
+                        .map(str::to_string)
+                        .ok_or_else(|| bad(cmd, "offset association ids must be nonempty strings of at most 512 bytes"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            if associations.iter().collect::<std::collections::BTreeSet<_>>().len() != associations.len() {
+                return Err(bad(cmd, "offset association ids must be unique"));
+            }
+            Ok(ProfileSel::OffsetBoundaries { associations })
+        }
         Value::String(s) if s.eq_ignore_ascii_case("all") => Ok(ProfileSel::All),
         Value::Number(n) => Ok(ProfileSel::Indices { indices: vec![n.as_u64().ok_or_else(|| bad(cmd, "profile index"))? as usize] }),
         Value::Array(a) if a.is_empty() => Err(bad(cmd, "`profiles` is empty")),
@@ -1351,3 +1401,15 @@ mod patterns_tests;
 #[cfg(test)]
 #[path = "revolve_convention_tests.rs"]
 mod revolve_convention_tests;
+
+#[cfg(test)]
+#[path = "offset_topology_tests.rs"]
+mod offset_topology_tests;
+
+#[cfg(test)]
+#[path = "offset_identity_tests.rs"]
+mod offset_identity_tests;
+
+#[cfg(test)]
+#[path = "offset_edit_guard_tests.rs"]
+mod offset_edit_guard_tests;

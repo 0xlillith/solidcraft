@@ -83,6 +83,9 @@ pub(crate) mod sketch_attachment_ui;
 #[cfg(test)]
 mod sketch_attachment_ui_tests;
 pub mod sketch_dims;
+pub(crate) mod sketch_display;
+#[cfg(test)]
+mod sketch_display_ui_tests;
 #[cfg(test)]
 mod sketch_edit_tests;
 pub mod sketch_palette;

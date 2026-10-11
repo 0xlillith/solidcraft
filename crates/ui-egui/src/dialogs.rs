@@ -2923,16 +2923,13 @@ pub(crate) fn profile_indices(ss: &solvecraft_engine::doc::SolvedSketch, sel: &P
     match sel {
         ProfileSel::All => (0..ps.len()).collect(),
         ProfileSel::Indices { indices } => indices.iter().copied().filter(|i| *i < ps.len()).collect(),
+        ProfileSel::OffsetBoundaries { .. } | ProfileSel::WholeBoundaries { .. } => {
+            solvecraft_engine::doc::profile_selection_indices(ss, sel).unwrap_or_default()
+        }
         ProfileSel::Curves { loops } => loops
             .iter()
             .filter_map(|l| {
-                let mut want: Vec<&String> = l.iter().collect();
-                want.sort();
-                ps.iter().position(|p| {
-                    let mut have: Vec<&String> = p.outer_curves.iter().collect();
-                    have.sort();
-                    have == want
-                })
+                solvecraft_engine::doc::profile_selection_indices(ss, &ProfileSel::Curves { loops: vec![l.clone()] }).ok()?.first().copied()
             })
             .collect(),
         ProfileSel::Points { points } => points.iter().filter_map(|q| ps.iter().position(|p| p.region.contains(*q))).collect(),

@@ -100,22 +100,17 @@ fn generated_profiles_and_press_pull_convert_rotated_occurrence_picks_once() {
         check(&mut s, area * 30.0, hole, 30.0);
         run(&mut s, "solid.press_pull", json!({"face":[35,-10,15],"distance":5}));
         check(&mut s, area * 35.0, hole, 35.0);
-        let height = if hole {
-            // Curved coincident Cut is an existing kernel limit; it must be atomic.
-            let before = s.doc.to_json();
-            let error = s.execute("solid.press_pull", &json!({"face":[35,-15,15],"distance":-5})).unwrap_err();
-            let message = error.to_string();
-            assert!(message.contains("takes planar faces only"), "{error}");
-            assert!(message.contains("the target has 2 curved faces (cylinder)"), "{error}");
-            assert!(message.contains("the tool has 2 curved faces (cylinder)"), "{error}");
-            assert_eq!(s.doc.to_json(), before);
-            check(&mut s, area * 35.0, hole, 35.0);
-            35.0
-        } else {
-            run(&mut s, "solid.press_pull", json!({"face":[35,-15,15],"distance":-5}));
-            check(&mut s, area * 30.0, hole, 30.0);
-            30.0
-        };
+        let before_cut = s.doc.to_json();
+        run(&mut s, "solid.press_pull", json!({"face":[35,-15,15],"distance":-5}));
+        let height = 30.0;
+        check(&mut s, area * height, hole, height);
+        let after_cut = s.doc.to_json();
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.to_json(), before_cut);
+        check(&mut s, area * 35.0, hole, 35.0);
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.to_json(), after_cut);
+        check(&mut s, area * height, hole, height);
         let world = s.world_state();
         let occupied = Vec3::new(35.0, 21.0 - height, 15.0);
         let absent = Vec3::new(35.0, 19.0 - height, 15.0);

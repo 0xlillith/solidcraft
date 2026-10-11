@@ -873,7 +873,7 @@ fn arc_center(s: &mut Session, p: &Value) -> Result<Value> {
             let end = c.pos() + Vec2::from_angle((a.pos() - c.pos()).angle() + sw.to_radians()) * a.pos().dist(c.pos());
             let cid = match &id {
                 Some(i) => i.clone(),
-                None => sk.fresh("a"),
+                None => sk.fresh("a")?,
             };
             let ai = match a.idx() {
                 Some(i) => i,
@@ -1746,6 +1746,26 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
                 points.extend(sk.link_points(id));
             } else {
                 return Err(bad(cmd, format!("unknown sketch entity `{id}`")));
+            }
+        }
+        let selected_curves = curves.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        let selected_points = points.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        let removed = sk
+            .curves
+            .iter()
+            .enumerate()
+            .filter(|(index, curve)| selected_curves.contains(index) || curve.kind.point_ids().iter().any(|point| selected_points.contains(point)))
+            .map(|(_, curve)| curve.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for offset in &sk.offsets {
+            let Some(topology) = &offset.topology else { continue };
+            if offset.outputs.iter().any(|id| removed.contains(id.as_str()))
+                && topology
+                    .roles
+                    .iter()
+                    .any(|role| !role.retired && role.kind == solvecraft_sketch::OffsetRoleKind::Arc && !removed.contains(role.output.as_str()))
+            {
+                return Err(bad(cmd, "break the offset association before deleting only part of its curved boundary"));
             }
         }
         sk.constraints.retain(|c| !cons.contains(&c.id));
