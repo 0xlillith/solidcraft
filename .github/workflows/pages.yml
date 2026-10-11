@@ -7,6 +7,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Published release for Flatpak (empty: latest stable release)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -50,6 +56,17 @@ jobs:
           cp -r target/book/. site/
           cp -r dist/web site/app
       - uses: actions/configure-pages@v5
+        id: pages
+      - name: Install Flatpak repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak ostree
+      - name: Include the published Flatpak repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || '' }}
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: bash packaging/flatpak-site.sh site
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

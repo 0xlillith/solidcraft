@@ -117,7 +117,11 @@ Keep that deployment separate from building the application. A publication made 
 Actions `GITHUB_TOKEN` does not trigger downstream `release: published` workflows; in that
 case explicitly dispatch the Flatpak workflow with the published tag, or use an appropriately
 authorized maintainer/App token for publication. Do not assume the repository updated: check
-the deployment run. Coordinate its GitHub Pages output with the existing docs website.
+the deployment run. The Flatpak workflow requests the shared Pages workflow with that tag;
+Pages assembles the documentation, browser app, and Flatpak repository together. Ordinary
+docs updates include the latest stable Flatpak release too. Verify the resulting Pages run,
+not only the dispatch job, so a release cannot erase the docs or app and docs updates cannot
+erase the package repository.
 
 ## Repository setup
 
