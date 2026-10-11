@@ -153,6 +153,7 @@ pub fn read(s: &str) -> Result<Document> {
     validate_versioned_geometry(&v)?;
     validate_emboss_targets(&v)?;
     validate_freeform_offsets(&v)?;
+    validate_sketch_sizes(&v)?;
     crate::format_offsets::validate_raw(&v)?;
     let legacy_wires = validate_wires(&v, version)?;
     validate_body_transfers(&v)?;
@@ -211,6 +212,29 @@ pub fn read(s: &str) -> Result<Document> {
     normalise(&mut d)?;
     d.format = format_string(FORMAT);
     Ok(d)
+}
+
+/// The caps interactive editing enforces, applied to the raw JSON so an oversized sketch is
+/// never deserialised. Every sketch in the timeline is solved when the design opens, and the
+/// solver sizes its dense matrices by the sketch, so a file with hundreds of thousands of
+/// points would ask the allocator for terabytes and abort before anything could report it.
+fn validate_sketch_sizes(value: &Value) -> Result<()> {
+    let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(()) };
+    let invalid = || DocError::Invalid("damaged design: sketch too large".into());
+    for feature in features {
+        if feature.get("type").and_then(Value::as_str) != Some("sketch") {
+            continue;
+        }
+        let Some(sketch) = feature.get("sketch") else { continue };
+        let len = |key: &str| sketch.get(key).and_then(Value::as_array).map_or(0, Vec::len);
+        if len("points") > solvecraft_sketch::MAX_POINTS
+            || len("curves") > solvecraft_sketch::MAX_CURVES
+            || len("constraints") > solvecraft_sketch::MAX_CONSTRAINTS
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
 }
 
 /// Bound arrays before typed allocation; only old files with absent markers need migration.
@@ -1198,5 +1222,36 @@ mod tests {
         v["huge"] = Value::from(1e300);
         assert!(read(&v.to_string()).is_err(), "out-of-range numbers anywhere");
         assert!(read("{\"format\": 2}").is_err());
+    }
+
+    /// Every sketch in the timeline is solved when the design opens, and the solver sizes its
+    /// dense matrices by the sketch. The caps interactive editing enforces have to hold for a
+    /// file too, before the arrays are deserialised.
+    #[test]
+    fn oversized_sketches_are_refused_before_typed_decoding() {
+        use solvecraft_sketch::{MAX_CONSTRAINTS, MAX_CURVES, MAX_POINTS, Sketch};
+
+        // A sketch right at the point cap, chained by coincident constraints.
+        let mut sketch = Sketch::new();
+        let mut previous = 0;
+        while sketch.points.len() < MAX_POINTS {
+            let i = sketch.add_point(solvecraft_geom::Vec2::new(0.001 * sketch.points.len() as f64, 0.0), None).unwrap();
+            sketch.add_constraint(solvecraft_sketch::ConstraintKind::Coincident { p: previous, q: i }, None).unwrap();
+            previous = i;
+        }
+        let mut doc = Document::new("big sketch");
+        doc.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, None).unwrap();
+        let at_cap: Value = serde_json::from_str(&doc.to_json()).unwrap();
+        assert!(read(&at_cap.to_string()).is_ok(), "a sketch at the caps must still load");
+
+        // One past each cap, grown at the JSON level: no typed array is ever built.
+        for (key, cap) in [("points", MAX_POINTS), ("constraints", MAX_CONSTRAINTS), ("curves", MAX_CURVES)] {
+            let mut value = at_cap.clone();
+            let slot = &mut value["features"][0]["sketch"][key];
+            let first = slot.as_array().and_then(|a| a.first()).cloned().unwrap_or(Value::Null);
+            *slot = Value::Array(vec![first; cap + 1]);
+            let error = read(&value.to_string()).unwrap_err().to_string();
+            assert!(error.contains("sketch too large"), "{key}: {error}");
+        }
     }
 }

@@ -161,9 +161,16 @@ fn generated() -> Vec<(String, Vec<u8>)> {
     let design = |name: &str, features: Value| {
         json!({"format": "solvecraft/11", "name": name, "units": "mm", "params": [], "next_id": 9, "features": features}).to_string().into_bytes()
     };
+    // A sketch past the caps interactive editing enforces: solving it would size dense matrices
+    // by the point count and abort on the allocation.
+    let point = json!({"id": "p1", "pos": [0.0, 0.0], "fixed": false});
+    let oversized = json!([{"id": 1, "name": "Sketch1", "suppressed": false, "type": "sketch",
+                            "plane": {"type": "origin", "name": "XY"},
+                            "sketch": {"points": vec![point; 200_000], "curves": [], "constraints": []}}]);
     vec![
         ("construction plane is its own side".into(), design("selfplane", json!([plane(1, "P1", to("P1"))]))),
         ("two construction planes refer to each other".into(), design("twoplanes", json!([plane(1, "P1", to("P2")), plane(2, "P2", to("P1"))]))),
+        ("sketch with 200,000 points".into(), design("bigsketch", oversized)),
     ]
 }
 
