@@ -173,6 +173,13 @@ pub fn face_names(b: &ModelBody) -> Arc<Vec<String>> {
 
 /// Work out a body's face names from the feature that made it and the model before it.
 fn derive(b: &ModelBody, o: &NamingOrigin, nf: usize) -> Vec<String> {
+    // A rigid Move changes coordinates, not topology or face ownership. Geometric
+    // overlap with the unmoved input cannot recover the names at the new position.
+    if matches!(o.feature.kind, FeatureKind::Move { .. })
+        && let Some(input) = o.before.body(&b.name)
+    {
+        return face_names(input).as_ref().clone();
+    }
     let m = b.mesh();
     let size = b.body.size().max(1e-6);
     let tol = (size * 1e-4).max(1e-6);
