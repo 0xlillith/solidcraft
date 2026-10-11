@@ -401,6 +401,39 @@ fn point_constraints_keep_the_first_pick() {
     assert!(pt(&s, "p2").dist(solvecraft_geom::Vec2::new(3.0, -7.0)) < 1e-6, "{:?}", pt(&s, "p2"));
 }
 
+#[test]
+fn coincident_line_pairs_resolve_ties_independently_of_pick_order() {
+    for (a, b) in [("l1", "l2"), ("l2", "l1")] {
+        let mut s = new_sketch();
+        run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false,"connect":false}));
+        run(&mut s, "sketch.line", json!({"points":[[10,20],[30,20]],"infer":false,"connect":false}));
+        run(&mut s, "sketch.constraint.coincident", json!({"a":a,"b":b}));
+        let sk = sketch(&s);
+        let p = sk.resolve_point("l1.start").unwrap();
+        let q = sk.resolve_point("l2.start").unwrap();
+        assert!(sk.point(p).unwrap().dist(sk.point(q).unwrap()) < 1e-6);
+        let count = sk.constraints.len();
+        let result = run(&mut s, "sketch.constraint.coincident", json!({"a":b,"b":a}));
+        assert_eq!(result["existing"], true);
+        assert_eq!(sketch(&s).constraints.len(), count);
+    }
+}
+
+#[test]
+fn coincident_refuses_invalid_curve_pairs_atomically() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false,"connect":false}));
+    run(&mut s, "sketch.circle.center", json!({"center":[40,40],"radius":5}));
+    let before = serde_json::to_value(&s.doc).unwrap();
+    let undo = s.undo.len();
+    for (a, b, message) in [("l1", "l1", "distinct lines"), ("l1", "c1", "straight lines"), ("c1", "l1", "straight lines")] {
+        let error = s.execute("sketch.constraint.coincident", &json!({"a":a,"b":b})).unwrap_err();
+        assert!(error.to_string().contains(message), "{error}");
+        assert_eq!(serde_json::to_value(&s.doc).unwrap(), before);
+        assert_eq!(s.undo.len(), undo);
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Sketch Palette options
 
