@@ -274,11 +274,17 @@ fn sheet_of(s: &Session, p: &Value, cmd: &str) -> Result<SheetBody> {
 }
 
 fn flat_json(sh: &SheetBody) -> Result<Value> {
-    let (w, h) = sh.flat_size()?;
-    let loops = sh.outline()?;
+    let regions = sh.flat_regions()?;
+    let loops: Vec<Vec<Vec2>> = regions.iter().map(|r| r.outer.polyline(1e-3)).collect();
+    let (mut lo, mut hi) = (Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN));
+    for p in loops.iter().flatten() {
+        lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
+        hi = Vec2::new(hi.x.max(p.x), hi.y.max(p.y));
+    }
+    let (w, h) = (hi.x - lo.x, hi.y - lo.y);
     let pt = |v: &Vec2| json!([v.x, v.y]);
     let outline: Vec<Value> = loops.iter().map(|l| Value::Array(l.iter().map(pt).collect())).collect();
-    let holes: Vec<Value> = sh.holes.iter().map(|h| Value::Array(h.outer.polyline(1e-3).iter().map(pt).collect())).collect();
+    let holes: Vec<Value> = regions.iter().flat_map(|r| &r.holes).map(|h| Value::Array(h.polyline(1e-3).iter().map(pt).collect())).collect();
     let bends: Vec<Value> = sh
         .bends()
         .iter()
@@ -331,16 +337,23 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
         w(11, &f(b.x));
         w(21, &f(b.y));
     };
-    for l in sh.outline()? {
-        let m = l.len();
-        for i in 0..m {
-            if let (Some(a), Some(b)) = (l.get(i), l.get((i + 1) % m)) {
-                line(&mut w, "OUTLINE", *a, *b);
+    let regions = sh.flat_regions()?;
+    for h in regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)) {
+        // A circle is often represented by two semicircles. Keep the whole analytic
+        // boundary as one CIRCLE rather than approximating outer boundaries with chords.
+        if let Some(solvecraft_geom::Seg2::Arc { center, radius, sweep, .. }) = h.segs.first() {
+            let total: f64 = h.segs.iter().filter_map(|s| if let solvecraft_geom::Seg2::Arc { sweep, .. } = s { Some(*sweep) } else { None }).sum();
+            let circular = h.segs.iter().all(|s| matches!(s, solvecraft_geom::Seg2::Arc { center: c, radius: r, sweep: a, .. } if c.dist(*center) < 1e-9 && (*r-*radius).abs() < 1e-9 && a.signum() == sweep.signum()));
+            if circular && (total.abs() - std::f64::consts::TAU).abs() < 1e-9 {
+                w(0, "CIRCLE");
+                w(8, "OUTLINE");
+                w(10, &f(center.x));
+                w(20, &f(center.y));
+                w(40, &f(*radius));
+                continue;
             }
         }
-    }
-    for h in &sh.holes {
-        for seg in &h.outer.segs {
+        for seg in &h.segs {
             match *seg {
                 solvecraft_geom::Seg2::Arc { center, radius, start, sweep } => {
                     if (sweep.abs() - std::f64::consts::TAU).abs() < 1e-9 {

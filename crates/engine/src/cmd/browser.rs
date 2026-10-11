@@ -36,7 +36,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("browser.order", "Order Browser Items", order).params("folder, component?, order: [keys] (the folder's items in display order)"),
     CommandSpec::new("browser.visibility", "Show/Hide", visibility).icon("eye").noundo().params(
         "visible: bool; items?: [sketch id or name | body name | construction name | O|X|Y|Z|XY|XZ|YZ]; \
-         or folder?: bodies|sketches|construction|origin (all of it). View state: not saved, not an undo step",
+         or folder?: bodies|sketches|construction|origin (all of it); or paths?: [[occurrence ids]] (exact placements and descendants), isolate?: bool (requires paths and visible:true). View state: not saved, not an undo step",
     ),
 ];
 
@@ -191,6 +191,66 @@ fn shown_item(s: &Session, key: &str) -> Option<Shown> {
 fn visibility(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "browser.visibility";
     let visible = bool_(p, "visible").ok_or_else(|| bad(cmd, "`visible` must be true or false"))?;
+    if let Some(value) = p.get("paths") {
+        if p.get("items").is_some() || p.get("folder").is_some() {
+            return Err(bad(cmd, "give paths, items or folder, not several"));
+        }
+        let paths =
+            value.as_array().filter(|a| !a.is_empty() && a.len() <= 10_000).ok_or_else(|| bad(cmd, "paths must list 1..10000 occurrence paths"))?;
+        let paths: Vec<Vec<u64>> = paths
+            .iter()
+            .map(|value| {
+                let path = value
+                    .as_array()
+                    .filter(|a| !a.is_empty() && a.len() <= 64)
+                    .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
+                    .ok_or_else(|| bad(cmd, "each path must list 1..64 occurrence ids"))?;
+                s.occurrence_placement(&path).map_err(|e| bad(cmd, e.to_string()))?;
+                Ok(path)
+            })
+            .collect::<Result<_>>()?;
+        if bool_(p, "isolate").unwrap_or(false) {
+            if !visible {
+                return Err(bad(cmd, "isolate requires visible:true"));
+            }
+            let mut hidden = Vec::new();
+            let mut ancestor_bodies = Vec::new();
+            let mut stack = vec![Vec::<u64>::new()];
+            let mut count = 0;
+            while let Some(parent) = stack.pop() {
+                for child in s.occurrence_children(&parent)? {
+                    count += 1;
+                    if count > 100_000 {
+                        return Err(bad(cmd, "isolate exceeds 100000 placements"));
+                    }
+                    if paths.iter().any(|selected| child.path.starts_with(selected)) {
+                        continue;
+                    }
+                    if paths.iter().any(|selected| selected.starts_with(&child.path)) {
+                        ancestor_bodies.extend(child.bodies.into_iter().map(|b| b.world));
+                        stack.push(child.path);
+                    } else {
+                        hidden.push(child.path);
+                    }
+                }
+            }
+            let mut root_bodies: Vec<String> =
+                s.model.state().bodies.iter().filter(|b| s.doc.body_component(&b.name, b.feature) == 0).map(|b| b.name.clone()).collect();
+            root_bodies.extend(ancestor_bodies);
+            s.visibility.hidden_occurrences = hidden;
+            s.visibility.hidden_bodies = root_bodies;
+            s.revision += 1;
+            return Ok(json!({"visible":true,"isolated":paths,"visibility":s.visibility}));
+        }
+        for path in &paths {
+            s.visibility.hidden_occurrences.retain(|p| p != path);
+            if !visible {
+                s.visibility.hidden_occurrences.push(path.clone());
+            }
+        }
+        s.revision += 1;
+        return Ok(json!({"visible":visible,"changed":paths.len(),"visibility":s.visibility}));
+    }
     let items: Vec<Shown> = match (str_(p, "folder"), p.get("items")) {
         (Some(_), Some(_)) => return Err(bad(cmd, "give `items` or `folder`, not both")),
         (Some("bodies"), None) => s.world_state().bodies.iter().map(|b| Shown::Body(b.name.clone())).collect(),
@@ -211,6 +271,9 @@ fn visibility(s: &mut Session, p: &Value) -> Result<Value> {
         (None, None) => return Err(bad(cmd, "`items` or `folder` is required")),
     };
     let v = &mut s.visibility;
+    if visible && str_(p, "folder") == Some("bodies") {
+        v.hidden_occurrences.clear();
+    }
     for it in &items {
         match it {
             Shown::Sketch(id) => {
@@ -247,6 +310,7 @@ fn document_units(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({ "units": u, "kept": [] }));
     }
     // What the geometry reads: every feature's length inputs.
+    let matched_configuration = s.doc.configuration_matches().then(|| s.doc.configs.active.clone()).flatten();
     let before = s.doc.length_inputs();
     s.doc_mut().units = u.to_string();
     // Unit-less user parameters holding a bare number read it in the design's units where they
@@ -277,6 +341,10 @@ fn document_units(s: &mut Session, p: &Value) -> Result<Value> {
                 kept.push(name);
             }
         }
+    }
+    s.doc_mut().preserve_configuration_units(&old, &kept);
+    if let Some(row) = matched_configuration {
+        s.doc_mut().apply_configuration(&row)?;
     }
     Ok(json!({ "units": u, "kept": kept }))
 }

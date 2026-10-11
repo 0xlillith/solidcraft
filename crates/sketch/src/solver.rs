@@ -249,6 +249,17 @@ impl State<'_> {
             _ => 0.0,
         }
     }
+    fn arc_sweep(&self, c: usize) -> f64 {
+        let Some(curve) = self.sk.curves.get(c) else { return 0.0 };
+        let CurveKind::Arc { c: cp, a, b } = curve.kind else { return 0.0 };
+        let sweep = ((self.p(b) - self.p(cp)).angle() - (self.p(a) - self.p(cp)).angle()).rem_euclid(std::f64::consts::TAU);
+        if curve.reversed { -sweep } else { sweep }
+    }
+    fn slot_length(&self, a: usize, b: usize) -> f64 {
+        let (ca, ra) = self.round(a);
+        let (cb, rb) = self.round(b);
+        ca.dist(cb) + ra + rb
+    }
     /// Curvature vector of a curve at its point `p` (towards the centre of curvature).
     fn curvature_at(&self, c: usize, p: usize) -> Vec2 {
         let Some(kind) = self.sk.curves.get(c).map(|c| &c.kind) else { return Vec2::ZERO };
@@ -433,6 +444,18 @@ fn residuals(s: &State, k: &ConstraintKind, out: &mut Vec<f64>) {
             let (a, b) = s.line(l);
             out.push(a.dist(b) - value);
         }
+        LineAngle { l, value } => {
+            let (a, b) = s.line(l);
+            // A dimension with no typed length must not satisfy its angle by collapsing
+            // the line. Scale with the original geometry, independently of the unknowns.
+            let scale = match s.sk.curves.get(l).map(|c| &c.kind) {
+                Some(CurveKind::Line { a, b }) => s.sk.point(*a).zip(s.sk.point(*b)).map(|(a, b)| a.dist(b)).unwrap_or(1.0),
+                _ => 1.0,
+            };
+            out.push(wrap_angle((b - a).angle() - value) * scale.max(1.0));
+        }
+        ArcSweep { c, value } => out.push((s.arc_sweep(c) - value) * s.sk.radius(c).unwrap_or(1.0).max(1.0)),
+        SlotOverallLength { a, b, value } => out.push(s.slot_length(a, b) - value),
         Radius { c, value } => out.push(s.radius_of(c) - value),
         Diameter { c, value } => out.push(2.0 * s.round(c).1 - value),
         Angle { a, b, value, flip } => {
@@ -483,6 +506,12 @@ fn measure(s: &State, k: &ConstraintKind) -> Option<f64> {
             let (a, b) = s.line(l);
             a.dist(b)
         }
+        LineAngle { l, value } => {
+            let (a, b) = s.line(l);
+            value + wrap_angle((b - a).angle() - value)
+        }
+        ArcSweep { c, .. } => s.arc_sweep(c),
+        SlotOverallLength { a, b, .. } => s.slot_length(a, b),
         Radius { c, .. } => s.radius_of(c),
         Diameter { c, .. } => 2.0 * s.round(c).1,
         Angle { a, b, flip, .. } => {
@@ -614,14 +643,21 @@ fn block_vars(sk: &Sketch, lay: &Layout, b: &Block) -> Vec<usize> {
                 pt(&mut v, p);
                 curve(&mut v, c);
             }
-            Horizontal { l } | Vertical { l } | Length { l, .. } | Radius { c: l, .. } | Diameter { c: l, .. } => curve(&mut v, l),
+            Horizontal { l }
+            | Vertical { l }
+            | Length { l, .. }
+            | LineAngle { l, .. }
+            | ArcSweep { c: l, .. }
+            | Radius { c: l, .. }
+            | Diameter { c: l, .. } => curve(&mut v, l),
             Parallel { a, b }
             | Perpendicular { a, b }
             | Collinear { a, b }
             | Tangent { a, b }
             | Equal { a, b }
             | Concentric { a, b }
-            | Angle { a, b, .. } => {
+            | Angle { a, b, .. }
+            | SlotOverallLength { a, b, .. } => {
                 curve(&mut v, a);
                 curve(&mut v, b);
             }
@@ -846,6 +882,20 @@ pub fn solve(sk: &mut Sketch) -> SolveReport {
 /// constraint between two entities holds the first so only the second moves. Everything else
 /// moves as little as it can. On failure the geometry is restored.
 pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
+    let mut orientation_before = Vec::new();
+    for constraint in &sk.constraints {
+        if !constraint.driven
+            && let ConstraintKind::ArcSweep { c, value } = constraint.kind
+            && value.is_finite()
+            && let Some(curve) = sk.curves.get_mut(c)
+            && let CurveKind::Arc { a, b, .. } = &mut curve.kind
+            && curve.reversed != (value < 0.0)
+        {
+            orientation_before.push((c, *a, *b, curve.reversed));
+            std::mem::swap(a, b);
+            curve.reversed = value < 0.0;
+        }
+    }
     let lay = layout(sk, hold);
     let mut x = vec![0.0; lay.n];
     for (i, p) in sk.points.iter().enumerate() {
@@ -866,6 +916,34 @@ pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
         }
     }
     let x0 = x.clone();
+    // Exactly opposite directions sit on the wrapped angle's derivative discontinuity.
+    // Nudge one free endpoint into a continuous branch before Newton iterations. The
+    // untouched x0 still restores the complete original geometry on a failed solve.
+    for constraint in &sk.constraints {
+        if constraint.driven {
+            continue;
+        }
+        let ConstraintKind::LineAngle { l, value } = constraint.kind else { continue };
+        let Some(CurveKind::Line { a, b }) = sk.curves.get(l).map(|c| &c.kind) else { continue };
+        let (pa, pb) = {
+            let state = State { sk, lay: &lay, x: &x };
+            (state.p(*a), state.p(*b))
+        };
+        let delta = wrap_angle((pb - pa).angle() - value);
+        if delta.abs() < std::f64::consts::PI - 1e-5 || !delta.is_finite() {
+            continue;
+        }
+        let d = Vec2::from_angle((pb - pa).angle() - delta.signum() * 0.01) * pa.dist(pb);
+        let (point, at) = if lay.pvar.get(*b).copied().flatten().is_some() { (*b, pa + d) } else { (*a, pb - d) };
+        if let Some(index) = lay.pvar.get(point).copied().flatten() {
+            if let Some(v) = x.get_mut(index) {
+                *v = at.x;
+            }
+            if let Some(v) = x.get_mut(index + 1) {
+                *v = at.y;
+            }
+        }
+    }
 
     let mut blocks: Vec<(Block, Vec<usize>)> = Vec::new();
     for c in &sk.curves {
@@ -1002,6 +1080,17 @@ pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
             *r = use_x.get(v).copied().unwrap_or(*r).abs().max(1e-9);
         }
     }
+    if status == SolveStatus::Failed {
+        for (ci, a_before, b_before, reversed) in orientation_before.into_iter().rev() {
+            if let Some(curve) = sk.curves.get_mut(ci)
+                && let CurveKind::Arc { a, b, .. } = &mut curve.kind
+            {
+                *a = a_before;
+                *b = b_before;
+                curve.reversed = reversed;
+            }
+        }
+    }
     let vdet = |v: Option<usize>| v.is_none_or(|v| det.get(v).copied().unwrap_or(false));
     let pdet = |p: usize| match lay.pvar.get(p).copied().flatten() {
         Some(v) => vdet(Some(v)) && vdet(Some(v + 1)),
@@ -1029,5 +1118,40 @@ pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
         failing,
         point_determined,
         curve_determined,
+    }
+}
+
+#[cfg(test)]
+mod typed_dimension_tests {
+    use super::*;
+
+    #[test]
+    fn failed_signed_sweep_restores_arc_orientation_and_coordinates() {
+        let mut sk = Sketch::new();
+        let c = sk.add_arc(Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(0.0, 10.0), [Some(0), None, None], None).unwrap();
+        let id = sk.add_constraint(ConstraintKind::ArcSweep { c, value: std::f64::consts::FRAC_PI_2 }, None).unwrap();
+        sk.curves[c].fixed = true;
+        assert!(solve(&mut sk).ok());
+        let before = sk.curves.clone();
+        let points = sk.points.clone();
+        sk.constraints.iter_mut().find(|constraint| constraint.id == id).unwrap().kind.set_value(-std::f64::consts::FRAC_PI_2);
+        assert!(!solve(&mut sk).ok());
+        assert_eq!(sk.curves, before);
+        assert_eq!(sk.points, points);
+    }
+
+    #[test]
+    fn signed_dimensions_validate_kinds_values_and_survive_curve_removal() {
+        let mut sk = Sketch::new();
+        let l = sk.add_line(Vec2::ZERO, Vec2::new(10.0, 10.0), Some(0), None, None).unwrap();
+        assert!(sk.add_constraint(ConstraintKind::ArcSweep { c: l, value: 1.0 }, None).is_err());
+        assert!(sk.add_constraint(ConstraintKind::LineAngle { l, value: f64::NAN }, None).is_err());
+        sk.add_constraint(ConstraintKind::LineAngle { l, value: -std::f64::consts::FRAC_PI_4 }, None).unwrap();
+        assert!(solve(&mut sk).ok());
+        let CurveKind::Line { a, b } = sk.curves[l].kind else { panic!("line") };
+        let direction = sk.points[b].pos - sk.points[a].pos;
+        assert!((direction.angle() + std::f64::consts::FRAC_PI_4).abs() < 1e-7);
+        sk.remove_curves(&[l]);
+        assert!(sk.constraints.is_empty());
     }
 }

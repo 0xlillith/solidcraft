@@ -238,6 +238,9 @@ fn select_set(s: &mut Session, p: &Value) -> Result<Value> {
     let mut sel: Vec<Sel> = Vec::new();
     for it in items {
         let one: Sel = serde_json::from_value(it).map_err(|e| bad("select.set", e.to_string()))?;
+        if let Sel::Occurrence { path } = &one {
+            s.occurrence_bodies(path, true).map_err(|e| bad("select.set", e.to_string()))?;
+        }
         sel.push(one);
     }
     if !bool_(p, "add").unwrap_or(false) {

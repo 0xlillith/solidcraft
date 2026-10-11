@@ -16,6 +16,9 @@ use crate::dialogs::{Dialog, Kind, combo, field, row_label};
 use crate::selection::{BODIES, SelInput};
 use crate::theme::Tokens;
 
+#[path = "configuration_rules_ui.rs"]
+mod configuration_rules_ui;
+
 /// One keyed value of a motion study: a joint's value (index) at steps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
@@ -60,6 +63,7 @@ pub enum Mo {
     Configurations {
         new_row: String,
         error: Option<String>,
+        rule_editor: configuration_rules_ui::Editor,
     },
 }
 
@@ -114,7 +118,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             vec![],
         ),
         "explode.create" => (Mo::Explode { name: n("Exploded View", "explode.list"), scale: 1.0, shown: None, saved: None, error: None }, vec![]),
-        "config.table" | "config.configure" => (Mo::Configurations { new_row: String::new(), error: None }, vec![]),
+        "config.table" | "config.configure" => (Mo::Configurations { new_row: String::new(), error: None, rule_editor: Default::default() }, vec![]),
         _ => return None,
     };
     Some((Kind::Motion(mo), inputs))
@@ -263,7 +267,11 @@ pub fn column_parts(c: &str) -> (&str, &str) {
 /// The value a table cell edit sends: suppress columns take booleans, parameters expressions.
 pub fn cell_value(column: &str, text: &str) -> Value {
     match column_parts(column).0 {
-        "suppress" => json!(matches!(text.trim().to_ascii_lowercase().as_str(), "suppressed" | "true" | "yes" | "1" | "off")),
+        "suppress" => match text.trim().to_ascii_lowercase().as_str() {
+            "suppressed" | "true" | "yes" | "1" | "off" => json!(true),
+            "unsuppressed" | "false" | "no" | "0" | "on" => json!(false),
+            _ => json!(text),
+        },
         _ => json!(text),
     }
 }
@@ -578,8 +586,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 ui.end_row();
             }
         }
-        Mo::Configurations { new_row, error } => {
-            let v = app.session.execute("config.table", &json!({})).unwrap_or(Value::Null);
+        Mo::Configurations { new_row, error, rule_editor } => {
+            let revision = app.session.revision;
+            let v = rule_editor.table.as_ref().filter(|(r, _)| *r == revision).map(|(_, v)| v.clone()).unwrap_or_else(|| {
+                let value = app.session.execute("config.table", &json!({})).unwrap_or(Value::Null);
+                rule_editor.table = Some((revision, value.clone()));
+                value
+            });
             let mut tb = table(&v);
             // Bare numbers show with their parameter's unit ("40" is 40 mm), as Fusion shows them.
             let kinds = app.session.doc.all_param_exprs();
@@ -588,7 +601,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                     let (kind, n) = column_parts(c);
                     if kind == "param"
                         && val.trim().parse::<f64>().is_ok()
-                        && let Some(unit) = kinds.iter().find(|x| x.0 == n).and_then(|x| unit_of(x.2))
+                        && let Some(unit) = app.session.doc.param(n).map(|parameter| parameter.unit.clone()).or_else(|| {
+                            kinds.iter().find(|x| x.0 == n).and_then(|x| {
+                                unit_of(x.2).map(|unit| {
+                                    if x.2 == solvecraft_engine::doc::expr::Kind::Length { app.session.doc.units.clone() } else { unit.to_string() }
+                                })
+                            })
+                        })
                     {
                         *val = format!("{} {unit}", val.trim());
                     }
@@ -680,14 +699,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                             run(app, error, "config.row", json!({"name": name, "values": { c: choice }}));
                                         }
                                     }
-                                    let id = egui::Id::new(("cfg", name, c));
-                                    let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
+                                    let id = (name.clone(), c.clone());
+                                    let mut text = rule_editor.drafts.get(&id).cloned().unwrap_or_else(|| shown.clone());
                                     let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(if style { 106.0 } else { 164.0 }));
                                     if r.changed() {
-                                        ui.data_mut(|d| d.insert_temp(id, text.clone()));
+                                        rule_editor.drafts.insert(id.clone(), text.clone());
                                     }
                                     if r.lost_focus() {
-                                        ui.data_mut(|d| d.remove::<String>(id));
+                                        rule_editor.drafts.remove(&id);
                                         if text != shown {
                                             run(app, error, "config.row", json!({"name": name, "values": { c: cell_value(c, &text) }}));
                                         }
@@ -771,6 +790,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 }
             });
             ui.end_row();
+            configuration_rules_ui::show(ui, app, error, rule_editor);
             if let Some(e) = error {
                 ui.label("");
                 ui.label(RichText::new(e.as_str()).color(t.error));
@@ -906,6 +926,82 @@ mod tests {
         assert_eq!(cell_value("suppress:Fillet1", "Suppressed"), json!(true));
         assert_eq!(cell_value("suppress:Fillet1", "on"), json!(false));
         assert_eq!(cell_value("param:width", "90 mm"), json!("90 mm"));
+    }
+
+    #[test]
+    fn configuration_compound_condition_and_rule_order_are_editable_in_dialog() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.resize", json!({"width":1400,"height":1100}));
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"parameters.change","params":{"name":"length","expression":"40 mm"}}},
+            {"call":"engine.execute","params":{"command":"config.configure","params":{"params":["length"]}}},
+            {"start":"config.table"},{"widget":"Add or edit rule"},
+            {"widget":"Always"},{"widget":"All"},{"widget":"Always"},{"widget":"Parameter"},
+            {"widget":"Choose…"},{"widget":"length"},{"widget":"Save Rule"}
+        ]))
+        .unwrap();
+        assert!(
+            matches!(&h.app.session.doc.configs.rules[0].condition,solvecraft_engine::doc::config::RuleCondition::All{conditions} if matches!(&conditions[0],solvecraft_engine::doc::config::RuleCondition::Parameter{..}))
+        );
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"config.rule","params":{"rule":{"id":"last","name":"Last drive","condition":{"type":"always"},"effect":{"type":"drive_parameter","parameter":"length","expression":"20 mm"}}}}},
+            {"widget":"Preview Row"},{"widget":"Preview: Default"}
+        ])).unwrap();
+        assert!(h.widget("length = 20 mm").is_some());
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "40 mm");
+        h.run(&json!([{"widget":"↑"},{"widget":"Preview Row"}])).unwrap();
+        assert_eq!(h.app.session.doc.configs.rules[0].id, "last");
+        assert!(h.widget("length = 10 mm").is_some());
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "40 mm");
+    }
+
+    #[test]
+    fn configuration_rule_editor_creates_previews_edits_and_applies_driven_value() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.resize", json!({"width":1400,"height":1000}));
+        h.run(&json!([
+            {"call":"engine.execute","params":{"command":"parameters.change","params":{"name":"length","expression":"40 mm"}}},
+            {"call":"engine.execute","params":{"command":"solid.box","params":{"length":"length","width":10,"height":10}}},
+            {"call":"engine.execute","params":{"command":"config.configure","params":{"params":["length"]}}},
+            {"start":"config.table"},
+            {"widget":"Add or edit rule"},
+            {"widget":"Choose…"},
+            {"widget":"length"},
+            {"widget":"Save Rule"}
+        ]))
+        .unwrap();
+        assert_eq!(h.app.session.doc.configs.rules.len(), 1);
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "40 mm");
+        let before = h.app.session.doc.clone();
+        h.run(&json!([{"widget":"Preview Row"}])).unwrap();
+        assert_eq!(h.app.session.doc, before);
+        h.run(&json!([{"widget":"Apply"}])).unwrap();
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "10 mm");
+        assert!(h.app.session.doc.configuration_matches());
+        h.run(&json!([
+            {"widget":"10 mm","near":"Value"},{"key":"A","cmd":true},{"text":"20 mm"},{"widget":"Save Rule"},
+            {"widget":"Apply"}
+        ]))
+        .unwrap();
+        assert_eq!(h.app.session.doc.param("length").unwrap().expr, "20 mm");
+        assert_eq!(h.app.session.doc.configs.rows[0].cells[0], "40 mm");
+        let before = h.app.session.doc.clone();
+        h.run(&json!([
+            {"widget":"Drive parameter"},{"widget":"Range"},
+            {"widget":"0 mm","near":"Minimum"},{"key":"A","cmd":true},{"text":"100 mm"},{"widget":"Save Rule"}
+        ]))
+        .unwrap();
+        assert_eq!(h.app.session.doc, before, "failed rule edit is atomic");
+        assert!(
+            h.widget("configuration rules: rule `New rule` restricts the final value").is_some()
+                || h.output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .any(|(_, n)| n.label().or(n.value()).is_some_and(|text| text.contains("restricts the final value")))
+        );
     }
 
     #[test]

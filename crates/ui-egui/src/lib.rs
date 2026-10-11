@@ -404,7 +404,13 @@ impl SolveApp {
         match &r {
             Ok(_) => {
                 self.session.echo(format!("{} done", command_label(id)));
-                if matches!(id, "file.new" | "doc.open") {
+                if matches!(id, "file.new" | "doc.open" | "doc.recover") {
+                    self.menu.props = None;
+                    // The old document is already replaced: discard its editor without
+                    // applying cancellation hooks (such as restoring its timeline marker).
+                    self.dialog = None;
+                    self.tool = None;
+                    self.preview = preview::PreviewState::default();
                     self.cam = Camera::default();
                     self.fit_view();
                 }
@@ -615,7 +621,7 @@ impl SolveApp {
     pub fn origin_visible(&self) -> bool {
         self.ui.show_origin
             || (self.dialog.as_ref().is_some_and(|d| matches!(d.kind, dialogs::Kind::Sketch))
-                && !self.session.world_state().bodies.iter().any(|b| !self.session.visibility.hidden_bodies.contains(&b.name)))
+                && !self.session.world_state().bodies.iter().any(|b| self.session.body_visible(&b.name)))
     }
 
     pub fn set_status(&mut self, s: impl Into<String>, error: bool) {

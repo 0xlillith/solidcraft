@@ -23,13 +23,15 @@
 //! - 7: configuration tables can include body material and appearance columns. Version 6
 //!   rows need no transformation; the version stamp lets older readers request an update
 //!   instead of encountering an unknown column variant.
+//! - 8: ordered configuration rules and persistent signed line-angle, arc-sweep and slot
+//!   dimensions. Version 7 geometry and table values retain their meaning without changes.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
 
 pub fn format_string(n: u32) -> String {
     format!("solvecraft/{n}")
@@ -42,7 +44,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 6] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(())];
+const JSON_STEPS: [JsonStep; 7] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(())];
 
 /// Old XZ references retain their exact frame, including nested offset and angled planes.
 /// New origin references use +Y; freezing the old frame avoids changing sketch coordinates,
@@ -133,6 +135,7 @@ pub fn read(s: &str) -> Result<Document> {
         )));
     }
     check_numbers(&v, 0)?;
+    crate::config::validate_rules_json(&v)?;
     for step in JSON_STEPS.iter().skip(version as usize - 1).take((FORMAT - version) as usize) {
         step(&mut v)?;
     }
@@ -242,7 +245,7 @@ mod tests {
         let upgraded = read(&legacy.to_string()).unwrap();
         assert_eq!(upgraded, d, "the identity migration preserves the complete design");
         assert_eq!(serde_json::to_value(&upgraded.configs).unwrap(), original_table);
-        assert_eq!(upgraded.format, "solvecraft/7");
+        assert_eq!(upgraded.format, format_string(FORMAT));
         assert!(upgraded.configuration_matches());
         legacy.as_object_mut().unwrap().remove("configs");
         assert!(read(&legacy.to_string()).unwrap().configs.is_empty());
@@ -251,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn version_seven_styles_roundtrip_and_newer_versions_are_refused_before_columns() {
+    fn version_seven_styles_upgrade_and_newer_versions_are_refused_before_columns() {
         use crate::config::{Column, ConfigRow};
         let mut d = Document::new("configured styles");
         d.configs.columns = vec![Column::Material("Body".into()), Column::Appearance("Body".into())];
@@ -261,15 +264,70 @@ mod tests {
         }];
         d.apply_configuration("Blue steel").unwrap();
         let mut value: Value = serde_json::from_str(&d.to_json()).unwrap();
-        assert_eq!(value["format"], "solvecraft/7");
+        value["format"] = Value::from("solvecraft/7");
+        let original_table = value["configs"].clone();
         let roundtrip = read(&value.to_string()).unwrap();
         assert_eq!(roundtrip, d);
+        assert_eq!(serde_json::to_value(&roundtrip.configs).unwrap(), original_table);
+        assert_eq!(roundtrip.format, "solvecraft/8");
         assert!(roundtrip.configuration_matches());
         value["format"] = Value::from(format_string(FORMAT + 1));
         value["configs"]["columns"] = serde_json::json!([{"unknown_future_column":"Body"}]);
+        value["configs"]["rules"] = serde_json::json!({"unknown_future_rule": true});
         let error = read(&value.to_string()).unwrap_err().to_string();
         assert!(error.contains("newer SolveCraft") && error.contains("update SolveCraft"), "{error}");
         assert!(!error.contains("unknown variant"), "format refusal precedes decoding new variants");
+    }
+
+    #[test]
+    fn version_seven_origin_sketch_keeps_geometry_dimension_ids_and_expressions() {
+        use solvecraft_geom::Vec2;
+        use solvecraft_sketch::{ConstraintKind, Sketch};
+        let mut d = Document::new("legacy origin dimensions");
+        d.set_param("reach", "25 mm", Some("mm"), None).unwrap();
+        let dim = d.new_model_param("reach", "mm");
+        let mut sketch = Sketch::new();
+        let end = sketch.add_point(Vec2::new(25.0, 0.0), Some("tip")).unwrap();
+        let line = sketch.add_line_pts(0, end, Some("edge")).unwrap();
+        sketch.add_constraint(ConstraintKind::Horizontal { l: line }, None).unwrap();
+        sketch.add_constraint(ConstraintKind::Length { l: line, value: 25.0 }, Some(dim)).unwrap();
+        d.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, Some("Dimensioned")).unwrap();
+        let mut legacy: Value = serde_json::from_str(&d.to_json()).unwrap();
+        legacy["format"] = Value::from("solvecraft/7");
+        let features = legacy["features"].clone();
+        let params = legacy["params"].clone();
+        let upgraded = read(&legacy.to_string()).unwrap();
+        assert_eq!(upgraded, d);
+        let upgraded_json: Value = serde_json::from_str(&upgraded.to_json()).unwrap();
+        assert_eq!(upgraded_json["features"], features);
+        assert_eq!(upgraded_json["params"], params);
+        assert_eq!(read(&upgraded.to_json()).unwrap(), upgraded);
+    }
+
+    #[test]
+    fn version_eight_persistent_angle_sweep_and_slot_dimensions_roundtrip() {
+        use solvecraft_geom::Vec2;
+        use solvecraft_sketch::{ConstraintKind, Sketch};
+        let mut d = Document::new("persistent typed dimensions");
+        let heading = d.new_model_param("45 deg", "deg");
+        let sweep = d.new_model_param("180 deg", "deg");
+        let overall = d.new_model_param("10 mm", "mm");
+        let mut sketch = Sketch::new();
+        let end = sketch.add_point(Vec2::new(2.0, 2.0), None).unwrap();
+        let line = sketch.add_line_pts(0, end, None).unwrap();
+        let a = sketch.add_arc(Vec2::ZERO, Vec2::new(0.0, 2.0), Vec2::new(0.0, -2.0), [None; 3], None).unwrap();
+        let b = sketch.add_arc(Vec2::new(6.0, 0.0), Vec2::new(6.0, -2.0), Vec2::new(6.0, 2.0), [None; 3], None).unwrap();
+        sketch.add_constraint(ConstraintKind::LineAngle { l: line, value: std::f64::consts::FRAC_PI_4 }, Some(heading)).unwrap();
+        sketch.add_constraint(ConstraintKind::ArcSweep { c: a, value: std::f64::consts::PI }, Some(sweep)).unwrap();
+        sketch.add_constraint(ConstraintKind::SlotOverallLength { a, b, value: 10.0 }, Some(overall)).unwrap();
+        d.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, None).unwrap();
+        let mut saved: Value = serde_json::from_str(&d.to_json()).unwrap();
+        assert_eq!(saved["format"], "solvecraft/8");
+        assert_eq!(read(&saved.to_string()).unwrap(), d);
+        saved["format"] = Value::from(format_string(FORMAT + 1));
+        saved["features"][0]["sketch"]["constraints"][0]["type"] = Value::from("future_dimension");
+        let error = read(&saved.to_string()).unwrap_err().to_string();
+        assert!(error.contains("newer SolveCraft") && !error.contains("unknown variant"), "{error}");
     }
 
     #[test]

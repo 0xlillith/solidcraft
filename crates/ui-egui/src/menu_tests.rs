@@ -13,6 +13,26 @@ fn sample_app() -> SolveApp {
     SolveApp::new(s, Services::default())
 }
 
+#[test]
+fn properties_leave_with_the_document_but_survive_a_failed_open() {
+    let mut app = sample_app();
+    app.menu.props = Some(("Prior body".into(), json!({"volume_mm3":42})));
+    app.start("config.table");
+    assert!(app.dialog.is_some());
+    assert!(app.run("doc.open", json!({"path":"__missing_properties_regression__.solvecraft"})).is_err());
+    assert!(app.menu.props.is_some());
+    assert!(app.dialog.is_some());
+    app.run("file.new", json!({"name":"New design"})).unwrap();
+    assert!(app.menu.props.is_none());
+    assert!(app.dialog.is_none());
+    app.menu.props = Some(("New design".into(), json!({})));
+    crate::documents::open_tab(&mut app, Session::default()).unwrap();
+    assert!(app.menu.props.is_none());
+    app.menu.props = Some(("Blank design".into(), json!({})));
+    crate::documents::adopt(&mut app, Session::default());
+    assert!(app.menu.props.is_none());
+}
+
 fn find(items: &[Item], label: &str) -> Item {
     items
         .iter()

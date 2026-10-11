@@ -214,10 +214,12 @@ fn scene_key(app: &SolveApp) -> u64 {
     (app.cam.pitch > 0.0).hash(&mut h);
     app.ui.show_sketches.hash(&mut h);
     app.session.visibility.hidden_bodies.hash(&mut h);
+    app.session.visibility.hidden_occurrences.hash(&mut h);
     app.session.visibility.hidden_sketches.hash(&mut h);
     app.session.visibility.shown_sketches.hash(&mut h);
     app.ui.hidden_profiles.hash(&mut h);
     app.session.active_component.hash(&mut h);
+    app.session.active_occurrence_path.hash(&mut h);
     app.preview.replaced.hash(&mut h);
     crate::theme::is_dark().hash(&mut h);
     app.session.active_sketch.hash(&mut h);
@@ -264,12 +266,17 @@ fn build_scene(app: &SolveApp) -> GpuScene {
             sc.under_line(w3(c + Vec3::new(-ext, t, 0.0)), w3(c + Vec3::new(ext, t, 0.0)), col, w);
         }
     }
+    let active_bodies = s.active_occurrence_path.as_ref().and_then(|p| s.occurrence_bodies(p, true).ok());
     for b in &st.bodies {
-        if app.session.visibility.hidden_bodies.contains(&b.name) || app.preview.replaced.contains(&b.name) {
+        if !app.session.body_visible(&b.name) || app.preview.replaced.contains(&b.name) {
             continue;
         }
         // With a component active, bodies outside it are drawn faded.
-        let faded = s.active_component != 0 && !s.doc.component_within(s.doc.body_component(&b.name, b.feature), s.active_component);
+        let faded = if let Some(names) = &active_bodies {
+            !names.contains(&b.name)
+        } else {
+            s.active_component != 0 && !s.doc.component_within(b.component, s.active_component)
+        };
         let base = body_color(&s.doc, b).unwrap_or(tk.body);
         let col = if faded { c4(base.gamma_multiply(0.35)) } else { c4(base) };
         let m = b.mesh();
@@ -283,7 +290,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
         let hidden_edges = app.ui.visual_style == 3;
         let hidden_col = c4(tk.text.gamma_multiply(0.35));
         // Appearances: the body's opacity, and faces with looks of their own.
-        let opacity = s.doc.body_look(&b.name, b.feature).map_or(1.0, |l| l.opacity);
+        let opacity = s.doc.model_body_look(b).map_or(1.0, |l| l.opacity);
         let face_looks: std::collections::HashMap<usize, solvecraft_engine::doc::appearance::Look> =
             if shaded { s.doc.face_colors(b).into_iter().collect() } else { Default::default() };
         for (ti, t) in m.triangles.iter().enumerate().filter(|_| shaded) {
@@ -329,7 +336,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
     // Section: the outline of each body where the plane cuts it.
     if let Some((o, n)) = section_plane(app) {
         let col = c4(tk.text.gamma_multiply(0.9));
-        for b in st.bodies.iter().filter(|b| !app.session.visibility.hidden_bodies.contains(&b.name)) {
+        for b in st.bodies.iter().filter(|b| app.session.body_visible(&b.name)) {
             for (a, c) in section_segments(&b.mesh(), o, n) {
                 sc.line(a.to_f32(), c.to_f32(), col, 1.8, false);
             }
@@ -370,7 +377,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
 fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &solvecraft_engine::doc::ModelState) {
     // The bodies' box in the camera's Z-up frame (the ground is its XY plane).
     let mut b = solvecraft_engine::geom::Aabb3::EMPTY;
-    for x in st.bodies.iter().filter(|x| !app.session.visibility.hidden_bodies.contains(&x.name)) {
+    for x in st.bodies.iter().filter(|x| app.session.body_visible(&x.name)) {
         let bb = x.mesh().bounds();
         if bb.is_empty() {
             continue;
@@ -632,6 +639,7 @@ fn pick_cached(app: &mut SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     app.session.active_sketch.hash(&mut h);
     app.dialog.as_ref().and_then(|d| d.active_input()).map(|i| i.accept).hash(&mut h);
     app.session.visibility.hidden_bodies.hash(&mut h);
+    app.session.visibility.hidden_occurrences.hash(&mut h);
     app.ui.perspective.hash(&mut h);
     (proj.rect.width().to_bits(), proj.rect.height().to_bits()).hash(&mut h);
     let key = h.finish();
@@ -707,7 +715,7 @@ pub fn pick(app: &SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     // Nearest face along the ray (hides what is behind it).
     let mut bestf: Option<(f64, Hit)> = None;
     for b in &st.bodies {
-        if app.session.visibility.hidden_bodies.contains(&b.name) {
+        if !app.session.body_visible(&b.name) {
             continue;
         }
         // Bodies whose box the ray misses (or enters behind the best hit so far) are skipped.
@@ -733,7 +741,7 @@ pub fn pick(app: &SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     let mut bestv: Option<(f32, Hit)> = None;
     let mut beste: Option<(f32, Hit)> = None;
     for b in &st.bodies {
-        if app.session.visibility.hidden_bodies.contains(&b.name) {
+        if !app.session.body_visible(&b.name) {
             continue;
         }
         // Only bodies whose outline on screen is near the cursor can have an edge under it.
@@ -874,7 +882,7 @@ fn feature_geometry(app: &SolveApp, id: u64) -> Vec<Sel> {
     let prefix = format!("F{id}:");
     let mut out = Vec::new();
     for b in &st.bodies {
-        if app.session.visibility.hidden_bodies.contains(&b.name) || app.preview.replaced.contains(&b.name) {
+        if !app.session.body_visible(&b.name) || app.preview.replaced.contains(&b.name) {
             continue;
         }
         if b.feature == id {
@@ -900,6 +908,14 @@ fn feature_geometry(app: &SolveApp, id: u64) -> Vec<Sel> {
 fn displayed_selection(app: &SolveApp, item: &Sel) -> Vec<Sel> {
     match item {
         Sel::Feature { id } => feature_geometry(app, *id),
+        Sel::Occurrence { path } => app
+            .session
+            .occurrence_bodies(path, true)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|name| app.session.body_visible(name))
+            .map(|name| Sel::Body { name })
+            .collect(),
         _ => grouped_selection(&app.session, item),
     }
 }
@@ -1120,6 +1136,7 @@ fn highlight_key(app: &SolveApp) -> u64 {
     app.origin_visible().hash(&mut h);
     app.session.visibility.hidden_origin.hash(&mut h);
     app.session.visibility.hidden_bodies.hash(&mut h);
+    app.session.visibility.hidden_occurrences.hash(&mut h);
     app.cam.half_height().to_bits().hash(&mut h);
     app.cam.back().x.to_bits().hash(&mut h);
     h.finish()
@@ -1202,14 +1219,14 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
         match x {
             Sel::Face { body, index, .. } => {
                 // A live preview stands in for the body: its old faces would fight with it.
-                if let Some(b) = st.body(body).filter(|_| !app.preview.replaced.contains(body)) {
+                if let Some(b) = st.body(body).filter(|_| app.session.body_visible(body) && !app.preview.replaced.contains(body)) {
                     face_tris(&mut sc, &b.mesh(), *index, c4(t.sel_face), false);
                     hidden_face_outline(&mut sc, &b.mesh(), *index, t.sel_edge);
                 }
             }
             Sel::Body { name } => {
                 if let Some(b) = st.body(name)
-                    && !app.session.visibility.hidden_bodies.contains(name)
+                    && app.session.body_visible(name)
                 {
                     let m = b.mesh();
                     for f in 0..b.body.face_count() {
@@ -1219,6 +1236,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
             }
             Sel::Edge { body, index, point } => {
                 if let Some(b) = st.body(body)
+                    && app.session.body_visible(body)
                     && let Some(e) = edge_of(&b.mesh(), *index, *point)
                 {
                     edge_lines(&mut sc, e, t.sel_edge, t.sel_edge_rim, 3.0);
@@ -1253,7 +1271,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
     // Timeline modifiers light only their resulting faces; browser rows light whole bodies.
     let mut hovered = app.viewport.hover_feature.map(|id| feature_geometry(app, id)).unwrap_or_default();
     hovered.extend(app.viewport.hover_bodies.iter().map(|name| Sel::Body { name: name.clone() }));
-    for b in st.bodies.iter().filter(|b| !app.session.visibility.hidden_bodies.contains(&b.name) && !app.preview.replaced.contains(&b.name)) {
+    for b in st.bodies.iter().filter(|b| app.session.body_visible(&b.name) && !app.preview.replaced.contains(&b.name)) {
         let whole = hovered.iter().any(|x| matches!(x, Sel::Body { name } if name == &b.name));
         let faces: Vec<_> = if whole {
             (0..b.body.face_count()).collect()
@@ -1936,7 +1954,7 @@ fn box_select(app: &mut SolveApp, proj: &Proj, bx: BoxSel, add: bool) {
     } else {
         let accept = app.dialog.as_ref().and_then(|d| d.active_input()).map(|i| i.accept).unwrap_or(BODIES);
         for b in &st.bodies {
-            if app.session.visibility.hidden_bodies.contains(&b.name) {
+            if !app.session.body_visible(&b.name) {
                 continue;
             }
             let m = b.mesh();

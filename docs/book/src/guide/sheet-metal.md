@@ -28,3 +28,13 @@ consume an undo step.
 
 DXF cutout geometry preserves lines, circles and circular arcs; other curves are sampled
 adaptively. The `OUTLINE`, `BEND_UP` and `BEND_DOWN` layers separate cuts from bend centres.
+
+Base-flange profiles keep their interior holes. Through cuts that cross a sheet edge become
+notches in the flat outline; overlapping and repeated cuts remove their combined area once.
+The flat preview, DXF and unfolded solid use the same material boundaries. Lines and circular
+arcs remain exact; other profile curves use a 0.001 mm chord tolerance.
+
+Cuts can leave separate material pieces, including the centre of a ring cut. These pieces
+remain one logical sheet group through Unfold / Refold and export as separate flat outlines.
+Large profiles that exceed the geometry processing budget report an error instead of
+exporting a partial outline.

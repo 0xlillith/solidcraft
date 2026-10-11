@@ -130,6 +130,10 @@ pub fn material_look(material: &str) -> Option<Look> {
 }
 
 impl Document {
+    /// Shared definition appearance for a computed occurrence body.
+    pub fn model_body_look(&self, body: &crate::ModelBody) -> Option<Look> {
+        self.body_look(body.definition_name(), body.feature)
+    }
     /// A body's look (without face appearances): its own, else its component's, else its
     /// material's.
     pub fn body_look(&self, name: &str, feature: u64) -> Option<Look> {
@@ -167,8 +171,8 @@ impl Document {
                 None => Vec::new(),
             },
         };
-        for f in self.appearances.faces.iter().filter(|f| f.body == b.name) {
-            let (p, look) = (f.point, f.look.clone());
+        for f in self.appearances.faces.iter().filter(|f| f.body == b.definition_name()) {
+            let (p, look) = (crate::apply_point(&b.source_transform, f.point), f.look.clone());
             // By name (every piece of a split face), else by the point.
             if let Some(n) = &f.name {
                 let stem = crate::naming::strip_piece(n);

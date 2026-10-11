@@ -62,13 +62,14 @@ fn measure(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let want = string_list(p, "bodies");
     let st = s.world_state();
-    let mut bodies: Vec<Value> = st.bodies.iter().filter(|b| want.is_empty() || want.contains(&b.name)).map(measure_json).collect();
+    let selected: Vec<_> = st.bodies.iter().filter(|b| want.is_empty() || want.contains(&b.name)).collect();
+    let mut bodies: Vec<Value> = selected.iter().map(|b| measure_json(b)).collect();
     // Mass from each body's material.
-    for b in &mut bodies {
-        let name = b["name"].as_str().unwrap_or_default().to_string();
+    for (b, body) in bodies.iter_mut().zip(selected) {
         if let Some(v) = b["volume_mm3"].as_f64() {
-            let rho = s.doc.density(&name);
-            b["material"] = json!(s.doc.materials.get(&name).cloned().unwrap_or_else(|| "Default".into()));
+            let source = body.definition_name();
+            let rho = s.doc.density(source);
+            b["material"] = json!(s.doc.materials.get(source).cloned().unwrap_or_else(|| "Default".into()));
             b["density_g_cm3"] = json!(rho);
             b["mass_g"] = json!(v * rho / 1000.0);
         }
@@ -214,7 +215,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|b| {
             let mut v = if with_measure { measure_json(b) } else { json!({"name": b.name, "feature": b.feature}) };
             if let Some(o) = v.as_object_mut() {
-                o.insert("visible".into(), json!(!s.visibility.hidden_bodies.contains(&b.name)));
+                o.insert("visible".into(), json!(s.body_visible(&b.name)));
             }
             v
         })
@@ -495,7 +496,7 @@ fn appearance_list(s: &mut Session, p: &Value) -> Result<Value> {
         let b = st.body(name).ok_or_else(|| bad("appearance.list", format!("no body `{name}`")))?;
         out["body"] = json!({
             "name": name,
-            "appearance": s.doc.body_look(&b.name, b.feature).map(|l| look_json(&l)),
+            "appearance": s.doc.model_body_look(b).map(|l| look_json(&l)),
             "color": s.doc.body_color(b),
             "faces": s.doc.face_colors(b).iter().map(|(i, l)| json!({"face": i, "appearance": look_json(l)})).collect::<Vec<_>>(),
         });

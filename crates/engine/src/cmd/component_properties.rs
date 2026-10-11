@@ -64,18 +64,11 @@ pub(super) fn occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "occurrence.properties";
     let id = super::occurrence(s, p, cmd)?;
     let doc = placed_doc(s);
-    let paths: Vec<Vec<u64>> = placements(&doc, cmd)?.into_iter().filter(|(_, path, _)| path.last() == Some(&id)).map(|(_, path, _)| path).collect();
-    let path = if let Some(value) = p.get("path") {
-        let path = value
-            .as_array()
-            .filter(|a| !a.is_empty() && a.len() <= 64)
-            .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
-            .ok_or_else(|| bad(cmd, "`path` must list 1…64 occurrence ids"))?;
-        if !paths.contains(&path) {
-            return Err(bad(cmd, "`path` does not identify a placement of this occurrence"));
-        }
-        path
+    let path = if p.get("path").is_some() {
+        super::occurrence_path(s, p, id, cmd)?
     } else {
+        let paths: Vec<Vec<u64>> =
+            placements(&doc, cmd)?.into_iter().filter(|(_, path, _)| path.last() == Some(&id)).map(|(_, path, _)| path).collect();
         match paths.as_slice() {
             [path] => path.clone(),
             [] => return Err(bad(cmd, "occurrence has no placement")),
@@ -97,9 +90,27 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
         (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY));
     let (mut faces, mut edges, mut vertices) = (0, 0, 0);
     let mut placement_count = 0;
-    for (component, path, transform) in
-        placements(doc, cmd)?.into_iter().filter(|(_, path, _)| if descendants { path.starts_with(selected) } else { path == selected })
-    {
+    let selected_placements = if selected.is_empty() {
+        if descendants { placements(doc, cmd)? } else { vec![(0, Vec::new(), solvecraft_doc::IDENTITY)] }
+    } else {
+        let placement = s.occurrence_placement(selected).map_err(|e| bad(cmd, e.to_string()))?;
+        let mut out = vec![(placement.component, selected.to_vec(), placement.world)];
+        let mut stack = if descendants { out.clone() } else { Vec::new() };
+        while let Some((component, path, transform)) = stack.pop() {
+            for occurrence in doc.occurrences.iter().filter(|o| o.parent == component) {
+                if path.len() >= 64 || out.len() >= 100_000 {
+                    return Err(bad(cmd, "assembly exceeds physical-properties traversal limits (64 levels or 100000 placements)"));
+                }
+                let mut child = path.clone();
+                child.push(occurrence.id);
+                let world = solvecraft_doc::mat_mul(&transform, &occurrence.transform);
+                out.push((occurrence.component, child.clone(), world));
+                stack.push((occurrence.component, child, world));
+            }
+        }
+        out
+    };
+    for (component, path, transform) in selected_placements {
         placement_count += 1;
         for body in state.bodies.iter().filter(|b| doc.body_component(&b.name, b.feature) == component) {
             let transform: Mat = doc.body_offsets.get(&body.name).map(|offset| solvecraft_doc::mat_mul(&transform, offset)).unwrap_or(transform);

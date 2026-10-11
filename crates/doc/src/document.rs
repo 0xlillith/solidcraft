@@ -1586,7 +1586,7 @@ impl Document {
     /// else its component's, else its material's look, else the colour it was imported with.
     /// (Faces may have their own: `face_looks`.)
     pub fn body_color(&self, b: &crate::ModelBody) -> Option<[f32; 3]> {
-        self.body_look(&b.name, b.feature).map(|l| l.rgb()).or_else(|| b.body.color()).or_else(|| b.imported.as_ref().and_then(|i| i.color))
+        self.model_body_look(b).map(|l| l.rgb()).or_else(|| b.body.color()).or_else(|| b.imported.as_ref().and_then(|i| i.color))
     }
 
     /// The model with each body carrying the colour, opacity and face colours it is shown with
@@ -1595,7 +1595,7 @@ impl Document {
         let mut st = state.clone();
         for b in &mut st.bodies {
             let c = self.body_color(b);
-            let look = self.body_look(&b.name, b.feature);
+            let look = self.model_body_look(b);
             let faces: Vec<solvecraft_kernel::FacePaint> = self
                 .face_colors(b)
                 .into_iter()
@@ -1739,9 +1739,22 @@ impl Document {
         let idx = self.feature_index(id).ok_or_else(|| DocError::Unknown(format!("feature {id}")))?;
         let mut gone = vec![id];
         gone.extend(self.features.iter().filter(|f| f.kind.input_sketches().contains(&id)).map(|f| f.id));
+        let gone_params: Vec<String> = self.features.iter().filter(|f| gone.contains(&f.id)).flat_map(|f| f.param_names.clone()).collect();
+        self.configs
+            .rules
+            .retain(|rule| !rule.references_features(&gone) && !rule.parameter_references().iter().any(|name| gone_params.contains(name)));
         self.features.retain(|f| !gone.contains(&f.id));
         // Configuration columns of deleted features go with them.
-        let keep: Vec<bool> = self.configs.columns.iter().map(|c| !matches!(c, crate::config::Column::Suppress(id) if gone.contains(id))).collect();
+        let keep: Vec<bool> = self
+            .configs
+            .columns
+            .iter()
+            .map(|c| match c {
+                crate::config::Column::Suppress(id) => !gone.contains(id),
+                crate::config::Column::Param(name) => !gone_params.contains(name),
+                _ => true,
+            })
+            .collect();
         if keep.contains(&false) {
             let mut k = keep.iter();
             self.configs.columns.retain(|_| k.next().copied().unwrap_or(true));
@@ -1768,6 +1781,19 @@ impl Document {
 
     fn referenced_names(&self) -> Vec<String> {
         let mut used: Vec<String> = Vec::new();
+        for rule in &self.configs.rules {
+            used.extend(rule.parameter_references());
+        }
+        for (index, column) in self.configs.columns.iter().enumerate() {
+            if let crate::config::Column::Param(name) = column {
+                used.push(name.clone());
+                for row in &self.configs.rows {
+                    if let Some(value) = row.cells.get(index) {
+                        used.extend(expr::references(value));
+                    }
+                }
+            }
+        }
         for f in &self.features {
             for e in f.kind.expressions() {
                 used.extend(expr::references(e));
@@ -1959,6 +1985,9 @@ impl Document {
                 let v = vals.get(p).copied().ok_or_else(|| DocError::Unknown(format!("parameter `{p}`")))?.to_kind(kind)?;
                 c.kind.set_value(v);
             }
+        }
+        for c in &sk.constraints {
+            sk.validate(&c.kind)?;
         }
         Ok(())
     }

@@ -7,9 +7,9 @@ features → parametric timeline) as an open, pure-Rust, agent-drivable applicat
 
 | Question | Answer |
 |---|---|
-| Where are we? | **M0, M1, M13 done; M2, M5–M7, M9, M10, M14 in progress.** Sketch with solver and the full SKETCH create/modify set; extrude, revolve (two sides, symmetric, to object), fillet/chamfer (variable radius, chord length, a radius per edge, corner patches), holes, threads (cosmetic and modelled), patterns, mirror, shell (inside/outside/both), draft, loft, sweep, coil, split body and split face, delete face, construction planes, axes and points; persistent naming of faces and edges; parameters and configurations; components, joints, motion studies, exploded views; sheet metal and a plastic enclosure subset; STEP/IGES/3MF/STL/OBJ/DXF; autosave and crash recovery; desktop and browser (wasm) app, CLI, MCP server, oracle harness. |
-| Command parity (in scope) | **331 / 541 (61%)** in-scope commands; SOLID + SKETCH **186 / 291 (64%)** — [docs/parity.md](docs/parity.md); registry breadth does not establish workflow or geometric parity |
-| Fusion oracle | **76 / 76 parts match** — [docs/oracle.md](docs/oracle.md) |
+| Where are we? | **M0 and M13 done; M1, M2, M5–M7, M9, M10, M14 in progress.** Sketch with solver and the full SKETCH create/modify set; extrude, revolve (two sides, symmetric, to object), fillet/chamfer (variable radius, chord length, a radius per edge, corner patches), holes, threads (cosmetic and modelled), patterns, mirror, shell (inside/outside/both), draft, loft, sweep, coil, split body and split face, delete face, construction planes, axes and points; persistent naming of faces and edges; parameters and configurations; components, joints, motion studies, exploded views; sheet metal and a plastic enclosure subset; STEP/IGES/3MF/STL/OBJ/DXF; autosave and crash recovery; desktop and browser (wasm) app, CLI, MCP server, oracle harness. |
+| Command parity (in scope) | **335 / 541 (62%)** in-scope commands; SOLID + SKETCH **188 / 291 (65%)** — [docs/parity.md](docs/parity.md); registry breadth does not establish workflow or geometric parity |
+| Fusion oracle | **76 / 76 parts match** in the checked-in historical report — [docs/oracle.md](docs/oracle.md). The current sprint adds independent analytic and UI regressions; the local Fusion oracle corpus has not been rerun. |
 | Tests | Solver, profiles, kernel booleans/blends/measures, expressions, timeline, persistent naming, file formats and migrations, assemblies, sheet metal, engine end-to-end, hostile-input fuzz over every command and headless UI scenarios. `cargo xtask ci` reports the current passing counts. |
 | Gates | `cargo xtask ci`: fmt, clippy -D warnings, tests, asset attribution, layering, wasm32 build — green |
 | Time to a useful alpha (M0–M6) | ≈ **82 agent hours** remain (sum of the M1–M6 estimates below) |
@@ -46,7 +46,7 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 | # | Milestone | Status | Hours left |
 |---|---|---|---|
 | M0 | Vertical slice | done | — |
-| M1 | Sketch depth: done — projection/intersect/include as linked geometry (auto-project on faces, lost-reference warnings, break link), full SKETCH create/modify set (slots, polygons, tangent arcs/circles, ellipse, fit/control splines, conic, text, trim/extend/break, fillet/chamfer, offset, mirror, patterns, move/scale, blend curve, centerline), constraints incl. curvature and polygon with over-constraint refusal, driven/arc-length/linear-diameter dimensions, AutoConstrain, DXF/SVG insert, 3D sketch curves (Project To Surface, Intersection Curve, Isoparametric Curve, Spun Profile), exact free-form profiles (B-spline/NURBS edges, any spline degree, curves cut by crossings), sweeps and pipes along 3D sketch curves, canvases and decals, curvature combs | done | 4 |
+| M1 | Sketch depth: command coverage implemented — projection/intersect/include as linked geometry (auto-project on faces, lost-reference warnings, break link), full SKETCH create/modify set (slots, polygons, tangent arcs/circles, ellipse, fit/control splines, conic, text, trim/extend/break, fillet/chamfer, offset, mirror, patterns, move/scale, blend curve, centerline), constraints incl. curvature and polygon with over-constraint refusal, driven/arc-length/linear-diameter dimensions, AutoConstrain, DXF/SVG insert, 3D sketch curves (Project To Surface, Intersection Curve, Isoparametric Curve, Spun Profile), exact free-form profiles (B-spline/NURBS edges, any spline degree, curves cut by crossings), sweeps and pipes along 3D sketch curves, canvases and decals, curvature combs. Remaining workflow repairs: exact free-form Extend intersections, associative free-form Offset, and consistent occurrence-frame 3D wire authoring | in progress | 4 |
 | M2 | Robust modelling: coplanar booleans in the kernel, holes (placed on faces and on sketch points), threads (cosmetic, then modelled), patterns, mirror, shell, draft, split, construction geometry | in progress | 16 |
 | M3 | General fillets and chamfers (curved edges, chains, vertex blends); saddle rolling-ball surfaces now use continuous seam sections and arc-length fitting with shared contact boundaries and bounded accuracy checks | in progress | 30 |
 | M4 | Files: STEP import (done: all 29 Fusion STEP files — [docs/step-import.md](docs/step-import.md)), 3MF export and 3MF/STL import as mesh bodies (done), DXF sketches, OBJ import | in progress | 6 |
@@ -58,8 +58,8 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 | M10 | Sheet metal: flange (base, edge, contour), hem, unfold/refold, convert, flat pattern + DXF, rules: done (oracle 67-76). PLASTIC enclosure subset: Boss, Rib, Web, Lip/Groove, Snap Fit, Rest, Plastic Rules (library, edit, assign; rule draft and clearance as feature defaults): done, no Fusion oracle (licence), tested against hand-computed geometry. UI: SHEET METAL and PLASTIC tabs in Fusion's layout with dialogs (live preview, Edit Feature, pre-selection) for Flange, Hem, Unfold/Refold, Convert, Sheet Metal Rules, Create Flat Pattern (flat view with bend lines, bend table CSV/JSON and DXF export with exact circle/arc/line cutouts), Boss, Lip/Groove, Snap Fit, Rest, Manage and Assign Plastic Rules; Fold (bend along a sketch line) | in progress | 36 |
 | M11 | 2D drawings | deferred | — |
 | M12 | Release: installers, signing, docs, performance | planned | 16 |
-| M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Left: configuration rules and component/face style columns | in progress | 4 |
-| M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/7"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
+| M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Ordered typed configuration rules, atomic validation and structured rule editing: done. Left: component/face style columns | in progress | 4 |
+| M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/8"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
 
 ## Known limitations
 
@@ -84,7 +84,10 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   sections stacked end to end) are combined exactly in 2D; bodies touching along one whole face
   (a part and its mirror image) are stitched; coincident planar faces are pushed apart when
   their neighbours are planes or cylinders. Other coincident curved configurations can still
-  fail. Fully internal voids are not supported. Spheres are built from six pole-free patches.
+  fail. Bounded containment classification preserves fully internal cavities and nested
+  material islands independently of shell order, with STEP round-trip and material-membership
+  regressions. Near-contact curved shells use the general boolean path rather than a
+  containment shortcut. Spheres are built from six pole-free patches.
 - Mass properties come from fine tessellation (curved faces within ~1e-4 relative); triangles
   that cut through curved faces (trimmed faces after booleans) are split onto the surface first.
 - STEP import (our own reader, crates/kernel/src/step_in; all 29 Fusion STEP files pass
@@ -117,6 +120,24 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Inline sketch dimensions: Tab and Shift+Tab cycle within the active shape's value boxes,
   selecting visited values for replacement. Expression completion retains forward-Tab
   priority; real keyboard regressions cover rectangles, lines and single-value circles.
+  Typed lengths, radii, line angles, signed arc sweeps and slot lengths persist as constraints
+  and expressions through save/reopen. Shape creation and its dimensions form one undo step;
+  rejected values keep the editable field focused.
+- Repeated components: Browser selection, visibility, properties, copy and Move/Copy use
+  checked occurrence paths. Active nested occurrences author planar sketches and solids in
+  their selected frame. Pending moves compose through parents; dialog cancellation restores
+  its selected move. Source materials and body/face appearances follow transformed instances.
+  Shared nested definitions remain shared, and legacy 3D wire authoring and deep Paste New
+  need further work. See [occurrence workflows](docs/occurrence-workflows.md).
+- Configuration rules: ordered typed conditions can drive parameters and suppressions or
+  restrict values. Preview explains effective values without modifying the document; applying
+  rules validates rows atomically. Length expressions retain their authoring units across
+  document-unit changes. The UI supports structured All/Any/Not conditions and rule ordering.
+  Component and face style columns remain open. See [configurations](docs/configurations.md).
+- Sheet-metal material: inherited holes, crossing edge notches, overlapping cuts and retained
+  islands share the same boundaries in flat preview, DXF and unfolded solids. Detached material
+  pieces survive unfold/refold as one logical sheet group, including split flanged sheets.
+  Circular cuts crossing bends remain unsupported; free-form bases use bounded sampling.
 - Rolling-ball fillet accuracy: independent offset-cylinder tee references check surface
   distance, actual trimmed tessellation, supporting-cylinder contacts and tangency at two
   scales. The measured trimmed-part error is below 0.0001 mm; this is an analytic geometry

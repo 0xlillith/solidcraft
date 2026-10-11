@@ -421,3 +421,328 @@ fn flat_dxf_preserves_exact_cutout_entities() {
     assert_eq!(read.len(), 6);
     assert!(read.iter().any(|g| matches!(g, solvecraft_io::Geom2::Arc { c, a, b } if *c == Vec2::new(20.0, 10.0) && a.dist(Vec2::new(30.0, 10.0)) < 1e-9 && b.dist(Vec2::new(10.0, 10.0)) < 1e-9)));
 }
+
+// A profile chosen by a point outside its inner loop must keep that inner loop through
+// sheet construction, flattening and manufacturing export.
+#[test]
+fn inherited_base_profile_holes_survive_every_sheet_state() {
+    for flip in [false, true] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Perforated"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [40, 20], "p1": [60, 40]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "sheet.flange", json!({"sketch": "Perforated", "profiles": [{"point": [10, 10]}], "flip": flip}));
+        assert!((volume(&mut s) - 14000.0).abs() < 1e-6);
+        let f = flat(&mut s);
+        assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(1));
+        let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+        assert_eq!(solvecraft_io::read_dxf(&dxf).unwrap().len(), 8);
+        let mut reopened = Session::default();
+        run(&mut reopened, "sketch.insert_dxf", json!({"text": dxf, "name": "Blank"}));
+        run(&mut reopened, "sketch.finish", json!({}));
+        let pick = if flip { [10, -10] } else { [10, 10] };
+        run(&mut reopened, "solid.extrude", json!({"sketch": "Blank", "profiles": [{"point": pick}], "distance": 2.5}));
+        assert!((volume(&mut reopened) - 14000.0).abs() < 1e-5);
+        run(&mut s, "sheet.unfold", json!({}));
+        assert!((volume(&mut s) - 14000.0).abs() < 1e-6);
+        run(&mut s, "sheet.refold", json!({}));
+        assert!((volume(&mut s) - 14000.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn edge_notch_uses_the_same_material_boundary_in_solid_flat_and_dxf() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Notch"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [-5, 20], "p1": [10, 40]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Notch", "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    assert!((volume(&mut s) - 14500.0).abs() < 1e-6);
+    let f = flat(&mut s);
+    assert_eq!(f["outline"].as_array().map(Vec::len), Some(1));
+    assert_eq!(f["outline"][0].as_array().map(Vec::len), Some(8));
+    assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(0));
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    assert_eq!(solvecraft_io::read_dxf(&dxf).unwrap().len(), 8);
+    let mut reopened = Session::default();
+    run(&mut reopened, "sketch.insert_dxf", json!({"text": dxf, "name": "Blank"}));
+    run(&mut reopened, "sketch.finish", json!({}));
+    run(&mut reopened, "solid.extrude", json!({"sketch": "Blank", "distance": 2.5}));
+    assert!((volume(&mut reopened) - 14500.0).abs() < 1e-5);
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - 14500.0).abs() < 1e-6);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - 14500.0).abs() < 1e-6);
+}
+
+#[test]
+fn inherited_round_hole_survives_flange_and_unfold_in_flipped_frames() {
+    for flip in [false, true] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Perforated"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+        run(&mut s, "sketch.circle.center", json!({"center": [50, 30], "radius": 5}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "sheet.flange", json!({"sketch": "Perforated", "profiles": [{"point": [10, 10]}], "flip": flip}));
+        run(&mut s, "sheet.flange", json!({"edges": [[50, 0, if flip { -2.5 } else { 2.5 }]], "height": 20}));
+        let folded = volume(&mut s);
+        assert!((folded - (18972.62196081845 - PI * 25.0 * 2.5)).abs() < 0.2, "{folded}");
+        let f = flat(&mut s);
+        assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(1));
+        let sh = s.model.state().sheets[0].clone();
+        let regions = sh.flat_regions().unwrap();
+        assert_eq!(regions[0].holes[0].segs.len(), 2);
+        assert!(regions[0].holes[0].segs.iter().all(|s| matches!(s, solvecraft_geom::Seg2::Arc { radius, .. } if (*radius - 5.0).abs() < 1e-9)));
+        let expected = regions.iter().map(solvecraft_geom::Region2::area).sum::<f64>() * 2.5;
+        run(&mut s, "sheet.unfold", json!({}));
+        assert!((volume(&mut s) - expected).abs() < 0.1);
+        run(&mut s, "sheet.refold", json!({}));
+        assert!((volume(&mut s) - folded).abs() < 0.1);
+    }
+}
+
+#[test]
+fn crossing_only_disconnecting_cut_preserves_all_material_states() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Split"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [45, -5], "p1": [55, 65]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Split", "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    assert!((volume(&mut s) - 13500.0).abs() < 1e-6);
+    assert_eq!(flat(&mut s)["outline"].as_array().map(Vec::len), Some(2));
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    let mut reopened = Session::default();
+    run(&mut reopened, "sketch.insert_dxf", json!({"text": dxf, "name": "SplitBlank"}));
+    run(&mut reopened, "sketch.finish", json!({}));
+    run(&mut reopened, "solid.extrude", json!({"sketch": "SplitBlank", "distance": 2.5}));
+    assert!((volume(&mut reopened) - 13500.0).abs() < 1e-6);
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - 13500.0).abs() < 1e-6);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - 13500.0).abs() < 1e-6);
+}
+
+#[test]
+fn splitting_an_unfolded_flanged_sheet_preserves_both_bent_pieces() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50,0,2.5]], "height": 20}));
+    let folded = volume(&mut s);
+    run(&mut s, "sheet.unfold", json!({}));
+    let unfolded = volume(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "BlankSplit"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [45,-100], "p1": [55,100]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "BlankSplit", "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    assert!((volume(&mut s) - unfolded * 0.9).abs() < 0.1);
+    assert_eq!(flat(&mut s)["outline"].as_array().map(Vec::len), Some(2));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - folded * 0.9).abs() < 0.2);
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - unfolded * 0.9).abs() < 0.1);
+}
+
+#[test]
+fn repeated_and_nested_sheet_cuts_are_redundant() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    for (i, radius) in [3.0, 5.0, 5.0].into_iter().enumerate() {
+        let name = format!("Hole{i}");
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": name}));
+        run(&mut s, "sketch.circle.center", json!({"center": [20, 30], "radius": radius}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": name, "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    }
+    assert!((volume(&mut s) - (6000.0 - PI * 25.0) * 2.5).abs() < 0.1);
+    assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn overlapping_round_cuts_keep_exact_union_in_export_and_roundtrip() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    for (i, x) in [20.0, 22.0].into_iter().enumerate() {
+        let name = format!("Overlap{i}");
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": name}));
+        run(&mut s, "sketch.circle.center", json!({"center": [x, 30], "radius": 5}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": name, "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    }
+    let intersection = 50.0 * (0.2f64).acos() - (96.0f64).sqrt();
+    let expected = (6000.0 - (50.0 * PI - intersection)) * 2.5;
+    assert!((volume(&mut s) - expected).abs() < 0.1);
+    assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), Some(1));
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    assert!(dxf.contains("0\nARC\n"));
+    let mut reopened = Session::default();
+    run(&mut reopened, "sketch.insert_dxf", json!({"text": dxf, "name": "Blank"}));
+    run(&mut reopened, "sketch.finish", json!({}));
+    run(&mut reopened, "solid.extrude", json!({"sketch": "Blank", "profiles": [{"point": [10, 10]}], "distance": 2.5}));
+    assert!((volume(&mut reopened) - expected).abs() < 0.1);
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - expected).abs() < 0.1);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - expected).abs() < 0.1);
+}
+
+#[test]
+fn cut_across_a_concave_notch_uses_crossings_not_just_contained_corners() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "U"}));
+    run(&mut s, "sketch.line", json!({"points": [[0,0],[100,0],[100,60],[70,60],[70,20],[30,20],[30,60],[0,60],[0,0]]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sheet.flange", json!({"sketch": "U"}));
+    assert!((volume(&mut s) - 11000.0).abs() < 1e-6);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "ArmNotches"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [20,30], "p1": [80,40]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "ArmNotches", "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    assert!((volume(&mut s) - 10500.0).abs() < 1e-6);
+    let f = flat(&mut s);
+    assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(0));
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - 10500.0).abs() < 1e-6);
+}
+
+#[test]
+fn tiny_cut_inside_exact_circle_survives_unfold_refold_and_dxf() {
+    for initially_flat in [false, true] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Disc"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [0,0], "radius": 10}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "sheet.flange", json!({"sketch": "Disc"}));
+        let circle = s.model.state().sheets[0].base.outer.clone();
+        let displayed = circle.polyline(1e-3);
+        let at = (displayed[0] + displayed[1]).normalized().unwrap() * 9.9998;
+        assert!(!circle.contains(at));
+        if initially_flat {
+            run(&mut s, "sheet.unfold", json!({}));
+        }
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "TinyCut"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [at.x-0.000025,at.y-0.000025], "p1": [at.x+0.000025,at.y+0.000025]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": "TinyCut", "through_all": true, "operation": "cut", "direction": "symmetric"}));
+        for stage in ["sheet.unfold", "sheet.refold"] {
+            let regions = s.model.state().sheets[0].flat_regions().unwrap();
+            assert_eq!(regions[0].holes.len(), 1);
+            assert!((regions[0].holes[0].signed_area().abs() - 2.5e-9).abs() < 1e-13);
+            assert_eq!(s.model.state().bodies.len(), 1);
+            let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+            assert_eq!(solvecraft_io::read_dxf(&dxf).unwrap().len(), 5);
+            if stage == "sheet.unfold" && initially_flat {
+                run(&mut s, "sheet.refold", json!({}));
+            }
+            run(&mut s, stage, json!({}));
+        }
+        assert_eq!(s.model.state().sheets[0].flat_regions().unwrap()[0].holes.len(), 1);
+    }
+}
+
+#[test]
+fn unrelated_box_cut_preserves_logical_ring_sheet_compound() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    let sheet_name = s.model.state().sheets[0].body.clone();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Ring"}));
+    for radius in [10, 5] {
+        run(&mut s, "sketch.circle.center", json!({"center": [50,30], "radius": radius}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    run(
+        &mut s,
+        "solid.extrude",
+        json!({"sketch": "Ring", "profiles": [{"point": [57,30]}], "through_all": true, "operation": "cut", "direction": "symmetric"}),
+    );
+    let material = s.model.state().sheets[0].flat_regions().unwrap();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "corner": [200,0,0], "body_name": "SeparateBox"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "BoxCut"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [205,5], "p1": [210,10]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(
+        &mut s,
+        "solid.extrude",
+        json!({"sketch": "BoxCut", "participants": ["SeparateBox"], "through_all": true, "operation": "cut", "direction": "symmetric"}),
+    );
+    assert_eq!(s.model.state().bodies.len(), 2);
+    assert_eq!(s.model.state().sheets[0].flat_regions().unwrap(), material);
+    for stage in ["sheet.unfold", "sheet.refold"] {
+        run(&mut s, stage, json!({"body": sheet_name}));
+        assert_eq!(s.model.state().bodies.len(), 2);
+        let state = s.model.state();
+        let body = &state.bodies.iter().find(|b| b.name == sheet_name).unwrap().body;
+        assert!(body.contains(solvecraft_geom::Vec3::new(50.0, 30.0, 1.25)));
+        assert!(!body.contains(solvecraft_geom::Vec3::new(57.0, 30.0, 1.25)));
+    }
+}
+
+#[test]
+fn specialized_sheet_cuts_respect_component_and_explicit_participants() {
+    for explicit in [false, true] {
+        let mut s = Session::default();
+        base(&mut s, 100.0, 60.0);
+        let name = s.model.state().sheets[0].body.clone();
+        run(&mut s, "component.create", json!({"name": "Other"}));
+        run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 10, "body_name": "OtherBox"}));
+        if explicit {
+            run(&mut s, "component.activate", json!({"component": "root"}));
+        }
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Cut"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [20,20], "p1": [30,30]}));
+        run(&mut s, "sketch.finish", json!({}));
+        let mut params = json!({"sketch": "Cut", "through_all": true, "operation": "cut", "direction": "symmetric"});
+        if explicit {
+            params["participants"] = json!(["OtherBox"]);
+        }
+        run(&mut s, "solid.extrude", params);
+        let m = run(&mut s, "inspect.measure", json!({"bodies": [name]}));
+        assert!((m["total"]["volume_mm3"].as_f64().unwrap() - 15000.0).abs() < 1e-6);
+        assert!(s.model.state().sheets[0].holes.is_empty());
+        let m = run(&mut s, "inspect.measure", json!({"bodies": ["OtherBox"]}));
+        assert!((m["total"]["volume_mm3"].as_f64().unwrap() - 59000.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn ring_cut_preserves_retained_island_through_unfold_and_refold() {
+    fn material_probes(s: &Session) {
+        let body = &s.model.state().bodies[0].body;
+        assert!(body.contains(solvecraft_geom::Vec3::new(50.0, 30.0, 1.25)));
+        assert!(!body.contains(solvecraft_geom::Vec3::new(57.0, 30.0, 1.25)));
+        assert!(body.contains(solvecraft_geom::Vec3::new(65.0, 30.0, 1.25)));
+    }
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Ring"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [50,30], "radius": 10}));
+    run(&mut s, "sketch.circle.center", json!({"center": [50,30], "radius": 5}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(
+        &mut s,
+        "solid.extrude",
+        json!({"sketch": "Ring", "profiles": [{"point": [57,30]}], "through_all": true, "operation": "cut", "direction": "symmetric"}),
+    );
+    let expected = (6000.0 - PI * 75.0) * 2.5;
+    assert!((volume(&mut s) - expected).abs() < 0.2);
+    material_probes(&s);
+    assert_eq!(flat(&mut s)["outline"].as_array().map(Vec::len), Some(2));
+    let regions = s.model.state().sheets[0].flat_regions().unwrap();
+    assert!(regions.iter().any(|r| r.contains(solvecraft_geom::Vec2::new(50.0, 30.0))));
+    assert!(!regions.iter().any(|r| r.contains(solvecraft_geom::Vec2::new(57.0, 30.0))));
+    assert!(regions.iter().any(|r| r.contains(solvecraft_geom::Vec2::new(65.0, 30.0))));
+    let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap().to_string();
+    let mut reopened = Session::default();
+    run(&mut reopened, "sketch.insert_dxf", json!({"text": dxf, "name": "RingBlank"}));
+    run(&mut reopened, "sketch.finish", json!({}));
+    run(&mut reopened, "solid.extrude", json!({"sketch": "RingBlank", "profiles": [{"point": [10,10]}, {"point": [50,30]}], "distance": 2.5}));
+    assert!((volume(&mut reopened) - expected).abs() < 0.2);
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - expected).abs() < 0.2);
+    material_probes(&s);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - expected).abs() < 0.2);
+    material_probes(&s);
+}

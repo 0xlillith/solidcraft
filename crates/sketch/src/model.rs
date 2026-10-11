@@ -233,6 +233,22 @@ pub enum ConstraintKind {
         l: usize,
         value: f64,
     },
+    /// Signed angle of a line's stored start-to-end direction from sketch +X (radians).
+    LineAngle {
+        l: usize,
+        value: f64,
+    },
+    /// Signed logical sweep of an arc (radians), preserving clockwise and major arcs.
+    ArcSweep {
+        c: usize,
+        value: f64,
+    },
+    /// Overall length of a straight slot: cap-centre distance plus both cap radii.
+    SlotOverallLength {
+        a: usize,
+        b: usize,
+        value: f64,
+    },
     Radius {
         c: usize,
         value: f64,
@@ -282,6 +298,9 @@ impl ConstraintKind {
             | DistanceY { value, .. }
             | PointLineDistance { value, .. }
             | Length { value, .. }
+            | LineAngle { value, .. }
+            | ArcSweep { value, .. }
+            | SlotOverallLength { value, .. }
             | Radius { value, .. }
             | Diameter { value, .. }
             | ArcLength { value, .. }
@@ -298,6 +317,9 @@ impl ConstraintKind {
             | DistanceY { value, .. }
             | PointLineDistance { value, .. }
             | Length { value, .. }
+            | LineAngle { value, .. }
+            | ArcSweep { value, .. }
+            | SlotOverallLength { value, .. }
             | Radius { value, .. }
             | Diameter { value, .. }
             | ArcLength { value, .. }
@@ -307,7 +329,7 @@ impl ConstraintKind {
         }
     }
     pub fn is_angle(&self) -> bool {
-        matches!(self, ConstraintKind::Angle { .. })
+        matches!(self, ConstraintKind::Angle { .. } | ConstraintKind::LineAngle { .. } | ConstraintKind::ArcSweep { .. })
     }
     /// Short type name (Fusion-like) for listings.
     pub fn name(&self) -> &'static str {
@@ -328,7 +350,8 @@ impl ConstraintKind {
             Distance { .. } | DistanceX { .. } | DistanceY { .. } | PointLineDistance { .. } | Length { .. } => "LinearDimension",
             Radius { .. } => "RadialDimension",
             Diameter { .. } => "DiameterDimension",
-            Angle { .. } => "AngularDimension",
+            Angle { .. } | LineAngle { .. } | ArcSweep { .. } => "AngularDimension",
+            SlotOverallLength { .. } => "LinearDimension",
             Smooth { .. } => "Smooth",
             ArcLength { .. } => "ArcLengthDimension",
             LinearDiameter { .. } => "LinearDiameterDimension",
@@ -340,12 +363,12 @@ impl ConstraintKind {
             Coincident { p, q } | HorizontalPoints { p, q } | VerticalPoints { p, q } => (vec![p, q], vec![]),
             Distance { p, q, .. } | DistanceX { p, q, .. } | DistanceY { p, q, .. } => (vec![p, q], vec![]),
             PointOnCurve { p, c } => (vec![p], vec![c]),
-            Horizontal { l } | Vertical { l } | Length { l, .. } => (vec![], vec![l]),
-            Radius { c, .. } | Diameter { c, .. } => (vec![], vec![c]),
+            Horizontal { l } | Vertical { l } | Length { l, .. } | LineAngle { l, .. } => (vec![], vec![l]),
+            Radius { c, .. } | Diameter { c, .. } | ArcSweep { c, .. } => (vec![], vec![c]),
             Parallel { a, b } | Perpendicular { a, b } | Collinear { a, b } | Tangent { a, b } | Equal { a, b } | Concentric { a, b } => {
                 (vec![], vec![a, b])
             }
-            Angle { a, b, .. } => (vec![], vec![a, b]),
+            Angle { a, b, .. } | SlotOverallLength { a, b, .. } => (vec![], vec![a, b]),
             Midpoint { p, l } | PointLineDistance { p, l, .. } => (vec![p], vec![l]),
             Symmetric { p, q, l } => (vec![p, q], vec![l]),
             Fix { p } => (vec![p], vec![]),
@@ -379,13 +402,13 @@ impl ConstraintKind {
                 fp(p);
                 fc(c);
             }
-            Horizontal { l } | Vertical { l } | Length { l, .. } => fc(l),
-            Radius { c, .. } | Diameter { c, .. } => fc(c),
+            Horizontal { l } | Vertical { l } | Length { l, .. } | LineAngle { l, .. } => fc(l),
+            Radius { c, .. } | Diameter { c, .. } | ArcSweep { c, .. } => fc(c),
             Parallel { a, b } | Perpendicular { a, b } | Collinear { a, b } | Tangent { a, b } | Equal { a, b } | Concentric { a, b } => {
                 fc(a);
                 fc(b);
             }
-            Angle { a, b, .. } => {
+            Angle { a, b, .. } | SlotOverallLength { a, b, .. } => {
                 fc(a);
                 fc(b);
             }
@@ -694,11 +717,12 @@ impl Sketch {
             Horizontal { l }
             | Vertical { l }
             | Length { l, .. }
+            | LineAngle { l, .. }
             | Midpoint { l, .. }
             | Symmetric { l, .. }
             | PointLineDistance { l, .. }
             | LinearDiameter { l, .. } => need_line(l)?,
-            ArcLength { c, .. } if !matches!(self.curves.get(c).map(|c| &c.kind), Some(CurveKind::Arc { .. })) => {
+            ArcLength { c, .. } | ArcSweep { c, .. } if !matches!(self.curves.get(c).map(|c| &c.kind), Some(CurveKind::Arc { .. })) => {
                 return Err(SketchError::WrongKind(name(c), "arc length needs an arc".into()));
             }
             Smooth { a, b } => {
@@ -722,6 +746,36 @@ impl Sketch {
                 need_round(a)?;
                 need_round(b)?;
             }
+            SlotOverallLength { a, b, value } => {
+                if a == b || ![a, b].iter().all(|i| matches!(self.curves.get(*i).map(|c| &c.kind), Some(CurveKind::Arc { .. }))) {
+                    return Err(SketchError::Invalid("overall slot length needs two different arc caps".into()));
+                }
+                let radius = |cap: usize| {
+                    self.constraints
+                        .iter()
+                        .filter(|c| !c.driven)
+                        .find_map(|dimension| match dimension.kind {
+                            Radius { c, value } if c == cap => Some(value),
+                            Diameter { c, value } if c == cap => Some(value / 2.0),
+                            // Slot caps are constrained equal; a diameter on either drives both.
+                            Diameter { c, value } | Radius { c, value }
+                                if (c == a || c == b)
+                                    && self
+                                        .constraints
+                                        .iter()
+                                        .any(|e| matches!(e.kind, Equal { a: x, b: y } if (x == a && y == b) || (x == b && y == a))) =>
+                            {
+                                Some(if matches!(dimension.kind, Diameter { .. }) { value / 2.0 } else { value })
+                            }
+                            _ => None,
+                        })
+                        .or_else(|| self.radius(cap))
+                        .unwrap_or(0.0)
+                };
+                if value <= radius(a) + radius(b) + 1e-9 {
+                    return Err(SketchError::Invalid("overall slot length must exceed its width".into()));
+                }
+            }
             Tangent { a, b } => {
                 let free = |i: usize| self.curves.get(i).is_some_and(|c| c.kind.is_freeform());
                 if !(is_round(a) || is_round(b) || free(a) || free(b)) {
@@ -738,6 +792,11 @@ impl Sketch {
             && (!v.is_finite() || v.abs() > 1e9 || (v < 0.0 && !k.is_angle()))
         {
             return Err(SketchError::Invalid(format!("dimension value {v}")));
+        }
+        if let ArcSweep { value, .. } = *k
+            && !(value.abs() > 1e-9 && value.abs() < std::f64::consts::TAU - 1e-9)
+        {
+            return Err(SketchError::Invalid("arc sweep must be nonzero and less than a full turn".into()));
         }
         Ok(())
     }

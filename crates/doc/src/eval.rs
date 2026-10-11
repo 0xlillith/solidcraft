@@ -16,6 +16,10 @@ use crate::{AxisRef, DocError, Document, Feature, FeatureKind, HoleKind, Operati
 #[derive(Clone, Debug)]
 pub struct ModelBody {
     pub name: String,
+    /// Definition identity for a computed placement; never parsed from its display name.
+    pub source_name: Option<String>,
+    /// Definition geometry coordinates to this computed body's frame.
+    pub source_transform: crate::Mat,
     pub body: Body,
     /// Feature that created it.
     pub feature: u64,
@@ -35,7 +39,21 @@ pub struct ModelBody {
 
 impl ModelBody {
     pub fn new(name: String, body: Body, feature: u64) -> Self {
-        ModelBody { name, body, feature, mesh: Arc::new(OnceLock::new()), key: 0, names: Default::default(), component: 0, imported: None }
+        ModelBody {
+            name,
+            source_name: None,
+            source_transform: crate::IDENTITY,
+            body,
+            feature,
+            mesh: Arc::new(OnceLock::new()),
+            key: 0,
+            names: Default::default(),
+            component: 0,
+            imported: None,
+        }
+    }
+    pub fn definition_name(&self) -> &str {
+        self.source_name.as_deref().unwrap_or(&self.name)
     }
     /// Display mesh (chord tolerance 1/1000 of the body size), computed once.
     pub fn mesh(&self) -> Arc<Mesh> {
@@ -807,6 +825,8 @@ fn apply_op(state: &mut ModelState, f: &Feature, tools: Vec<Body>, op: Operation
         }
         Operation::Cut | Operation::Intersect => {
             let bop = if op == Operation::Cut { BoolOp::Cut } else { BoolOp::Intersect };
+            let affected: std::collections::BTreeSet<String> =
+                target_idx.iter().filter_map(|i| state.bodies.get(*i).map(|b| b.name.clone())).collect();
             let mut remove = Vec::new();
             for &ti in &target_idx {
                 let Some(mut acc) = state.bodies.get(ti).map(|b| Some(b.body.clone())) else { continue };
@@ -834,6 +854,10 @@ fn apply_op(state: &mut ModelState, f: &Feature, tools: Vec<Body>, op: Operation
             // A cut can leave a body in pieces: each piece becomes its own body ("Bar", "Bar (1)").
             let mut split: Vec<ModelBody> = Vec::new();
             for mb in std::mem::take(&mut state.bodies) {
+                if !affected.contains(&mb.name) || state.sheets.iter().any(|s| s.body == mb.name) {
+                    split.push(mb);
+                    continue;
+                }
                 let pieces = mb.body.lumps().unwrap_or_else(|_| vec![mb.body.clone()]);
                 if pieces.len() < 2 {
                     split.push(mb);
@@ -2370,11 +2394,21 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             if *operation == Operation::Cut && matches!(f.kind, FeatureKind::Extrude { .. }) && !st.sheets.is_empty() {
                 let handled = more::sheet_cut(f, st, &tools, targets)?;
                 if !handled.is_empty() {
+                    let effective = if targets.is_empty() { &f.participants } else { targets };
+                    let all = effective.len() == 1 && effective.first().is_some_and(|t| t == "*");
                     let rest: Vec<String> = st
                         .bodies
                         .iter()
+                        .filter(|b| {
+                            !handled.contains(&b.name)
+                                && (all
+                                    || if effective.is_empty() {
+                                        b.component == f.component || b.feature == f.id
+                                    } else {
+                                        effective.contains(&b.name)
+                                    })
+                        })
                         .map(|b| b.name.clone())
-                        .filter(|n| !handled.contains(n) && (targets.is_empty() || targets.contains(n)))
                         .collect();
                     if rest.is_empty() {
                         return Ok(());
@@ -2873,14 +2907,19 @@ fn unique_body_name(st: &ModelState, base: &str) -> String {
 /// face finds the face where it is shown and projects its edges there. The model itself when
 /// every placement agrees (the usual case).
 pub fn state_in_frame<'a>(doc: &Document, st: &'a ModelState, comp: u64) -> std::borrow::Cow<'a, ModelState> {
+    state_in_frame_at(doc, st, comp, doc.component_transform(comp))
+}
+
+/// As `state_in_frame`, using the exact active placement for its shared source geometry.
+pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, frame: Mat) -> std::borrow::Cow<'a, ModelState> {
     use std::borrow::Cow;
     if doc.occurrences.is_empty() && doc.body_offsets.is_empty() {
         return Cow::Borrowed(st);
     }
-    let Some(inv) = crate::mat_inverse(&doc.component_transform(comp)) else { return Cow::Borrowed(st) };
+    let Some(inv) = crate::mat_inverse(&frame) else { return Cow::Borrowed(st) };
     let comp_of_feature = |id: u64| doc.feature(id).map(|f| f.component).unwrap_or(0);
     let rel = |c: u64, body: Option<&str>| {
-        let m = crate::mat_mul(&inv, &doc.component_transform(c));
+        let m = crate::mat_mul(&inv, &if c == comp { frame } else { doc.component_transform(c) });
         match body.and_then(|b| doc.body_offsets.get(b)) {
             Some(o) => crate::mat_mul(&m, o),
             None => m,
@@ -2900,6 +2939,9 @@ pub fn state_in_frame<'a>(doc: &Document, st: &'a ModelState, comp: u64) -> std:
             let names = crate::naming::face_names(b);
             let mut nb = ModelBody::new(b.name.clone(), t, b.feature);
             nb.component = b.component;
+            nb.source_name = b.source_name.clone();
+            nb.source_transform = crate::mat_mul(m, &b.source_transform);
+            nb.imported = b.imported.clone();
             nb.names = crate::naming::NameCell::known(names);
             *b = nb;
         }
@@ -2938,17 +2980,18 @@ pub fn world_state(doc: &Document, st: &ModelState) -> ModelState {
     let mut out = ModelState { body_counter: st.body_counter, ..Default::default() };
     for (comp, path, m) in doc.placements() {
         let primary = path == first_path(comp);
-        let label = || -> String {
-            path.iter().filter_map(|id| doc.occurrences.iter().find(|o| o.id == *id)).map(|o| o.name.as_str()).collect::<Vec<_>>().join("/")
-        };
         let ident = crate::is_identity(&m);
         for b in st.bodies.iter().filter(|b| doc.body_component(&b.name, b.feature) == comp) {
-            let name = if primary { b.name.clone() } else { format!("{} ({})", b.name, label()) };
+            let name = doc.world_body_name(st, &b.name, comp, &path);
             // A body moved in from another component keeps its place (its offset).
             let bm = doc.body_offsets.get(&b.name).map(|o| crate::mat_mul(&m, o)).unwrap_or(m);
             let body =
                 if crate::is_identity(&bm) { b.body.clone() } else { kernel::transform_matrix(&b.body, bm).unwrap_or_else(|_| b.body.clone()) };
             let mut placed = ModelBody::new(name, body, b.feature);
+            placed.source_name = Some(b.definition_name().to_string());
+            placed.source_transform = crate::mat_mul(&bm, &b.source_transform);
+            placed.component = comp;
+            placed.imported = b.imported.clone();
             // Placement preserves topology: face ownership remains that of the
             // source model, including modifiers on component instances.
             placed.names = crate::naming::NameCell::known(crate::naming::face_names(b));

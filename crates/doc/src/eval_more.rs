@@ -497,17 +497,22 @@ pub(super) fn sheet_cut(f: &Feature, st: &mut ModelState, tools: &[Body], target
         }
     }
     let mut handled = Vec::new();
+    let mut overlap_work = crate::sheet::FlatWork::new();
+    let targets = if targets.is_empty() { &f.participants } else { targets };
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
     for i in 0..st.sheets.len() {
         let Some(sh) = st.sheets.get(i).cloned() else { continue };
-        if !targets.is_empty() && !targets.contains(&sh.body) {
+        let eligible = all
+            || if targets.is_empty() {
+                st.bodies.iter().any(|b| b.name == sh.body && (b.component == f.component || b.feature == f.id))
+            } else {
+                targets.contains(&sh.body)
+            };
+        if !eligible {
             continue;
         }
         let candidates: Vec<(Option<usize>, Region2)> = if sh.flat {
-            if sh.frame.normal().cross(n).len() > 1e-6 {
-                Vec::new()
-            } else {
-                vec![(None, Region2 { outer: Loop2::polygon(&sh.outline()?.into_iter().next().unwrap_or_default()), holes: Vec::new() })]
-            }
+            if sh.frame.normal().cross(n).len() > 1e-6 { Vec::new() } else { sh.flat_regions()?.into_iter().map(|region| (None, region)).collect() }
         } else {
             sh.parallel_panels(&ss.plane)
         };
@@ -520,11 +525,9 @@ pub(super) fn sheet_cut(f: &Feature, st: &mut ModelState, tools: &[Body], target
             if z0.min(z1) < span.0 - 1e-6 || z0.max(z1) > span.1 + 1e-6 {
                 continue;
             }
-            let outline = if sh.flat { sh.outline()?.into_iter().flatten().collect::<Vec<_>>() } else { panel.outer.polyline(1e-3) };
             for r in &regions {
-                let Some(flat) = sh.region_to_flat(pi, &ss.plane, r) else { continue };
-                let fp = flat.outer.polyline(1e-3);
-                let overlaps = fp.iter().any(|p| point_in_poly(&outline, *p)) || outline.iter().any(|p| point_in_poly(&fp, *p));
+                let flat = sh.region_to_flat(pi, &ss.plane, r)?;
+                let overlaps = crate::sheet::flat_regions_overlap(&panel, &flat, &mut overlap_work)?;
                 if overlaps && !added.iter().any(|x: &Region2| x == &flat) {
                     added.push(flat);
                 }
@@ -540,18 +543,6 @@ pub(super) fn sheet_cut(f: &Feature, st: &mut ModelState, tools: &[Body], target
         handled.push(sh.body.clone());
     }
     Ok(handled)
-}
-
-fn point_in_poly(poly: &[Vec2], p: Vec2) -> bool {
-    let mut inside = false;
-    let m = poly.len();
-    for i in 0..m {
-        let (Some(&a), Some(&b)) = (poly.get(i), poly.get((i + m - 1) % m)) else { continue };
-        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 /// Outline loops (in `plane` coordinates) of the mesh triangles lying in the plane at distance

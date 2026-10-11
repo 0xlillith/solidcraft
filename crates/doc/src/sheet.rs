@@ -16,6 +16,118 @@ use solvecraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 use crate::expr::{self, Kind, Value};
 use crate::{DocError, Document, IDENTITY, Mat, Result, apply_point, apply_vector, mat_inverse, mat_mul};
 
+// Bound the aggregate geometry, including sampled curves and intermediate clipping pieces.
+// These are work limits, never geometry truncation: a larger input returns a useful error.
+const MAX_FLAT_POINTS: usize = 16_384;
+const MAX_FLAT_PIECES: usize = 4096;
+const MAX_FLAT_WORK: usize = 500_000_000;
+
+fn flat_budget_error() -> DocError {
+    DocError::Invalid("sheet metal flat geometry exceeds the bounded processing budget".into())
+}
+
+pub(crate) struct FlatWork(usize);
+
+impl FlatWork {
+    pub(crate) fn new() -> Self {
+        Self(MAX_FLAT_WORK)
+    }
+    fn charge(&mut self, work: usize) -> Result<()> {
+        self.0 = self.0.checked_sub(work).ok_or_else(flat_budget_error)?;
+        Ok(())
+    }
+}
+
+fn flat_polyline(lp: &Loop2) -> Result<Vec<Vec2>> {
+    if lp.segs.len() > MAX_FLAT_POINTS {
+        return Err(flat_budget_error());
+    }
+    let mut points = Vec::new();
+    for seg in &lp.segs {
+        let p = seg.polyline(1e-3);
+        let add = p.len().saturating_sub(1);
+        if points.len().saturating_add(add) > MAX_FLAT_POINTS {
+            return Err(flat_budget_error());
+        }
+        points.extend(p.iter().take(add));
+    }
+    Ok(points)
+}
+
+fn flat_points(polys: &[Vec<Vec2>]) -> Result<usize> {
+    let n = polys.iter().try_fold(0usize, |n, p| n.checked_add(p.len()).ok_or_else(flat_budget_error))?;
+    if n > MAX_FLAT_POINTS || polys.len() > MAX_FLAT_PIECES {
+        return Err(flat_budget_error());
+    }
+    Ok(n)
+}
+
+fn planar_region(region: &Region2) -> Result<Region2> {
+    if region.holes.len() > MAX_FLAT_PIECES {
+        return Err(flat_budget_error());
+    }
+    region_complexity(std::slice::from_ref(region))?;
+    let convert = |lp: &Loop2| -> Result<Loop2> {
+        if lp.segs.iter().all(|s| matches!(s, Seg2::Line { .. } | Seg2::Arc { .. })) {
+            flat_polyline(lp)?;
+            Ok(lp.clone())
+        } else {
+            // Keep free-form profiles through controlled 0.001 mm chord sampling.
+            Ok(Loop2::polygon(&flat_polyline(lp)?))
+        }
+    };
+    Ok(Region2 {
+        outer: convert(&region.outer)?.ccw(),
+        holes: region.holes.iter().map(|h| convert(h).map(|l| l.ccw().reversed())).collect::<Result<_>>()?,
+    })
+}
+
+fn region_complexity(regions: &[Region2]) -> Result<(usize, usize)> {
+    if regions.len() > MAX_FLAT_PIECES {
+        return Err(flat_budget_error());
+    }
+    let (mut edges, mut points) = (0usize, 0usize);
+    for lp in regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)) {
+        edges = edges.saturating_add(lp.segs.len());
+        if edges > MAX_FLAT_POINTS {
+            return Err(flat_budget_error());
+        }
+        points = points.saturating_add(flat_polyline(lp)?.len());
+        if points > MAX_FLAT_POINTS {
+            return Err(flat_budget_error());
+        }
+    }
+    Ok((edges, points))
+}
+
+fn material_boolean(a: &[Region2], b: &[Region2], op: kernel::BoolOp, work: &mut FlatWork) -> Result<Vec<Region2>> {
+    let (ae, ap) = region_complexity(a)?;
+    let (be, bp) = region_complexity(b)?;
+    let edges = ae.saturating_add(be);
+    work.charge(edges.saturating_mul(edges).saturating_add(edges.saturating_mul(ap.saturating_add(bp))).saturating_mul(8))?;
+    let regions = kernel::planar_regions_boolean(a, b, op, 1e-7)?;
+    region_complexity(&regions)?;
+    Ok(regions)
+}
+
+// Merge in balanced rounds so hundreds of disjoint holes or adjoining panels do not
+// repeatedly arrange a growing accumulated boundary against just one small region.
+fn material_union(regions: Vec<Region2>, work: &mut FlatWork) -> Result<Vec<Region2>> {
+    region_complexity(&regions)?;
+    let mut groups: Vec<Vec<Region2>> = regions.into_iter().map(|r| vec![r]).collect();
+    while groups.len() > 1 {
+        let mut next = Vec::new();
+        let mut iter = groups.into_iter();
+        while let Some(a) = iter.next() {
+            match iter.next() {
+                Some(b) => next.push(material_boolean(&a, &b, kernel::BoolOp::Union, work)?),
+                None => next.push(a),
+            }
+        }
+        groups = next;
+    }
+    Ok(groups.pop().unwrap_or_default())
+}
 /// A sheet metal rule. Values are expressions; `Thickness` inside them is the rule's thickness.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SheetRule {
@@ -424,65 +536,70 @@ impl SheetBody {
         }
     }
 
-    /// The pieces of the sheet as cells: base and flange panels and bend zones, each less the
-    /// cut-outs over it (cut-outs inside a panel stay exact holes; ones crossing a piece's edge
-    /// must be convex polygons).
-    fn cells(&self) -> Result<Vec<Cell>> {
-        let mut pieces: Vec<(Piece, Vec<Vec2>)> =
-            self.panels().into_iter().map(|(pi, r)| (Piece::Panel(pi), dedup(&r.outer.ccw().polyline(1e-3)))).collect();
-        for (i, f) in self.flanges.iter().enumerate() {
-            pieces.push((Piece::Zone(i), dedup(&self.zone(f).outer.ccw().polyline(1e-3))));
+    /// The pieces of the sheet as cells: base and flange panels and bend zones, each less
+    /// the combined cut-out material. Planar clipping retains holes and disconnected islands.
+    fn cells_with_work(&self, work: &mut FlatWork) -> Result<Vec<Cell>> {
+        if self.flanges.len().saturating_mul(2).saturating_add(1) > MAX_FLAT_PIECES || self.holes.len() > MAX_FLAT_PIECES {
+            return Err(flat_budget_error());
         }
+        let raw = self
+            .flanges
+            .iter()
+            .fold(self.base.outer.segs.len(), |n, f| n.saturating_add(f.shape.as_ref().map_or(4, Vec::len)))
+            .saturating_add(self.holes.iter().fold(0usize, |n, h| n.saturating_add(h.outer.segs.len())));
+        if raw > MAX_FLAT_POINTS {
+            return Err(flat_budget_error());
+        }
+        let mut pieces: Vec<(Piece, Region2)> = self.panels().into_iter().map(|(pi, r)| (Piece::Panel(pi), r)).collect();
+        for (i, f) in self.flanges.iter().enumerate() {
+            pieces.push((Piece::Zone(i), self.zone(f)));
+        }
+        let mut cuts = Vec::new();
+        let mut cut_points = 0usize;
+        for hole in &self.holes {
+            let region = planar_region(hole)?;
+            cut_points = cut_points.saturating_add(region_complexity(std::slice::from_ref(&region))?.1);
+            if cut_points > MAX_FLAT_POINTS {
+                return Err(flat_budget_error());
+            }
+            cuts.push(region);
+        }
+        let cuts = material_union(cuts, work)?;
         let mut out = Vec::new();
-        for (piece, poly) in pieces {
-            let mut inner: Vec<Vec<Seg2>> = Vec::new();
-            let mut crossing: Vec<Vec<Vec2>> = Vec::new();
-            for h in &self.holes {
-                let hp = dedup(&h.outer.ccw().polyline(1e-3));
-                if matches!(piece, Piece::Panel(_)) && hp.iter().all(|p| point_in(&poly, *p)) {
-                    inner.push(h.outer.ccw().reversed().segs.clone());
-                } else if hp.iter().any(|p| point_in(&poly, *p)) || poly.iter().any(|p| point_in(&hp, *p)) || polys_cross(&poly, &hp) {
-                    if !is_convex(&hp) {
-                        return Err(DocError::Invalid(
-                            "not supported yet: cut-outs over a panel's edge or a bend that are not convex polygons".into(),
-                        ));
-                    }
-                    crossing.push(hp);
+        let mut points = 0usize;
+        for (piece, region) in pieces {
+            let panel = planar_region(&region)?;
+            let material = if cuts.is_empty() { vec![panel] } else { material_boolean(&[panel], &cuts, kernel::BoolOp::Cut, work)? };
+            for region in material {
+                points = points.saturating_add(region_complexity(std::slice::from_ref(&region))?.1);
+                if points > MAX_FLAT_POINTS || out.len() >= MAX_FLAT_PIECES {
+                    return Err(flat_budget_error());
                 }
-            }
-            if crossing.is_empty() {
-                let outer = Loop2::polygon(&poly).segs;
-                out.push(Cell {
-                    piece,
-                    outer: if matches!(piece, Piece::Panel(None)) { self.base.outer.ccw().segs.clone() } else { outer },
-                    holes: inner,
-                });
-                continue;
-            }
-            let mut parts = vec![poly];
-            for h in &crossing {
-                parts = parts.iter().flat_map(|p| convex_diff(p, h)).collect();
-            }
-            let loops = merge_loops(&parts);
-            let (outers, holes): (Vec<Vec<Vec2>>, Vec<Vec<Vec2>>) = loops.into_iter().partition(|l| signed_area(l) > 0.0);
-            for o in outers {
-                let mut hs: Vec<Vec<Seg2>> =
-                    holes.iter().filter(|h| h.first().is_some_and(|p| point_in(&o, *p))).map(|h| Loop2::polygon(h).segs).collect();
-                hs.extend(inner.iter().filter(|h| h.first().is_some_and(|s| point_in(&o, s.start()))).cloned());
-                out.push(Cell { piece, outer: Loop2::polygon(&o).segs, holes: hs });
+                out.push(Cell { piece, outer: region.outer.segs, holes: region.holes.into_iter().map(|l| l.segs).collect() });
             }
         }
         Ok(out)
     }
-
     /// Faces of the solid made by `cells` between heights `z0` and `z1`.
-    fn faces(&self, cells: &[Cell], z0: f64, z1: f64) -> Result<Vec<FaceSpec>> {
+    fn faces(&self, cells: &[Cell], z0: f64, z1: f64, work: &mut FlatWork) -> Result<Vec<FaceSpec>> {
         // Split straight edges where other cells' corners touch them, so neighbours share edges.
+        let edges = cells
+            .iter()
+            .fold(0usize, |n, c| n.saturating_add(c.outer.len()).saturating_add(c.holes.iter().fold(0usize, |m, h| m.saturating_add(h.len()))));
+        if edges > MAX_FLAT_POINTS || cells.len() > MAX_FLAT_PIECES {
+            return Err(flat_budget_error());
+        }
+        work.charge(edges.saturating_mul(edges).saturating_mul(4))?;
         let corners: Vec<Vec2> = cells.iter().flat_map(|c| c.outer.iter().chain(c.holes.iter().flatten()).map(Seg2::start)).collect();
-        let split_loop = |segs: &[Seg2]| -> Vec<Seg2> {
+        let mut split_edges = 0usize;
+        let mut split_loop = |segs: &[Seg2]| -> Result<Vec<Seg2>> {
             let mut v = Vec::new();
             for e in segs {
                 let Seg2::Line { a, b } = *e else {
+                    split_edges += 1;
+                    if split_edges > MAX_FLAT_POINTS {
+                        return Err(flat_budget_error());
+                    }
                     v.push(*e);
                     continue;
                 };
@@ -499,18 +616,31 @@ impl SheetBody {
                 ts.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
                 let mut prev = a;
                 for t in ts {
+                    split_edges += 1;
+                    if split_edges > MAX_FLAT_POINTS {
+                        return Err(flat_budget_error());
+                    }
                     let q = a + d * t;
                     v.push(Seg2::Line { a: prev, b: q });
                     prev = q;
                 }
+                split_edges += 1;
+                if split_edges > MAX_FLAT_POINTS {
+                    return Err(flat_budget_error());
+                }
                 v.push(Seg2::Line { a: prev, b });
             }
-            v
+            Ok(v)
         };
-        let cells: Vec<Cell> = cells
-            .iter()
-            .map(|c| Cell { piece: c.piece, outer: split_loop(&c.outer), holes: c.holes.iter().map(|h| split_loop(h)).collect() })
-            .collect();
+        let mut split_cells = Vec::new();
+        for c in cells {
+            let outer = split_loop(&c.outer)?;
+            let holes = c.holes.iter().map(|h| split_loop(h)).collect::<Result<_>>()?;
+            split_cells.push(Cell { piece: c.piece, outer, holes });
+        }
+        // Reserve the complete adjacency scan before visiting any wall.
+        work.charge(split_edges.saturating_mul(split_edges).saturating_mul(2))?;
+        let cells = split_cells;
         let near = |p: Vec2, q: Vec2| p.dist(q) < 1e-6;
         // Shared with a neighbour: the same flat edge the other way, landing in the same place
         // (flat neighbours across a corner of two bends do not).
@@ -602,40 +732,78 @@ impl SheetBody {
         if self.flat {
             return self.flat_solid();
         }
-        Ok(kernel::sew(&self.faces(&self.cells()?, 0.0, self.t)?)?)
+        let mut work = FlatWork::new();
+        let cells = self.cells_with_work(&mut work)?;
+        Ok(kernel::sew(&self.faces(&cells, 0.0, self.t, &mut work)?)?)
     }
 
     /// The flat pattern as one extrusion (outline with its cut-outs).
     pub fn flat_solid(&self) -> Result<Body> {
-        let loops = self.outline()?;
-        let mut loops: Vec<Loop2> = loops.into_iter().map(|l| Loop2::polygon(&l)).collect();
-        loops.sort_by(|a, b| b.signed_area().abs().total_cmp(&a.signed_area().abs()));
-        let mut it = loops.into_iter();
-        let outer = it.next().ok_or_else(|| DocError::Invalid("empty flat pattern".into()))?.ccw();
-        let mut holes: Vec<Loop2> = it.map(|l| l.ccw().reversed()).collect();
-        let op = outer.polyline(1e-3);
-        for h in &self.holes {
-            let hp = h.outer.polyline(1e-3);
-            if hp.iter().all(|p| point_in(&op, *p)) {
-                holes.push(h.outer.ccw().reversed());
-            } else {
-                return Err(DocError::Invalid("not supported yet: cut-outs over the flat pattern's edge".into()));
-            }
-        }
+        let regions = self.flat_regions()?;
         let pl = plane_of(&self.frame_mat(), Vec3::ZERO, Vec3::X, Vec3::Y)?;
-        kernel::extrude(&pl, &[Region2 { outer, holes }], 0.0, self.t)?.into_iter().next().ok_or_else(|| DocError::Invalid("flat pattern".into()))
+        Ok(kernel::extrude_planar_regions(&pl, &regions, 0.0, self.t)?)
     }
 
+    /// Actual flat material boundaries after cut-outs. The same panel and cut regions build
+    /// the folded solid; planar unions remove panel/bend seams and turn edge-crossing cuts
+    /// into notches. Lines and circular arcs remain exact through clipping and merging.
+    pub fn flat_regions(&self) -> Result<Vec<Region2>> {
+        let mut work = FlatWork::new();
+        // Merge structural pieces before cutting: clipping each panel first introduces
+        // coincident notch endpoints at seams, while a single material cut has no seams.
+        if self.flanges.len().saturating_mul(2).saturating_add(1) > MAX_FLAT_PIECES || self.holes.len() > MAX_FLAT_PIECES {
+            return Err(flat_budget_error());
+        }
+        let raw = self.flanges.iter().fold(self.base.outer.segs.len(), |n, f| n.saturating_add(f.shape.as_ref().map_or(4, Vec::len)));
+        if raw > MAX_FLAT_POINTS {
+            return Err(flat_budget_error());
+        }
+        let mut regions = Vec::new();
+        let mut panel_points = 0usize;
+        for (_, r) in self.panels() {
+            let r = planar_region(&r)?;
+            panel_points = panel_points.saturating_add(region_complexity(std::slice::from_ref(&r))?.1);
+            if panel_points > MAX_FLAT_POINTS {
+                return Err(flat_budget_error());
+            }
+            regions.push(r);
+        }
+        for f in &self.flanges {
+            regions.push(planar_region(&self.zone(f))?);
+            region_complexity(&regions)?;
+        }
+        let regions = material_union(regions, &mut work)?;
+        let mut cuts = Vec::new();
+        let mut cut_points = 0usize;
+        for hole in &self.holes {
+            let region = planar_region(hole)?;
+            cut_points = cut_points.saturating_add(region_complexity(std::slice::from_ref(&region))?.1);
+            if cut_points > MAX_FLAT_POINTS {
+                return Err(flat_budget_error());
+            }
+            cuts.push(region);
+        }
+        let cuts = material_union(cuts, &mut work)?;
+        let regions = if cuts.is_empty() { regions } else { material_boolean(&regions, &cuts, kernel::BoolOp::Cut, &mut work)? };
+        if regions.is_empty() {
+            return Err(DocError::Invalid("empty flat pattern".into()));
+        }
+        Ok(regions)
+    }
     /// Outline loops of the flat pattern (flat coordinates): the pieces' edges, shared ones left out.
     pub fn outline(&self) -> Result<Vec<Vec<Vec2>>> {
-        let mut polys: Vec<Vec<Vec2>> = vec![dedup(&self.base.outer.ccw().polyline(1e-3))];
-        for f in &self.flanges {
-            polys.push(dedup(&self.zone(f).outer.ccw().polyline(1e-3)));
-            if f.leg > 1e-9 {
-                polys.push(dedup(&self.panel(f).outer.ccw().polyline(1e-3)));
-            }
+        if self.flanges.len().saturating_mul(2).saturating_add(1) > MAX_FLAT_PIECES {
+            return Err(flat_budget_error());
         }
-        let loops = merge_loops(&polys);
+        let mut polys: Vec<Vec<Vec2>> = vec![dedup(&flat_polyline(&self.base.outer.ccw())?)];
+        for f in &self.flanges {
+            polys.push(dedup(&flat_polyline(&self.zone(f).outer.ccw())?));
+            if f.leg > 1e-9 {
+                polys.push(dedup(&flat_polyline(&self.panel(f).outer.ccw())?));
+            }
+            flat_points(&polys)?;
+        }
+        let loops = merge_loops(&polys, &mut FlatWork::new())?;
         if loops.is_empty() {
             return Err(DocError::Invalid("empty flat pattern".into()));
         }
@@ -670,13 +838,13 @@ impl SheetBody {
     /// the sewn (faces, edges, vertices).
     pub fn round_hole_correction(&self) -> (i64, i64, i64) {
         let (mut df, mut de, mut dv) = (0i64, 0i64, 0i64);
-        for h in &self.holes {
+        let Ok(regions) = self.flat_regions() else { return (0, 0, 0) };
+        for h in regions.iter().flat_map(|r| &r.holes) {
             let arcs: Vec<(Vec2, f64)> =
-                h.outer.segs.iter().filter_map(|s| if let Seg2::Arc { center, radius, .. } = s { Some((*center, *radius)) } else { None }).collect();
-            let n = h.outer.segs.len() as i64;
-            let full = !arcs.is_empty()
-                && arcs.len() == h.outer.segs.len()
-                && arcs.iter().all(|(c, r)| c.dist(arcs[0].0) < 1e-9 && (r - arcs[0].1).abs() < 1e-9);
+                h.segs.iter().filter_map(|s| if let Seg2::Arc { center, radius, .. } = s { Some((*center, *radius)) } else { None }).collect();
+            let n = h.segs.len() as i64;
+            let full =
+                !arcs.is_empty() && arcs.len() == h.segs.len() && arcs.iter().all(|(c, r)| c.dist(arcs[0].0) < 1e-9 && (r - arcs[0].1).abs() < 1e-9);
             if full && n > 1 {
                 df += 1 - n;
                 de += 2 - 3 * n;
@@ -688,7 +856,7 @@ impl SheetBody {
 
     /// Bounding size of the flat pattern (x, y in the flat frame).
     pub fn flat_size(&self) -> Result<(f64, f64)> {
-        let loops = self.outline()?;
+        let loops: Vec<Vec<Vec2>> = self.flat_regions()?.iter().map(|r| r.outer.polyline(1e-3)).collect();
         let (mut lo, mut hi) = (Vec2::new(f64::MAX, f64::MAX), Vec2::new(f64::MIN, f64::MIN));
         for p in loops.iter().flatten() {
             lo = Vec2::new(lo.x.min(p.x), lo.y.min(p.y));
@@ -1114,8 +1282,9 @@ impl SheetBody {
     }
 
     /// Map a region in a world plane to flat coordinates through a panel's placement.
-    pub fn region_to_flat(&self, panel: Option<usize>, plane: &Plane, r: &Region2) -> Option<Region2> {
-        let inv = mat_inverse(&self.world(panel))?;
+    pub fn region_to_flat(&self, panel: Option<usize>, plane: &Plane, r: &Region2) -> Result<Region2> {
+        region_complexity(std::slice::from_ref(r))?;
+        let inv = mat_inverse(&self.world(panel)).ok_or_else(|| DocError::Invalid("invalid sheet panel frame".into()))?;
         let map = |p: Vec2| {
             let q = apply_point(&inv, plane.to_world(p));
             Vec2::new(q.x, q.y)
@@ -1138,16 +1307,18 @@ impl SheetBody {
                 other => Seg2::Line { a: map(other.start()), b: map(other.end()) },
             }
         };
-        let curved_other = r.outer.segs.iter().any(|x| !matches!(x, Seg2::Line { .. } | Seg2::Arc { .. }));
-        let mut lp = if curved_other {
-            Loop2::polygon(&r.outer.polyline(1e-3).into_iter().map(map).collect::<Vec<_>>())
-        } else {
-            Loop2 { segs: r.outer.segs.iter().map(seg).collect() }
+        let map_loop = |lp: &Loop2| -> Result<Loop2> {
+            let curved_other = lp.segs.iter().any(|x| !matches!(x, Seg2::Line { .. } | Seg2::Arc { .. }));
+            if curved_other {
+                Ok(Loop2::polygon(&flat_polyline(lp)?.into_iter().map(map).collect::<Vec<_>>()))
+            } else {
+                Ok(Loop2 { segs: lp.segs.iter().map(seg).collect() })
+            }
         };
-        if lp.signed_area() < 0.0 {
-            lp = lp.reversed();
-        }
-        Some(Region2 { outer: lp, holes: Vec::new() })
+        Ok(Region2 {
+            outer: map_loop(&r.outer)?.ccw(),
+            holes: r.holes.iter().map(|h| map_loop(h).map(|l| l.ccw().reversed())).collect::<Result<_>>()?,
+        })
     }
 
     /// Panels whose plane is parallel to `plane` (world): (panel, region).
@@ -1178,7 +1349,9 @@ fn point_in(poly: &[Vec2], p: Vec2) -> bool {
 /// The boundary of a union of counter-clockwise polygons that meet edge to edge: edges are
 /// split where corners touch them, edges running both ways cancel, the rest chain into loops
 /// (outer loops counter-clockwise, holes clockwise; straight runs merged).
-fn merge_loops(polys: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
+fn merge_loops(polys: &[Vec<Vec2>], work: &mut FlatWork) -> Result<Vec<Vec<Vec2>>> {
+    let n = flat_points(polys)?;
+    work.charge(n.saturating_mul(n).saturating_mul(2))?;
     let mut segs: Vec<(Vec2, Vec2)> = Vec::new();
     for p in polys {
         let m = p.len();
@@ -1208,9 +1381,13 @@ fn merge_loops(polys: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
         ts.sort_by(|x, y| x.total_cmp(y));
         ts.dedup_by(|x, y| (*x - *y).abs() < 1e-12);
         for w in ts.windows(2) {
+            if split.len() >= MAX_FLAT_POINTS {
+                return Err(flat_budget_error());
+            }
             split.push((*a + d * w[0], *a + d * w[1]));
         }
     }
+    work.charge(split.len().saturating_mul(split.len()).saturating_mul(2))?;
     let same = |p: Vec2, q: Vec2| p.dist(q) < 1e-6;
     let keep: Vec<(Vec2, Vec2)> = split
         .iter()
@@ -1248,33 +1425,12 @@ fn merge_loops(polys: &[Vec<Vec2>]) -> Vec<Vec<Vec2>> {
             loops.push(clean);
         }
     }
-    loops
+    Ok(loops)
 }
 
 fn signed_area(p: &[Vec2]) -> f64 {
     let m = p.len();
     (0..m).filter_map(|i| Some(p.get(i)?.cross(*p.get((i + 1) % m)?))).sum::<f64>() / 2.0
-}
-
-/// A convex polygon minus a convex polygon (both counter-clockwise), as convex pieces.
-fn convex_diff(a: &[Vec2], h: &[Vec2]) -> Vec<Vec<Vec2>> {
-    let mut out = Vec::new();
-    let mut rest = a.to_vec();
-    let m = h.len();
-    for i in 0..m {
-        let (Some(&p), Some(&q)) = (h.get(i), h.get((i + 1) % m)) else { continue };
-        let Some(d) = (q - p).normalized() else { continue };
-        let left = Vec2::new(-d.y, d.x);
-        let outside = dedup(&clip(&rest, p, left * -1.0));
-        if outside.len() >= 3 && signed_area(&outside).abs() > 1e-12 {
-            out.push(outside);
-        }
-        rest = dedup(&clip(&rest, p, left));
-        if rest.len() < 3 {
-            break;
-        }
-    }
-    out
 }
 
 /// Do two polygons' edges cross?
@@ -1291,25 +1447,24 @@ fn polys_cross(a: &[Vec2], b: &[Vec2]) -> bool {
     })
 }
 
-fn is_convex(p: &[Vec2]) -> bool {
-    let m = p.len();
-    (0..m).all(|i| match (p.get(i), p.get((i + 1) % m), p.get((i + 2) % m)) {
-        (Some(a), Some(b), Some(c)) => (*b - *a).cross(*c - *b) >= -1e-9,
-        _ => true,
-    })
+/// Bounded overlap predicate, including crossing-only cuts whose vertices lie outside a panel.
+pub(crate) fn flat_regions_overlap(a: &Region2, b: &Region2, work: &mut FlatWork) -> Result<bool> {
+    let (a, b) = (planar_region(a)?, planar_region(b)?);
+    Ok(!material_boolean(&[a], &[b], kernel::BoolOp::Intersect, work)?.is_empty())
 }
 
 /// A sheet from a closed profile (base flange): the region in `plane`, thickness along its normal.
 pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region: Region2) -> SheetBody {
+    let holes = region.holes.into_iter().map(|h| Region2 { outer: h.ccw(), holes: Vec::new() }).collect();
     SheetBody {
         body: body.into(),
         rule: rule.into(),
         t: rv.thickness,
         k: rv.k_factor,
         frame: plane,
-        base: region,
+        base: Region2 { outer: region.outer, holes: Vec::new() },
         flanges: Vec::new(),
-        holes: Vec::new(),
+        holes,
         flat: false,
         gap: rv.gap,
         base_curves: Vec::new(),
@@ -1509,5 +1664,120 @@ mod tests {
         assert!((v0 - v1 - want).abs() < 1.0, "{v0} {v1} {want}");
         s.flat = true;
         assert!(s.solid().is_ok());
+    }
+
+    #[test]
+    fn disconnected_material_keeps_each_hole_with_its_own_region() {
+        let mut s = plate(100.0, 60.0);
+        s.holes.push(rect(Vec2::new(45.0, -5.0), Vec2::new(55.0, -5.0), Vec2::new(55.0, 65.0), Vec2::new(45.0, 65.0)));
+        s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(20.0, 30.0), 5.0), holes: vec![] });
+        let regions = s.flat_regions().unwrap();
+        assert_eq!(regions.len(), 2);
+        let left = regions.iter().find(|r| r.outer.contains(Vec2::new(10.0, 10.0))).unwrap();
+        let right = regions.iter().find(|r| r.outer.contains(Vec2::new(90.0, 10.0))).unwrap();
+        assert_eq!(left.holes.len(), 1);
+        assert!(left.holes[0].segs.iter().all(|s| matches!(s, Seg2::Arc { radius, .. } if (*radius - 5.0).abs() < 1e-9)));
+        assert!(right.holes.is_empty());
+        let area: f64 = regions.iter().map(Region2::area).sum();
+        assert!((area - (5400.0 - std::f64::consts::PI * 25.0)).abs() < 1e-6);
+        assert!((vol(&s.flat_solid().unwrap()) - area * 2.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn ring_cut_retains_exact_central_material_island() {
+        let mut s = plate(100.0, 60.0);
+        s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(50.0, 30.0), 10.0), holes: vec![Loop2::circle(Vec2::new(50.0, 30.0), 5.0)] });
+        let regions = s.flat_regions().unwrap();
+        assert_eq!(regions.len(), 2);
+        let island = regions.iter().find(|r| r.outer.contains(Vec2::new(50.0, 30.0))).unwrap();
+        assert!(island.holes.is_empty());
+        assert!(island.outer.segs.iter().all(|s| matches!(s, Seg2::Arc { radius, .. } if (*radius - 5.0).abs() < 1e-9)));
+        let area: f64 = regions.iter().map(Region2::area).sum();
+        assert!((area - (6000.0 - std::f64::consts::PI * 75.0)).abs() < 1e-6);
+        assert!((vol(&s.flat_solid().unwrap()) - area * 2.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn freeform_profile_uses_bounded_sampling_with_exact_round_holes() {
+        let mut s = plate(100.0, 60.0);
+        s.base.outer.segs = vec![
+            Seg2::Line { a: Vec2::ZERO, b: Vec2::new(100.0, 0.0) },
+            Seg2::Line { a: Vec2::new(100.0, 0.0), b: Vec2::new(100.0, 60.0) },
+            Seg2::Cubic { p0: Vec2::new(100.0, 60.0), p1: Vec2::new(200.0 / 3.0, 80.0), p2: Vec2::new(100.0 / 3.0, 80.0), p3: Vec2::new(0.0, 60.0) },
+            Seg2::Line { a: Vec2::new(0.0, 60.0), b: Vec2::ZERO },
+        ];
+        s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(50.0, 30.0), 3.0), holes: vec![] });
+        let regions = s.flat_regions().unwrap();
+        assert!(regions[0].outer.segs.iter().all(|s| matches!(s, Seg2::Line { .. })));
+        assert!(regions[0].holes[0].segs.iter().all(|s| matches!(s, Seg2::Arc { .. })));
+        // The cubic has x=100(1-t), y=60+60t(1-t), hence an exact blank area of 7000.
+        let expected = (7000.0 - std::f64::consts::PI * 9.0) * 2.5;
+        assert!((vol(&s.solid().unwrap()) - expected).abs() < 0.5);
+        assert!((vol(&s.flat_solid().unwrap()) - expected).abs() < 0.5);
+    }
+
+    #[test]
+    fn flat_geometry_budgets_reject_aggregate_and_intermediate_work() {
+        let mut s = plate(100.0, 60.0);
+        // Each arc is individually legal, but their combined sampled points exceed the cap.
+        s.base.outer.segs = vec![Seg2::Arc { center: Vec2::ZERO, radius: 1000.0, start: 0.0, sweep: std::f64::consts::TAU }; 8];
+        assert!(s.flat_regions().unwrap_err().to_string().contains("budget"));
+        let mut s = plate(100.0, 60.0);
+        s.holes = vec![Region2 { outer: Loop2::circle(Vec2::new(20.0, 20.0), 1.0), holes: vec![] }; MAX_FLAT_PIECES + 1];
+        assert!(s.flat_regions().unwrap_err().to_string().contains("budget"));
+        let p = vec![vec![Vec2::ZERO; MAX_FLAT_POINTS]];
+        assert!(merge_loops(&p, &mut FlatWork::new()).unwrap_err().to_string().contains("budget"));
+        // Exhausting a clipping/merge allowance must report an error before work begins.
+        assert!(merge_loops(&[vec![Vec2::ZERO, Vec2::X, Vec2::Y]], &mut FlatWork(0)).is_err());
+    }
+
+    #[test]
+    fn overlapping_round_cutouts_union_with_exact_arc_boundaries() {
+        let mut s = plate(100.0, 60.0);
+        s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(20.0, 30.0), 5.0), holes: vec![] });
+        s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(22.0, 30.0), 5.0), holes: vec![] });
+        let regions = s.flat_regions().unwrap();
+        assert_eq!(regions[0].holes.len(), 1);
+        assert!(regions[0].holes[0].segs.iter().all(|s| matches!(s, Seg2::Arc { radius, .. } if (*radius - 5.0).abs() < 1e-9)));
+        let intersection = 50.0 * (0.2f64).acos() - (96.0f64).sqrt();
+        let area = 6000.0 - (50.0 * std::f64::consts::PI - intersection);
+        assert!((regions[0].area() - area).abs() < 1e-6);
+        assert!((vol(&s.solid().unwrap()) - area * 2.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn nested_and_repeated_round_cutouts_keep_only_the_largest_exact_boundary() {
+        for reverse in [false, true] {
+            let mut s = plate(100.0, 60.0);
+            let mut radii = vec![3.0, 5.0, 5.0];
+            if reverse {
+                radii.reverse();
+            }
+            for radius in radii {
+                s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(20.0, 30.0), radius), holes: vec![] });
+            }
+            let regions = s.flat_regions().unwrap();
+            assert_eq!(regions[0].holes.len(), 1);
+            assert!((regions[0].area() - (6000.0 - std::f64::consts::PI * 25.0)).abs() < 1e-6);
+            let volume = vol(&s.solid().unwrap());
+            // Body measure tessellates curved faces; the exact region area above is the
+            // stronger analytic check, while this follows the existing sheet measure budget.
+            assert!((volume - (6000.0 - std::f64::consts::PI * 25.0) * 2.5).abs() < 0.1, "{volume}");
+            assert_eq!(s.round_hole_correction(), (-1, -4, -2));
+        }
+    }
+
+    #[test]
+    fn sewing_budget_rejects_edge_splitting_growth_before_allocating_faces() {
+        let s = plate(100.0, 60.0);
+        let cells: Vec<Cell> = (0..250)
+            .map(|i| Cell {
+                piece: Piece::Panel(None),
+                outer: Loop2::polygon(&[Vec2::new(i as f64, 0.0), Vec2::new(250.0, 0.0), Vec2::new(i as f64, 1.0)]).segs,
+                holes: vec![],
+            })
+            .collect();
+        assert!(s.faces(&cells, 0.0, 2.5, &mut FlatWork::new()).unwrap_err().to_string().contains("budget"));
+        assert!(s.faces(&cells[..1], 0.0, 2.5, &mut FlatWork(0)).unwrap_err().to_string().contains("budget"));
     }
 }

@@ -8,21 +8,26 @@ use solvecraft_doc::{FeatureKind, Mat, Occurrence};
 use solvecraft_geom::Vec3;
 
 use super::CommandSpec;
-use crate::params::{bad, bool_, num, str_, string_list, vec3};
+use crate::params::{bad, bool_, str_, string_list, vec3};
 use crate::{Result, Session};
 
 #[path = "component_properties.rs"]
 mod properties;
 
+#[cfg(test)]
+#[path = "occurrence_tests.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod occurrence_tests;
+
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("component.create", "New Component", new_component)
         .at("SOLID", "ASSEMBLE")
         .icon("component")
-        .params("name?, parent?: component id or name (default: the active one); activate?: bool (default true)"),
+        .params("name?, parent?: component id or name (default: the active one); parent_path?: exact parent placement; activate?: bool (default true)"),
     CommandSpec::new("component.from_bodies", "Create Components from Bodies", from_bodies)
         .icon("component")
         .params("bodies: [names] → one new component per body, named after it"),
-    CommandSpec::new("component.activate", "Activate Component", activate).noundo().params("component: id or name (0 or \"root\" for the design)"),
+    CommandSpec::new("component.activate", "Activate Component", activate).noundo().params("component: id or name (0 or \"root\" for the design); occurrence?, path?: exact placement used to author shared geometry"),
     CommandSpec::new("component.list", "List Components", list).noundo(),
     CommandSpec::new("component.properties", "Component Physical Properties", properties::component)
         .icon("measure").noundo()
@@ -35,13 +40,13 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("component.move_bodies", "Move Bodies to Component", move_bodies).params("bodies: [names], component"),
     CommandSpec::new("component.move_sketches", "Move Sketches to Component", move_sketches).params("sketches: [ids or names], component"),
     CommandSpec::new("occurrence.copy", "Paste (Instance)", copy_occurrence)
-        .params("component (or occurrence): what to place again; parent?: component (default: the same parent); translate?: [x,y,z]"),
-    CommandSpec::new("component.paste_new", "Paste New", paste_new).params("component: copied with its features into a new, independent component; translate?: [x,y,z]"),
+        .params("component (or occurrence): what to place again; path?: validates selected occurrence; parent?: component (default: the same parent); translate?: [x,y,z]. Copies the selected effective transform, including pending moves"),
+    CommandSpec::new("component.paste_new", "Paste New", paste_new).params("component: copied with its own features into a new, independent component; occurrence?, path?: selected source placement; translate?: [x,y,z]"),
     CommandSpec::new("occurrence.move", "Move Occurrence", move_occurrence)
-        .params("occurrence; translate?: [x,y,z]; axis?: [x,y,z], angle?: radians or \"30 deg\", origin?: [x,y,z]; capture?: bool (default true; false keeps it pending until Capture Position)"),
+        .params("occurrence; path?: exact placement; space?: local|world (default local); translate?: [x,y,z]; axis?: [x,y,z], angle?: radians or \"30 deg\", origin?: [x,y,z]; capture?: bool (default true; false keeps it pending until Capture Position). Nested occurrence definitions remain shared"),
     CommandSpec::new("occurrence.ground", "Ground", ground).params("occurrence; grounded?: bool (default toggles)"),
     CommandSpec::new("component.capture_position", "Capture Position", capture).at("SOLID", "POSITION").icon("capture").params("keeps pending occurrence moves"),
-    CommandSpec::new("component.revert_position", "Revert Position", revert).at("SOLID", "POSITION").icon("revert").noundo().params("drops pending occurrence moves"),
+    CommandSpec::new("component.revert_position", "Revert Position", revert).at("SOLID", "POSITION").icon("revert").noundo().params("occurrences?: [ids] (default all); drops selected pending occurrence moves"),
 ];
 
 fn key(v: Option<&Value>) -> Option<String> {
@@ -66,12 +71,61 @@ fn translation(t: Vec3) -> Mat {
     solvecraft_doc::rigid(t, Vec3::ZERO, Vec3::Z, 0.0)
 }
 
+fn move_vector(p: &Value, key: &str, default: Vec3, coordinate: bool, cmd: &str) -> Result<Vec3> {
+    let v = match p.get(key) {
+        None => default,
+        Some(value) => vec3(value).ok_or_else(|| bad(cmd, format!("{key} must contain three finite numbers")))?,
+    };
+    if !v.is_finite() || (coordinate && [v.x, v.y, v.z].iter().any(|x| x.abs() > 1e9)) {
+        return Err(bad(cmd, format!("{key} exceeds supported numeric range")));
+    }
+    Ok(v)
+}
+
+fn valid_position(m: &Mat) -> bool {
+    let column = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
+    let (x, y, z) = (column(0), column(1), column(2));
+    m.iter().flatten().all(|x| x.is_finite())
+        && m[3][..3].iter().all(|x| x.abs() <= 1e9)
+        && [x, y, z].iter().all(|axis| (axis.dot(*axis) - 1.0).abs() < 1e-6)
+        && x.dot(y).abs() < 1e-6
+        && x.dot(z).abs() < 1e-6
+        && y.dot(z).abs() < 1e-6
+        && x.cross(y).dot(z) > 0.0
+        && [m[0][3], m[1][3], m[2][3]].iter().all(|x| x.abs() < 1e-9)
+        && (m[3][3] - 1.0).abs() < 1e-9
+}
+
 fn new_component(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "component.create";
     let parent = if p.get("parent").is_some() { component(s, p, "parent", cmd)? } else { s.active_component };
+    let parent_path = if let Some(value) = p.get("parent_path") {
+        let path = value
+            .as_array()
+            .filter(|a| a.len() < 64)
+            .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad(cmd, "parent_path must list up to 63 occurrence ids"))?;
+        let component = if path.is_empty() { 0 } else { s.occurrence_placement(&path).map_err(|e| bad(cmd, e.to_string()))?.component };
+        if component != parent {
+            return Err(bad(cmd, "parent_path belongs to another component"));
+        }
+        path
+    } else if parent == s.active_component {
+        s.active_occurrence_path.clone().unwrap_or_else(|| s.doc.first_path(parent))
+    } else {
+        s.doc.first_path(parent)
+    };
+    if parent_path.len() >= 64 {
+        return Err(bad(cmd, "new component exceeds occurrence depth limit"));
+    }
     let id = s.doc_mut().add_component(str_(p, "name"), parent)?;
     if p.get("activate").and_then(Value::as_bool).unwrap_or(true) {
+        let mut path = parent_path;
+        if let Some(o) = s.doc.occurrence_of(id) {
+            path.push(o.id);
+        }
         s.active_component = id;
+        s.active_occurrence_path = Some(path);
     }
     let name = s.doc.components.iter().find(|c| c.id == id).map(|c| c.name.clone()).unwrap_or_default();
     let occ = s.doc.occurrence_of(id).map(|o| o.id);
@@ -102,7 +156,18 @@ fn from_bodies(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn activate(s: &mut Session, p: &Value) -> Result<Value> {
     let id = component(s, p, "component", "component.activate")?;
+    let path = if p.get("path").is_some() || p.get("occurrence").is_some() {
+        let occurrence = occurrence(s, p, "component.activate")?;
+        let path = occurrence_path(s, p, occurrence, "component.activate")?;
+        if s.occurrence_placement(&path)?.component != id {
+            return Err(bad("component.activate", "path belongs to another component"));
+        }
+        Some(path)
+    } else {
+        None
+    };
     s.active_component = id;
+    s.active_occurrence_path = path;
     s.revision += 1;
     Ok(json!({ "active": id }))
 }
@@ -231,16 +296,30 @@ fn move_sketches(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn copy_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "occurrence.copy";
-    let comp = if p.get("occurrence").is_some() {
+    let selected = if p.get("occurrence").is_some() {
         let o = occurrence(s, p, cmd)?;
-        s.doc.occurrences.iter().find(|x| x.id == o).map(|x| x.component).unwrap_or(0)
+        Some(o)
+    } else {
+        None
+    };
+    let comp = if let Some(id) = selected {
+        s.doc.occurrences.iter().find(|o| o.id == id).map(|o| o.component).unwrap_or(0)
     } else {
         component(s, p, "component", cmd)?
     };
-    let src = s.doc.occurrence_of(comp).cloned().ok_or_else(|| bad(cmd, "that component has no occurrence"))?;
+    let src = if let Some(id) = selected { s.doc.occurrences.iter().find(|o| o.id == id) } else { s.doc.occurrence_of(comp) }
+        .cloned()
+        .ok_or_else(|| bad(cmd, "that component has no occurrence"))?;
+    if p.get("path").is_some() {
+        occurrence_path(s, p, src.id, cmd)?;
+    }
     let parent = if p.get("parent").is_some() { component(s, p, "parent", cmd)? } else { src.parent };
-    let t = p.get("translate").and_then(vec3).unwrap_or(Vec3::ZERO);
-    let m = solvecraft_doc::mat_mul(&translation(t), &src.transform);
+    let t = move_vector(p, "translate", Vec3::ZERO, true, cmd)?;
+    let base = s.pending_moves.get(&src.id).unwrap_or(&src.transform);
+    let m = solvecraft_doc::mat_mul(&translation(t), base);
+    if !valid_position(&m) {
+        return Err(bad(cmd, "copy transform exceeds supported numeric range"));
+    }
     let id = s.doc_mut().add_occurrence(comp, parent, m)?;
     Ok(json!({"occurrence": id, "component": comp}))
 }
@@ -252,8 +331,27 @@ fn paste_new(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "pick a component, not the design"));
     }
     let src = s.doc.components.iter().find(|c| c.id == comp).cloned().ok_or_else(|| bad(cmd, "component"))?;
-    let occ = s.doc.occurrence_of(comp).cloned();
-    let new_id = s.doc_mut().add_component(Some(&format!("{} (copy)", src.name)), src.parent)?;
+    let occ = if p.get("occurrence").is_some() {
+        let id = occurrence(s, p, cmd)?;
+        if p.get("path").is_some() {
+            occurrence_path(s, p, id, cmd)?;
+        }
+        let occurrence = s.doc.occurrences.iter().find(|o| o.id == id).cloned().ok_or_else(|| bad(cmd, "no occurrence"))?;
+        if occurrence.component != comp {
+            return Err(bad(cmd, "occurrence belongs to another component"));
+        }
+        Some(occurrence)
+    } else {
+        s.doc.occurrence_of(comp).cloned()
+    };
+    let t = move_vector(p, "translate", Vec3::ZERO, true, cmd)?;
+    let base = occ.as_ref().map(|o| s.pending_moves.get(&o.id).copied().unwrap_or(o.transform)).unwrap_or(solvecraft_doc::IDENTITY);
+    let transform = solvecraft_doc::mat_mul(&translation(t), &base);
+    if !valid_position(&transform) {
+        return Err(bad(cmd, "copy transform exceeds supported numeric range"));
+    }
+    let parent = occ.as_ref().map(|o| o.parent).unwrap_or(src.parent);
+    let new_id = s.doc_mut().add_component(Some(&format!("{} (copy)", src.name)), parent)?;
     // Copy the component's features with fresh ids and names; references between them follow.
     let feats: Vec<solvecraft_doc::Feature> = s.doc.features.iter().filter(|f| f.component == comp).cloned().collect();
     let mut idmap: std::collections::HashMap<u64, u64> = Default::default();
@@ -276,10 +374,8 @@ fn paste_new(s: &mut Session, p: &Value) -> Result<Value> {
             slot.component = new_id;
         }
     }
-    let t = p.get("translate").and_then(vec3).unwrap_or(Vec3::ZERO);
-    let base = occ.map(|o| o.transform).unwrap_or(solvecraft_doc::IDENTITY);
     if let Some(o) = s.doc_mut().occurrences.iter_mut().find(|o| o.component == new_id) {
-        o.transform = solvecraft_doc::mat_mul(&translation(t), &base);
+        o.transform = transform;
     }
     Ok(json!({"component": new_id, "features": new_ids}))
 }
@@ -316,6 +412,34 @@ fn remap(v: &mut Value, ids: &std::collections::HashMap<u64, u64>, names: &std::
     }
 }
 
+pub(super) fn occurrence_path(s: &Session, p: &Value, id: u64, cmd: &str) -> Result<Vec<u64>> {
+    let path = if let Some(value) = p.get("path") {
+        value
+            .as_array()
+            .filter(|a| !a.is_empty() && a.len() <= 64)
+            .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad(cmd, "`path` must list 1..64 occurrence ids"))?
+    } else {
+        let o = s.doc.occurrences.iter().find(|o| o.id == id).ok_or_else(|| bad(cmd, "no occurrence"))?;
+        let mut path = s.doc.first_path(o.parent);
+        // A world frame requires an explicit containing placement when any ancestor is instanced.
+        for ancestor in &path {
+            if let Some(a) = s.doc.occurrences.iter().find(|a| a.id == *ancestor)
+                && s.doc.occurrences.iter().filter(|x| x.component == a.component).count() > 1
+            {
+                return Err(bad(cmd, "occurrence has multiple placements; supply its `path`"));
+            }
+        }
+        path.push(id);
+        path
+    };
+    if path.last() != Some(&id) {
+        return Err(bad(cmd, "path and occurrence disagree"));
+    }
+    s.occurrence_placement(&path).map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(path)
+}
+
 fn move_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "occurrence.move";
     let id = occurrence(s, p, cmd)?;
@@ -323,19 +447,56 @@ fn move_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
     if o.grounded {
         return Err(bad(cmd, format!("{} is grounded", o.name)));
     }
-    let t = p.get("translate").and_then(vec3).unwrap_or(Vec3::ZERO);
-    let axis = p.get("axis").and_then(vec3).unwrap_or(Vec3::Z);
+    let t = move_vector(p, "translate", Vec3::ZERO, true, cmd)?;
+    let axis = move_vector(p, "axis", Vec3::Z, false, cmd)?;
     let angle = match p.get("angle") {
         Some(Value::String(e)) => s.doc.eval(e, solvecraft_doc::expr::Kind::Angle).map_err(|e| bad(cmd, e.to_string()))?,
-        _ => num(p, "angle").unwrap_or(0.0),
+        None => 0.0,
+        Some(value) => value.as_f64().ok_or_else(|| bad(cmd, "angle must be a number or angle expression"))?,
     };
-    if !(t.is_finite() && angle.is_finite()) {
+    if !(t.is_finite() && axis.is_finite() && angle.is_finite()) {
         return Err(bad(cmd, "non-finite move"));
     }
-    let origin = p.get("origin").and_then(vec3).unwrap_or(Vec3::ZERO);
+    if angle != 0.0 && axis.normalized().is_none() {
+        return Err(bad(cmd, "rotation axis must have a finite nonzero length"));
+    }
+    let origin = move_vector(p, "origin", Vec3::ZERO, true, cmd)?;
     let delta = solvecraft_doc::rigid(t, origin, axis, angle);
-    let cur = s.pending_moves.get(&id).copied().unwrap_or(o.transform);
+    let space = match p.get("space") {
+        None => "local",
+        Some(Value::String(space)) => space.as_str(),
+        _ => return Err(bad(cmd, "space must be local or world")),
+    };
+    if !matches!(space, "local" | "world") {
+        return Err(bad(cmd, "space must be local or world"));
+    }
+    let path = if p.get("path").is_some() || space == "world" { Some(occurrence_path(s, p, id, cmd)?) } else { None };
+    let delta = if space == "world" {
+        let placement = s.occurrence_placement(path.as_deref().unwrap_or(&[]))?;
+        let inverse = solvecraft_doc::mat_inverse(&placement.parent_world).ok_or_else(|| bad(cmd, "parent frame is singular"))?;
+        solvecraft_doc::mat_mul(&solvecraft_doc::mat_mul(&inverse, &delta), &placement.parent_world)
+    } else {
+        delta
+    };
+    let cur = if let Some(value) = p.get("base_transform") {
+        let base: Mat = serde_json::from_value(value.clone()).map_err(|_| bad(cmd, "base_transform must be a 4x4 affine matrix"))?;
+        if !valid_position(&base)
+            || base[0][3].abs() > 1e-12
+            || base[1][3].abs() > 1e-12
+            || base[2][3].abs() > 1e-12
+            || (base[3][3] - 1.0).abs() > 1e-12
+            || solvecraft_doc::mat_inverse(&base).is_none()
+        {
+            return Err(bad(cmd, "base_transform must be finite, affine and invertible"));
+        }
+        base
+    } else {
+        s.pending_moves.get(&id).copied().unwrap_or(o.transform)
+    };
     let next = solvecraft_doc::mat_mul(&delta, &cur);
+    if !valid_position(&next) {
+        return Err(bad(cmd, "move transform exceeds supported numeric range"));
+    }
     if bool_(p, "capture").unwrap_or(true) {
         s.pending_moves.remove(&id);
         if let Some(x) = s.doc_mut().occurrences.iter_mut().find(|x| x.id == id) {
@@ -351,6 +512,9 @@ fn move_occurrence(s: &mut Session, p: &Value) -> Result<Value> {
 fn ground(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "occurrence.ground";
     let id = occurrence(s, p, cmd)?;
+    if p.get("path").is_some() {
+        occurrence_path(s, p, id, cmd)?;
+    }
     let want = bool_(p, "grounded");
     let o = s.doc_mut().occurrences.iter_mut().find(|o| o.id == id).ok_or_else(|| bad(cmd, "occurrence"))?;
     o.grounded = want.unwrap_or(!o.grounded);
@@ -370,9 +534,24 @@ fn capture(s: &mut Session, _p: &Value) -> Result<Value> {
     Ok(json!({ "captured": n }))
 }
 
-fn revert(s: &mut Session, _p: &Value) -> Result<Value> {
-    let n = s.pending_moves.len();
-    s.pending_moves.clear();
+fn revert(s: &mut Session, p: &Value) -> Result<Value> {
+    let before = s.pending_moves.len();
+    if let Some(value) = p.get("occurrences") {
+        let ids = value
+            .as_array()
+            .filter(|a| !a.is_empty() && a.len() <= 10_000)
+            .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| bad("component.revert_position", "occurrences must list 1..10000 ids"))?;
+        if ids.iter().any(|id| !s.doc.occurrences.iter().any(|o| o.id == *id)) {
+            return Err(bad("component.revert_position", "no occurrence"));
+        }
+        for id in ids {
+            s.pending_moves.remove(&id);
+        }
+    } else {
+        s.pending_moves.clear();
+    }
+    let n = before - s.pending_moves.len();
     s.revision += 1;
     Ok(json!({ "reverted": n }))
 }
@@ -383,7 +562,7 @@ pub fn to_active_frame(s: &Session, kind: &mut FeatureKind) {
     if s.active_component == 0 || crate::frames::mapped() {
         return;
     }
-    let m = s.doc.component_transform(s.active_component);
+    let m = s.active_component_frame();
     if solvecraft_doc::is_identity(&m) {
         return;
     }

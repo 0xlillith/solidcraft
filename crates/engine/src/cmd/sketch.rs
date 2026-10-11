@@ -9,6 +9,10 @@ use super::{CommandSpec, in_sketch};
 use crate::params::{bad, bool_, expr, num, req_vec2, str_, string_list, vec2, vec3};
 use crate::{EngineError, Result, Session};
 
+#[path = "sketch_dimensioned.rs"]
+mod dimensioned;
+use dimensioned::draw as draw_dimensioned;
+
 /// The `connect` parameter every drawing command takes (see `connect_points`).
 macro_rules! connect_doc {
     () => {
@@ -29,6 +33,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .key("L")
         .enabled(in_sketch)
         .params(concat!("points: [[x,y] | \"l1.end\" | {at, ref}…], closed?: bool, construction?: bool, ids?: [..], infer?: bool (add horizontal/vertical)", connect_doc!())),
+    CommandSpec::new("sketch.draw.dimensioned", "Draw Dimensioned Sketch Geometry", draw_dimensioned)
+        .enabled(in_sketch)
+        .params("command: sketch creation command, params: object, dimensions: object of role to numeric or expression value; creates geometry and all driving dimensions atomically in one undo step"),
     CommandSpec::new("sketch.rectangle.two_point", "2-Point Rectangle", rect_two_point)
         .at("SKETCH", "CREATE")
         .icon("rect")
@@ -355,7 +362,8 @@ pub(super) fn plane_ref(s: &Session, p: &Value, cmd: &str) -> Result<PlaneRef> {
                 // A planar face of a body at this point, as the active component sees the model
                 // (another component's face where it is placed).
                 let model = s.model.state();
-                let st = solvecraft_doc::state_in_frame(&s.doc, &model, s.active_component);
+                let placed = s.placed_document();
+                let st = solvecraft_doc::state_in_frame_at(&placed, &model, s.active_component, s.active_component_frame());
                 let mut found = None;
                 let mut face_name = None;
                 for b in &st.bodies {
@@ -792,6 +800,7 @@ fn arc_center(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn polygon(s: &mut Session, p: &Value, cmd: &str, center: Vec2, r_vertex: f64, start: f64, n: usize, inscribed: bool) -> Result<Value> {
+    let mut support_circle = String::new();
     let (out, info) = draw(s, p, cmd, |sk, _| {
         let corners: Vec<Vec2> = (0..n).map(|i| center + Vec2::from_angle(start + std::f64::consts::TAU * i as f64 / n as f64) * r_vertex).collect();
         let (l, pts) = polygon_lines(sk, &corners)?;
@@ -804,6 +813,7 @@ fn polygon(s: &mut Session, p: &Value, cmd: &str, center: Vec2, r_vertex: f64, s
         // Construction circle tying the polygon to its centre.
         let rc = if inscribed { r_vertex } else { r_vertex * (std::f64::consts::PI / n as f64).cos() };
         let circ = sk.add_circle(center, rc, None, None)?;
+        support_circle = sk.curves.get(circ).map(|c| c.id.clone()).unwrap_or_default();
         if let Some(cu) = sk.curves.get_mut(circ) {
             cu.construction = true;
         }
@@ -818,13 +828,15 @@ fn polygon(s: &mut Session, p: &Value, cmd: &str, center: Vec2, r_vertex: f64, s
         }
         Ok((ids_of(sk, &l), cons))
     })?;
-    Ok(result(out, info))
+    let mut value = result(out, info);
+    value["support_circle"] = json!(support_circle);
+    Ok(value)
 }
 
 fn sides(p: &Value, cmd: &str) -> Result<usize> {
     let n = num(p, "sides").unwrap_or(6.0);
-    if !(3.0..=200.0).contains(&n) {
-        return Err(bad(cmd, "sides must be 3…200"));
+    if !(3.0..=200.0).contains(&n) || n.fract() != 0.0 {
+        return Err(bad(cmd, "sides must be an integer from 3 to 200"));
     }
     Ok(n as usize)
 }
@@ -1333,9 +1345,18 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
         // The other reading of an angle between two lines (see below).
         let mut alt: Option<(ConstraintKind, f64)> = None;
         let (mut k, mut cur): (ConstraintKind, f64) = match (e0, e1) {
+            ((None, Some(c)), None) if ty == "sweep" => {
+                let angle = arc_len(sk, c).zip(sk.radius(c)).map(|(len, r)| len / r).ok_or_else(|| bad(cmd, "sweep needs an arc"))?;
+                let angle = if sk.curves.get(c).is_some_and(|c| c.reversed) { -angle } else { angle };
+                (ConstraintKind::ArcSweep { c, value: angle }, angle)
+            }
             ((None, Some(c)), None) if is_line(c) => {
                 let (a, b) = line_pts(sk, c).unwrap_or_default();
                 match ty.as_str() {
+                    "angle" => {
+                        let angle = (b - a).angle();
+                        (ConstraintKind::LineAngle { l: c, value: angle }, angle)
+                    }
                     "horizontal" => {
                         (ConstraintKind::DistanceX { p: line_ends(sk, c).0, q: line_ends(sk, c).1, value: (b.x - a.x).abs() }, (b.x - a.x).abs())
                     }
@@ -1383,6 +1404,15 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
                 } else {
                     (ConstraintKind::PointLineDistance { p: q, l, value: d }, d)
                 }
+            }
+            ((None, Some(a)), Some((None, Some(b)))) if ty == "overall_length" => {
+                let current = sk
+                    .center(a)
+                    .zip(sk.center(b))
+                    .zip(sk.radius(a).zip(sk.radius(b)))
+                    .map(|((ca, cb), (ra, rb))| ca.dist(cb) + ra + rb)
+                    .ok_or_else(|| bad(cmd, "overall slot length needs two arc caps"))?;
+                (ConstraintKind::SlotOverallLength { a, b, value: current }, current)
             }
             ((None, Some(a)), Some((None, Some(b)))) if is_line(a) && is_line(b) => {
                 let (a0, a1) = line_pts(sk, a).unwrap_or_default();

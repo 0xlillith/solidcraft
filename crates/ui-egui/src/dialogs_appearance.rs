@@ -119,7 +119,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
             && !app.session.selection.iter().any(|s| matches!(s, Sel::Body { .. }));
         let state = app.session.world_state();
         let existing = app.session.selection.iter().find_map(|sel| match sel {
-            Sel::Body { name } => state.body(name).and_then(|b| app.session.doc.body_look(name, b.feature)),
+            Sel::Body { name } => state.body(name).and_then(|b| app.session.doc.model_body_look(b)),
             Sel::Face { body, index, .. } => state.body(body).and_then(|b| {
                 app.session
                     .doc
@@ -127,7 +127,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
                     .into_iter()
                     .find(|(i, _)| i == index)
                     .map(|(_, look)| look)
-                    .or_else(|| app.session.doc.body_look(body, b.feature))
+                    .or_else(|| app.session.doc.model_body_look(b))
             }),
             _ => None,
         });

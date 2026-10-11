@@ -22,6 +22,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         "name; from? (row to copy; default current values); values?: {column key: expression, suppression, material name, appearance name or Look object}; rename?; delete?: bool",
     ),
     CommandSpec::new("config.activate", "Activate Configuration", activate).params("row: name — sets its parameter values and suppressions"),
+    CommandSpec::new("config.preview", "Preview Configuration", preview).noundo().params("row: name — validates a rebuild without changing the design or history"),
+    CommandSpec::new("config.rule", "Configuration Rule", rule).params("rule?: {id,name,enabled,condition,effect}; id? + delete?; id? + index? (ordered move)"),
+    CommandSpec::new("config.rules", "Configuration Rules", show).noundo().params("ordered typed rules, rows and active state"),
 ];
 
 fn column_of(s: &Session, p: &Value, cmd: &str) -> Result<Column> {
@@ -99,7 +102,7 @@ fn show(s: &mut Session, _p: &Value) -> Result<Value> {
         .iter()
         .map(|r| json!({"name": r.name, "values": keys.iter().zip(&r.cells).map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>()}))
         .collect();
-    Ok(json!({"columns": keys, "rows": rows, "active": t.active, "matches": s.doc.configuration_matches()}))
+    Ok(json!({"columns": keys, "rows": rows, "rules": t.rules, "active": t.active, "matches": s.doc.configuration_matches()}))
 }
 
 fn column(s: &mut Session, p: &Value) -> Result<Value> {
@@ -117,6 +120,9 @@ fn column(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         add_column(s, c, cmd)?;
     }
+    if !s.doc.configs.rules.is_empty() {
+        validate_rows(s, cmd)?;
+    }
     show(s, p)
 }
 
@@ -126,6 +132,9 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
     let idx = s.doc.configs.rows.iter().position(|r| r.name == name);
     if bool_(p, "delete").unwrap_or(false) {
         let i = idx.ok_or_else(|| bad(cmd, format!("no row `{name}`")))?;
+        if s.doc.configs.rows.len() == 1 && !s.doc.configs.rules.is_empty() {
+            return Err(bad(cmd, "delete rules before deleting the last configuration row"));
+        }
         let t = &mut s.doc_mut().configs;
         t.rows.remove(i);
         if t.active.as_deref() == Some(name.as_str()) {
@@ -190,6 +199,7 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "configuration name already exists"));
     }
     let t = &mut s.doc_mut().configs;
+    let validated_name = rename.clone().unwrap_or_else(|| name.clone());
     match idx {
         Some(i) => {
             if let Some(r) = t.rows.get_mut(i) {
@@ -209,17 +219,104 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
             t.rows.push(ConfigRow { name, cells });
         }
     }
+    if !s.doc.configs.rules.is_empty() {
+        let mut trial = s.scratch();
+        activate(&mut trial, &json!({"row":validated_name})).map_err(|e| bad(cmd, e.to_string()))?;
+    }
+    show(s, p)
+}
+
+fn validate_rows(s: &Session, cmd: &str) -> Result<()> {
+    if !s.doc.configs.rules.is_empty() && s.doc.configs.rows.is_empty() {
+        return Err(bad(cmd, "rules require at least one configuration row"));
+    }
+    for row in &s.doc.configs.rows {
+        let mut trial = s.scratch();
+        activate(&mut trial, &json!({"row":row.name})).map_err(|e| bad(cmd, format!("row `{}`: {e}", row.name)))?;
+    }
+    Ok(())
+}
+
+fn rule(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "config.rule";
+    if let Some(value) = p.get("rule") {
+        solvecraft_doc::config::validate_rules_json(&json!({"configs":{"rules":[value]}})).map_err(|e| bad(cmd, e.to_string()))?;
+        let mut rule: solvecraft_doc::config::ConfigRule = serde_json::from_value(value.clone()).map_err(|e| bad(cmd, e.to_string()))?;
+        if rule.length_unit.is_none() {
+            rule.length_unit = s
+                .doc
+                .configs
+                .rules
+                .iter()
+                .find(|existing| existing.id == rule.id)
+                .and_then(|existing| existing.length_unit.clone())
+                .or_else(|| Some(s.doc.units.clone()));
+        }
+        let rules = &mut s.doc_mut().configs.rules;
+        if let Some(index) = rules.iter().position(|r| r.id == rule.id) {
+            rules[index] = rule;
+        } else {
+            if rules.len() >= solvecraft_doc::config::MAX_RULES {
+                return Err(bad(cmd, "too many rules"));
+            }
+            rules.push(rule);
+        }
+    } else {
+        let id = str_(p, "id").ok_or_else(|| bad(cmd, "give rule or id"))?;
+        let rules = &mut s.doc_mut().configs.rules;
+        let index = rules.iter().position(|r| r.id == id).ok_or_else(|| bad(cmd, "unknown rule"))?;
+        if bool_(p, "delete").unwrap_or(false) {
+            rules.remove(index);
+        } else {
+            let position = p
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| *v < rules.len())
+                .ok_or_else(|| bad(cmd, "valid index required"))?;
+            let rule = rules.remove(index);
+            rules.insert(position, rule);
+        }
+    }
+    validate_rows(s, cmd)?;
     show(s, p)
 }
 
 fn activate(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "config.activate";
     let r = str_(p, "row").ok_or_else(|| bad(cmd, "`row` is required"))?.to_string();
-    s.doc_mut().apply_configuration(&r).map_err(|e| bad(cmd, e.to_string()))?;
+    let mut trial = s.scratch();
+    let trace = trial.doc_mut().apply_configuration_with_trace(&r).map_err(|e| bad(cmd, e.to_string()))?;
+    trial.refresh();
+    let new_errors: Vec<String> = trial
+        .model
+        .results
+        .iter()
+        .filter_map(|result| {
+            result
+                .error
+                .as_ref()
+                .filter(|error| s.model.result(result.id).is_none_or(|before| before.error.as_ref() != Some(*error)))
+                .map(|error| format!("{}: {error}", result.name))
+        })
+        .collect();
+    if !new_errors.is_empty() {
+        return Err(bad(cmd, format!("configuration `{r}` would fail to rebuild: {}", new_errors.join("; "))));
+    }
+    s.doc = trial.doc;
     s.refresh();
     let errors: Vec<String> = s.model.results.iter().filter_map(|x| x.error.clone()).collect();
     let mut out = show(s, p)?;
     out["errors"] = json!(errors);
+    out["trace"] = json!(trace);
+    Ok(out)
+}
+
+fn preview(s: &mut Session, p: &Value) -> Result<Value> {
+    let mut trial = s.scratch();
+    let mut out = activate(&mut trial, p)?;
+    out["preview"] = json!(true);
+    out["parameters"] = json!(trial.doc.param_rows());
     Ok(out)
 }
 
@@ -238,6 +335,186 @@ mod tests {
 
     fn volume(s: &mut Session) -> f64 {
         run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap_or(f64::NAN)
+    }
+
+    #[test]
+    fn configuration_activation_tolerates_identical_existing_errors_but_rejects_reenabled_failure() {
+        let mut s = Session::default();
+        run(&mut s, "parameters.change", json!({"name":"radius","expression":"10 mm"}));
+        run(&mut s, "solid.sphere", json!({"radius":"radius"}));
+        let feature = s.doc.features[0].name.clone();
+        run(&mut s, "config.configure", json!({"params":["radius"],"features":[feature]}));
+        run(&mut s, "config.row", json!({"name":"Existing error","values":{"radius":"-1 mm"}}));
+        run(&mut s, "parameters.change", json!({"name":"radius","expression":"-1 mm"}));
+        assert!(s.model.results[0].error.is_some());
+        let existing = run(&mut s, "config.activate", json!({"row":"Existing error"}));
+        assert_eq!(existing["errors"].as_array().unwrap().len(), 1);
+        s.doc_mut().features[0].suppressed = true;
+        s.refresh();
+        assert!(s.model.results[0].error.is_none());
+        run(&mut s, "config.row", json!({"name":"Reenabled failure","values":{"radius":"-1 mm",format!("suppress:{feature}"):false}}));
+        let before = s.doc.clone();
+        assert!(s.execute("config.activate", &json!({"row":"Reenabled failure"})).is_err());
+        assert_eq!(s.doc, before);
+        assert!(s.model.results[0].error.is_none());
+    }
+
+    #[test]
+    fn configuration_rows_and_literal_rule_thresholds_keep_physical_units_on_switch() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length":10,"width":10,"height":10}));
+        let length = s.doc.features[0].param_names[0].clone();
+        run(&mut s, "config.configure", json!({"params":[length]}));
+        run(
+            &mut s,
+            "config.rule",
+            json!({"rule":{"id":"limit","name":"Metric stock","condition":{"type":"parameter","parameter":length,"operator":"le","expression":"20"},"effect":{"type":"parameter_range","parameter":length,"minimum":"5","maximum":"20"}}}),
+        );
+        run(&mut s, "document.units", json!({"units":"in"}));
+        assert_eq!(s.doc.configs.rows[0].cells[0], "10 mm");
+        let rule = serde_json::to_value(&s.doc.configs.rules[0]).unwrap();
+        assert_eq!(rule["condition"]["expression"], "20 mm");
+        assert_eq!(rule["effect"]["minimum"], "5 mm");
+        let preview = run(&mut s, "config.preview", json!({"row":"Default"}));
+        assert_eq!(preview["trace"][0]["matched"], true);
+        run(&mut s, "config.activate", json!({"row":"Default"}));
+        assert!((volume(&mut s) - 1000.0).abs() < 1e-6);
+        assert!(s.doc.configuration_matches());
+        run(&mut s, "edit.undo", json!({}));
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.units, "mm");
+        assert_eq!(s.doc.configs.rows[0].cells[0], "10");
+    }
+
+    #[test]
+    fn configuration_mixed_rule_expressions_keep_authoring_units_without_rewriting_source() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length":10,"width":20,"height":10}));
+        let length = s.doc.features[0].param_names[0].clone();
+        let width = s.doc.features[0].param_names[1].clone();
+        run(&mut s, "config.configure", json!({"params":[length,width]}));
+        let expression = format!("{width} + 1");
+        run(
+            &mut s,
+            "config.rule",
+            json!({"rule":{"id":"drive","name":"Stock extra","condition":{"type":"always"},"effect":{"type":"drive_parameter","parameter":length,"expression":expression}}}),
+        );
+        run(
+            &mut s,
+            "config.rule",
+            json!({"rule":{"id":"range","name":"Stock bound","condition":{"type":"parameter","parameter":length,"operator":"lt","expression":format!("{width} + 2")},"effect":{"type":"parameter_range","parameter":length,"minimum":width,"maximum":format!("{width} + 2")}}}),
+        );
+        run(&mut s, "config.activate", json!({"row":"Default"}));
+        let before = volume(&mut s);
+        assert!((before - 4200.0).abs() < 1e-6);
+        run(&mut s, "document.units", json!({"units":"in"}));
+        assert!((volume(&mut s) - before).abs() < 1e-6, "matched row rederives drives in their authoring unit");
+        assert!(s.doc.configuration_matches());
+        let rule = serde_json::to_value(&s.doc.configs.rules[0]).unwrap();
+        assert_eq!(rule["effect"]["expression"], expression);
+        assert_eq!(rule["length_unit"], "mm");
+        let preview = run(&mut s, "config.preview", json!({"row":"Default"}));
+        assert_eq!(preview["trace"][1]["matched"], true);
+    }
+
+    #[test]
+    fn configuration_rule_edits_enforce_existing_rows_and_are_undoable() {
+        let mut s = Session::default();
+        run(&mut s, "parameters.change", json!({"name":"length","expression":"10 mm"}));
+        run(&mut s, "solid.box", json!({"length":"length","width":10,"height":10}));
+        run(&mut s, "config.configure", json!({"params":["length"]}));
+        let rule = json!({"id":"limit","name":"Length limit","condition":{"type":"always"},"effect":{"type":"parameter_range","parameter":"length","minimum":"5 mm","maximum":"20 mm"}});
+        run(&mut s, "config.rule", json!({"rule":rule}));
+        let before = s.doc.clone();
+        assert!(s.execute("config.row", &json!({"name":"Default","delete":true})).is_err());
+        assert_eq!(s.doc, before, "last row remains while rules exist");
+        assert!(s.execute("config.row", &json!({"name":"Too large","values":{"length":"30 mm"}})).is_err());
+        assert_eq!(s.doc, before);
+        let impossible = json!({"id":"limit","name":"Length limit","condition":{"type":"always"},"effect":{"type":"parameter_range","parameter":"length","minimum":"15 mm","maximum":"20 mm"}});
+        assert!(s.execute("config.rule", &json!({"rule":impossible})).is_err());
+        assert_eq!(s.doc, before);
+        let preview = run(&mut s, "config.preview", json!({"row":"Default"}));
+        assert_eq!(preview["trace"][0]["name"], "Length limit");
+        assert_eq!(preview["trace"][0]["matched"], true);
+        assert_eq!(s.doc, before);
+        run(&mut s, "config.rule", json!({"id":"limit","delete":true}));
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc, before);
+        let reopened = solvecraft_doc::format::read(&s.doc.to_json()).unwrap();
+        assert_eq!(reopened.configs.rules, s.doc.configs.rules);
+    }
+
+    #[test]
+    fn configuration_preview_and_failed_geometry_leave_design_unchanged() {
+        let mut s = Session::default();
+        run(&mut s, "parameters.change", json!({"name":"length", "expression":"10 mm"}));
+        run(&mut s, "solid.box", json!({"length":"length", "width":10, "height":10}));
+        run(&mut s, "config.configure", json!({"params":["length"]}));
+        run(&mut s, "config.row", json!({"name":"Large", "values":{"length":"20 mm"}}));
+        run(&mut s, "config.row", json!({"name":"Degenerate", "values":{"length":"0 mm"}}));
+        let before = s.doc.clone();
+        let revision = s.revision;
+        assert_eq!(run(&mut s, "config.preview", json!({"row":"Large"}))["preview"], true);
+        assert_eq!(s.doc, before);
+        assert_eq!(s.revision, revision);
+        assert!(s.execute("config.preview", &json!({"row":"Degenerate"})).is_err());
+        assert_eq!(s.doc, before);
+        assert!(s.execute("config.activate", &json!({"row":"Degenerate"})).is_err());
+        assert_eq!(s.doc, before);
+        assert!((volume(&mut s) - 1000.0).abs() < 1e-6);
+        run(&mut s, "config.activate", json!({"row":"Large"}));
+        assert!((volume(&mut s) - 2000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn configured_feature_inputs_and_suppression_match_typed_cells() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length":10, "width":10, "height":10}));
+        let feature = s.doc.features[0].name.clone();
+        let length = s.doc.features[0].param_names[0].clone();
+        s.doc_mut().units = "in".into();
+        run(&mut s, "config.configure", json!({"params":[length], "features":[feature]}));
+        assert_eq!(s.doc.configs.rows[0].cells[0], "10 mm", "Default captures stored feature literals in their base unit");
+        run(&mut s, "config.activate", json!({"row":"Default"}));
+        assert!((volume(&mut s) - 1000.0).abs() < 1e-6, "captured Default preserves geometry in an inch design");
+        run(&mut s, "config.row", json!({"name":"Inches", "values":{length.clone():"2", format!("suppress:{feature}"):"NO"}}));
+        run(&mut s, "config.activate", json!({"row":"Inches"}));
+        assert_eq!(s.doc.config_current(&solvecraft_doc::config::Column::Param(length.clone())).as_deref(), Some("2 in"));
+        assert!(s.doc.configuration_matches());
+        assert!((volume(&mut s) - 5080.0).abs() < 1e-6);
+        let feature_id = s.doc.features[0].id;
+        run(
+            &mut s,
+            "config.rule",
+            json!({"rule":{"id":"inch-condition","name":"Inch condition","condition":{"type":"parameter","parameter":length,"operator":"gt","expression":"5"},"effect":{"type":"drive_suppression","feature":feature_id,"value":true}}}),
+        );
+        run(
+            &mut s,
+            "config.rule",
+            json!({"rule":{"id":"inch-range","name":"Inch range","condition":{"type":"always"},"effect":{"type":"parameter_range","parameter":length,"minimum":"0","maximum":"5"}}}),
+        );
+        let preview = run(&mut s, "config.preview", json!({"row":"Inches"}));
+        assert_eq!(preview["trace"][0]["matched"], false, "bare comparison means inches for a feature length");
+        assert_eq!(preview["trace"][1]["matched"], true);
+    }
+
+    #[test]
+    fn configured_parameters_cannot_be_deleted_and_deleted_features_prune_columns() {
+        let mut s = Session::default();
+        run(&mut s, "parameters.change", json!({"name":"spare", "expression":"10 mm"}));
+        run(&mut s, "config.configure", json!({"params":["spare"]}));
+        assert!(s.doc_mut().remove_param("spare").is_err());
+        run(&mut s, "config.column", json!({"param":"spare", "delete":true}));
+        s.doc_mut().remove_param("spare").unwrap();
+        run(&mut s, "solid.box", json!({"length":10,"width":10,"height":10}));
+        let feature = &s.doc.features[0];
+        let id = feature.id;
+        let length = feature.param_names[0].clone();
+        let name = feature.name.clone();
+        run(&mut s, "config.configure", json!({"params":[length], "features":[name]}));
+        s.doc_mut().delete_feature(id).unwrap();
+        assert!(s.doc.configs.columns.is_empty());
+        assert!(s.doc.configs.rows.iter().all(|row| row.cells.is_empty()));
     }
 
     #[test]

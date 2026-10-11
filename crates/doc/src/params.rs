@@ -502,6 +502,53 @@ impl Document {
         Ok(())
     }
 
+    /// Change existing expressions against their final dependency graph, independent of
+    /// column order. Unlike `change_param`, this never creates a missing parameter.
+    pub fn change_params_atomic(&mut self, changes: &[(String, String)]) -> Result<()> {
+        if changes.len() > crate::config::MAX_COLUMNS {
+            return Err(DocError::Invalid("too many parameter changes".into()));
+        }
+        let mut names = BTreeSet::new();
+        let mut changed = BTreeSet::new();
+        let (_, before_errors) = self.param_values();
+        let mut next = self.clone();
+        for (name, expression) in changes {
+            if !names.insert(name.clone()) {
+                return Err(DocError::Invalid(format!("duplicate parameter `{name}`")));
+            }
+            if expression.len() > 4096 || expression.trim().is_empty() {
+                return Err(DocError::Expr("expression is empty or too long".into()));
+            }
+            if let Some(p) = next.params.iter_mut().find(|p| p.name == *name) {
+                if p.expr != expression.trim() {
+                    changed.insert(name.clone());
+                }
+                p.expr = expression.trim().to_string();
+                continue;
+            }
+            let hit = next.features.iter().enumerate().find_map(|(i, f)| f.param_names.iter().position(|n| n == name).map(|k| (i, k)));
+            let Some((i, k)) = hit else { return Err(DocError::Unknown(format!("parameter `{name}`"))) };
+            let kind = next.features.get(i).and_then(|f| f.kind.inputs().get(k).map(|x| x.2)).unwrap_or(Kind::Unitless);
+            let normalized = next.with_design_unit(expression, kind);
+            let Some(feature) = next.features.get_mut(i) else { return Err(DocError::Unknown(format!("parameter `{name}`"))) };
+            let Some((_, target, _)) = feature.kind.inputs_mut().into_iter().nth(k) else {
+                return Err(DocError::Unknown(format!("parameter `{name}`")));
+            };
+            if *target != normalized {
+                changed.insert(name.clone());
+            }
+            *target = normalized;
+        }
+        let (_, errors) = next.param_values();
+        for (name, error) in errors {
+            if changed.contains(&name) || !before_errors.contains_key(&name) {
+                return Err(DocError::Expr(format!("parameter `{name}`: {error}")));
+            }
+        }
+        *self = next;
+        Ok(())
+    }
+
     /// The parameters table (user, sketch dimensions, feature inputs).
     pub fn param_rows(&self) -> Vec<ParamRow> {
         let (vals, errs) = self.param_values();
@@ -639,6 +686,8 @@ pub enum ParamUser {
     Feature { feature: u64, name: String, input: String },
     /// A sketch dimension (`constraint` is its id).
     Dimension { feature: u64, name: String, constraint: String },
+    /// A configured column or an expression saved in a configuration row.
+    Configuration { row: Option<String>, column: String },
 }
 
 impl ParamUser {
@@ -647,6 +696,10 @@ impl ParamUser {
             ParamUser::Parameter { name } => format!("parameter {name}"),
             ParamUser::Feature { name, input, .. } => format!("{name} ({input})"),
             ParamUser::Dimension { name, constraint, .. } => format!("{name} dimension {constraint}"),
+            ParamUser::Configuration { row, column } => match row {
+                Some(row) => format!("configuration `{row}` ({column})"),
+                None => format!("configuration column {column}"),
+            },
         }
     }
 }
@@ -716,6 +769,24 @@ impl Document {
     /// expressions refer to it, and the sketch dimensions it drives.
     pub fn param_users(&self, name: &str) -> Vec<ParamUser> {
         let mut out = Vec::new();
+        for rule in &self.configs.rules {
+            if rule.parameter_references().iter().any(|reference| reference == name) {
+                out.push(ParamUser::Configuration { row: None, column: format!("rule `{}`", rule.name) });
+            }
+        }
+        for (index, column) in self.configs.columns.iter().enumerate() {
+            if let crate::config::Column::Param(target) = column {
+                let key = self.config_key(column);
+                if target == name {
+                    out.push(ParamUser::Configuration { row: None, column: key.clone() });
+                }
+                for row in &self.configs.rows {
+                    if row.cells.get(index).is_some_and(|value| expr::references(value).iter().any(|reference| reference == name)) {
+                        out.push(ParamUser::Configuration { row: Some(row.name.clone()), column: key.clone() });
+                    }
+                }
+            }
+        }
         for p in &self.params {
             if p.name != name && expr::references(&p.expr).iter().any(|r| r == name) {
                 out.push(ParamUser::Parameter { name: p.name.clone() });
@@ -828,6 +899,9 @@ impl Document {
             }
         }
         // Configuration cells refer to parameters too.
+        for rule in &mut self.configs.rules {
+            rule.rename_parameter(old, new);
+        }
         for r in &mut self.configs.rows {
             for (column, cell) in self.configs.columns.iter().zip(&mut r.cells) {
                 if matches!(column, crate::config::Column::Param(_)) {

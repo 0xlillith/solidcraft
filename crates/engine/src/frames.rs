@@ -88,38 +88,20 @@ struct Frames {
 
 fn frames(s: &Session) -> Frames {
     let st = s.model.state();
-    let doc: std::borrow::Cow<solvecraft_doc::Document> = if s.pending_moves.is_empty() {
-        std::borrow::Cow::Borrowed(&*s.doc)
-    } else {
-        let mut d = (*s.doc).clone();
-        for o in &mut d.occurrences {
-            if let Some(m) = s.pending_moves.get(&o.id) {
-                o.transform = *m;
-            }
-        }
-        std::borrow::Cow::Owned(d)
-    };
+    let doc = s.placed_document();
     // World name, the component's own body name, and its frame.
-    let bodies = doc
-        .body_frames(&st)
-        .into_iter()
-        .map(|(world, _, _, m)| {
-            let own = st
-                .bodies
-                .iter()
-                .find(|b| world == b.name || world.starts_with(&format!("{} (", b.name)))
-                .map(|b| b.name.clone())
-                .unwrap_or_else(|| world.clone());
-            (world, own, m)
-        })
-        .collect();
+    let bodies = doc.body_frames_with_source(&st).into_iter().map(|(world, own, _, _, m)| (world, own, m)).collect();
     let sketch_comp = s.active_sketch.and_then(|id| doc.feature(id)).map(|f| f.component).unwrap_or(s.active_component);
-    Frames { bodies, active: doc.component_transform(s.active_component), sketch: doc.component_transform(sketch_comp) }
+    let active = s.active_component_frame();
+    Frames { bodies, active, sketch: if sketch_comp == s.active_component { active } else { doc.component_transform(sketch_comp) } }
 }
 
-/// Does any placement move anything (so the world differs from the components' frames)?
+/// Does world geometry or its instance naming differ from source components?
 pub fn placed(s: &Session) -> bool {
-    !s.pending_moves.is_empty() || !s.doc.body_offsets.is_empty() || s.doc.placements().iter().any(|(_, _, m)| !is_identity(m))
+    let mut components = std::collections::BTreeSet::new();
+    !s.pending_moves.is_empty()
+        || !s.doc.body_offsets.is_empty()
+        || s.doc.occurrences.iter().any(|o| !is_identity(&o.transform) || !components.insert(o.component))
 }
 
 fn vec3(v: &Value) -> Option<Vec3> {
@@ -138,7 +120,7 @@ fn pt(p: Vec3) -> Value {
 /// The frame of the body a world point lies on (the nearest), or of the named body.
 fn frame_at(s: &Session, f: &Frames, p: Vec3, body: Option<&str>) -> Option<Mat> {
     if let Some(b) = body
-        && let Some((_, _, m)) = f.bodies.iter().find(|(w, own, _)| w == b || (own == b && !w.contains(" (")))
+        && let Some((_, _, m)) = f.bodies.iter().find(|(w, _, _)| w == b)
     {
         return Some(*m);
     }

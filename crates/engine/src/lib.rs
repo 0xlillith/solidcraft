@@ -12,6 +12,7 @@ pub mod frames;
 pub mod fuzz;
 pub mod legacy_ids;
 pub mod licences;
+pub mod occurrences;
 pub mod params;
 pub mod recovery;
 pub mod sample;
@@ -74,6 +75,10 @@ pub type Result<T> = std::result::Result<T, EngineError>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Sel {
+    /// An exact placement, including its containing occurrence placements.
+    Occurrence {
+        path: Vec<u64>,
+    },
     Body {
         name: String,
     },
@@ -159,9 +164,12 @@ pub struct Session {
     pub auto_project: bool,
     /// The component new sketches and features go into (0 = the root).
     pub active_component: u64,
+    /// The placement used when authoring shared component geometry.
+    pub active_occurrence_path: Option<Vec<u64>>,
     /// Occurrence moves not captured yet (Capture Position keeps them, a recompute drops them).
     pub pending_moves: std::collections::BTreeMap<u64, solvecraft_doc::Mat>,
     world_cache: std::sync::Mutex<Option<(u64, Arc<solvecraft_doc::ModelState>)>>,
+    occurrence_visibility_cache: std::sync::Mutex<Option<occurrences::VisibilityCache>>,
     /// Features copied with `timeline.copy` (pasted by `timeline.paste`).
     pub clipboard: Vec<solvecraft_doc::Feature>,
     /// Section Analysis: a view cut by a plane (origin, unit normal; the normal side is hidden).
@@ -192,6 +200,8 @@ pub(crate) struct Checkpoint {
 pub struct Visibility {
     /// Bodies by name.
     pub hidden_bodies: Vec<String>,
+    /// Exact occurrence placements hidden with all descendants.
+    pub hidden_occurrences: Vec<Vec<u64>>,
     /// Origin items (O, X, Y, Z, XY, XZ, YZ) and construction geometry, by name.
     pub hidden_origin: Vec<String>,
     /// Sketches by feature id.
@@ -246,8 +256,10 @@ impl Session {
             revision: 1,
             auto_project: true,
             active_component: 0,
+            active_occurrence_path: None,
             pending_moves: Default::default(),
             world_cache: Default::default(),
+            occurrence_visibility_cache: Default::default(),
             clipboard: Vec::new(),
             section: None,
             analysis: None,
@@ -295,7 +307,7 @@ impl Session {
         {
             return w.clone();
         }
-        let w = if self.pending_moves.is_empty() {
+        let mut w = if self.pending_moves.is_empty() {
             solvecraft_doc::world_state(&self.doc, &st)
         } else {
             let mut d = (*self.doc).clone();
@@ -306,6 +318,23 @@ impl Session {
             }
             solvecraft_doc::world_state(&d, &st)
         };
+        // Sketch definitions are displayed once, at the placement currently being authored.
+        if self.active_occurrence_path.is_some() && self.active_component != 0 {
+            let first = self.occurrence_placement(&self.doc.first_path(self.active_component)).map(|p| p.world).unwrap_or(solvecraft_doc::IDENTITY);
+            if let Some(inverse) = solvecraft_doc::mat_inverse(&first) {
+                let delta = solvecraft_doc::mat_mul(&self.active_component_frame(), &inverse);
+                for sketch in w.sketches.iter_mut().filter(|sk| self.doc.feature(sk.feature).is_some_and(|f| f.component == self.active_component)) {
+                    let plane = sketch.plane;
+                    if let Some(mapped) = solvecraft_geom::Plane::new(
+                        solvecraft_doc::apply_point(&delta, plane.origin),
+                        solvecraft_doc::apply_vector(&delta, plane.x),
+                        solvecraft_doc::apply_vector(&delta, plane.y),
+                    ) {
+                        sketch.plane = mapped;
+                    }
+                }
+            }
+        }
         let w = Arc::new(w);
         if let Ok(mut c) = self.world_cache.lock() {
             *c = Some((self.revision, w.clone()));
@@ -316,6 +345,7 @@ impl Session {
     pub fn refresh(&mut self) {
         self.model.evaluate(&self.doc);
         self.revision += 1;
+        self.prune_occurrence_state();
         // Joints follow the geometry their origins snap to.
         if !self.doc.assembly.joints.is_empty() {
             cmd::joints::resolve(self);
@@ -421,21 +451,23 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             active_sketch: self.active_sketch,
-            selection: Vec::new(),
+            selection: self.selection.clone(),
             path: None,
             saved: self.saved.clone(),
             log: Vec::new(),
             revision: self.revision,
             auto_project: self.auto_project,
             active_component: self.active_component,
+            active_occurrence_path: self.active_occurrence_path.clone(),
             pending_moves: self.pending_moves.clone(),
             world_cache: Default::default(),
+            occurrence_visibility_cache: Default::default(),
             clipboard: self.clipboard.clone(),
             section: None,
             analysis: None,
             checkpoints: Vec::new(),
             next_checkpoint: 1,
-            visibility: Visibility::default(),
+            visibility: self.visibility.clone(),
         }
     }
 
@@ -469,6 +501,7 @@ impl Session {
         self.revision = computed.revision;
         self.invalidate_view(previous_revision);
         self.active_component = computed.active_component;
+        self.active_occurrence_path = computed.active_occurrence_path;
         self.pending_moves = computed.pending_moves;
         for message in computed.log {
             self.echo(message);
