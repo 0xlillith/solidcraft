@@ -34,74 +34,74 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("line")
         .key("L")
         .enabled(in_sketch)
-        .params(concat!("points: [[x,y] | \"l1.end\" | {at, ref}…], closed?: bool, construction?: bool, ids?: [..], infer?: bool (add horizontal/vertical)", connect_doc!())),
+        .params(concat!("points: [[x,y] | \"l1.end\" | {at, ref}…], closed?: bool, construction?: bool, ids?: [..], infer?: bool (add horizontal/vertical)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.draw.dimensioned", "Draw Dimensioned Sketch Geometry", draw_dimensioned)
         .enabled(in_sketch)
-        .params("command: sketch creation command, params: object, dimensions: object of role to numeric or expression value; creates geometry and all driving dimensions atomically in one undo step"),
+        .params(concat!("command: sketch creation command, params: object, dimensions: object of role to numeric or expression value; creates geometry and all driving dimensions atomically in one undo step", created_doc!())),
     CommandSpec::new("sketch.rectangle.two_point", "2-Point Rectangle", rect_two_point)
         .at("SKETCH", "CREATE")
         .icon("rect")
         .key("R")
         .enabled(in_sketch)
-        .params(concat!("p0, p1: opposite corners [x,y]; construction?. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!())),
+        .params(concat!("p0, p1: opposite corners [x,y]; construction?. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.rectangle.three_point", "3-Point Rectangle", rect_three_point)
         .at("SKETCH", "CREATE")
         .icon("rect3")
         .enabled(in_sketch)
-        .params(concat!("p0, p1: first edge; p2: point on the opposite edge", connect_doc!())),
+        .params(concat!("p0, p1: first edge; p2: point on the opposite edge", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.rectangle.center", "Center Rectangle", rect_center)
         .at("SKETCH", "CREATE")
         .icon("rect_center")
         .enabled(in_sketch)
-        .params(concat!("center, corner. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!())),
+        .params(concat!("center, corner. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.circle.center", "Center Diameter Circle", circle_center)
         .at("SKETCH", "CREATE")
         .icon("circle")
         .key("C")
         .enabled(in_sketch)
-        .params(concat!("center: [x,y] or point ref, radius | diameter: number", connect_doc!())),
+        .params(concat!("center: [x,y] or point ref, radius | diameter: number", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.circle.two_point", "2-Point Circle", circle_two)
         .at("SKETCH", "CREATE")
         .icon("circle2")
         .enabled(in_sketch)
-        .params(concat!("p0, p1: diameter ends", connect_doc!())),
+        .params(concat!("p0, p1: diameter ends", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.circle.three_point", "3-Point Circle", circle_three)
         .at("SKETCH", "CREATE")
         .icon("circle3")
         .enabled(in_sketch)
-        .params(concat!("p0, p1, p2", connect_doc!())),
-    CommandSpec::new("sketch.arc.three_point", "3-Point Arc", arc_three).at("SKETCH", "CREATE").icon("arc3").enabled(in_sketch).params(concat!("start, end, through", connect_doc!())),
+        .params(concat!("p0, p1, p2", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.arc.three_point", "3-Point Arc", arc_three).at("SKETCH", "CREATE").icon("arc3").enabled(in_sketch).params(concat!("start, end, through", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.arc.center_point", "Center Point Arc", arc_center)
         .at("SKETCH", "CREATE")
         .icon("arc_center")
         .enabled(in_sketch)
-        .params(concat!("center, start, end (counter-clockwise from start) | center, start, sweep: signed degrees", connect_doc!())),
+        .params(concat!("center, start, end (counter-clockwise from start) | center, start, sweep: signed degrees", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.polygon.inscribed", "Inscribed Polygon", polygon_inscribed)
         .at("SKETCH", "CREATE")
         .icon("polygon")
         .enabled(in_sketch)
-        .params(concat!("center, radius (to vertices), sides, angle?: deg", connect_doc!())),
+        .params(concat!("center, radius (to vertices), sides, angle?: deg", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.polygon.circumscribed", "Circumscribed Polygon", polygon_circumscribed)
         .at("SKETCH", "CREATE")
         .icon("polygon")
         .enabled(in_sketch)
-        .params(concat!("center, radius (to edge midpoints), sides, angle?: deg", connect_doc!())),
+        .params(concat!("center, radius (to edge midpoints), sides, angle?: deg", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.polygon.edge", "Edge Polygon", polygon_edge)
         .at("SKETCH", "CREATE")
         .icon("polygon")
         .enabled(in_sketch)
-        .params(concat!("p0, p1: one edge, sides", connect_doc!())),
+        .params(concat!("p0, p1: one edge, sides", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.slot.center_to_center", "Center to Center Slot", slot_c2c)
         .at("SKETCH", "CREATE")
         .icon("slot")
         .enabled(in_sketch)
-        .params(concat!("p0, p1: arc centres, width", connect_doc!())),
+        .params(concat!("p0, p1: arc centres, width", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.slot.overall", "Overall Slot", slot_overall)
         .at("SKETCH", "CREATE")
         .icon("slot")
         .enabled(in_sketch)
-        .params(concat!("p0, p1: overall ends, width", connect_doc!())),
-    CommandSpec::new("sketch.point", "Point", draw_point).at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y], id?", connect_doc!())),
+        .params(concat!("p0, p1: overall ends, width", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.point", "Point", draw_point).at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y], id?", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.dimension", "Sketch Dimension", dimension).at("SKETCH", "CREATE").icon("dimension").key("D").enabled(in_sketch).params(
         "entities: [refs], type?: auto|distance|horizontal|vertical|length|radius|diameter|angle, value?: number or expression (default: current); text_at?: [x, y]. Two lines: the angle between them (acute, or 180° − it when the value is nearer that) unless text_at picks a sector. Returns measured in unit (mm or deg)",
     ),
@@ -351,6 +351,37 @@ pub(super) fn mark_construction(sk: &mut Sketch, curves: &[usize], p: &Value) {
             }
         }
     }
+}
+
+/// What a command added to a sketch: the ids of the points, curves, constraints and dimensions
+/// in `after` that `before` does not have (`None`: a new sketch), in creation order, plus the
+/// 3D curves (`wires`) when there are any. Ids are stable and never reused in a sketch, so they
+/// can be used in later commands (`sketch.dimension`, `sketch.constraint.*`, `sketch.delete`…).
+pub(crate) fn created(before: Option<&Sketch>, after: &Sketch) -> Value {
+    use std::collections::HashSet;
+    let empty = Sketch::new();
+    let before = before.unwrap_or(&empty);
+    let old: HashSet<&str> = before
+        .points
+        .iter()
+        .map(|x| x.id.as_str())
+        .chain(before.curves.iter().map(|x| x.id.as_str()))
+        .chain(before.constraints.iter().map(|x| x.id.as_str()))
+        .chain(before.wires.iter().map(|x| x.id.as_str()))
+        .collect();
+    let new = |id: &&str| !old.contains(*id);
+    let points: Vec<&str> = after.points.iter().map(|x| x.id.as_str()).filter(new).collect();
+    let curves: Vec<&str> = after.curves.iter().map(|x| x.id.as_str()).filter(new).collect();
+    let (dims, cons): (Vec<_>, Vec<_>) = after.constraints.iter().filter(|c| new(&c.id.as_str())).partition(|c| c.kind.is_dimension());
+    let ids = |v: Vec<&solvecraft_sketch::Constraint>| v.into_iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+    let mut out = json!({"points": points, "curves": curves, "constraints": ids(cons), "dimensions": ids(dims)});
+    let wires: Vec<&str> = after.wires.iter().map(|x| x.id.as_str()).filter(new).collect();
+    if !wires.is_empty()
+        && let Some(o) = out.as_object_mut()
+    {
+        o.insert("wires".into(), json!(wires));
+    }
+    out
 }
 
 pub(super) fn result(sk_out: (Vec<String>, Vec<String>), info: Value) -> Value {
@@ -1909,3 +1940,7 @@ mod rect_tests;
 #[cfg(test)]
 #[path = "sketch_ux_tests.rs"]
 mod ux_tests;
+
+#[cfg(test)]
+#[path = "sketch_ids_tests.rs"]
+mod ids_tests;

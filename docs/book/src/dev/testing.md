@@ -1,7 +1,8 @@
 # Test harnesses
 
-`cargo xtask ci` runs everything a pull request must pass: fmt, clippy with `-D warnings`, the
-tests in release mode, `xtask layers`, `xtask assets` and the wasm build check.
+`cargo xtask ci` runs everything a pull request must pass: fmt, `xtask assets`,
+`xtask licences --check`, `xtask layers`, clippy with `-D warnings`, the tests with the `ci`
+profile and the wasm build check.
 
 | Harness | Where | What it catches |
 |---|---|---|
@@ -34,7 +35,14 @@ A new file in `crates/ui-egui/tests/scenarios/` is picked up automatically. To r
 before it's fixed, add a `{"pending": "why"}` step; its test is then ignored with that reason, and
 the fix removes the step.
 
-## Release mode
+## CI profile
 
-CI runs the tests with `--release`, because some truck assertions only exist in debug builds
-and fail on valid geometry. If a test fails only in debug, say so in the PR.
+CI runs the tests with `--profile ci`: light optimisation, line tables, no LTO and debug
+assertions off. Some truck debug assertions fail on valid geometry; the `ci` profile disables
+them while building faster than `--release`. If a test fails only in a plain debug build, say
+so in the PR.
+
+Run `cargo xtask test` to build with this profile and run the test binaries concurrently,
+with doc tests alongside. Arguments after `--` go to each test binary, for example
+`cargo xtask test -- shell`. To run the test binaries sequentially instead, use
+`cargo test --workspace --profile ci`.

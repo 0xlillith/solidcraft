@@ -62,6 +62,11 @@ Claude Desktop (`claude_desktop_config.json`), bridged to a running app:
 | `open` | `path` | Open a `.solvecraft` design, a STEP file (`.step`/`.stp`) as a new design holding its bodies (an Import base feature), or a 3MF/STL file as mesh bodies. |
 | `save` | `path?` | Save the design (to its current file without `path`). |
 
+To change a feature after it is made, read its definition with `execute` `timeline.inspect`
+(`{feature}`: id or name) and change fields with `timeline.edit` (`{feature, set}`; e.g.
+`{"extent": {"distance": "30"}}`). The fields per feature type are listed in the book's
+*Solid features* chapter.
+
 Resources: `solvecraft://design` (inspect JSON with measurements) and `solvecraft://commands`
 (the catalog).
 

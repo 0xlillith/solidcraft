@@ -775,9 +775,10 @@ pub(crate) fn field(ui: &mut egui::Ui, s: &mut String) -> bool {
 
 pub(crate) fn combo(ui: &mut egui::Ui, id: &str, labels: &[&str], sel: &mut usize) {
     let row = ROW.with(|r| r.borrow().clone());
-    let r = egui::ComboBox::from_id_salt(id).selected_text(labels.get(*sel).copied().unwrap_or("")).width(FIELD_W).show_ui(ui, |ui| {
+    let selected = labels.get(*sel).copied().map(tr).unwrap_or("");
+    let r = egui::ComboBox::from_id_salt(id).selected_text(selected).width(FIELD_W).show_ui(ui, |ui| {
         for (i, l) in labels.iter().enumerate() {
-            let item = ui.selectable_value(sel, i, *l);
+            let item = ui.selectable_value(sel, i, tr(l));
             crate::scenario::publish_handle(&format!("dialog:{row}:{l}"), item.rect.center());
         }
     });
@@ -787,6 +788,10 @@ pub(crate) fn combo(ui: &mut egui::Ui, id: &str, labels: &[&str], sel: &mut usiz
 thread_local! {
     /// The label of the dialog row being laid out (its widgets publish `dialog:<label>` handles).
     static ROW: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+fn tr(text: &str) -> &str {
+    crate::i18n::tr_label(text)
 }
 
 /// A dialog row's widget, for scenarios and demos: the handle `dialog:<row label>`.
@@ -878,11 +883,12 @@ const LABEL_MAX_W: f32 = 150.0;
 /// A row label in the dialog's label column (the grid sizes the column to its widest label).
 pub(crate) fn row_label(ui: &mut egui::Ui, text: &str) {
     ROW.with(|r| *r.borrow_mut() = text.to_string());
-    let full = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
+    let display_text = tr(text);
+    let full = egui::WidgetText::from(display_text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x;
     let w = full.clamp(LABEL_W, LABEL_MAX_W);
     ui.allocate_ui_with_layout(vec2(w, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.set_width(w);
-        ui.add(egui::Label::new(text).wrap());
+        ui.add(egui::Label::new(display_text).wrap());
     });
 }
 
@@ -1057,9 +1063,14 @@ fn input_rows(d: &mut Dialog, ui: &mut egui::Ui) {
             let custom_axis = i == 1 && inp.items.is_empty() && matches!(d.kind, Kind::Revolve { axis: Some(_), .. });
             let filled = !inp.items.is_empty() || custom_axis;
             let text = if filled {
-                RichText::new(if custom_axis { "↖ Custom Axis".into() } else { format!("↖ {} selected", inp.items.len()) }).color(Color32::WHITE)
+                RichText::new(if custom_axis {
+                    crate::i18n::tr("dialog.custom_axis").into()
+                } else {
+                    crate::i18n::format("dialog.selected_count", &[("count", &inp.items.len().to_string())])
+                })
+                .color(Color32::WHITE)
             } else {
-                RichText::new("↖ Select").color(t.text)
+                RichText::new(crate::i18n::tr("dialog.select")).color(t.text)
             };
             let stroke = if active { Stroke::new(1.5, t.accent) } else { Stroke::new(1.0, t.dialog_border.gamma_multiply(1.6)) };
             // Not in the Tab order: Tab moves between values.
@@ -1255,6 +1266,7 @@ fn auto_operation(app: &SolveApp, d: &mut Dialog) {
 /// the view cube, sized to its content.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.dialog.take() else { return };
+    let _language = crate::i18n::scope(&app.preferences.language);
     auto_operation(app, &mut d);
     update_measure(app, &mut d);
     update_fill_cells(app, &mut d);
@@ -1267,7 +1279,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut cancel = false;
     let mut enter = false;
     let wide = d.is_wide();
-    let heading = if d.editing.is_some() { format!("EDIT {}", title(&d.kind)) } else { title(&d.kind).to_string() };
+    let raw_title = title(&d.kind);
+    let heading = if d.editing.is_some() { crate::i18n::format("dialog.edit_title", &[("title", tr(raw_title))]) } else { tr(raw_title).to_string() };
     let frame = egui::Frame::window(&ctx.global_style())
         .fill(t.dialog_bg)
         .stroke(Stroke::new(1.0, t.dialog_border))
@@ -1917,21 +1930,29 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 egui::Spinner::new().size(14.0).paint_at(ui, sr);
                 sresp.on_hover_text("Updating the preview");
             }
-            let buttons = if has_ok { 64.0 * 2.0 + ui.spacing().item_spacing.x } else { 64.0 };
+            let raw_label = if matches!(d.kind, Kind::ConfirmDelete { .. }) { "Delete" } else { "OK" };
+            let label = tr(raw_label);
+            let raw_close = if matches!(d.kind, Kind::Params { .. } | Kind::Measure { .. }) { "Close" } else { "Cancel" };
+            let close = tr(raw_close);
+            let button_width = |text: &str| {
+                let galley = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
+                (galley.size().x + 2.0 * ui.spacing().button_padding.x).max(64.0)
+            };
+            let (ok_width, close_width) = (button_width(label), button_width(close));
+            let buttons = close_width + if has_ok { ok_width + ui.spacing().item_spacing.x } else { 0.0 };
             crate::frame::right_aligned(ui, total, buttons, |ui| {
                 if has_ok {
-                    let label = if matches!(d.kind, Kind::ConfirmDelete { .. }) { "Delete" } else { "OK" };
                     let b = egui::Button::new(RichText::new(label).color(if valid { Color32::WHITE } else { t.text_dim }))
                         .fill(if valid { t.accent } else { Color32::TRANSPARENT })
-                        .min_size(vec2(64.0, 24.0));
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .min_size(vec2(ok_width, 24.0));
                     let r = ui.add_enabled(valid, b);
-                    crate::scenario::publish_handle(&format!("dialog:{label}"), r.rect.center());
+                    crate::scenario::publish_handle(&format!("dialog:{raw_label}"), r.rect.center());
                     if r.clicked() {
                         ok = true;
                     }
                 }
-                let close = if matches!(d.kind, Kind::Params { .. } | Kind::Measure { .. }) { "Close" } else { "Cancel" };
-                if ui.add(egui::Button::new(close).min_size(vec2(64.0, 24.0))).clicked() {
+                if ui.add(egui::Button::new(close).wrap_mode(egui::TextWrapMode::Extend).min_size(vec2(close_width, 24.0))).clicked() {
                     cancel = true;
                 }
             });

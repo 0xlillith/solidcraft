@@ -28,6 +28,46 @@ HTTPS or localhost, because it uses the Origin Private File System.
 
 Windows from Linux: `cargo xwin build --release --target x86_64-pc-windows-msvc -p solvecraft`.
 
+### NixOS: `nix develop`
+
+NixOS has no `/usr/lib`, so nothing is on `LD_LIBRARY_PATH` and a plain `cargo run` finds none of
+the libraries the app loads at run time: the Wayland ones winit opens the window through, the EGL
+loader wgpu renders through, and libdbus-1, which rfd's file dialogs reach xdg-desktop-portal
+through (a dialog then never appears and the pick returns no path):
+
+```
+ERROR solvecraft: winit EventLoopError: ... The wayland library could not be loaded
+ERROR eframe::native::run: Exiting because of error: WGPU error: Failed to create surface for any enabled backend: {}
+ERROR rfd::backend::xdg_desktop_portal::portal::libdbus: Can't connect to a portal: libdbus-1.so not found
+```
+
+`nix develop` (the [`flake.nix`](flake.nix) in the repository root) puts the Wayland, X11,
+EGL-loader and D-Bus libraries on `LD_LIBRARY_PATH`, so `cargo run --release -p solvecraft` works
+from that shell as on any other distribution, file dialogs included. `nix run` builds the app and
+wraps the binary the same way. The Mesa drivers stay the system's, from `/run/opengl-driver`
+(`hardware.graphics.enable`): that is the driver stack the compositor runs on, and wgpu reaches the
+integrated GPU through the EGL loader. The shell deliberately brings no Rust toolchain — the one on
+`PATH` keeps its build cache, where a second `rustc` would make every build recompile the workspace
+from scratch; `nix develop .#rust` is there for a machine with no Rust at all.
+
+**Anti-aliasing on the OpenGL backend.** NixOS keeps the Vulkan ICD descriptions
+(`/run/opengl-driver/share/vulkan/icd.d`) off the Vulkan loader's search path, so wgpu picks its
+OpenGL backend on the integrated GPU. On that backend any multisampling above 1× — the default is
+4× — draws a black window: the UI still lays out and the control channel still answers, but every
+frame, `ui.screenshot` included, comes out empty. Set **Preferences ▸ Graphics ▸ Anti-aliasing** to
+1× and restart (the setting applies on the next start), or write it before the first run, since a
+black window is no way to reach the dialog:
+
+```sh
+mkdir -p ~/.local/share/solvecraft
+echo '{"msaa": 1}' > ~/.local/share/solvecraft/graphics.json
+```
+
+`apps/solvecraft/src/main.rs` reads that file (`graphics_path()`, eframe's storage dir) before the
+window opens; 2× and 4× are the same black window. The Vulkan backend is no way out of it either:
+`libvulkan.so.1` is not on `LD_LIBRARY_PATH`, so `WGPU_BACKEND=vulkan` exits with a
+`CreateSurfaceError` instead.
+
 ## How the code is laid out
 
 The [README](README.md#architecture) has the layer table. The short version:
@@ -127,6 +167,23 @@ install. If you work on geometry and want to check against it, ask in an issue.
    clippy (`-D warnings`), then the tests with the wasm build check alongside. A PR has to pass it.
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
+
+Words alone can leave a change hard to picture. When a screenshot, short demo, diagram or
+before/after model view helps explain what is broken or changed, please include that concrete
+context in the issue or PR. This applies to kernel, geometry, assembly and backend work as well
+as the UI. Coding agents should run the relevant example and capture the actual reproduction
+or result themselves, with a brief expected/actual explanation and annotations where useful;
+please don't ask a human for evidence the agent can produce. Changes with no useful visual
+explanation do not need media. Use a small example without private designs or sensitive
+details; attach the media or link to an accessible recording rather than committing generated
+review artifacts.
+
+Keep checking upstream commits and the relevant PR's merge status throughout the work and
+before handoff. Integrate upstream merges, resolve conflicts without losing others' changes,
+and validate the integrated result. Before pushing, run `git pull --rebase origin main`, re-run
+CI if it brought changes, and push without force. Report the upstream/PR state you checked,
+any conflicts resolved and validation results. While a task remains active, follow an open
+PR through its status changes; at handoff, clearly identify anything still awaiting merge.
 
 Much of SolveCraft so far was written by AI coding agents (Claude) working in parallel, each
 owning one area, with a human setting direction and reporting bugs. Their working notes are in
