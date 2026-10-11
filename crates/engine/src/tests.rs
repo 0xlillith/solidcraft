@@ -47,6 +47,50 @@ fn join_extrude_from_a_chamfered_top_face() {
     assert!(rel(volume(&mut s), base + PI * 64.0 * 5.0) < 5e-4);
 }
 
+/// A join that bridges two bodies makes them one body, not an overlap of the first and the second.
+#[test]
+fn join_bridging_two_bodies_merges_them() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "operation": "new_body"}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 4, "height": 4, "corner": [5, 3, 3], "operation": "join"}));
+    let st = s.model.state();
+    assert_eq!(st.bodies.len(), 1, "both boxes and the bar are one body");
+    assert_eq!(st.bodies[0].name, "Body1");
+    assert_eq!(st.bodies[0].body.lumps().unwrap().len(), 1);
+    // 2 boxes + the bar's 10 mm outside them.
+    assert!(rel(volume(&mut s), 2000.0 + 10.0 * 16.0) < 1e-6);
+}
+
+/// A join touching only the second body merges into that body and leaves the first alone.
+#[test]
+fn join_merges_into_the_body_it_meets() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "operation": "new_body"}));
+    // Sits on Body2's top face: a face contact, no shared volume.
+    run(&mut s, "solid.box", json!({"length": 4, "width": 4, "height": 4, "corner": [23, 3, 10], "operation": "join"}));
+    let st = s.model.state();
+    assert_eq!(st.bodies.len(), 2);
+    let b1 = st.bodies.iter().find(|b| b.name == "Body1").unwrap();
+    let b2 = st.bodies.iter().find(|b| b.name == "Body2").unwrap();
+    assert_eq!(b1.body.face_count(), 6, "Body1 is untouched");
+    assert_eq!(b2.body.lumps().unwrap().len(), 1);
+    assert!(rel(volume(&mut s), 2064.0) < 1e-6);
+}
+
+/// A join that meets no body still joins the first body, as a separate lump.
+#[test]
+fn join_meeting_nothing_keeps_the_first_body() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "solid.box", json!({"length": 4, "width": 4, "height": 4, "corner": [40, 0, 0], "operation": "join"}));
+    let st = s.model.state();
+    assert_eq!(st.bodies.len(), 1);
+    assert_eq!(st.bodies[0].body.lumps().unwrap().len(), 2);
+    assert!(rel(volume(&mut s), 1064.0) < 1e-6);
+}
+
 mod component_frames;
 mod mirror_planes;
 mod primitive_points;

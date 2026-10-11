@@ -924,13 +924,40 @@ fn apply_op(state: &mut ModelState, f: &Feature, tools: Vec<Body>, op: Operation
     }
     match op {
         Operation::Join => {
-            let Some(&first) = target_idx.first() else { return Ok(()) };
-            let Some(mut acc) = state.bodies.get(first).map(|b| b.body.clone()) else { return Ok(()) };
-            for t in &tools {
-                acc = kernel::boolean(&acc, t, BoolOp::Union)?.ok_or_else(|| DocError::Invalid("join produced nothing".into()))?;
-            }
-            if let Some(mb) = state.bodies.get_mut(first) {
-                *mb = ModelBody::new(mb.name.clone(), acc, mb.feature);
+            // Each tool joins every target it meets into one body, kept under the first one's
+            // name; a tool that meets none joins the first target as a separate lump. A sheet
+            // metal body keeps its own identity: only the first body met may be one.
+            let mut live: Vec<String> = target_idx.iter().filter_map(|i| state.bodies.get(*i).map(|b| b.name.clone())).collect();
+            let union = |a: &Body, b: &Body| kernel::boolean(a, b, BoolOp::Union)?.ok_or_else(|| DocError::Invalid("join produced nothing".into()));
+            for tool in &tools {
+                let mut met: Vec<String> = Vec::new();
+                for name in &live {
+                    let Some(mb) = state.body(name) else { continue };
+                    let sheet = state.sheets.iter().any(|s| &s.body == name);
+                    if mb.body.is_mesh() || (!met.is_empty() && sheet) {
+                        continue;
+                    }
+                    if mb.body.meets(tool)? {
+                        met.push(name.clone());
+                    }
+                }
+                let Some(keep) = met.first().or(live.first()).cloned() else { return Ok(()) };
+                let Some(base) = state.body(&keep).map(|b| b.body.clone()) else { continue };
+                let mut acc = union(&base, tool)?;
+                for name in met.iter().skip(1) {
+                    if let Some(b) = state.body(name) {
+                        acc = union(&acc, &b.body)?;
+                    }
+                }
+                let absorbed: std::collections::BTreeSet<String> = met.into_iter().skip(1).collect();
+                if let Some(mb) = state.bodies.iter_mut().find(|b| b.name == keep) {
+                    *mb = ModelBody::new(mb.name.clone(), acc, mb.feature);
+                }
+                state.bodies.retain(|b| !absorbed.contains(&b.name));
+                for t in state.threads.iter_mut().filter(|t| absorbed.contains(&t.body)) {
+                    t.body = keep.clone();
+                }
+                live.retain(|n| !absorbed.contains(n));
             }
         }
         Operation::Cut | Operation::Intersect => {
