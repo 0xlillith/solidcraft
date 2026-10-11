@@ -154,28 +154,31 @@ fn cmd_run(args: &[String]) -> Result<(), String> {
         Some(b) => load(b)?,
         None => Session::default(),
     };
-    if args.iter().any(|a| a == "--results") {
-        // Print every command's result (scripts only).
+    let results = if args.iter().any(|a| a == "--results") {
+        // Collect every command's result (scripts only), then process requested files too.
         let v = read_json(path.ok_or("--results needs a script")?)?;
         let r = s.run_script(&v).map_err(|e| e.to_string())?;
-        println!("{}", pretty(&Value::Array(r)));
-        return Ok(());
-    }
-    match (base, path) {
-        (Some(_), Some(p)) => {
-            let v = read_json(p)?;
-            s.run_script(&v).map_err(|e| e.to_string())?;
+        Some(Value::Array(r))
+    } else {
+        match (base, path) {
+            (Some(_), Some(p)) => {
+                let v = read_json(p)?;
+                s.run_script(&v).map_err(|e| e.to_string())?;
+            }
+            (None, Some(p)) => s = load(p)?,
+            _ => {}
         }
-        (None, Some(p)) => s = load(p)?,
-        _ => {}
-    }
+        None
+    };
     for out in flags(args, "--out") {
         s.execute("file.export", &json!({"path": out})).map_err(|e| e.to_string())?;
     }
     if let Some(p) = flag(args, "--save") {
         s.execute("file.save_as", &json!({"path": p})).map_err(|e| e.to_string())?;
     }
-    if !args.iter().any(|a| a == "--quiet") {
+    if let Some(results) = results {
+        println!("{}", pretty(&results));
+    } else if !args.iter().any(|a| a == "--quiet") {
         let m = s.execute("inspect.measure", &json!({})).map_err(|e| e.to_string())?;
         println!("{}", pretty(&m));
     }
