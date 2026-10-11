@@ -118,17 +118,20 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
         let faces = app.session.selection.iter().any(|s| matches!(s, Sel::Face { .. }))
             && !app.session.selection.iter().any(|s| matches!(s, Sel::Body { .. }));
         let state = app.session.world_state();
+        let body_look = |body: &solvecraft_engine::doc::ModelBody| {
+            app.session.doc.model_body_look(body).or_else(|| {
+                (body.body.paint().is_some() || body.imported.is_some() || body.body.color().is_some()).then(|| {
+                    let color =
+                        app.session.doc.body_color(body).map(|rgb| rgb.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)).unwrap_or([196, 199, 204]);
+                    solvecraft_engine::doc::appearance::Look::custom(color, app.session.doc.model_body_opacity(body))
+                })
+            })
+        };
         let existing = app.session.selection.iter().find_map(|sel| match sel {
-            Sel::Body { name } => state.body(name).and_then(|b| app.session.doc.model_body_look(b)),
-            Sel::Face { body, index, .. } => state.body(body).and_then(|b| {
-                app.session
-                    .doc
-                    .face_colors(b)
-                    .into_iter()
-                    .find(|(i, _)| i == index)
-                    .map(|(_, look)| look)
-                    .or_else(|| app.session.doc.model_body_look(b))
-            }),
+            Sel::Body { name } => state.body(name).and_then(body_look),
+            Sel::Face { body, index, .. } => state
+                .body(body)
+                .and_then(|b| app.session.doc.face_colors(b).into_iter().find(|(i, _)| i == index).map(|(_, look)| look).or_else(|| body_look(b))),
             _ => None,
         });
         (
@@ -341,7 +344,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
     ui.end_row();
     row_label(ui, "Opacity");
     ui.spacing_mut().slider_width = 110.0;
-    if ui.add(egui::Slider::new(&mut k.opacity, 0.0..=1.0).fixed_decimals(2)).changed() {
+    // Decimal formatting must not round a saved look merely by drawing its editor.
+    if ui.add(egui::Slider::new(&mut k.opacity, 0.0..=1.0).max_decimals_opt(None).custom_formatter(|value, _| format!("{value:.2}"))).changed() {
         k.remove_override = false;
     }
     ui.end_row();
@@ -588,6 +592,23 @@ mod tests {
         let p = apply_params(&[Sel::Body { name: "Body2".into() }], look.color, look.opacity, Some(&look.name)).unwrap();
         a.run("appearance.assign", p).unwrap();
         assert_eq!(a.session.doc.appearances.bodies.get("Body1"), a.session.doc.appearances.bodies.get("Body2"));
+    }
+
+    #[test]
+    fn real_frames_and_unchanged_apply_keep_precise_opacity() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+        h.app.run("appearance.assign", json!({"bodies":["Body1"],"color":"#abcdef","opacity":0.123456})).unwrap();
+        for cancel in [true, false] {
+            h.app.session.selection = vec![Sel::Body { name: "Body1".into() }];
+            h.app.start("appearance.assign");
+            h.frames(3);
+            let Kind::Appearance(appearance) = &h.app.dialog.as_ref().unwrap().kind else { panic!("appearance dialog") };
+            assert_eq!(appearance.opacity, 0.123456);
+            h.step(&json!({"key":if cancel {"Escape"} else {"Enter"}})).unwrap();
+            assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+            assert_eq!(h.app.session.doc.appearances.bodies["Body1"].opacity, 0.123456);
+        }
     }
 
     #[test]

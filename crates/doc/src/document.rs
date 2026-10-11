@@ -161,6 +161,85 @@ pub enum AxisRef {
     Line { origin: Vec3, dir: Vec3 },
 }
 
+/// Persistent cylindrical Emboss selection, authored in the feature component frame.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EmbossFace {
+    pub body: String,
+    pub at: Vec3,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub author_path: Vec<u64>,
+}
+
+impl EmbossFace {
+    /// The selected sketch placement, shared by evaluation and interactive guides.
+    pub fn sketch_frame(&self, doc: &Document, author: u64, sketch_owner: u64, body_feature: u64) -> Result<crate::Mat> {
+        let owner = doc.body_component(&self.body, body_feature);
+        if sketch_owner == owner {
+            return Self::component_frame(doc, owner, &self.path);
+        }
+        if sketch_owner == author {
+            return Self::component_frame(doc, author, &self.author_path);
+        }
+        let path = doc.first_path(sketch_owner);
+        let mut component = sketch_owner;
+        for _ in 0..64 {
+            if component == 0 {
+                break;
+            }
+            let mut occurrences = doc.occurrences.iter().filter(|o| o.component == component);
+            let occurrence = occurrences.next().ok_or_else(|| DocError::Invalid("sketch placement no longer exists".into()))?;
+            if occurrences.next().is_some() {
+                return Err(DocError::Invalid("sketch placement is ambiguous".into()));
+            }
+            component = occurrence.parent;
+        }
+        if component != 0 {
+            return Err(DocError::Invalid("sketch placement exceeds depth limit".into()));
+        }
+        Self::component_frame(doc, sketch_owner, &path)
+    }
+
+    /// Resolve this exact placement without expanding every assembly instance.
+    pub fn body_frame(&self, doc: &Document, feature: u64) -> Result<crate::Mat> {
+        let owner = doc.body_component(&self.body, feature);
+        let mut frame = Self::component_frame(doc, owner, &self.path)?;
+        if let Some(offset) = doc.body_offsets.get(&self.body) {
+            frame = crate::mat_mul(&frame, offset);
+        }
+        Ok(frame)
+    }
+
+    /// Resolve one saved component path without expanding other occurrences.
+    pub fn component_frame(doc: &Document, owner: u64, path: &[u64]) -> Result<crate::Mat> {
+        if path.len() > 64 || doc.occurrences.len() > 100_000 {
+            return Err(DocError::Invalid("selected cylinder path exceeds work limits".into()));
+        }
+        let mut frame = crate::IDENTITY;
+        let mut component = 0;
+        let mut seen = std::collections::BTreeSet::new();
+        for id in path {
+            if *id == 0 || !seen.insert(*id) {
+                return Err(DocError::Invalid("invalid selected cylinder path".into()));
+            }
+            let occurrence = doc
+                .occurrences
+                .iter()
+                .find(|o| o.id == *id && o.parent == component)
+                .ok_or_else(|| DocError::Invalid("selected cylinder placement no longer exists".into()))?;
+            frame = crate::mat_mul(&frame, &occurrence.transform);
+            component = occurrence.component;
+        }
+        if path.is_empty() {
+            frame = doc.component_transform(owner);
+        } else if component != owner {
+            return Err(DocError::Invalid("selected cylinder path belongs to another component".into()));
+        }
+        Ok(frame)
+    }
+}
+
 /// Feature definitions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -437,13 +516,15 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<String>,
     },
-    /// Raise (emboss) or sink (deboss) sketch profiles on the planar face they lie on.
+    /// Raise or sink profiles on a planar face, or wrap them on a selected cylindrical wall.
     Emboss {
         sketch: u64,
         profiles: ProfileSel,
         depth: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         deboss: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        face: Option<EmbossFace>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<String>,
     },
@@ -1220,6 +1301,7 @@ impl FeatureKind {
             FeatureKind::Extrude { extent, .. } => extent.to.iter_mut().chain(extent.from.iter_mut()).collect(),
             FeatureKind::Revolve { to: Some(p), .. } => vec![p],
             FeatureKind::Thread { face, .. } => vec![face],
+            FeatureKind::Emboss { face: Some(face), .. } => vec![&mut face.at],
             FeatureKind::Boss { position, .. } | FeatureKind::SnapFit { position, .. } | FeatureKind::Rest { position, .. } => vec![position],
             _ => Vec::new(),
         }
@@ -1253,6 +1335,9 @@ impl FeatureKind {
                     v.push(d);
                 }
                 if let Some(d) = &extent.taper {
+                    v.push(d);
+                }
+                if let Some(d) = &extent.to_offset {
                     v.push(d);
                 }
             }
@@ -1595,17 +1680,12 @@ impl Document {
         let mut st = state.clone();
         for b in &mut st.bodies {
             let c = self.body_color(b);
-            let look = self.model_body_look(b);
             let faces: Vec<solvecraft_kernel::FacePaint> = self
                 .face_colors(b)
                 .into_iter()
                 .map(|(face, l)| solvecraft_kernel::FacePaint { face, color: l.rgb(), opacity: l.opacity as f32 })
                 .collect();
-            let opacity = look
-                .map(|l| l.opacity as f32)
-                .or_else(|| b.body.paint().map(|p| p.opacity))
-                .or_else(|| b.imported.as_ref().and_then(|i| i.opacity))
-                .unwrap_or(1.0);
+            let opacity = self.model_body_opacity(b) as f32;
             let paint = solvecraft_kernel::Paint { opacity, faces };
             if c != b.body.color() || b.body.paint() != Some(&paint) {
                 b.body = b.body.clone().with_color(c).with_paint(Some(paint));
@@ -1752,9 +1832,13 @@ impl Document {
             .map(|c| match c {
                 crate::config::Column::Suppress(id) => !gone.contains(id),
                 crate::config::Column::Param(name) => !gone_params.contains(name),
+                crate::config::Column::FaceAppearance(target) => !gone.contains(&target.origin_feature),
                 _ => true,
             })
             .collect();
+        self.appearances
+            .faces
+            .retain(|face| !face.strict_name || !face.name.as_ref().is_some_and(|name| gone.iter().any(|id| name.starts_with(&format!("F{id}:")))));
         if keep.contains(&false) {
             let mut k = keep.iter();
             self.configs.columns.retain(|_| k.next().copied().unwrap_or(true));

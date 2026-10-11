@@ -195,11 +195,22 @@ fn derive(b: &ModelBody, o: &NamingOrigin, nf: usize) -> Vec<String> {
             || xb.max.z < bb.min.z - tol
             || xb.min.z > bb.max.z + tol)
     };
+    // Independently created solids own their faces even when another body
+    // occupies the same coordinates. Boolean operations still inherit inputs.
+    let independent_solid = matches!(
+        o.feature.kind,
+        FeatureKind::Box { operation: crate::Operation::NewBody, .. }
+            | FeatureKind::Cylinder { operation: crate::Operation::NewBody, .. }
+            | FeatureKind::Sphere { operation: crate::Operation::NewBody, .. }
+            | FeatureKind::Torus { operation: crate::Operation::NewBody, .. }
+            | FeatureKind::Extrude { operation: crate::Operation::NewBody, .. }
+            | FeatureKind::Revolve { operation: crate::Operation::NewBody, .. }
+    );
     let inputs: Vec<(&ModelBody, FaceIndex, Arc<Vec<String>>)> = o
         .before
         .bodies
         .iter()
-        .filter(|x| !x.body.is_mesh() && overlaps(x))
+        .filter(|x| !independent_solid && !x.body.is_mesh() && overlaps(x))
         .take(64)
         .map(|x| {
             let n = face_count(x);

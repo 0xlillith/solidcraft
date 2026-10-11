@@ -5,6 +5,8 @@
 mod browser;
 mod clipboard;
 mod component;
+mod component_clone;
+mod component_clone_assembly;
 mod construct;
 mod delete;
 mod edit;

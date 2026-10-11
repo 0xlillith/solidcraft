@@ -54,6 +54,8 @@ mod status_tests {
         assert!(app.session.log.last().is_some_and(|l| l.starts_with("Redo: ") && !l.contains("edit.redo")), "{:?}", app.session.log.last());
     }
 }
+#[cfg(test)]
+mod extrude_edit_tests;
 mod file_load;
 pub mod palette;
 pub mod params_dialog;
@@ -63,6 +65,8 @@ mod preselect_tests;
 pub mod preview;
 pub mod recovery_ui;
 pub mod ref_images;
+#[cfg(test)]
+mod revolve_edit_tests;
 pub mod scenario;
 pub mod selection;
 pub mod shortcut_box;
@@ -548,13 +552,13 @@ impl SolveApp {
         let Some(idx) = self.session.doc.feature_index(id) else { return };
         let marker = self.session.doc.marker;
         self.tool = None;
-        if self.run("timeline.roll_to", json!({ "position": idx })).is_err() {
+        if dialogs::roll_marker(self, Some(idx)).is_err() {
             return;
         }
         match dialogs::for_feature(self, id, marker) {
             Some(d) => self.dialog = Some(d),
             None => {
-                let _ = self.run("timeline.roll_to", marker.map(|m| json!({ "position": m })).unwrap_or_else(|| json!({})));
+                let _ = dialogs::roll_marker(self, marker);
                 self.palette.text = format!("timeline.edit {{\"feature\": {id}, \"set\": {{}}}}");
                 self.ui.palette_open = true;
             }

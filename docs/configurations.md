@@ -1,7 +1,8 @@
 # Design configurations
 
 The configuration table stores named design variants. Add parameter, feature suppression,
-physical material, and body appearance columns with `config.configure` or `config.column`.
+physical material, body appearance, component appearance, and semantic face appearance columns
+with `config.configure` or `config.column`.
 The desktop Configuration Table's **Add Column** menu offers the same targets. Material and
 appearance cells have a **Library** picker; their text fields also accept exact saved values.
 
@@ -34,9 +35,46 @@ face appearances keep their existing priority. Physical material changes affect 
 `delete` to remove it. Names must be unique. To remove a style column, use
 `config.column` with `material` or `appearance` set to the target body and `delete: true`.
 
-Style columns target body names. Assignments remain stored when a row suppresses the feature
-that produces that body, and become visible when it returns. Component and face appearance
-columns are not yet supported.
+Body style columns target body names. Assignments remain stored when a row suppresses the
+feature that produces that body, and become visible when it returns.
+
+## Component and face appearances
+
+**Add Column** offers component appearances and a **Face Appearance** submenu organized by
+body and semantic role. You can also select a viewport face before opening the menu and use
+**Selected face on ...**. These assignments affect every occurrence sharing the definition.
+Component columns use stable component IDs, so renaming a component preserves its rows.
+Face columns use a definition body and semantic lineage, never a saved display face index.
+
+```json
+{"command":"config.configure","params":{"component_appearances":["Part"],"face_appearances":[{"body":"Box1","point":[5,5,10]}]}}
+```
+
+Use a point on the current surface to capture a face. World occurrence picks are converted
+to the shared definition coordinates. `config.table` returns canonical keys and readable
+target labels. Use its returned face key when editing a row or deleting a face column:
+`config.column` accepts `face_appearance: "<returned key>"` with `delete: true`.
+Component columns can be removed with `component_appearance: "Part"` and `delete: true`.
+
+Supported stable face roles are box axis faces, cylinder caps and unsplit side, profile-plane
+extrude caps, and one-sided revolve caps. From/nonzero or variable Start Offset/Two Sides extrude caps and
+symmetric/Two Sides revolve caps are not yet certified. Mesh faces, ambiguous cap names,
+generic index-derived names, and sketch side names based on nearest-curve heuristics are
+rejected. Coplanar split pieces of one supported semantic face share
+the configured appearance. If that lineage disappears while its body remains, Apply and
+Preview reject the row atomically. There is no nearest-face substitution; later ordinary
+topology edits also cannot transfer its paint to a replacement face. A suppressed owning
+feature keeps the assignment dormant until it returns.
+
+The Library's **Follow inherited appearance** removes only the selected direct component
+or face override. Face paint takes priority over body, component, and physical material;
+clearing it reveals inherited or imported paint. Body renames maintain face targets.
+Deleting a component or originating feature removes its configured targets and row cells.
+Deleting one occurrence preserves the shared definition configuration.
+
+Independent component copies duplicate mapped configuration columns, row values, and rules
+without retargeting the source. Copying a strict configured face from a foreign body frozen
+as an import currently fails explicitly because imported face lineage is not certified.
 
 Activation evaluates all row parameter expressions together, so column order does not create
 temporary dependency cycles. Preview and activation reject new or changed geometry errors
@@ -96,6 +134,6 @@ value lists support up to 128 expressions. These bounds are checked before saved
 decoded. Driven appearance/material rules and repeated fixed-point evaluation are outside
 the current rule scope.
 
-Designs saved with rules use file format 8. Older designs upgrade on opening without
+Designs saved with component or strict face styles use file format 9. Older designs upgrade on opening without
 changing their existing configuration values. Older SolveCraft versions must be updated to
 open newly saved designs.

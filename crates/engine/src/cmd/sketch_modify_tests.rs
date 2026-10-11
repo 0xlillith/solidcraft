@@ -184,6 +184,58 @@ fn trim_circle_makes_an_arc_and_a_profile() {
 }
 
 #[test]
+fn exact_extend_ellipse_preserves_support_target_and_history() {
+    for (y, expected_x) in [(3.0, 12.0), (5.0, 20.0)] {
+        let mut s = new_sketch();
+        let ellipse = ids(&run(&mut s, "sketch.ellipse", json!({"center":[20,0],"major":[30,0],"minor_radius":5}))["curves"])[0].clone();
+        run(&mut s, "sketch.constraint.fix", json!({"entity":ellipse}));
+        let line = ids(&run(&mut s, "sketch.line", json!({"points":[[0,y],[5,y]],"connect":false,"infer":false}))["curves"])[0].clone();
+        let before = s.doc.to_json();
+        let target = sketch(&s).exact_segs(0).unwrap();
+        run(&mut s, "sketch.extend", json!({"curve":line,"at":[5,y]}));
+        let sk = sketch(&s);
+        let end = sk.point(sk.resolve_point(&format!("{line}.end")).unwrap()).unwrap();
+        assert!(end.dist(Vec2::new(expected_x, y)) < 1e-7, "exact ellipse contact {end:?}");
+        assert_eq!(sk.exact_segs(0).unwrap(), target);
+        let persisted = s.doc.to_json();
+        let reopened = solvecraft_doc::format::read(&persisted).unwrap();
+        assert_eq!(reopened.to_json(), persisted);
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.to_json(), before);
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.to_json(), persisted);
+    }
+}
+
+#[test]
+fn exact_extend_arc_rejects_interior_hit_atomically() {
+    let mut s = new_sketch();
+    let arc = ids(&run(&mut s, "sketch.arc.center_point", json!({"center":[0,0],"start":[10,0],"end":[0,10],"connect":false}))["curves"])[0].clone();
+    let x = 50.0_f64.sqrt();
+    let cutter = ids(&run(&mut s, "sketch.line", json!({"points":[[x,5],[x,9]],"connect":false,"infer":false}))["curves"])[0].clone();
+    run(&mut s, "sketch.constraint.fix", json!({"entity":cutter}));
+    let before = s.doc.to_json();
+    let history = s.undo.len();
+    assert!(s.execute("sketch.extend", &json!({"curve":arc,"at":[10,0]})).is_err());
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(s.undo.len(), history);
+}
+
+#[test]
+fn exact_extend_refuses_ambiguous_stop_without_history_change() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points":[[0,0],[5,0]],"connect":false,"infer":false}));
+    run(&mut s, "sketch.line", json!({"points":[[10,-5],[10,5]],"connect":false,"infer":false}));
+    run(&mut s, "sketch.line", json!({"points":[[8,-2],[12,2]],"connect":false,"infer":false}));
+    let before = s.doc.to_json();
+    let history = s.undo.len();
+    let error = s.execute("sketch.extend", &json!({"curve":"l1","at":[5,0]})).unwrap_err();
+    assert!(error.to_string().contains("multiple curves"), "{error}");
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(s.undo.len(), history);
+}
+
+#[test]
 fn fillet_and_chamfers() {
     let mut s = new_sketch();
     let r = run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]}));
@@ -562,4 +614,102 @@ fn offset_free_form_curves() {
     let e = ids(&run(&mut s, "sketch.ellipse", json!({"center": [100, 0], "major": [110, 0], "minor_radius": 5}))["curves"])[0].clone();
     let r = run(&mut s, "sketch.offset", json!({"curves": [e], "distance": 1, "side": [100, 20]}));
     assert_eq!(ids(&r["curves"]).len(), 1, "{r}");
+}
+
+#[test]
+fn certified_offset_follows_dimension_drag_reopen_break_and_undo() {
+    let mut s = new_sketch();
+    let ellipse = ids(&run(&mut s, "sketch.ellipse", json!({"center":[0,0],"major":[10,0],"minor_radius":5,"connect":false}))["curves"])[0].clone();
+    run(&mut s, "sketch.dimension", json!({"entities":[ellipse],"type":"major","value":10}));
+    let before = s.doc.to_json();
+    let out = run(&mut s, "sketch.offset", json!({"curves":[ellipse],"distance":-1,"chain":false}));
+    let output = out["curves"][0].as_str().unwrap().to_string();
+    assert_eq!(sketch(&s).freeform_offsets.len(), 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before);
+    run(&mut s, "edit.redo", json!({}));
+    let result = run(&mut s, "parameters.change", json!({"name":"d1","expression":12}));
+    assert_eq!(result["errors"], json!([]));
+    let verify = |s: &Session| {
+        let sk = sketch(s);
+        let source = sk.curve_index(&ellipse).unwrap();
+        let (c, m) = match sk.curves[source].kind {
+            CurveKind::Ellipse { c, m, .. } => (sk.point(c).unwrap(), sk.point(m).unwrap()),
+            _ => panic!("ellipse"),
+        };
+        let derived = sk.exact_segs(sk.curve_index(&output).unwrap()).unwrap();
+        let want = m + (m - c).normalized().unwrap();
+        assert!(derived[0].point_at(0.0).dist(want) < 1e-7, "updated offset {want:?}");
+    };
+    verify(&s);
+    run(&mut s, "sketch.drag", json!({"entity":ellipse,"from":[0,0],"to":[4,3]}));
+    verify(&s);
+    let mut reopened = Session {
+        doc: std::sync::Arc::new(solvecraft_doc::format::read(&s.doc.to_json()).unwrap()),
+        active_sketch: s.active_sketch,
+        ..Session::default()
+    };
+    reopened.refresh();
+    verify(&reopened);
+    let attached = reopened.doc.to_json();
+    run(&mut reopened, "sketch.offset.break", json!({"curve":output}));
+    let sk = sketch(&reopened);
+    assert!(sk.freeform_offsets.is_empty());
+    assert!(sk.curves[sk.curve_index(&output).unwrap()].kind.point_ids().iter().all(|i| !sk.points[*i].fixed));
+    run(&mut reopened, "edit.undo", json!({}));
+    assert_eq!(reopened.doc.to_json(), attached);
+}
+
+#[test]
+fn certified_offset_delete_output_undo_reopen_and_refuse_dependent_source() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.ellipse", json!({"center":[0,0],"major":[10,0],"minor_radius":5}));
+    let out = run(&mut s, "sketch.offset", json!({"curves":["e1"],"distance":-1,"chain":false}));
+    let id = out["curves"][0].as_str().unwrap().to_string();
+    let attached = s.doc.to_json();
+    let history = s.undo.len();
+    assert!(s.execute("sketch.delete", &json!({"entities":["e1"]})).is_err());
+    assert_eq!(s.doc.to_json(), attached);
+    assert_eq!(s.undo.len(), history);
+    run(&mut s, "sketch.delete", json!({"entities":[id]}));
+    let sk = sketch(&s);
+    assert!(sk.freeform_offsets.is_empty());
+    assert!(sk.curve_index(&id).is_none());
+    assert!(sk.curve_index("e1").is_some());
+    let deleted = s.doc.to_json();
+    let reopened = solvecraft_doc::format::read(&deleted).unwrap();
+    assert_eq!(reopened.to_json(), deleted);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), attached);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.to_json(), deleted);
+    // The central removal path also handles a deleted fit node, which removes its curve.
+    run(&mut s, "edit.undo", json!({}));
+    let sk = sketch(&s);
+    let node = sk.points[sk.curves[sk.curve_index(&id).unwrap()].kind.point_ids()[3]].id.clone();
+    run(&mut s, "sketch.delete", json!({"entities":[node]}));
+    assert!(sketch(&s).freeform_offsets.is_empty());
+    assert!(sketch(&s).curve_index(&id).is_none());
+}
+
+#[test]
+fn analytic_offset_partial_delete_releases_survivors_preserves_source_and_undo() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[20,30]}));
+    let out = run(&mut s, "sketch.offset", json!({"curves":["l1"],"distance":-1}));
+    let outputs = ids(&out["curves"]);
+    assert_eq!(outputs.len(), 4);
+    let before = s.doc.to_json();
+    run(&mut s, "sketch.delete", json!({"entities":[outputs[0]]}));
+    let sk = sketch(&s);
+    assert!(sk.offsets.is_empty());
+    for id in outputs.iter().skip(1) {
+        let curve = &sk.curves[sk.curve_index(id).unwrap()];
+        assert!(curve.kind.point_ids().iter().all(|i| !sk.points[*i].fixed));
+    }
+    assert!(sk.curve_index("l1").is_some());
+    let saved = s.doc.to_json();
+    assert_eq!(solvecraft_doc::format::read(&saved).unwrap().to_json(), saved);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before);
 }

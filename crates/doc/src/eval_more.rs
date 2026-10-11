@@ -2,17 +2,64 @@
 //! kernel's extrude, boolean, offset and transform operations).
 
 use super::*;
+use crate::EmbossFace;
 use crate::apply_point;
 use solvecraft_geom::{Loop2, Seg2};
 
 pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState) -> Result<()> {
     match &f.kind {
-        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets } => {
+        FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face } => {
             let ss = st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?;
             let regions = select_profiles(ss, profiles)?;
             let d = val(vals, depth, Kind::Length)?;
             if !(d > 0.0) {
                 return Err(DocError::Invalid("the emboss depth must be positive".into()));
+            }
+            if let Some(face) = face {
+                if !targets.is_empty() && (targets.len() != 1 || targets.first() != Some(&face.body)) {
+                    return Err(DocError::Invalid("cylinder emboss must keep its selected target body".into()));
+                }
+                let i =
+                    st.bodies.iter().position(|b| b.name == face.body).ok_or_else(|| DocError::Unknown(format!("emboss body `{}`", face.body)))?;
+                let mb = st.bodies.get(i).cloned().ok_or_else(|| DocError::Invalid("emboss body".into()))?;
+                let body_frame = face.body_frame(doc, mb.feature)?;
+                let inverse = crate::mat_inverse(&body_frame).ok_or_else(|| DocError::Invalid("invalid cylinder body frame".into()))?;
+                let sketch_owner = doc.feature(ss.feature).map(|f| f.component).unwrap_or(0);
+                let author_frame = EmbossFace::component_frame(doc, f.component, &face.author_path)?;
+                let sketch_frame = face.sketch_frame(doc, f.component, sketch_owner, mb.feature)?;
+                let sketch_transform = crate::mat_mul(&inverse, &sketch_frame);
+                let plane = Plane::new(
+                    crate::apply_point(&sketch_transform, ss.plane.origin),
+                    crate::apply_vector(&sketch_transform, ss.plane.x),
+                    crate::apply_vector(&sketch_transform, ss.plane.y),
+                )
+                .ok_or_else(|| DocError::Invalid("invalid cylinder sketch frame".into()))?;
+                let mut at = crate::apply_point(&crate::mat_mul(&inverse, &author_frame), face.at);
+                let name = f
+                    .face_names
+                    .first()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| DocError::Invalid("selected cylinder face has no persistent identity".into()))?;
+                {
+                    let mut scoped = ModelState::default();
+                    scoped.bodies.push(mb.clone());
+                    let (picked, split) = crate::naming::point_on_face(&scoped, name, at)
+                        .ok_or_else(|| DocError::Invalid("selected cylinder face no longer exists".into()))?;
+                    if split {
+                        return Err(DocError::Invalid("selected cylinder face was split".into()));
+                    }
+                    let (index, _, _) = crate::project::nearest_face(&mb.mesh(), picked)
+                        .ok_or_else(|| DocError::Invalid("selected cylinder face cannot be resolved".into()))?;
+                    if crate::naming::face_names(&mb).get(index as usize) != Some(name) {
+                        return Err(DocError::Invalid("selected cylinder face is ambiguous".into()));
+                    }
+                    at = kernel::cylinder_emboss_anchor(&mb.body, index as usize, picked)?;
+                }
+                let result = kernel::emboss_cylinder_at(&mb.body, at, &plane, &regions, if *deboss { -d } else { d })?;
+                if let Some(slot) = st.bodies.get_mut(i) {
+                    *slot = ModelBody::new(mb.name, result, mb.feature);
+                }
+                return Ok(());
             }
             let (a, b) = if *deboss { (-d, 0.0) } else { (0.0, d) };
             let tools = kernel::extrude(&ss.plane, &regions, a, b)?;

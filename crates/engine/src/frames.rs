@@ -26,6 +26,8 @@ enum K {
     Make,
     /// A direction: turned with the command's frame.
     Dir,
+    /// An arbitrary axis object in the authoring frame: {origin, dir}.
+    Axis,
     /// A plane object (`{face}`, `{origin, normal}`, `{origin, x_dir, y_dir}`) or a plane name.
     Plane,
     /// A body name, or a list of them.
@@ -43,7 +45,8 @@ use K::*;
 /// The parameters each command takes in world coordinates.
 fn table(id: &str) -> &'static [(&'static str, K)] {
     match id {
-        "solid.extrude" | "solid.revolve" => &[("face", Pick), ("targets", Body), ("participants", Body)],
+        "solid.extrude" => &[("face", Pick), ("from", Make), ("to", Make), ("targets", Body), ("participants", Body)],
+        "solid.revolve" => &[("face", Pick), ("axis", Axis), ("to", Make), ("targets", Body), ("participants", Body)],
         "solid.box" | "solid.sphere" => &[("corner", Make), ("center", Make)],
         "solid.cylinder" | "solid.coil" | "solid.torus" => &[("base", Make), ("center", Make), ("axis", Dir)],
         "solid.fillet" | "solid.chamfer" => &[("edges", Picks), ("body", Body)],
@@ -51,6 +54,7 @@ fn table(id: &str) -> &'static [(&'static str, K)] {
         "solid.scale" => &[("origin", Make), ("bodies", Body)],
         "solid.offset_face" | "solid.shell" => &[("faces", Picks), ("body", Body)],
         "solid.thread" => &[("face", Pick)],
+        "solid.emboss" => &[("face", Make)],
         "solid.draft" => &[("faces", Picks), ("neutral", Plane), ("pull", Dir), ("body", Body)],
         "solid.press_pull" => &[("face", Pick), ("edges", Picks)],
         "solid.replace_face" => &[("faces", Picks), ("target_face", Pick), ("target", Plane), ("body", Body)],
@@ -333,7 +337,34 @@ pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
         // component is active. Body-relative picks still use the picked body's frame.
         let mut context = s.scratch();
         context.active_component = feature.component;
-        let inner = to_local(&context, cmd, params.get("params")?)?;
+        if let solvecraft_doc::FeatureKind::Emboss { face: Some(face), .. } = &feature.kind {
+            context.active_occurrence_path = (!face.author_path.is_empty()).then(|| face.author_path.clone());
+        }
+        let mut inner = to_local(&context, cmd, params.get("params")?)?;
+        // An untouched explicit axis is displayed in world coordinates by Edit
+        // Feature. Keep its exact saved values instead of an affine round trip.
+        if cmd == "solid.revolve"
+            && let solvecraft_doc::FeatureKind::Revolve { axis: solvecraft_doc::AxisRef::Line { origin, dir }, .. } = &feature.kind
+        {
+            let frame = context.active_component_frame();
+            let displayed = serde_json::json!({"origin":pt(apply_point(&frame,*origin)),"dir":pt(apply_vector(&frame,*dir))});
+            if params.get("params").and_then(|p| p.get("axis")) == Some(&displayed) {
+                inner["axis"] = serde_json::json!({"origin":pt(*origin),"dir":pt(*dir)});
+            }
+        }
+        let points = match (&feature.kind, cmd) {
+            (solvecraft_doc::FeatureKind::Revolve { to, .. }, "solid.revolve") => [("to", *to), ("from", None)],
+            (solvecraft_doc::FeatureKind::Extrude { extent, .. }, "solid.extrude") => [("to", extent.to), ("from", extent.from)],
+            _ => [("to", None), ("from", None)],
+        };
+        for (key, point) in points {
+            if let Some(point) = point {
+                let displayed = pt(apply_point(&context.active_component_frame(), point));
+                if params.get("params").and_then(|p| p.get(key)) == Some(&displayed) {
+                    inner[key] = pt(point);
+                }
+            }
+        }
         let mut out = params.clone();
         out["params"] = inner;
         return Some(out);
@@ -359,6 +390,24 @@ pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
                 Picks => m.picks(v, body.as_deref()),
                 Make => m.make(v),
                 Dir => m.dir(v),
+                Axis => {
+                    if let Some(axis) = v.as_object() {
+                        let mut axis = axis.clone();
+                        if let Some(origin) = axis.get("origin").and_then(|o| m.make(o)) {
+                            axis.insert("origin".into(), origin);
+                        }
+                        if let Some(dir) = axis.get("dir").and_then(vec3)
+                            && !is_identity(&m.f.active)
+                            && let Some(inv) = mat_inverse(&m.f.active)
+                        {
+                            axis.insert("dir".into(), pt(apply_vector(&inv, dir)));
+                            m.changed = true;
+                        }
+                        Some(Value::Object(axis))
+                    } else {
+                        None
+                    }
+                }
                 Plane => m.plane(v),
                 Body => m.body(v),
                 Here | HerePlane => {

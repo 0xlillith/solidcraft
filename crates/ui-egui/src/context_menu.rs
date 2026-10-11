@@ -652,6 +652,9 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     if !curves.is_empty() {
         v.push(cmd(app, "sketch.construction", "Normal / Construction").with(json!({ "curves": curves })));
     }
+    if curves.len() == 1 && ss.sketch.freeform_offsets.iter().any(|offset| offset.output == curves[0]) {
+        v.push(cmd(app, "sketch.offset.break", "Break Offset Association").with(json!({"curve":curves[0]})));
+    }
     v.push(act("ui.fix", "Fix/Unfix", "c_fix").with(json!({ "entities": ents })));
     v.push(act("ui.delete", "Delete", "delete").key("Del"));
     v.push(cmd(app, "sketch.dimension", "Sketch Dimension").with(json!({ "entities": ents })).on(ents.len() <= 2));

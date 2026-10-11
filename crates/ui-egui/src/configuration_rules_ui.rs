@@ -210,6 +210,18 @@ pub(super) fn show(ui: &mut Ui, app: &mut SolveApp, error: &mut Option<String>, 
     if let Some(preview) = &editor.preview {
         ui.collapsing(format!("Preview: {}", preview["active"].as_str().unwrap_or("row")), |ui| {
             ui.label("Preview leaves the current design unchanged.");
+            if let Some(styles) = preview["styles"].as_array() {
+                for style in styles {
+                    ui.add(
+                        egui::Label::new(format!(
+                            "{}: {} (shared definition)",
+                            style["target"].as_str().unwrap_or("Appearance"),
+                            if style["dormant"].as_bool() == Some(true) { "dormant" } else { "resolved" }
+                        ))
+                        .wrap(),
+                    );
+                }
+            }
             if let Some(trace) = preview["trace"].as_array() {
                 for entry in trace {
                     ui.label(format!(

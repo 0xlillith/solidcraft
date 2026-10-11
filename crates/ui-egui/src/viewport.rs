@@ -15,6 +15,10 @@ use crate::selection::{BoxSel, origin_quads, origin_size, ray_quad};
 use crate::theme::Tokens;
 use crate::{SolveApp, icons};
 
+#[cfg(test)]
+#[path = "viewport_appearance_tests.rs"]
+mod appearance_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavMode {
     Orbit,
@@ -290,7 +294,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
         let hidden_edges = app.ui.visual_style == 3;
         let hidden_col = c4(tk.text.gamma_multiply(0.35));
         // Appearances: the body's opacity, and faces with looks of their own.
-        let opacity = s.doc.model_body_look(b).map_or(1.0, |l| l.opacity);
+        let opacity = s.doc.model_body_opacity(b);
         let face_looks: std::collections::HashMap<usize, solvecraft_engine::doc::appearance::Look> =
             if shaded { s.doc.face_colors(b).into_iter().collect() } else { Default::default() };
         for (ti, t) in m.triangles.iter().enumerate().filter(|_| shaded) {
@@ -1086,13 +1090,18 @@ fn hidden_face_outline(sc: &mut GpuScene, m: &solvecraft_engine::geom::Mesh, fac
     }
 }
 
-fn profile_fill(sc: &mut GpuScene, app: &SolveApp, sketch: u64, index: usize, fill: Color32, edge: Color32) {
+pub(crate) fn profile_fill(sc: &mut GpuScene, app: &SolveApp, sketch: u64, index: usize, fill: Color32, edge: Color32) {
     let st = app.session.world_state();
     let Some(ss) = st.sketch(sketch) else { return };
     let Some(p) = ss.profiles.get(index) else { return };
+    let plane = match crate::dialogs::emboss_profile_plane(app, sketch) {
+        Ok(Some(plane)) => plane,
+        Ok(None) => ss.plane,
+        Err(_) => return,
+    };
     // Lift toward the eye so a profile on a face shows over it.
     let lift = app.cam.back() * (app.cam.half_height() * 0.002);
-    let w = |q: solvecraft_engine::geom::Vec2| (ss.plane.to_world(q) + lift).to_f32();
+    let w = |q: solvecraft_engine::geom::Vec2| (plane.to_world(q) + lift).to_f32();
     let col = c4(fill);
     // In the translucent pass (after the grid and edges) so it covers them.
     for [a, b, c] in p.region.triangulate(0.02) {

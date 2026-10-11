@@ -401,7 +401,7 @@ fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(cmd, "too many face appearances"));
             }
             let name = st_names.iter().find(|(b, p, _)| b == body && p.dist(*pt) < 1e-12).and_then(|(_, _, n)| n.clone());
-            a.faces.push(FaceLook { body: body.clone(), point: *pt, look: l.clone(), name });
+            a.faces.push(FaceLook { body: body.clone(), point: *pt, look: l.clone(), name, strict_name: false });
         }
     }
     for c in &comps {
@@ -414,11 +414,27 @@ fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
     if look.is_none() && !faces.is_empty() {
         let st = s.model.state();
         let doc = s.doc_mut();
-        let picked: Vec<(String, Option<usize>)> =
-            faces.iter().map(|(b, pt)| (b.clone(), st.body(b).and_then(|mb| solvecraft_doc::appearance::face_index_at(mb, *pt)))).collect();
+        let picked: Vec<(String, Option<usize>, Option<String>)> = faces
+            .iter()
+            .map(|(b, pt)| {
+                (
+                    b.clone(),
+                    st.body(b).and_then(|mb| solvecraft_doc::appearance::face_index_at(mb, *pt)),
+                    st_names.iter().find(|(name, p, _)| name == b && p.dist(*pt) < 1e-12).and_then(|(_, _, name)| name.clone()),
+                )
+            })
+            .collect();
         doc.appearances.faces.retain(|f| {
             let idx = st.body(&f.body).and_then(|mb| solvecraft_doc::appearance::face_index_at(mb, f.point));
-            !picked.iter().any(|(b, i)| *b == f.body && i.is_some() && *i == idx)
+            !picked.iter().any(|(b, i, name)| {
+                *b == f.body
+                    && (f
+                        .name
+                        .as_ref()
+                        .zip(name.as_ref())
+                        .is_some_and(|(a, b)| solvecraft_doc::naming::strip_piece(a) == solvecraft_doc::naming::strip_piece(b))
+                        || (!f.strict_name && i.is_some() && *i == idx))
+            })
         });
     }
     Ok(json!({

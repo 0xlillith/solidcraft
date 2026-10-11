@@ -486,6 +486,9 @@ fn rename_body(s: &mut Session, p: &Value) -> Result<Value> {
             solvecraft_doc::config::Column::Material(body) | solvecraft_doc::config::Column::Appearance(body) if *body == old => {
                 *body = name.to_string();
             }
+            solvecraft_doc::config::Column::FaceAppearance(target) if target.body == old => {
+                target.body = name.to_string();
+            }
             _ => {}
         }
     }

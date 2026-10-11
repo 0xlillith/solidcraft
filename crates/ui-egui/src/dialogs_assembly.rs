@@ -819,13 +819,11 @@ pub fn world_preview(s: &Session, cmds: &[(String, Value)], colors: Colors) -> O
     if cmds.is_empty() || !(moves || solvecraft_engine::frames::placed(s)) {
         return None;
     }
-    let mut scratch = s.scratch();
-    for (id, p) in cmds {
-        if let Err(e) = scratch.execute(id, p) {
-            return Some(Err(e.to_string()));
-        }
-    }
-    let (before, after) = (s.world_state(), scratch.world_state());
+    let preview = match s.preview_visible_world(cmds) {
+        Ok(preview) => preview,
+        Err(error) => return Some(Err(error.to_string())),
+    };
+    let (before, after) = (preview.before, preview.after);
     // A moved component looks like itself (no new surface), with its old place as the ghost.
     let colors = Colors { added: colors.body, ..colors };
     let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::preview::build(&before, &after, colors)));

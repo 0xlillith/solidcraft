@@ -25,13 +25,16 @@
 //!   instead of encountering an unknown column variant.
 //! - 8: ordered configuration rules and persistent signed line-angle, arc-sweep and slot
 //!   dimensions. Version 7 geometry and table values retain their meaning without changes.
+//! - 9: configured component/semantic-face styles, associative free-form offsets and
+//!   explicit cylindrical emboss targets. Existing version 8 geometry and rules are
+//!   preserved; new fields use defaults rather than guessing a target or an association.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 8;
+pub const FORMAT: u32 = 9;
 
 pub fn format_string(n: u32) -> String {
     format!("solvecraft/{n}")
@@ -44,7 +47,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 7] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(())];
+const JSON_STEPS: [JsonStep; 8] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(()), |_| Ok(())];
 
 /// Old XZ references retain their exact frame, including nested offset and angled planes.
 /// New origin references use +Y; freezing the old frame avoids changing sketch coordinates,
@@ -136,6 +139,9 @@ pub fn read(s: &str) -> Result<Document> {
     }
     check_numbers(&v, 0)?;
     crate::config::validate_rules_json(&v)?;
+    crate::config::validate_styles_json(&v)?;
+    validate_emboss_targets(&v)?;
+    validate_freeform_offsets(&v)?;
     for step in JSON_STEPS.iter().skip(version as usize - 1).take((FORMAT - version) as usize) {
         step(&mut v)?;
     }
@@ -151,10 +157,123 @@ pub fn read(s: &str) -> Result<Document> {
             return Err(DocError::Invalid(format!("damaged design: occurrence `{}` has an invalid placement", o.name)));
         }
     }
+    for feature in &d.features {
+        if let crate::FeatureKind::Sketch { sketch, .. } = &feature.kind {
+            sketch.validate_freeform_offsets().map_err(|e| DocError::Invalid(format!("damaged design: {e}")))?;
+        }
+    }
     // Fill in what older designs (and hand-edited files) may lack; a no-op otherwise.
     normalise(&mut d)?;
     d.format = format_string(FORMAT);
     Ok(d)
+}
+
+/// Validate new explicit targets before typed decoding. Older planar features have none.
+fn validate_emboss_targets(value: &Value) -> Result<()> {
+    let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(()) };
+    if features.len() > crate::document::MAX_FEATURES {
+        return Err(DocError::Invalid("document too large".into()));
+    }
+    for feature in features {
+        if feature.get("type").and_then(Value::as_str) != Some("emboss") {
+            continue;
+        }
+        let Some(target) = feature.get("face").filter(|target| !target.is_null()) else { continue };
+        let invalid = || DocError::Invalid("damaged design: an emboss face needs a bounded body name and three finite coordinates".into());
+        let object = target.as_object().ok_or_else(invalid)?;
+        if object.keys().any(|key| !matches!(key.as_str(), "body" | "at" | "path" | "author_path")) {
+            return Err(invalid());
+        }
+        let body = object.get("body").and_then(Value::as_str).ok_or_else(invalid)?;
+        let point = object.get("at").and_then(Value::as_array).ok_or_else(invalid)?;
+        if body.trim().is_empty()
+            || body.len() > 512
+            || body.chars().any(char::is_control)
+            || point.len() != 3
+            || point.iter().any(|coordinate| coordinate.as_f64().is_none_or(|number| !number.is_finite() || number.abs() > MAX_REAL))
+        {
+            return Err(invalid());
+        }
+        for path in ["path", "author_path"].into_iter().filter_map(|key| object.get(key)) {
+            let path = path.as_array().ok_or_else(invalid)?;
+            if path.len() > 64 {
+                return Err(invalid());
+            }
+            let mut ids = std::collections::BTreeSet::new();
+            for id in path {
+                let id = id.as_u64().filter(|id| *id != 0).ok_or_else(invalid)?;
+                if !ids.insert(id) {
+                    return Err(invalid());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_freeform_offsets(value: &Value) -> Result<()> {
+    let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(()) };
+    for feature in features {
+        if feature.get("type").and_then(Value::as_str) != Some("sketch") {
+            continue;
+        }
+        let Some(records) = feature.get("sketch").and_then(|sketch| sketch.get("freeform_offsets")) else { continue };
+        let invalid = || DocError::Invalid("damaged design: invalid free-form offset metadata".into());
+        let records = records.as_array().ok_or_else(invalid)?;
+        if records.len() > 128 {
+            return Err(invalid());
+        }
+        let mut outputs = std::collections::BTreeSet::new();
+        for record in records {
+            let object = record.as_object().ok_or_else(invalid)?;
+            if object.len() != 9
+                || object.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "source" | "output" | "forward" | "distance" | "divisions" | "pieces" | "closed" | "tolerance" | "certificate"
+                    )
+                })
+            {
+                return Err(invalid());
+            }
+            let source = record.get("source").and_then(Value::as_str).ok_or_else(invalid)?;
+            let output = record.get("output").and_then(Value::as_str).ok_or_else(invalid)?;
+            if [source, output].iter().any(|id| id.is_empty() || id.len() > 512 || id.chars().any(char::is_control))
+                || source == output
+                || !outputs.insert(output)
+            {
+                return Err(invalid());
+            }
+            let divisions = record.get("divisions").and_then(Value::as_u64).ok_or_else(invalid)?;
+            let pieces = record.get("pieces").and_then(Value::as_u64).ok_or_else(invalid)?;
+            let distance = record.get("distance").and_then(Value::as_f64).ok_or_else(invalid)?;
+            let tolerance = record.get("tolerance").and_then(Value::as_f64).ok_or_else(invalid)?;
+            if !(1..=256).contains(&divisions)
+                || !divisions.is_power_of_two()
+                || !(1..=256).contains(&pieces)
+                || pieces * divisions >= solvecraft_sketch::MAX_SPLINE_POINTS as u64
+                || !distance.is_finite()
+                || !(1e-9..=MAX_REAL).contains(&distance.abs())
+                || !tolerance.is_finite()
+                || !(tolerance > 0.0 && tolerance <= 0.002)
+                || record.get("certificate").and_then(Value::as_u64) != Some(1)
+                || record.get("forward").and_then(Value::as_bool).is_none()
+                || record.get("closed").and_then(Value::as_bool).is_none()
+            {
+                return Err(invalid());
+            }
+        }
+        let mut resolved = std::collections::BTreeSet::new();
+        for record in records {
+            let source = record.get("source").and_then(Value::as_str).ok_or_else(invalid)?;
+            let output = record.get("output").and_then(Value::as_str).ok_or_else(invalid)?;
+            if outputs.contains(source) && !resolved.contains(source) {
+                return Err(invalid());
+            }
+            resolved.insert(output);
+        }
+    }
+    Ok(())
 }
 
 /// Largest coordinate or size a design may hold (mm): a kilometre-scale part is already far
@@ -217,6 +336,173 @@ mod tests {
     use super::*;
 
     #[test]
+    fn version_eight_to_object_offset_keeps_existing_model_parameter_names() {
+        use crate::{Direction, Extent, FeatureKind, Operation, PlaneRef, ProfileSel};
+        let mut document = Document::new("legacy named extent");
+        document.set_param("offset", "2", Some("mm"), None).unwrap();
+        let sketch = document
+            .add_feature(FeatureKind::Sketch { plane: PlaneRef::Origin { name: "XY".into() }, sketch: solvecraft_sketch::Sketch::new() }, None)
+            .unwrap();
+        document
+            .add_feature(
+                FeatureKind::Extrude {
+                    sketch,
+                    profiles: ProfileSel::All,
+                    extent: Extent {
+                        distance: "10".into(),
+                        direction: Direction::Negative,
+                        distance2: None,
+                        start_offset: None,
+                        through_all: false,
+                        taper: Some("0 deg".into()),
+                        to: Some(solvecraft_geom::Vec3::new(0.0, 0.0, 10.0)),
+                        to_offset: Some("offset + 1 mm".into()),
+                        from: Some(solvecraft_geom::Vec3::new(0.0, 0.0, 5.0)),
+                    },
+                    operation: Operation::NewBody,
+                    targets: vec![],
+                },
+                None,
+            )
+            .unwrap();
+        document
+            .add_feature(
+                FeatureKind::Box {
+                    corner: ["0".into(), "0".into(), "0".into()],
+                    length: "d1".into(),
+                    width: "4".into(),
+                    height: "6".into(),
+                    operation: Operation::NewBody,
+                },
+                None,
+            )
+            .unwrap();
+        let mut legacy: Value = serde_json::from_str(&document.to_json()).unwrap();
+        legacy["format"] = Value::from("solvecraft/8");
+        // Version 8 exposed distance and taper, but had no model slot for To Offset.
+        legacy["features"][1]["param_names"] = serde_json::json!(["d1", "d2"]);
+        legacy["features"][2]["param_names"] = serde_json::json!(["d3", "d4", "d5"]);
+        let old_kind = legacy["features"][1].clone();
+        let upgraded = read(&legacy.to_string()).unwrap();
+        assert_eq!(&upgraded.features[1].param_names[..2], ["d1", "d2"]);
+        assert_eq!(upgraded.features[2].param_names, ["d3", "d4", "d5"]);
+        assert_eq!(upgraded.features[1].param_names.len(), 3);
+        assert_eq!(upgraded.features[1].param_names[2], "d6");
+        let saved: Value = serde_json::from_str(&upgraded.to_json()).unwrap();
+        for field in ["extent", "sketch", "operation", "profiles"] {
+            assert_eq!(saved["features"][1][field], old_kind[field]);
+        }
+        let (values, errors) = upgraded.param_values();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(values.get("d1").unwrap().v, 10.0);
+        assert_eq!(values.get("d3").unwrap().v, 10.0);
+        assert_eq!(values.get("d6").unwrap().v, 3.0);
+        assert_eq!(read(&upgraded.to_json()).unwrap(), upgraded);
+    }
+
+    #[test]
+    fn saved_offset_cannot_alias_and_overwrite_its_source_geometry() {
+        use solvecraft_geom::Vec2;
+        use solvecraft_sketch::{CurveKind, Sketch};
+        let mut sketch = Sketch::new();
+        let center = sketch.add_point(Vec2::ZERO, None).unwrap();
+        let major = sketch.add_point(Vec2::new(10.0, 0.0), None).unwrap();
+        let source = sketch.add_curve(CurveKind::Ellipse { c: center, m: major, r: 5.0 }, None).unwrap();
+        let output = sketch.add_freeform_offset(source, true, -1.0).unwrap();
+        assert!(sketch.validate_freeform_offsets().is_ok());
+        if let CurveKind::Spline { pts, .. } = &mut sketch.curves[output].kind {
+            pts[0] = center;
+        } else {
+            panic!("offset must produce a fit spline");
+        }
+        let mut document = Document::new("aliased offset geometry");
+        document.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, None).unwrap();
+        let error = read(&document.to_json()).unwrap_err().to_string();
+        assert!(error.contains("damaged design"), "{error}");
+    }
+
+    #[test]
+    fn structurally_valid_offset_records_must_reference_real_sketch_geometry() {
+        let mut document = Document::new("missing offset geometry");
+        document
+            .add_feature(
+                crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch: solvecraft_sketch::Sketch::new() },
+                None,
+            )
+            .unwrap();
+        let mut value: Value = serde_json::from_str(&document.to_json()).unwrap();
+        value["features"][0]["sketch"]["freeform_offsets"] = serde_json::json!([{
+            "source":"ellipse", "output":"offset", "forward":true, "distance":2.0,
+            "divisions":8, "pieces":4, "closed":true, "tolerance":0.002, "certificate":1
+        }]);
+        assert!(validate_freeform_offsets(&value).is_ok());
+        let error = read(&value.to_string()).unwrap_err().to_string();
+        assert!(error.contains("damaged design"), "{error}");
+    }
+
+    #[test]
+    fn freeform_offset_metadata_is_bounded_before_typed_decoding() {
+        let valid = serde_json::json!({"source":"ellipse", "output":"offset", "forward":true,
+            "distance":2.0, "divisions":8, "pieces":4, "closed":true,
+            "tolerance":0.002, "certificate":1});
+        let mut malformed = Vec::new();
+        for (key, value) in [
+            ("divisions", serde_json::json!(u64::MAX)),
+            ("pieces", serde_json::json!(u64::MAX)),
+            ("divisions", serde_json::json!(3)),
+            ("distance", serde_json::json!(0)),
+            ("tolerance", serde_json::json!(0.003)),
+            ("certificate", serde_json::json!(2)),
+            ("output", serde_json::json!("x".repeat(513))),
+            ("source", serde_json::json!("offset")),
+            ("unknown", serde_json::json!(true)),
+        ] {
+            let mut record = valid.clone();
+            record[key] = value;
+            malformed.push(serde_json::json!([record]));
+        }
+        malformed.push(serde_json::json!(vec![valid.clone(); 129]));
+        malformed.push(serde_json::json!([valid.clone(), valid.clone()]));
+        let mut cycle = valid.clone();
+        cycle["source"] = serde_json::json!("offset");
+        cycle["output"] = serde_json::json!("ellipse");
+        malformed.push(serde_json::json!([valid, cycle]));
+        for records in malformed {
+            let mut value: Value = serde_json::from_str(&Document::new("hostile offset").to_json()).unwrap();
+            value["features"] = serde_json::json!([{"type":"sketch", "sketch":{"freeform_offsets":records}}]);
+            let error = read(&value.to_string()).unwrap_err().to_string();
+            assert!(error.contains("free-form offset metadata"), "{error}");
+            value["format"] = Value::from(format_string(FORMAT + 1));
+            assert!(read(&value.to_string()).unwrap_err().to_string().contains("newer SolveCraft"));
+        }
+    }
+
+    #[test]
+    fn explicit_emboss_target_bounds_precede_typed_decoding() {
+        for target in [
+            serde_json::json!({"body":"", "at":[0,0,0]}),
+            serde_json::json!({"body":"Body", "at":[0,0]}),
+            serde_json::json!({"body":"Body", "at":[0,"invalid",0]}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "unknown":true}),
+            serde_json::json!({"body":"x".repeat(513), "at":[0,0,0]}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "path":"bad"}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "path":[0]}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "path":[1,1]}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "path":(1..=65).collect::<Vec<u64>>()}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "author_path":[1,1]}),
+            serde_json::json!({"body":"Body", "at":[0,0,0], "author_path":(1..=65).collect::<Vec<u64>>()}),
+        ] {
+            let mut value: Value = serde_json::from_str(&Document::new("hostile target").to_json()).unwrap();
+            value["features"] = serde_json::json!([{"type":"emboss", "face":target}]);
+            let error = read(&value.to_string()).unwrap_err().to_string();
+            assert!(error.contains("emboss face"), "{error}");
+            value["format"] = Value::from(format_string(FORMAT + 1));
+            let error = read(&value.to_string()).unwrap_err().to_string();
+            assert!(error.contains("newer SolveCraft"), "{error}");
+        }
+    }
+
+    #[test]
     fn version_six_configuration_rows_upgrade_without_changing_values_or_features() {
         use crate::config::{Column, ConfigRow};
         let mut d = Document::new("legacy configurations");
@@ -269,7 +555,7 @@ mod tests {
         let roundtrip = read(&value.to_string()).unwrap();
         assert_eq!(roundtrip, d);
         assert_eq!(serde_json::to_value(&roundtrip.configs).unwrap(), original_table);
-        assert_eq!(roundtrip.format, "solvecraft/8");
+        assert_eq!(roundtrip.format, format_string(FORMAT));
         assert!(roundtrip.configuration_matches());
         value["format"] = Value::from(format_string(FORMAT + 1));
         value["configs"]["columns"] = serde_json::json!([{"unknown_future_column":"Body"}]);
@@ -322,7 +608,7 @@ mod tests {
         sketch.add_constraint(ConstraintKind::SlotOverallLength { a, b, value: 10.0 }, Some(overall)).unwrap();
         d.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, None).unwrap();
         let mut saved: Value = serde_json::from_str(&d.to_json()).unwrap();
-        assert_eq!(saved["format"], "solvecraft/8");
+        assert_eq!(saved["format"], format_string(FORMAT));
         assert_eq!(read(&saved.to_string()).unwrap(), d);
         saved["format"] = Value::from(format_string(FORMAT + 1));
         saved["features"][0]["sketch"]["constraints"][0]["type"] = Value::from("future_dimension");

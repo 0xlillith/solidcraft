@@ -18,6 +18,22 @@ Extruding into existing material selects **Cut**. In an empty component it selec
 choose **New Body** explicitly to keep an addition separate. Changing the default does not alter
 operations already saved in a design.
 
+Editing an extrusion retains its signed distances, From/To Object inputs, taper expressions
+and explicit body targets. Revolve edits retain world, sketch and explicit-line axes, both
+angle expressions and To Object targets. An unchanged **All profiles** selection continues
+to include profiles added later. Cancel restores the complete timeline; a successful edit is
+one undo step, including downstream parameter changes. Editing a placed component previews the
+edited feature before its downstream history. Cylindrical Emboss profile guides follow the
+sketch's chosen occurrence frame.
+
+For cylindrical **Emboss**, select a supported exterior cylinder face and a tangent sketch
+profile. **Deboss** cuts radially into the wall. Orthogonal line profiles, including holes and
+concave outlines, wrap with exact radial walls; the profile must stay clear of seams and ends.
+Complete cylinders and coaxial sleeves are supported. Capture pending component positions
+before applying. The feature stores the selected target and author occurrence paths, so edits
+and reopening retain the chosen instances. Other curved surfaces and free-form profiles remain
+unsupported; omitting the face retains the planar emboss behavior.
+
 Fillets and chamfers handle straight edges between planar faces, whole smooth loops, runs of
 neighbouring edges with mitred or spherical corners, and closed chains of curved edges (a rolling
 ball). See the roadmap's known limitations for the rest.

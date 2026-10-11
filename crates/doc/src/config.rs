@@ -9,6 +9,12 @@ use crate::{DocError, Document, Result};
 #[path = "config_rules.rs"]
 mod rules;
 pub use rules::*;
+#[path = "config_styles.rs"]
+mod styles;
+pub use styles::*;
+#[path = "config_clone.rs"]
+mod clone;
+pub use clone::*;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,6 +27,10 @@ pub enum Column {
     Material(String),
     /// A body's appearance (library name, serialized Look, or empty to clear).
     Appearance(String),
+    /// Shared component definition's direct appearance.
+    ComponentAppearance(u64),
+    /// A certified semantic face lineage in a shared definition.
+    FaceAppearance(ConfigFaceTarget),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -132,6 +142,12 @@ impl Document {
             Column::Suppress(id) => self.feature(*id).map(|f| f.suppressed.to_string()),
             Column::Material(body) => Some(self.materials.get(body).cloned().unwrap_or_else(|| "Default".into())),
             Column::Appearance(body) => Some(self.appearances.bodies.get(body).and_then(|look| serde_json::to_string(look).ok()).unwrap_or_default()),
+            Column::ComponentAppearance(id) => {
+                Some(self.appearances.components.get(id).and_then(|look| serde_json::to_string(look).ok()).unwrap_or_default())
+            }
+            Column::FaceAppearance(target) => {
+                Some(self.config_face_look(target).and_then(|look| serde_json::to_string(&look).ok()).unwrap_or_default())
+            }
         }
     }
 
@@ -142,6 +158,8 @@ impl Document {
             Column::Suppress(id) => format!("suppress:{}", self.feature(*id).map(|f| f.name.clone()).unwrap_or_else(|| id.to_string())),
             Column::Material(body) => format!("material:{body}"),
             Column::Appearance(body) => format!("appearance:{body}"),
+            Column::ComponentAppearance(id) => format!("component_appearance:{id}"),
+            Column::FaceAppearance(target) => format!("face_appearance:{}", target.key()),
         }
     }
 
@@ -194,6 +212,32 @@ impl Document {
                         next.appearances.bodies.remove(body);
                     }
                 },
+                Column::ComponentAppearance(id) => {
+                    if *id == 0 || !next.components.iter().any(|component| component.id == *id) {
+                        return Err(DocError::Unknown(format!("component {id} is gone")));
+                    }
+                    match appearance_cell(v)? {
+                        Some(look) => {
+                            next.appearances.components.insert(*id, look);
+                        }
+                        None => {
+                            next.appearances.components.remove(id);
+                        }
+                    }
+                }
+                Column::FaceAppearance(target) => {
+                    next.certify_config_face(target)?;
+                    next.appearances.faces.retain(|face| !target.matches(face));
+                    if let Some(look) = appearance_cell(v)? {
+                        next.appearances.faces.push(crate::appearance::FaceLook {
+                            body: target.body.clone(),
+                            point: target.point,
+                            look,
+                            name: Some(target.name.clone()),
+                            strict_name: true,
+                        });
+                    }
+                }
             }
         }
         next.configs.active = Some(row.to_string());
@@ -228,6 +272,8 @@ impl Document {
             }
             Column::Material(body) => material_cell(v).is_ok_and(|m| self.materials.get(body) == m.as_ref()),
             Column::Appearance(body) => appearance_cell(v).is_ok_and(|look| self.appearances.bodies.get(body) == look.as_ref()),
+            Column::ComponentAppearance(id) => appearance_cell(v).is_ok_and(|look| self.appearances.components.get(id) == look.as_ref()),
+            Column::FaceAppearance(target) => appearance_cell(v).is_ok_and(|look| self.config_face_look(target) == look),
         })
     }
 }

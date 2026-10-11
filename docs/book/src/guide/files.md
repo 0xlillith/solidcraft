@@ -17,3 +17,8 @@ Saves are atomic: a crash at any moment leaves either the old file or the new on
 replaced version is kept as `<file>.bak`. Unsaved changes are autosaved to a recovery folder,
 and the next launch offers to recover them. Older design files are upgraded on open, and files
 from a newer version are refused with a message.
+
+Current designs use format 9 for semantic configuration styles, associative free-form offsets
+and explicit cylindrical emboss selections. Older geometry and expressions retain their
+meaning during upgrade; missing new fields use defaults. Association records and occurrence
+paths are bounded and checked before they can alter geometry.

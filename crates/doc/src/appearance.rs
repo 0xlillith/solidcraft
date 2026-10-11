@@ -45,6 +45,13 @@ pub struct FaceLook {
     /// The face's persistent name (found first).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Strict semantic assignments never transfer to a nearby replacement face.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict_name: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// The look a body was imported with, carried through later features (which build new kernel
@@ -134,6 +141,14 @@ impl Document {
     pub fn model_body_look(&self, body: &crate::ModelBody) -> Option<Look> {
         self.body_look(body.definition_name(), body.feature)
     }
+    /// Effective body opacity, including paint carried from an imported body.
+    pub fn model_body_opacity(&self, body: &crate::ModelBody) -> f64 {
+        self.model_body_look(body)
+            .map(|look| look.opacity)
+            .or_else(|| body.body.paint().map(|paint| paint.opacity as f64))
+            .or_else(|| body.imported.as_ref().and_then(|paint| paint.opacity.map(f64::from)))
+            .unwrap_or(1.0)
+    }
     /// A body's look (without face appearances): its own, else its component's, else its
     /// material's.
     pub fn body_look(&self, name: &str, feature: u64) -> Option<Look> {
@@ -173,6 +188,24 @@ impl Document {
         };
         for f in self.appearances.faces.iter().filter(|f| f.body == b.definition_name()) {
             let (p, look) = (crate::apply_point(&b.source_transform, f.point), f.look.clone());
+            if f.strict_name {
+                let Some(name) = f.name.as_ref() else { continue };
+                let Some(origin_feature) = name.strip_prefix('F').and_then(|name| name.split_once(':')).and_then(|(id, _)| id.parse().ok()) else {
+                    continue;
+                };
+                let target = crate::config::ConfigFaceTarget {
+                    body: f.body.clone(),
+                    origin_feature,
+                    name: crate::naming::strip_piece(name).into(),
+                    point: f.point,
+                };
+                let Ok(indices) = self.configuration_face_indices(b, &target) else { continue };
+                for index in indices {
+                    out.retain(|(old, _)| *old != index);
+                    out.push((index, look.clone()));
+                }
+                continue;
+            }
             // By name (every piece of a split face), else by the point.
             if let Some(n) = &f.name {
                 let stem = crate::naming::strip_piece(n);
@@ -185,7 +218,9 @@ impl Document {
                     continue;
                 }
             }
-            if let Some(i) = face_index_at(b, p) {
+            if !f.strict_name
+                && let Some(i) = face_index_at(b, p)
+            {
                 out.retain(|(j, _)| *j != i);
                 out.push((i, look));
             }

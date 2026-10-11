@@ -377,6 +377,44 @@ impl ConfigRule {
             }
         });
     }
+    pub(super) fn clone_for_targets(&self, maps: &super::ConfigCloneMaps) -> Option<Self> {
+        let mapped = match &self.effect {
+            RuleEffect::DriveParameter { parameter, .. }
+            | RuleEffect::ParameterRange { parameter, .. }
+            | RuleEffect::AllowParameterValues { parameter, .. } => maps.parameters.contains_key(parameter),
+            RuleEffect::DriveSuppression { feature, .. } => maps.features.contains_key(feature),
+        };
+        if !mapped {
+            return None;
+        }
+        let mut copy = self.clone();
+        copy.visit_parameters(&mut |text, expression| {
+            *text = if expression {
+                super::clone::remap_expression(text, &maps.parameters)
+            } else {
+                maps.parameters.get(text).cloned().unwrap_or_else(|| text.clone())
+            };
+        });
+        fn remap(condition: &mut RuleCondition, maps: &super::ConfigCloneMaps) {
+            match condition {
+                RuleCondition::Suppression { feature, .. } => {
+                    *feature = maps.features.get(feature).copied().unwrap_or(*feature);
+                }
+                RuleCondition::All { conditions } | RuleCondition::Any { conditions } => {
+                    for condition in conditions {
+                        remap(condition, maps);
+                    }
+                }
+                RuleCondition::Not { condition } => remap(condition, maps),
+                _ => {}
+            }
+        }
+        remap(&mut copy.condition, maps);
+        if let RuleEffect::DriveSuppression { feature, .. } = &mut copy.effect {
+            *feature = maps.features.get(feature).copied().unwrap_or(*feature);
+        }
+        Some(copy)
+    }
     fn visit_parameters(&mut self, visit: &mut impl FnMut(&mut String, bool)) {
         fn walk(c: &mut RuleCondition, visit: &mut impl FnMut(&mut String, bool)) {
             match c {

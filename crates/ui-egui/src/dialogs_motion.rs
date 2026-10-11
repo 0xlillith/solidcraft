@@ -631,10 +631,22 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                     "suppress" => format!("Suppress: {n}"),
                                     _ => n.to_string(),
                                 };
+                                let label = v["targets"]
+                                    .as_array()
+                                    .and_then(|targets| targets.iter().find(|target| target["key"].as_str() == Some(c)))
+                                    .and_then(|target| target["label"].as_str())
+                                    .filter(|_| matches!(kind, "component_appearance" | "face_appearance"))
+                                    .map(str::to_string)
+                                    .unwrap_or(label);
                                 ui.add_sized(vec2(156.0, 22.0), egui::Label::new(RichText::new(label).strong()).truncate()).on_hover_text(c);
                                 if ui.small_button("×").on_hover_text("Remove the column").clicked() {
                                     let key = if kind == "suppress" { "feature" } else { kind };
-                                    run(app, error, "config.column", json!({ key: n, "delete": true }));
+                                    run(
+                                        app,
+                                        error,
+                                        "config.column",
+                                        json!({ key: if kind == "face_appearance" {c.as_str()} else {n}, "delete": true }),
+                                    );
                                 }
                             });
                         }
@@ -661,7 +673,8 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                             for (c, val) in tb.columns.iter().zip(vals) {
                                 ui.allocate_ui_with_layout(vec2(190.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                     let (kind, _) = column_parts(c);
-                                    let shown = if kind == "appearance" {
+                                    let appearance = matches!(kind, "appearance" | "component_appearance" | "face_appearance");
+                                    let shown = if appearance {
                                         solvecraft_engine::doc::config::appearance_cell(val)
                                             .ok()
                                             .flatten()
@@ -671,11 +684,20 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                     } else {
                                         val.clone()
                                     };
-                                    let style = matches!(kind, "material" | "appearance");
+                                    let style = kind == "material" || appearance;
                                     if style {
                                         let mut choice = None;
                                         ui.menu_button("Library", |ui| {
-                                            if ui.button(if kind == "appearance" { "Follow material" } else { "Default material" }).clicked() {
+                                            if ui
+                                                .button(if kind == "appearance" {
+                                                    "Follow material"
+                                                } else if appearance {
+                                                    "Follow inherited appearance"
+                                                } else {
+                                                    "Default material"
+                                                })
+                                                .clicked()
+                                            {
                                                 choice = Some("Default".to_string());
                                                 ui.close();
                                             }
@@ -757,6 +779,17 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                         }
                     }
                 }
+                for component in &app.session.doc.components {
+                    if component.id != 0 && !tb.columns.contains(&format!("component_appearance:{}", component.id)) {
+                        options.push((format!("{} (component appearance)", component.name), json!({"component_appearance":component.id})));
+                    }
+                }
+                for selected in &app.session.selection {
+                    if let solvecraft_engine::Sel::Face { body, point, .. } = selected {
+                        options
+                            .push((format!("Selected face on {body} (shared appearance)"), json!({"face_appearance":{"body":body,"point":point}})));
+                    }
+                }
                 let mut pick: Option<Value> = None;
                 ui.menu_button("Add Column", |ui| {
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
@@ -766,6 +799,43 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                 ui.close();
                             }
                         }
+                        ui.menu_button("Face Appearance", |ui| {
+                            ui.label("Semantic faces share their appearance across instances.");
+                            let state = app.session.model.state();
+                            for body in &state.bodies {
+                                if body.body.is_mesh() {
+                                    continue;
+                                }
+                                ui.menu_button(format!("Faces on {}", body.name), |ui| {
+                                    let names = solvecraft_engine::doc::naming::face_names(body);
+                                    if let Ok(faces) = body.body.faces((body.body.size() * 2e-3).max(1e-3)) {
+                                        let mut seen = std::collections::BTreeSet::new();
+                                        for face in faces {
+                                            let Some(name) = names.get(face.index) else { continue };
+                                            let name = solvecraft_engine::doc::naming::strip_piece(name);
+                                            if !seen.insert(name.to_string()) {
+                                                continue;
+                                            }
+                                            let Some((id, role)) = name.strip_prefix('F').and_then(|name| name.split_once(':')) else { continue };
+                                            let Ok(origin_feature) = id.parse() else { continue };
+                                            let target = solvecraft_engine::doc::config::ConfigFaceTarget {
+                                                body: body.name.clone(),
+                                                origin_feature,
+                                                name: name.into(),
+                                                point: face.centroid,
+                                            };
+                                            if app.session.doc.certify_config_face(&target).is_err() {
+                                                continue;
+                                            }
+                                            if ui.button(role).clicked() {
+                                                pick = Some(json!({"face_appearance":{"body":body.name,"point":face.centroid}}));
+                                                ui.close();
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
                     });
                 });
                 if let Some(p) = pick {
@@ -779,6 +849,10 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                                 json!({ "features": [n] })
                             } else if let Some(n) = p.get("material") {
                                 json!({ "materials": [n] })
+                            } else if let Some(n) = p.get("component_appearance") {
+                                json!({ "component_appearances": [n] })
+                            } else if let Some(n) = p.get("face_appearance") {
+                                json!({ "face_appearances": [n] })
                             } else {
                                 json!({ "appearances": [p.get("appearance")] })
                             },
@@ -791,6 +865,20 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             });
             ui.end_row();
             configuration_rules_ui::show(ui, app, error, rule_editor);
+            if let Some(styles) = v["style_status"].as_array() {
+                for style in styles.iter().filter(|style| style["dormant"].as_bool() == Some(true)) {
+                    ui.add(
+                        egui::Label::new(format!(
+                            "{}: appearance dormant while its feature is suppressed",
+                            style["target"].as_str().unwrap_or("Face")
+                        ))
+                        .wrap(),
+                    );
+                }
+            }
+            if let Some(message) = v["style_error"].as_str() {
+                ui.add(egui::Label::new(RichText::new(message).color(t.error)).wrap());
+            }
             if let Some(e) = error {
                 ui.label("");
                 ui.label(RichText::new(e.as_str()).color(t.error));
@@ -1002,6 +1090,41 @@ mod tests {
                     .iter()
                     .any(|(_, n)| n.label().or(n.value()).is_some_and(|text| text.contains("restricts the final value")))
         );
+    }
+
+    #[test]
+    fn configuration_component_and_face_pickers_start_fresh_and_clear_inherited() {
+        for (component, width) in [(true, 1400), (false, 900)] {
+            let mut h = crate::scenario::Harness::new();
+            h.call("ui.resize", json!({"width":width,"height":720}));
+            if component {
+                h.call("engine.execute", json!({"command":"component.create","params":{"name":"Part"}}));
+            }
+            h.run(&json!([
+                {"call":"engine.execute","params":{"command":"solid.box","params":{"length":10,"width":10,"height":10,"body_name":"Block"}}},
+                {"start":"config.table"}, {"widget":"Add Column"}
+            ]))
+            .unwrap();
+            if component {
+                h.step(&json!({"widget":"Part (component appearance)"})).unwrap();
+                assert!(h.widget("Component: Part").is_some());
+            } else {
+                h.run(&json!([{"widget":"Face Appearance"},{"widget":"Faces on Block"},{"widget":"+z"}])).unwrap();
+                assert!(h.widget("Face: Block / +z").is_some());
+            }
+            assert_eq!(h.app.session.doc.configs.rows.len(), 1);
+            h.run(&json!([{"widget":"Library"},{"widget":"ABS - Red"},{"widget":"Apply"}])).unwrap();
+            if component {
+                assert_eq!(h.app.session.doc.appearances.components.values().next().unwrap().name, "ABS - Red");
+            } else {
+                assert_eq!(h.app.session.doc.appearances.faces[0].look.name, "ABS - Red");
+                assert!(h.app.session.doc.appearances.faces[0].strict_name);
+            }
+            h.run(&json!([{"widget":"Library"},{"widget":"Follow inherited appearance"},{"widget":"Apply"}])).unwrap();
+            assert!(h.app.session.doc.appearances.components.is_empty());
+            assert!(h.app.session.doc.appearances.faces.is_empty());
+            crate::scenario::check(&mut h, &json!({"windows_fit":{"max_width":560}})).unwrap();
+        }
     }
 
     #[test]

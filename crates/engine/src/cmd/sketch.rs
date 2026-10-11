@@ -223,7 +223,12 @@ pub(super) fn edit<T>(
     let out = f(&mut sk, &mut doc)?;
     let (vals, _) = doc.param_values();
     doc.apply_dimension_values(&vals, &mut sk)?;
-    let rep = solve(&mut sk);
+    sk.refresh_offsets()?;
+    let mut rep = solve(&mut sk);
+    if !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty() {
+        sk.refresh_offsets()?;
+        rep = solve(&mut sk);
+    }
     if strict && !rep.ok() {
         return Err(EngineError::Other(format!("that would over-constrain the sketch (conflicts with {})", rep.failing.join(", "))));
     }

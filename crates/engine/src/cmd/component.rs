@@ -41,7 +41,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("component.move_sketches", "Move Sketches to Component", move_sketches).params("sketches: [ids or names], component"),
     CommandSpec::new("occurrence.copy", "Paste (Instance)", copy_occurrence)
         .params("component (or occurrence): what to place again; path?: validates selected occurrence; parent?: component (default: the same parent); translate?: [x,y,z]. Copies the selected effective transform, including pending moves"),
-    CommandSpec::new("component.paste_new", "Paste New", paste_new).params("component: copied with its own features into a new, independent component; occurrence?, path?: selected source placement; translate?: [x,y,z]"),
+    CommandSpec::new("component.paste_new", "Paste New", paste_new).params("component: independently copy its nested definition graph and history, materials and styles; occurrence?, path?: selected source placement; translate?: [x,y,z]. Reassigned external bodies become base geometry; retained external links and omitted boundary joints are reported"),
     CommandSpec::new("occurrence.move", "Move Occurrence", move_occurrence)
         .params("occurrence; path?: exact placement; space?: local|world (default local); translate?: [x,y,z]; axis?: [x,y,z], angle?: radians or \"30 deg\", origin?: [x,y,z]; capture?: bool (default true; false keeps it pending until Capture Position). Nested occurrence definitions remain shared"),
     CommandSpec::new("occurrence.ground", "Ground", ground).params("occurrence; grounded?: bool (default toggles)"),
@@ -82,7 +82,7 @@ fn move_vector(p: &Value, key: &str, default: Vec3, coordinate: bool, cmd: &str)
     Ok(v)
 }
 
-fn valid_position(m: &Mat) -> bool {
+pub(super) fn valid_position(m: &Mat) -> bool {
     let column = |i: usize| Vec3::new(m[i][0], m[i][1], m[i][2]);
     let (x, y, z) = (column(0), column(1), column(2));
     m.iter().flatten().all(|x| x.is_finite())
@@ -229,6 +229,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         let _ = d.delete_feature(*f);
     }
     d.components.retain(|c| !gone.contains(&c.id));
+    d.remove_configuration_components(&gone);
     d.occurrences.retain(|o| !gone.contains(&o.component) && !gone.contains(&o.parent));
     let moved_out: Vec<String> = d.body_components.iter().filter(|(_, c)| gone.contains(c)).map(|(b, _)| b.clone()).collect();
     d.body_components.retain(|_, c| !gone.contains(c));
@@ -351,65 +352,7 @@ fn paste_new(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "copy transform exceeds supported numeric range"));
     }
     let parent = occ.as_ref().map(|o| o.parent).unwrap_or(src.parent);
-    let new_id = s.doc_mut().add_component(Some(&format!("{} (copy)", src.name)), parent)?;
-    // Copy the component's features with fresh ids and names; references between them follow.
-    let feats: Vec<solvecraft_doc::Feature> = s.doc.features.iter().filter(|f| f.component == comp).cloned().collect();
-    let mut idmap: std::collections::HashMap<u64, u64> = Default::default();
-    let mut namemap: std::collections::HashMap<String, String> = Default::default();
-    let mut new_ids = Vec::new();
-    for f in &feats {
-        let nid = s.doc_mut().add_feature(f.kind.clone(), Some(&format!("{} (copy)", f.name)))?;
-        idmap.insert(f.id, nid);
-        let nname = s.doc.feature(nid).map(|x| x.name.clone()).unwrap_or_default();
-        namemap.insert(f.name.clone(), nname);
-        new_ids.push(nid);
-    }
-    for nid in &new_ids {
-        let Some(f) = s.doc.feature(*nid).cloned() else { continue };
-        let mut v = serde_json::to_value(&f.kind).map_err(|e| bad(cmd, e.to_string()))?;
-        remap(&mut v, &idmap, &namemap, 0);
-        let kind: FeatureKind = serde_json::from_value(v).map_err(|e| bad(cmd, e.to_string()))?;
-        if let Some(slot) = s.doc_mut().feature_mut(*nid) {
-            slot.kind = kind;
-            slot.component = new_id;
-        }
-    }
-    if let Some(o) = s.doc_mut().occurrences.iter_mut().find(|o| o.component == new_id) {
-        o.transform = transform;
-    }
-    Ok(json!({"component": new_id, "features": new_ids}))
-}
-
-/// Point copied features at their copied sketches and features.
-fn remap(v: &mut Value, ids: &std::collections::HashMap<u64, u64>, names: &std::collections::HashMap<String, String>, depth: usize) {
-    if depth > 32 {
-        return;
-    }
-    match v {
-        Value::Object(o) => {
-            for (k, x) in o.iter_mut() {
-                match (k.as_str(), &*x) {
-                    ("sketch" | "path_sketch", Value::Number(n)) => {
-                        if let Some(m) = n.as_u64().and_then(|i| ids.get(&i)) {
-                            *x = json!(m);
-                        }
-                    }
-                    ("features", Value::Array(_)) => {
-                        if let Value::Array(a) = x {
-                            for e in a.iter_mut() {
-                                if let Some(m) = e.as_str().and_then(|n| names.get(n)) {
-                                    *e = json!(m);
-                                }
-                            }
-                        }
-                    }
-                    _ => remap(x, ids, names, depth + 1),
-                }
-            }
-        }
-        Value::Array(a) => a.iter_mut().for_each(|x| remap(x, ids, names, depth + 1)),
-        _ => {}
-    }
+    super::component_clone::paste(s, comp, occ, transform, parent, p)
 }
 
 pub(super) fn occurrence_path(s: &Session, p: &Value, id: u64, cmd: &str) -> Result<Vec<u64>> {

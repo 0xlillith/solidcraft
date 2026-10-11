@@ -492,6 +492,9 @@ pub struct Sketch {
     pub links: Vec<crate::link::Link>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offsets: Vec<crate::offset::OffsetChain>,
+    /// New certified normal offsets; legacy sampled output splines remain independent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub freeform_offsets: Vec<crate::freeform_offset::FreeformOffset>,
     /// 3D curves (world coordinates) carried by the sketch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wires: Vec<crate::wire::Wire>,
@@ -521,6 +524,7 @@ impl Sketch {
             constraints: Vec::new(),
             links: Vec::new(),
             offsets: Vec::new(),
+            freeform_offsets: Vec::new(),
             wires: Vec::new(),
             counters: Default::default(),
             view: SketchView::default(),
@@ -886,7 +890,7 @@ impl Sketch {
 
     /// Is curve `c` held in place: fixed or projected (linked).
     pub fn curve_locked(&self, c: usize) -> bool {
-        self.curves.get(c).is_some_and(|c| c.fixed || c.link.is_some())
+        self.curves.get(c).is_some_and(|c| c.fixed || c.link.is_some() || self.freeform_offsets.iter().any(|offset| offset.output == c.id))
     }
 
     /// Radius of a circle or arc.
@@ -1060,6 +1064,7 @@ impl Sketch {
 
     /// Remove curves only (points stay), remapping constraints.
     fn drop_curves(&mut self, which: &[usize]) {
+        self.prune_offsets_for_removed_curves(which);
         let mut cmap = vec![None; self.curves.len()];
         let mut n = 0;
         for (i, slot) in cmap.iter_mut().enumerate() {

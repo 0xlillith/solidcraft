@@ -11,6 +11,13 @@ component, and **Paste New** creates an independent copy. Move an occurrence wit
 triad, then **Capture Position** to keep it or **Revert** to put it back. SolveCraft asks before
 the next command if a move wasn't captured. **Ground** fixes an occurrence in place.
 
+Paste New copies nested component definitions, sketches, feature histories and generated
+dimension parameters. Repeated child instances remain shared within the new copy. Materials,
+appearances and wholly internal joints/motion records receive copied references. Design-wide
+user parameters remain shared; retained external links and omitted cross-boundary motion
+records are reported. Unsupported destructive links refuse the entire copy. See
+[individual-instance and copy details](https://github.com/bherbruck/solvecraft/blob/main/docs/occurrence-workflows.md).
+
 **Joints** (`joint.create`, J) connect two components by joint origins that snap to faces, edges,
 circles and vertices: rigid, revolute, slider, cylindrical, pin-slot, planar and ball, with
 offsets, flip and limits. **As-built Joint** keeps the current position, **Rigid Group** locks

@@ -321,7 +321,24 @@ pub(super) fn add_feature(s: &mut Session, p: &Value, kind: FeatureKind) -> Resu
     };
     let face_names = {
         let pts = kind.face_points();
-        if pts.is_empty() { Vec::new() } else { solvecraft_doc::naming::face_names_at(&s.model.state(), &pts) }
+        if let FeatureKind::Emboss { face: Some(face), .. } = &kind {
+            let state = s.model.state();
+            let body = state.body(&face.body).ok_or_else(|| EngineError::Other("selected cylinder body no longer exists".into()))?;
+            let frame = face.body_frame(&s.doc, body.feature).map_err(|e| EngineError::Other(e.to_string()))?;
+            let inverse = solvecraft_doc::mat_inverse(&frame).ok_or_else(|| EngineError::Other("invalid cylinder placement".into()))?;
+            let at = solvecraft_doc::apply_point(&solvecraft_doc::mat_mul(&inverse, &s.active_component_frame()), face.at);
+            let mut scoped = solvecraft_doc::ModelState::default();
+            scoped.bodies.push(body.clone());
+            let names = solvecraft_doc::naming::face_names_at(&scoped, &[at]);
+            if names.len() != 1 || names.first().is_none_or(|name| name.is_empty()) {
+                return Err(EngineError::Other("selected cylinder face has no persistent identity".into()));
+            }
+            names
+        } else if pts.is_empty() {
+            Vec::new()
+        } else {
+            solvecraft_doc::naming::face_names_at(&s.model.state(), &pts)
+        }
     };
     let participants = string_list(p, "participants");
     if participants.len() > 10_000 || participants.iter().any(|b| b != "*" && s.model.state().body(b).is_none()) {

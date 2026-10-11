@@ -513,10 +513,26 @@ impl Session {
     /// A `timeline.redefine` is shown even while the timeline is rolled back to the feature
     /// being edited.
     pub fn preview(&self, commands: &[(String, Value)]) -> Result<Preview> {
-        self.scratch().preview_in_place(commands).map(|after| Preview { before: self.model.state(), after })
+        self.scratch().preview_in_place(commands).map(|after| Preview { before: self.model.state(), after: after.model.state() })
     }
 
-    fn preview_in_place(mut self, commands: &[(String, Value)]) -> Result<Arc<ModelState>> {
+    /// The same evaluated preview in occurrence coordinates, including uncaptured moves.
+    pub fn preview_world(&self, commands: &[(String, Value)]) -> Result<Preview> {
+        self.scratch().preview_in_place(commands).map(|after| Preview { before: self.world_state(), after: after.world_state() })
+    }
+
+    /// World preview with each session's visibility applied, including new body placements.
+    pub fn preview_visible_world(&self, commands: &[(String, Value)]) -> Result<Preview> {
+        let visible = |session: &Session| {
+            let world = session.world_state();
+            let mut shown = (*world).clone();
+            shown.bodies.retain(|body| session.body_visible(&body.name));
+            Arc::new(shown)
+        };
+        self.scratch().preview_in_place(commands).map(|after| Preview { before: visible(self), after: visible(&after) })
+    }
+
+    fn preview_in_place(mut self, commands: &[(String, Value)]) -> Result<Self> {
         if commands.is_empty() {
             return Err(EngineError::Other("nothing to preview".into()));
         }
@@ -534,7 +550,7 @@ impl Session {
                 }
             }
         }
-        Ok(self.model.state())
+        Ok(self)
     }
 
     /// Measure one or two selections (see `inspect.measure` with `items`); errors come back as

@@ -28,8 +28,66 @@ pub static COMMANDS: &[CommandSpec] = &[
 ];
 
 fn column_of(s: &Session, p: &Value, cmd: &str) -> Result<Column> {
-    if ["param", "feature", "material", "appearance"].iter().filter(|k| p.get(**k).is_some()).count() != 1 {
-        return Err(bad(cmd, "give exactly one of `param`, `feature`, `material`, or `appearance`"));
+    if ["param", "feature", "material", "appearance", "component_appearance", "face_appearance"].iter().filter(|k| p.get(**k).is_some()).count() != 1
+    {
+        return Err(bad(cmd, "give exactly one configuration target"));
+    }
+    if let Some(value) = p.get("component_appearance") {
+        let key = value
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| value.as_u64().map(|id| id.to_string()))
+            .ok_or_else(|| bad(cmd, "component name or ID required"))?;
+        if bool_(p, "delete") == Some(true)
+            && let Some(column) = s.doc.configs.columns.iter().find(|column| matches!(column,Column::ComponentAppearance(id) if id.to_string()==key))
+        {
+            return Ok(column.clone());
+        }
+        let id = s
+            .doc
+            .find_component(&key)
+            .or_else(|| s.doc.occurrences.iter().find(|occurrence| occurrence.name == key).map(|occurrence| occurrence.component))
+            .filter(|id| *id != 0)
+            .ok_or_else(|| bad(cmd, "no component definition"))?;
+        return Ok(Column::ComponentAppearance(id));
+    }
+    if let Some(value) = p.get("face_appearance") {
+        if bool_(p, "delete") == Some(true) {
+            let key = value.as_str().ok_or_else(|| bad(cmd, "face column key required for deletion"))?;
+            return s
+                .doc
+                .configs
+                .columns
+                .iter()
+                .find(|column| matches!(column, Column::FaceAppearance(_)) && s.doc.config_key(column) == key)
+                .cloned()
+                .ok_or_else(|| bad(cmd, "no face column"));
+        }
+        let body_name = value.get("body").and_then(Value::as_str).ok_or_else(|| bad(cmd, "face body required"))?;
+        let point = value.get("point").and_then(crate::params::vec3).ok_or_else(|| bad(cmd, "finite face point required"))?;
+        let world = s.world_state();
+        let body = world.body(body_name).ok_or_else(|| bad(cmd, "no face body"))?;
+        if body.body.is_mesh() {
+            return Err(bad(cmd, "mesh faces have no supported semantic lineage"));
+        }
+        let index = solvecraft_doc::appearance::face_index_at(body, point).ok_or_else(|| bad(cmd, "no face at picked point"))?;
+        let names = solvecraft_doc::naming::face_names(body);
+        let name = names.get(index).map(|name| solvecraft_doc::naming::strip_piece(name).to_string()).ok_or_else(|| bad(cmd, "face name missing"))?;
+        let origin_feature = name
+            .strip_prefix('F')
+            .and_then(|name| name.split_once(':'))
+            .and_then(|(id, _)| id.parse::<u64>().ok())
+            .ok_or_else(|| bad(cmd, "face lineage missing"))?;
+        let inverse = solvecraft_doc::mat_inverse(&body.source_transform).ok_or_else(|| bad(cmd, "invalid definition placement transform"))?;
+        let target = solvecraft_doc::config::ConfigFaceTarget {
+            body: body.definition_name().into(),
+            origin_feature,
+            name,
+            point: solvecraft_doc::apply_point(&inverse, point),
+        };
+        s.doc.certify_config_face(&target).map_err(|error| bad(cmd, error.to_string()))?;
+        s.doc.configuration_face_indices(body, &target).map_err(|error| bad(cmd, error.to_string()))?;
+        return Ok(Column::FaceAppearance(target));
     }
     for (key, appearance) in [("material", false), ("appearance", true)] {
         if let Some(body) = str_(p, key) {
@@ -53,7 +111,9 @@ fn column_of(s: &Session, p: &Value, cmd: &str) -> Result<Column> {
 
 /// Add a column, filling existing rows with the design's current value.
 fn add_column(s: &mut Session, c: Column, cmd: &str) -> Result<()> {
-    if s.doc.configs.columns.contains(&c) {
+    if s.doc.configs.columns.iter().any(|existing| {
+        *existing == c || matches!((existing,&c),(Column::FaceAppearance(a),Column::FaceAppearance(b)) if a.body == b.body && a.name == b.name)
+    }) {
         return Ok(());
     }
     if s.doc.configs.columns.len() >= MAX_COLUMNS {
@@ -85,6 +145,18 @@ fn configure(s: &mut Session, p: &Value) -> Result<Value> {
             add_column(s, c, cmd)?;
         }
     }
+    for (plural, singular) in [("component_appearances", "component_appearance"), ("face_appearances", "face_appearance")] {
+        if let Some(values) = p.get(plural) {
+            let values = values
+                .as_array()
+                .filter(|values| values.len() <= MAX_COLUMNS)
+                .ok_or_else(|| bad(cmd, "configuration targets must be a bounded array"))?;
+            for value in values {
+                let c = column_of(s, &json!({singular:value}), cmd)?;
+                add_column(s, c, cmd)?;
+            }
+        }
+    }
     if s.doc.configs.rows.is_empty() {
         let cells = s.doc.configs.columns.iter().map(|c| s.doc.config_current(c).unwrap_or_default()).collect();
         let t = &mut s.doc_mut().configs;
@@ -102,7 +174,26 @@ fn show(s: &mut Session, _p: &Value) -> Result<Value> {
         .iter()
         .map(|r| json!({"name": r.name, "values": keys.iter().zip(&r.cells).map(|(k, v)| (k.clone(), json!(v))).collect::<serde_json::Map<_, _>>()}))
         .collect();
-    Ok(json!({"columns": keys, "rows": rows, "rules": t.rules, "active": t.active, "matches": s.doc.configuration_matches()}))
+    let targets: Vec<Value> = t
+        .columns
+        .iter()
+        .map(|column| {
+            let label = match column {
+                Column::ComponentAppearance(id) => {
+                    format!("Component: {}", s.doc.components.iter().find(|c| c.id == *id).map(|c| c.name.clone()).unwrap_or_else(|| id.to_string()))
+                }
+                Column::FaceAppearance(target) => {
+                    format!("Face: {} / {}", target.body, target.name.split_once(':').map(|(_, role)| role).unwrap_or(&target.name))
+                }
+                _ => s.doc.config_key(column),
+            };
+            json!({"key":s.doc.config_key(column),"label":label,"target":column})
+        })
+        .collect();
+    let styles = s.doc.configuration_style_status(&s.model.state());
+    Ok(
+        json!({"columns": keys, "targets":targets, "rows": rows, "rules": t.rules, "active": t.active, "matches": s.doc.configuration_matches() && styles.is_ok(), "style_status":styles.as_ref().ok(),"style_error":styles.err().map(|error|error.to_string())}),
+    )
 }
 
 fn column(s: &mut Session, p: &Value) -> Result<Value> {
@@ -154,7 +245,9 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
                 Value::String(t) => t.clone(),
                 Value::Bool(b) => b.to_string(),
                 Value::Number(n) => n.to_string(),
-                Value::Object(_) if k.starts_with("appearance:") => serde_json::to_string(v).map_err(|e| bad(cmd, e.to_string()))?,
+                Value::Object(_) if k.starts_with("appearance:") || k.starts_with("component_appearance:") || k.starts_with("face_appearance:") => {
+                    serde_json::to_string(v).map_err(|e| bad(cmd, e.to_string()))?
+                }
                 _ => return Err(bad(cmd, format!("value for `{k}` must be an expression or true/false"))),
             };
             if text.len() > 4096 {
@@ -170,7 +263,7 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
                         || match c {
                             Column::Param(n) => n == k,
                             Column::Suppress(id) => s.doc.feature(*id).is_some_and(|f| f.name == *k),
-                            Column::Material(_) | Column::Appearance(_) => false,
+                            Column::Material(_) | Column::Appearance(_) | Column::ComponentAppearance(_) | Column::FaceAppearance(_) => false,
                         }
                 })
                 .ok_or_else(|| bad(cmd, format!("`{k}` is not a column (config.column adds one)")))?;
@@ -178,7 +271,7 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
                 Some(Column::Material(_)) => {
                     text = solvecraft_doc::config::material_cell(&text).map_err(|e| bad(cmd, e.to_string()))?.unwrap_or_else(|| "Default".into());
                 }
-                Some(Column::Appearance(_)) => {
+                Some(Column::Appearance(_) | Column::ComponentAppearance(_) | Column::FaceAppearance(_)) => {
                     text = match solvecraft_doc::config::appearance_cell(&text).map_err(|e| bad(cmd, e.to_string()))? {
                         Some(look) => serde_json::to_string(&look).map_err(|e| bad(cmd, e.to_string()))?,
                         None => String::new(),
@@ -303,12 +396,14 @@ fn activate(s: &mut Session, p: &Value) -> Result<Value> {
     if !new_errors.is_empty() {
         return Err(bad(cmd, format!("configuration `{r}` would fail to rebuild: {}", new_errors.join("; "))));
     }
+    let styles = trial.doc.configuration_style_status(&trial.model.state()).map_err(|error| bad(cmd, format!("configuration `{r}`: {error}")))?;
     s.doc = trial.doc;
     s.refresh();
     let errors: Vec<String> = s.model.results.iter().filter_map(|x| x.error.clone()).collect();
     let mut out = show(s, p)?;
     out["errors"] = json!(errors);
     out["trace"] = json!(trace);
+    out["styles"] = json!(styles);
     Ok(out)
 }
 
@@ -319,6 +414,11 @@ fn preview(s: &mut Session, p: &Value) -> Result<Value> {
     out["parameters"] = json!(trial.doc.param_rows());
     Ok(out)
 }
+
+#[cfg(test)]
+#[path = "config_style_tests.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod style_tests;
 
 #[cfg(test)]
 mod tests {

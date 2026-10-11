@@ -355,6 +355,9 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     // selections, component authoring state or the original feature's definition.
     let mut trial = s.scratch();
     trial.active_component = old.component;
+    if let FeatureKind::Emboss { face: Some(face), .. } = &old.kind {
+        trial.active_occurrence_path = (!face.author_path.is_empty()).then(|| face.author_path.clone());
+    }
     trial.active_sketch = None;
     trial.selection = s.selection.clone();
     trial.doc_mut().marker = Some(idx);
@@ -362,7 +365,15 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     (spec.enabled)(&trial).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
     let r = (spec.run)(&mut trial, &params)?;
     let made = r.get("feature").and_then(Value::as_u64).ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
-    let new = trial.doc.feature(made).cloned().ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
+    let mut new = trial.doc.feature(made).cloned().ok_or_else(|| bad(cmd, format!("`{cid}` did not make a feature")))?;
+    if let (FeatureKind::Emboss { face: Some(before), .. }, FeatureKind::Emboss { face: Some(after), .. }) = (&old.kind, &mut new.kind)
+        && before.body == after.body
+        && before.path == after.path
+        && before.author_path == after.author_path
+        && before.at.dist(after.at) < 1e-8
+    {
+        *after = before.clone();
+    }
     if std::mem::discriminant(&new.kind) != std::mem::discriminant(&old.kind) {
         return Err(bad(cmd, format!("{} is not a {} feature", old.name, cid)));
     }

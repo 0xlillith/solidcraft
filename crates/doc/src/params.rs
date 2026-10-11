@@ -65,6 +65,9 @@ impl FeatureKind {
                 if let Some(d) = &mut extent.taper {
                     v.push(("Taper angle", d, A));
                 }
+                if let Some(d) = &mut extent.to_offset {
+                    v.push(("To offset", d, L));
+                }
             }
             FeatureKind::Revolve { angle, angle2, .. } => {
                 v.push(("Angle", angle, A));

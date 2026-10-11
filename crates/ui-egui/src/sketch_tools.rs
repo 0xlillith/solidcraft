@@ -647,7 +647,13 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             }
         }
         Mode::CurveAt => {
-            if let (Some((id, false)), Some((p, _))) = (sketch_entity(app, &hits), at) {
+            let curve = active_sketch(app).and_then(|active| {
+                hits.iter().find_map(|hit| match hit {
+                    Hit::SketchCurve { sketch, id, .. } if *sketch == active => Some(id.clone()),
+                    _ => None,
+                })
+            });
+            if let (Some(id), Some((p, _))) = (curve, at) {
                 let _ = app.run(cmd, json!({"curve": id, "at": xy(p)}));
             }
         }

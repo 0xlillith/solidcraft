@@ -632,7 +632,10 @@ impl Model {
             let mut warning = None;
             // Face references by name: move each face point onto its named face.
             let renamed;
-            let f = if f.face_names.iter().any(|n| !n.is_empty()) {
+            // Cylindrical emboss resolves its named face in the selected body's frame
+            // and certifies an analytic anchor; mesh projection here would undo that.
+            let explicit_emboss = matches!(&f.kind, FeatureKind::Emboss { face: Some(_), .. });
+            let f = if !explicit_emboss && f.face_names.iter().any(|n| !n.is_empty()) {
                 let mut g = f.clone();
                 let mut notes = Vec::new();
                 for (p, n) in g.kind.face_points_mut().into_iter().zip(&f.face_names) {
@@ -785,6 +788,11 @@ fn new_name(state: &mut ModelState, f: &Feature, k: usize) -> String {
     }
 }
 
+fn copy_body_name(state: &ModelState, f: &Feature, k: usize, source: &str) -> String {
+    let base = f.body_names.get(k).filter(|name| !name.trim().is_empty()).map(String::as_str).unwrap_or(source);
+    unique_body_name(state, base)
+}
+
 /// Add tool bodies to the model according to the operation.
 fn apply_op(state: &mut ModelState, f: &Feature, tools: Vec<Body>, op: Operation, targets: &[String]) -> Result<()> {
     // Participants: the feature's own targets, else its explicit participants, else the bodies
@@ -876,7 +884,7 @@ fn apply_op(state: &mut ModelState, f: &Feature, tools: Vec<Body>, op: Operation
 }
 
 /// Distance that reaches through every target body from the sketch plane (either side).
-fn through_all_distance(st: &ModelState, plane: &Plane, targets: &[String]) -> Result<f64> {
+pub fn through_all_distance(st: &ModelState, plane: &Plane, targets: &[String]) -> Result<f64> {
     let mut far: f64 = 0.0;
     let mut any = false;
     for b in st.bodies.iter().filter(|b| targets.is_empty() || targets.contains(&b.name)) {
@@ -1415,11 +1423,12 @@ fn feature_tools(vals: &BTreeMap<String, Value>, f: &Feature, st: &ModelState) -
                 if extent.distance2.is_some() || extent.start_offset.is_some() || extent.direction == crate::Direction::Symmetric {
                     return Err(DocError::Invalid("not supported yet: taper with two-sided, symmetric or offset extents".into()));
                 }
-                let sign = if extent.direction == crate::Direction::Negative { -1.0 } else { 1.0 };
+                let sign = if extent.to.is_none() && extent.direction == crate::Direction::Negative { -1.0 } else { 1.0 };
                 let (len, sign) = if d < 0.0 { (-d, -sign) } else { (d, sign) };
+                let start_plane = ss.plane.offset(from);
                 return Ok(regions
                     .iter()
-                    .map(|r| kernel::extrude_tapered(&ss.plane, r, len, sign, taper))
+                    .map(|r| kernel::extrude_tapered(&start_plane, r, len, sign, taper))
                     .collect::<std::result::Result<Vec<_>, _>>()?);
             }
             let off = from
@@ -2092,7 +2101,14 @@ fn replay(
             }
         }
         // New bodies from a pattern join their source when they touch it (as one feature would).
-        apply_op(st, f, copies, op, &targets)?;
+        if f.body_names.is_empty() {
+            apply_op(st, f, copies, op, &targets)?;
+        } else {
+            let start = st.bodies.iter().filter(|b| b.feature == f.id).count();
+            let mut named = f.clone();
+            named.body_names = f.body_names.iter().skip(start).cloned().collect();
+            apply_op(st, &named, copies, op, &targets)?;
+        }
     }
     Ok(())
 }
@@ -2105,7 +2121,7 @@ mod surface;
 /// Height above `plane` (along its normal) of the object at `p` as seen from `centre`: the face
 /// there if it is planar and parallel (its plane), else where a ray from `centre` along the
 /// normal meets the body there, else the point itself.
-fn object_height(st: &ModelState, plane: &Plane, centre: Vec3, p: Vec3) -> f64 {
+pub fn object_height(st: &ModelState, plane: &Plane, centre: Vec3, p: Vec3) -> f64 {
     let n = plane.normal();
     let h = |q: Vec3| (q - plane.origin).dot(n);
     for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
@@ -2367,7 +2383,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             }
             doc.apply_dimension_values(vals, &mut sk)?;
             let mut report = solve(&mut sk);
-            if !sk.offsets.is_empty() {
+            if !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty() {
                 // Source dimensions may have moved curves during the solve.
                 sk.refresh_offsets()?;
                 report = solve(&mut sk);
@@ -2626,12 +2642,14 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 return replay(doc, vals, f, st, features, &mats, warning);
             }
             // Bodies: each copy is a new body named after its source.
+            let mut output = 0;
             for n in bodies {
                 let mb = st.body(n).cloned().ok_or_else(|| DocError::Unknown(format!("body `{n}`")))?;
                 for m in &mats {
                     let copy = kernel::transform_matrix(&mb.body, *m)?;
-                    let name = unique_body_name(st, &mb.name);
+                    let name = copy_body_name(st, f, output, &mb.name);
                     st.bodies.push(ModelBody::new(name, copy, f.id));
+                    output += 1;
                 }
             }
             Ok(())
@@ -2642,6 +2660,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 return replay(doc, vals, f, st, features, &[mirror_matrix(&pl)], warning);
             }
             let m = mirror_matrix(&pl);
+            let mut output = 0;
             for n in bodies {
                 let i = st.bodies.iter().position(|b| &b.name == n).ok_or_else(|| DocError::Unknown(format!("body `{n}`")))?;
                 let Some(mb) = st.bodies.get(i).cloned() else { continue };
@@ -2655,13 +2674,15 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                                 *slot = ModelBody::new(mb.name.clone(), p, mb.feature);
                             }
                         } else {
-                            let name = unique_body_name(st, &mb.name);
+                            let name = copy_body_name(st, f, output, &mb.name);
                             st.bodies.push(ModelBody::new(name, p, f.id));
+                            output += 1;
                         }
                     }
                 } else {
-                    let name = unique_body_name(st, &mb.name);
+                    let name = copy_body_name(st, f, output, &mb.name);
                     st.bodies.push(ModelBody::new(name, mirrored, f.id));
+                    output += 1;
                 }
             }
             Ok(())
@@ -2857,8 +2878,8 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             Ok(())
         }
         FeatureKind::MeshImport { meshes, .. } => {
-            for (name, b) in mesh_bodies(meshes)? {
-                let name = unique_body_name(st, &name);
+            for (k, (name, b)) in mesh_bodies(meshes)?.into_iter().enumerate() {
+                let name = copy_body_name(st, f, k, &name);
                 st.bodies.push(ModelBody::new(name, b, f.id));
             }
             Ok(())

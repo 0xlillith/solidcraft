@@ -15,6 +15,20 @@ fillet, chamfer, offset (O), mirror, patterns, move/copy and scale.
 **Project** (P) and **Intersect** bring model edges into the sketch as linked geometry that
 follows later changes. Sketching on a face projects its edges automatically.
 
+Extend finds intersections with exact ellipses, rational conics and spline spans. It keeps the
+original line or circular support and extends only beyond the selected endpoint; conflicting
+constraints or an ambiguous overlap leave the sketch unchanged.
+
+Offsets of smooth ellipses, conics and splines follow their source after dimension changes,
+dragging and reopening a design. Their stored cubic spline has a whole-span normal-distance
+error bound of 0.002 mm. Singular tangents, curvature cusps, possible self-intersections and
+excessive subdivisions are refused. Offset these curves individually: mixed chain junctions
+currently require separate geometry. `sketch.offset.break` releases an offset for independent
+editing, and undo restores its association. Older independently sampled offsets remain independent.
+Smooth open offsets can be offset again, including bounded refinement after a source edit.
+A closed offset uses a natural cubic spline whose seam can have different end tangents;
+offsetting that result again is refused when the seam has no unique normal.
+
 ## Constraints and dimensions
 
 The solver is SolveCraft's own (damped Gauss–Newton with degree-of-freedom analysis). Constraints:
