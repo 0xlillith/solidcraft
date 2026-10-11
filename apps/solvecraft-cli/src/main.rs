@@ -97,7 +97,9 @@ fn pretty(v: &Value) -> String {
 }
 
 pub fn read_json(path: &str) -> Result<Value, String> {
-    let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    // Through the engine's file access, which refuses anything that is not a regular file and
+    // reads no more than the cap: a character device or a FIFO would otherwise never end.
+    let s = solvecraft_engine::io::vfs::read_to_string(path, solvecraft_engine::io::MAX_DESIGN_BYTES).map_err(|e| format!("{path}: {e}"))?;
     serde_json::from_str(&s).map_err(|e| format!("{path}: {e}"))
 }
 
@@ -359,13 +361,9 @@ fn cmd_bench_edit(args: &[String]) -> Result<(), String> {
 fn cmd_bench_open(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("usage: solvecraft-cli bench-open <design.solvecraft | part.step> [--parse-only]")?;
     let t = std::time::Instant::now();
-    let len = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.len();
     let step = solvecraft_engine::io::is_step_path(path);
     let limit = if step { solvecraft_engine::io::MAX_STEP_BYTES } else { solvecraft_engine::io::MAX_DESIGN_BYTES };
-    if len > limit as u64 {
-        return Err(format!("{path}: file too large"));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = solvecraft_engine::io::vfs::read(path, limit).map_err(|e| format!("{path}: {e}"))?;
     let read_ms = t.elapsed().as_secs_f64() * 1000.0;
     println!("{}", json!({"step": "read", "ms": read_ms, "bytes": bytes.len()}));
     let t = std::time::Instant::now();

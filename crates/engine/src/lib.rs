@@ -33,6 +33,10 @@ pub use solvecraft_kernel as kernel;
 pub use solvecraft_render as render;
 pub use solvecraft_sketch as sketch;
 
+/// Longest accepted request line on the JSON-lines channels (MCP over stdio and the control
+/// server over loopback), so both refuse runaway input at the same size.
+pub const MAX_LINE: usize = 16 << 20;
+
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("unknown command `{0}`")]

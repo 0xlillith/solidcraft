@@ -2299,3 +2299,29 @@ fn adopting_a_computed_component_keeps_its_warm_world_geometry() {
     s.invalidate_view(100);
     assert!(std::sync::Arc::ptr_eq(&prepared, &s.world_state()));
 }
+
+/// Every file command checked the size with the metadata and then read to the end. A character
+/// device reports a length of 0, so the cap passed and the read never finished; a FIFO blocked
+/// the calling thread, which over the control channel is the thread drawing the window.
+#[cfg(unix)]
+#[test]
+fn special_files_are_refused_by_every_file_command() {
+    let mut s = Session::default();
+    for cmd in ["doc.open", "parameters.import"] {
+        let r = s.execute(cmd, &json!({"path": "/dev/zero"}));
+        assert!(r.as_ref().is_err_and(|e| e.to_string().contains("not a regular file")), "{cmd}: {r:?}");
+    }
+    // The commands that check the extension first need a special file with the right name.
+    let dir = std::env::temp_dir().join(format!("solvecraft-special-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    for (cmd, name) in [("file.insert_step", "x.step"), ("file.insert_mesh", "x.3mf"), ("sketch.insert_dxf", "x.dxf")] {
+        let p = dir.join(name);
+        let _ = std::fs::remove_file(&p);
+        if !std::process::Command::new("mkfifo").arg(&p).status().map(|st| st.success()).unwrap_or(false) {
+            continue;
+        }
+        let r = s.execute(cmd, &json!({"path": p.to_string_lossy()}));
+        assert!(r.as_ref().is_err_and(|e| e.to_string().contains("not a regular file")), "{cmd}: {r:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

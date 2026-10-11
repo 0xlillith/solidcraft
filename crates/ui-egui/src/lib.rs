@@ -989,9 +989,16 @@ impl SolveApp {
     }
 
     fn drain_control(&mut self, ctx: &egui::Context) {
+        /// Requests run on this thread, so a flood would starve rendering. The rest stay
+        /// queued for the next frame.
+        const PER_FRAME: usize = 64;
+
         let Some(rx) = self.control_rx.take() else { return };
         // While the agent cursor acts out a request, later ones wait their turn.
-        while !self.agent.busy() {
+        for _ in 0..PER_FRAME {
+            if self.agent.busy() {
+                break;
+            }
             let Ok(req) = rx.try_recv() else { break };
             let reply = req.reply.clone();
             if agent_cursor::intercept(self, &req.method, &req.params, &reply) {

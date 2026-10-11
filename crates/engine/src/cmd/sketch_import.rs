@@ -34,11 +34,7 @@ fn source_text(p: &Value, cmd: &str) -> Result<String> {
         return Ok(t.to_string());
     }
     let path = str_(p, "path").filter(|x| !x.trim().is_empty() && x.len() < 4096).ok_or_else(|| bad(cmd, "give `path` or `text`"))?;
-    let meta = solvecraft_io::vfs::len(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    if meta as usize > MAX_DRAWING_BYTES {
-        return Err(EngineError::Other(format!("{path}: file too large")));
-    }
-    let bytes = solvecraft_io::vfs::read(path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = solvecraft_io::vfs::read(path, MAX_DRAWING_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
