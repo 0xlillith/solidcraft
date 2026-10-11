@@ -35,8 +35,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("feature: id|name → features deleted with it, and features that would fail without it"),
     CommandSpec::new("timeline.suppress", "Suppress Feature", suppress).params("feature: id|name, suppressed?: bool (default toggles)"),
     CommandSpec::new("timeline.edit", "Edit Feature", edit_feature).params(
-        "feature: id|name, set: {fields to change, e.g. {\"extent\": {\"distance\": \"30\"}}} → recomputed: features rebuilt, \
-             restored: features whose earlier result for the same inputs was reused",
+        "feature: id|name, set: {fields to change, merged into the feature's definition as timeline.inspect returns it, \
+         e.g. {\"extent\": {\"distance\": \"30\"}} (extrude), {\"angle\": \"90 deg\"} (revolve); \
+         expressions are text} → recomputed: features rebuilt, restored: features whose earlier result for the same inputs was reused",
+    ),
+    CommandSpec::new("timeline.inspect", "Inspect Feature", inspect_feature).noundo().params(
+        "feature: id|name → type, definition (the fields timeline.edit's set changes, with their current values), \
+         inputs: [{label, param, expression, unit}] (named inputs parameters.change can also set), error, warning",
     ),
     CommandSpec::new("select.set", "Select", select_set)
         .noundo()
@@ -188,6 +193,52 @@ fn merge(dst: &mut Value, src: &Value, depth: usize) {
         }
         (d, s) => *d = s.clone(),
     }
+}
+
+/// Fields of a stored feature left out of its definition: bookkeeping timeline.edit recomputes, and
+/// the name and suppression, which timeline.rename and timeline.suppress change.
+const NOT_EDITABLE: &[&str] = &["id", "type", "name", "suppressed", "param_names", "edge_refs", "edge_names", "face_names"];
+
+fn inspect_feature(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "timeline.inspect";
+    let id = feature_id(s, p.get("feature"), cmd)?;
+    let f = s.doc.feature(id).ok_or_else(|| bad(cmd, "feature"))?;
+    let mut def = serde_json::to_value(f).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut omitted = Vec::new();
+    if let Some(o) = def.as_object_mut() {
+        for k in NOT_EDITABLE {
+            o.remove(*k);
+        }
+        // Large payloads that timeline.edit cannot change.
+        let heavy: &[(&str, &str)] = match &f.kind {
+            FeatureKind::Sketch { .. } => &[("sketch", "the sketch geometry (sketch.inspect; edit it with the sketch commands)")],
+            FeatureKind::Import { .. } => &[("step", "the imported STEP text"), ("components", "the imported product tree")],
+            FeatureKind::MeshImport { .. } => &[("meshes", "the imported meshes")],
+            _ => &[],
+        };
+        for (k, why) in heavy {
+            if o.remove(*k).is_some() {
+                omitted.push(json!({"field": k, "what": why}));
+            }
+        }
+    }
+    let inputs: Vec<Value> = f
+        .kind
+        .inputs()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (label, e, k))| {
+            json!({"label": label, "param": f.param_names.get(i).filter(|n| !n.is_empty()), "expression": e, "unit": k.default_unit()})
+        })
+        .collect();
+    let marker = s.doc.marker.unwrap_or(usize::MAX);
+    let rolled_back = s.doc.features.iter().position(|x| x.id == id).is_some_and(|i| i >= marker);
+    let r = s.model.result(id);
+    Ok(json!({
+        "id": f.id, "name": f.name, "type": f.kind.type_name(), "suppressed": f.suppressed, "rolled_back": rolled_back,
+        "definition": def, "omitted": omitted, "inputs": inputs,
+        "error": r.and_then(|r| r.error.clone()), "warning": r.and_then(|r| r.warning.clone()),
+    }))
 }
 
 fn edit_feature(s: &mut Session, p: &Value) -> Result<Value> {
