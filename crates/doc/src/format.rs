@@ -132,21 +132,21 @@ fn v2_to_v3(v: &mut Value) -> Result<()> {
 
 /// Read a design file's JSON, upgrading older formats.
 pub fn read(s: &str) -> Result<Document> {
-    let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not a SolveCraft design: {e}")))?;
+    let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not a SolidCraft design: {e}")))?;
     let Some(obj) = v.as_object() else {
-        return Err(DocError::Invalid("not a SolveCraft design (expected a JSON object)".into()));
+        return Err(DocError::Invalid("not a SolidCraft design (expected a JSON object)".into()));
     };
     let version = match obj.get("format") {
         None => 1,
-        Some(Value::String(f)) => version_of(f).ok_or_else(|| DocError::Invalid(format!("not a SolveCraft design (format `{f}`)")))?,
-        Some(_) => return Err(DocError::Invalid("not a SolveCraft design (format is not a string)".into())),
+        Some(Value::String(f)) => version_of(f).ok_or_else(|| DocError::Invalid(format!("not a SolidCraft design (format `{f}`)")))?,
+        Some(_) => return Err(DocError::Invalid("not a SolidCraft design (format is not a string)".into())),
     };
     if version == 0 {
-        return Err(DocError::Invalid("not a SolveCraft design (format 0)".into()));
+        return Err(DocError::Invalid("not a SolidCraft design (format 0)".into()));
     }
     if version > FORMAT {
         return Err(DocError::Invalid(format!(
-            "this design was saved by a newer SolveCraft (file format {version}; this version reads formats up to {FORMAT}): update SolveCraft to open it"
+            "this design was saved by a newer SolidCraft (file format {version}; this version reads formats up to {FORMAT}): update SolidCraft to open it"
         )));
     }
     check_numbers(&v, 0)?;
@@ -950,7 +950,7 @@ mod tests {
             let error = read(&value.to_string()).unwrap_err().to_string();
             assert!(error.contains("free-form offset metadata"), "{error}");
             value["format"] = Value::from(format_string(FORMAT + 1));
-            assert!(read(&value.to_string()).unwrap_err().to_string().contains("newer SolveCraft"));
+            assert!(read(&value.to_string()).unwrap_err().to_string().contains("newer SolidCraft"));
         }
     }
 
@@ -975,7 +975,7 @@ mod tests {
             assert!(error.contains("emboss face"), "{error}");
             value["format"] = Value::from(format_string(FORMAT + 1));
             let error = read(&value.to_string()).unwrap_err().to_string();
-            assert!(error.contains("newer SolveCraft"), "{error}");
+            assert!(error.contains("newer SolidCraft"), "{error}");
         }
     }
 
@@ -1038,7 +1038,7 @@ mod tests {
         value["configs"]["columns"] = serde_json::json!([{"unknown_future_column":"Body"}]);
         value["configs"]["rules"] = serde_json::json!({"unknown_future_rule": true});
         let error = read(&value.to_string()).unwrap_err().to_string();
-        assert!(error.contains("newer SolveCraft") && error.contains("update SolveCraft"), "{error}");
+        assert!(error.contains("newer SolidCraft") && error.contains("update SolidCraft"), "{error}");
         assert!(!error.contains("unknown variant"), "format refusal precedes decoding new variants");
     }
 
@@ -1090,7 +1090,7 @@ mod tests {
         saved["format"] = Value::from(format_string(FORMAT + 1));
         saved["features"][0]["sketch"]["constraints"][0]["type"] = Value::from("future_dimension");
         let error = read(&saved.to_string()).unwrap_err().to_string();
-        assert!(error.contains("newer SolveCraft") && !error.contains("unknown variant"), "{error}");
+        assert!(error.contains("newer SolidCraft") && !error.contains("unknown variant"), "{error}");
     }
 
     #[test]
@@ -1202,7 +1202,7 @@ mod tests {
         assert!(read(&v.to_string()).is_ok(), "a file without a format is format 1");
         v["format"] = Value::from(format_string(FORMAT + 1));
         let e = read(&v.to_string()).unwrap_err().to_string();
-        assert!(e.contains("newer SolveCraft"), "{e}");
+        assert!(e.contains("newer SolidCraft"), "{e}");
         for bad in ["solvecraft/0", "acad/3", "solvecraft/-1", "solvecraft/99999999999999999999"] {
             v["format"] = Value::from(bad);
             assert!(read(&v.to_string()).is_err(), "{bad}");

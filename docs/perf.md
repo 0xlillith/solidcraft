@@ -136,7 +136,7 @@ Pi case in 15.2 s and 10.5 s. During those jobs, median `ui.inspect` round trips
 and 8.3 ms; the slowest were 33.7 ms and 28.6 ms. This fixes the window freeze, not the
 remaining cost of cold geometry evaluation.
 
-Recent thumbnails are 240 × 150 PNG files in `SolveCraft/thumbnails` under the platform
+Recent thumbnails are 240 Ã— 150 PNG files in `SolveCraft/thumbnails` under the platform
 cache directory (`LOCALAPPDATA` on Windows). Their keys include the source path, file size
 and modification time. Open and Save render from the model already in memory. Cached
 recents decode the PNG without reading or rebuilding a document, and run before cold

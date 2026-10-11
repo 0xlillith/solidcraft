@@ -9,8 +9,8 @@ version = "0.2.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
-authors = ["SolveCraft contributors"]
-repository = "https://github.com/bherbruck/solvecraft"
+authors = ["SolidCraft contributors"]
+repository = "https://github.com/bherbruck/solidcraft"
 
 [workspace.dependencies]
 # internal

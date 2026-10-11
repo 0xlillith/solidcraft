@@ -1,13 +1,17 @@
 # Getting started
 
+SolidCraft keeps its compatibility names: the desktop executable is `solvecraft`, the CLI
+is `solvecraft-cli`, and saved designs remain `.solvecraft`. Published 0.2.0 and 0.2.1 packages
+were released under the SolveCraft name.
+
 ## Desktop
 
 Download the latest build from the
-[releases page](https://github.com/bherbruck/solvecraft/releases), or build it yourself with
+[releases page](https://github.com/bherbruck/solidcraft/releases), or build it yourself with
 stable Rust (1.90 or newer):
 
 ```sh
-git clone https://github.com/bherbruck/solvecraft && cd solvecraft
+git clone https://github.com/bherbruck/solidcraft && cd solidcraft
 cargo run --release -p solvecraft -- --sample   # opens with a sample part
 ```
 
@@ -17,7 +21,7 @@ cargo run --release -p solvecraft -- --sample   # opens with a sample part
 
 ## Web
 
-The same app runs in the browser: [open SolveCraft on the web](../app/) (`?sample` opens the sample
+The same app runs in the browser: [open SolidCraft on the web](../app/) (`?sample` opens the sample
 part, `?webgl` forces WebGL2 where WebGPU is missing). Designs are saved in the browser's private
 file storage, which needs HTTPS or localhost. To build it yourself:
 

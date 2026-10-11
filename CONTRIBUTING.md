@@ -1,6 +1,6 @@
-# Contributing to SolveCraft
+# Contributing to SolidCraft
 
-SolveCraft is an open-source parametric 3D CAD app written in pure Rust, in the style of
+SolidCraft is an open-source parametric 3D CAD app written in pure Rust, in the style of
 Autodesk Fusion. You sketch on a plane, constrain the sketch, turn profiles into solids, and
 change a parameter to watch the timeline rebuild. It runs as a desktop app (Windows, Linux), in
 the browser (wasm + WebGPU/WebGL2), headless from a CLI, and as an MCP server that AI agents can
@@ -16,7 +16,7 @@ You need stable Rust 1.90 or newer. For the web
 build you also need `rustup target add wasm32-unknown-unknown` and [`trunk`](https://trunkrs.dev).
 
 ```sh
-git clone https://github.com/bherbruck/solvecraft && cd solvecraft
+git clone https://github.com/bherbruck/solidcraft && cd solvecraft
 cargo run --release -p solvecraft -- --sample      # desktop app with a sample part
 cargo xtask test                                   # unit, engine and UI-scenario tests
 cargo xtask ci                                     # everything a PR must pass (see below)
@@ -97,7 +97,7 @@ The [README](README.md#architecture) has the layer table. The short version:
    tooltips, templates or materials, and we never commit files Fusion produced. Command ids are
    our own (`solid.fillet`, not Fusion's internal names).
 2. **No GPL/LGPL/AGPL code, not even reading it.** That rules out OpenCASCADE, FreeCAD
-   (including planegcs), SolveSpace, CadQuery/OCP, LibreCAD and QCAD. SolveCraft is
+   (including planegcs), SolveSpace, CadQuery/OCP, LibreCAD and QCAD. SolidCraft is
    MIT OR Apache-2.0, and its solver and blends are written from the maths. Permissive
    dependencies are fine. Note which one you're adding and why in the PR, and run
    `cargo xtask licences` so THIRD-PARTY-LICENSES.txt lists it (CI checks that it is current).
@@ -151,14 +151,14 @@ in the PR. `cargo xtask test` builds the tests with it and then runs every test 
 depend on wall-clock timing.
 
 **The Fusion oracle** is a set of 76 reference parts, each built in Fusion from a recipe.
-SolveCraft rebuilds the same recipe and compares volume, area and topology counts with Fusion's
+SolidCraft rebuilds the same recipe and compares volume, area and topology counts with Fusion's
 measurements; [docs/oracle.md](docs/oracle.md) has the current results. The recipes and
 measurements live outside the repo (`plan/`, gitignored), because they come from a Fusion
 install. If you work on geometry and want to check against it, ask in an issue.
 
 ## Sending a change
 
-1. Work is tracked in [GitHub issues](https://github.com/bherbruck/solvecraft/issues), labelled
+1. Work is tracked in [GitHub issues](https://github.com/bherbruck/solidcraft/issues), labelled
    by area (`area:kernel`, `area:sketch`, `area:doc`, `area:ui`, `area:infra`). Before starting,
    comment on the issue so it gets the `in progress` label and two people don't build the same
    thing. For anything bigger than a bug fix that has no issue yet, open one first.
@@ -189,15 +189,15 @@ CI if it brought changes, and push without force. Report the upstream/PR state y
 any conflicts resolved and validation results. While a task remains active, follow an open
 PR through its status changes; at handoff, clearly identify anything still awaiting merge.
 
-Much of SolveCraft so far was written by AI coding agents (Claude) working in parallel, each
+Much of SolidCraft so far was written by AI coding agents (Claude) working in parallel, each
 owning one area, with a human setting direction and reporting bugs. Their working notes are in
 [AGENTS.md](AGENTS.md). Human contributors are just as welcome. Use whatever tools you like, as
 long as the change meets the rules above.
 
 ## Where help is wanted most
 
-See the [`help wanted`](https://github.com/bherbruck/solvecraft/labels/help%20wanted) and
-[`good first issue`](https://github.com/bherbruck/solvecraft/labels/good%20first%20issue) labels.
+See the [`help wanted`](https://github.com/bherbruck/solidcraft/labels/help%20wanted) and
+[`good first issue`](https://github.com/bherbruck/solidcraft/labels/good%20first%20issue) labels.
 In order of how much they'd help users:
 
 1. **Fillet and blend robustness.** Fillets are our own code (truck has no fillet operation).
@@ -206,7 +206,7 @@ In order of how much they'd help users:
    faces, and fillets that consume neighbouring faces.
 2. **Boolean robustness.** A random-design fuzzer currently gets about half of its designs
    through without a kernel error. Each failing seed is a reproducible bug.
-3. **Y-up / Z-up.** SolveCraft is Z-up only, so most STEP files (from SolidWorks, Onshape, or
+3. **Y-up / Z-up.** SolidCraft is Z-up only, so most STEP files (from SolidWorks, Onshape, or
    Fusion's default) open lying on their backs. Fusion solves this with a "default modeling
    orientation" preference.
 4. **Imported appearances.** Colours from STEP files are lost when a feature changes the
@@ -217,4 +217,4 @@ In order of how much they'd help users:
 ## Licence
 
 By contributing you agree that your contribution is licensed as MIT OR Apache-2.0, like the rest
-of SolveCraft. SolveCraft isn't affiliated with Autodesk. Fusion is a trademark of Autodesk, Inc.
+of SolidCraft. SolidCraft isn't affiliated with Autodesk. Fusion is a trademark of Autodesk, Inc.

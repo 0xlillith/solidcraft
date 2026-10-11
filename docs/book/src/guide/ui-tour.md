@@ -1,6 +1,6 @@
 # A tour of the window
 
-![The SolveCraft window](../generated/sample-plate.png)
+![The SolidCraft window](../generated/sample-plate.png)
 
 - **Title bar.** On Windows and Linux the application bar is the window's title bar: File, save,
   undo and redo, the start page, the theme, Help, and one tab per open design (each with its own
@@ -16,7 +16,7 @@
   wheel zooms at the cursor, the middle button pans and right-drag orbits freely (the mouse
   preset in Preferences switches to SolidWorks or Inventor style). Hold Shift during an orbit
   to snap to the nearest standard or diagonal view; the default Shift+middle gesture also snaps.
-  The axis view shows the world's X/Y/Z directions in SolveCraft's colors. Click a signed
+  The axis view shows the world's X/Y/Z directions in SolidCraft's colors. Click a signed
   axis tip to look along that axis; click the aligned tip again to look from the opposite side.
   Drag the axis view to orbit around the view centre, with Shift for snapping. Top and bottom
   keep the nearest quarter-turn heading. The house and navigation bar's Home button go home.

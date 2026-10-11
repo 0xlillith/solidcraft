@@ -211,7 +211,7 @@ pub fn model_xml(objects: &[MeshObject]) -> String {
     let mut x = String::new();
     x.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     let _ = writeln!(x, "<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NS}\">");
-    x.push_str(" <metadata name=\"Application\">SolveCraft</metadata>\n <resources>\n");
+    x.push_str(" <metadata name=\"Application\">SolidCraft</metadata>\n <resources>\n");
     let colored = objects.iter().any(|o| o.color.is_some() || o.transparency > 0.0 || !o.looks.is_empty());
     // Base material group id 1 (each object's own colour, then its faces' colours); objects
     // from 2. A see-through colour carries its alpha (#RRGGBBAA).

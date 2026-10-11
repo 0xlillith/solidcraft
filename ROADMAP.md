@@ -1,6 +1,6 @@
-# SolveCraft roadmap
+# SolidCraft roadmap
 
-Status as of **2026-10-11**. SolveCraft targets Fusion-style parametric modelling (sketch →
+Status as of **2026-10-11**. SolidCraft targets Fusion-style parametric modelling (sketch →
 features → parametric timeline) as an open, pure-Rust, agent-drivable application.
 
 ## At a glance
@@ -72,6 +72,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   useful reproduction context. The draft is editable, with optional capture of the actual
   viewport and copy/save controls. Opening GitHub does not submit the issue. Help also exposes
   reporting for unexpected results that did not produce an error.
+- The header exposes **Report a bug**, including an accessible compact control on
+  narrow windows. It opens the same editable report and screenshot review without
+  changing the active model or a pending dimension.
 
 ## 0.2.0 release batch
 

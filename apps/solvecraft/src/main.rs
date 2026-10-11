@@ -57,7 +57,7 @@ fn services() -> Services {
                     "Designs, STEP, IGES and meshes",
                     &["solvecraft", "step", "stp", "STEP", "STP", "igs", "iges", "IGS", "IGES", "3mf", "3MF", "stl", "STL"],
                 )
-                .add_filter("SolveCraft design", &["solvecraft"])
+                .add_filter("SolidCraft design", &["solvecraft"])
                 .add_filter("STEP", &["step", "stp", "STEP", "STP"])
                 .add_filter("IGES", &["igs", "iges", "IGS", "IGES"])
                 .add_filter("Mesh (3MF, STL)", &["3mf", "3MF", "stl", "STL"])
@@ -139,7 +139,7 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("SolveCraft")
+            .with_title("SolidCraft")
             .with_inner_size([1600.0, 1000.0])
             .with_min_inner_size([960.0, 600.0])
             .with_drag_and_drop(true)
@@ -166,7 +166,7 @@ fn main() -> eframe::Result {
         }));
     }
     eframe::run_native(
-        "SolveCraft",
+        "SolidCraft",
         options,
         Box::new(move |cc| {
             solvecraft_ui_egui::fonts::setup_fonts(&cc.egui_ctx);

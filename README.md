@@ -1,4 +1,4 @@
-# SolveCraft
+# SolidCraft
 
 **Parametric 3D CAD; an open-source, [clean-room](CLAUDE.md) reimplementation of Autodesk
 Fusion 360, built in pure Rust.**
@@ -7,19 +7,30 @@ Sketch, constrain, and build solids with a parametric feature timeline. Change a
 and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
 model through the built-in MCP server. Part of the storytold "craft" family.
 
-![SolveCraft: draw a rounded electronics enclosure, sketch its USB port directly on a face, add four mounting bosses and resize it through Parameters](docs/screenshots/enclosure-demo-0.2.1.gif)
+![SolidCraft: draw a rounded electronics enclosure, sketch its USB port directly on a face, add four mounting bosses and resize it through Parameters](docs/screenshots/enclosure-demo-0.2.1.gif)
 
-*Start with an empty design and draw the original parametric electronics enclosure in the English desktop UI: rounded corners, a shell, a USB port sketched directly on the wall and a four-boss pattern. Change width from 80 → 100 mm and wall thickness from 2 → 3 mm in Parameters and watch it rebuild. Original animated pointer and click cues; 4× playback. [Full video](https://github.com/bherbruck/solvecraft/raw/refs/heads/main/docs/screenshots/enclosure-demo-0.2.1.mp4), generated with the [demo script](examples/demo/record_ui.sh).*
+*Start with an empty design and draw the original parametric electronics enclosure in the English desktop UI: rounded corners, a shell, a USB port sketched directly on the wall and a four-boss pattern. Change width from 80 → 100 mm and wall thickness from 2 → 3 mm in Parameters and watch it rebuild. Original animated pointer and click cues; 4× playback. [Full video](https://github.com/bherbruck/solidcraft/raw/refs/heads/main/docs/screenshots/enclosure-demo-0.2.1.mp4), generated with the [demo script](examples/demo/record_ui.sh).*
 
-**Documentation:** the [SolveCraft book](https://bherbruck.github.io/solvecraft/) (user guide,
+**Documentation:** the [SolidCraft book](https://bherbruck.github.io/solidcraft/) (user guide,
 developer guide and command reference; sources in [docs/book](docs/book)), and the
-[web app](https://bherbruck.github.io/solvecraft/app/) to try it in the browser.
+[web app](https://bherbruck.github.io/solidcraft/app/) to try it in the browser.
 
 **Status: early but usable for simple parts.** 76 of 76 reference parts built in Fusion
-rebuild in SolveCraft with the same volume, area and topology ([docs/oracle.md](docs/oracle.md));
+rebuild in SolidCraft with the same volume, area and topology ([docs/oracle.md](docs/oracle.md));
 command parity with Fusion's Design workspace is tracked in [docs/parity.md](docs/parity.md).
-Open work and known bugs are in [GitHub issues](https://github.com/bherbruck/solvecraft/issues),
+Open work and known bugs are in [GitHub issues](https://github.com/bherbruck/solidcraft/issues),
 and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Name and compatibility
+
+SolidCraft was previously called SolveCraft. The product display name and repository are
+changing; existing identifiers remain compatible: `.solvecraft` designs, `solvecraft-cli`,
+Cargo package names, settings/recovery locations and package IDs keep their existing names.
+Published 0.2.0 and 0.2.1 packages and demo recordings retain their original SolveCraft branding
+and filenames.
+
+Use the SolidCraft documentation and web-app URLs above. GitHub redirects links to the
+renamed repository; old-name Pages and Flatpak URLs are not maintained as permanent aliases.
 
 ## What works
 
@@ -139,5 +150,5 @@ and licence rules, and where help is wanted most.
 
 ## Licence
 
-MIT OR Apache-2.0, at your option. SolveCraft is not affiliated with Autodesk; Fusion is a
+MIT OR Apache-2.0, at your option. SolidCraft is not affiliated with Autodesk; Fusion is a
 trademark of Autodesk, Inc.

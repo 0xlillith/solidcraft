@@ -616,7 +616,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 }
             });
             ui.end_row();
-            note(ui, "Anti-aliasing applies the next time SolveCraft starts");
+            note(ui, "Anti-aliasing applies the next time SolidCraft starts");
             ui.label("Renderer");
             ui.label(match (&app.viewport.gpu, &app.help.gpu) {
                 (Some(_), Some(g)) => format!("GPU: {g}"),
