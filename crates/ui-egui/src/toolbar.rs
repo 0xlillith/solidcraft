@@ -372,6 +372,14 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         // Panels.
         let tab = app.ui.tab.clone();
+        // The command whose tool or dialog is open right now, shown pressed in the toolbar.
+        let running: Option<String> = match (&app.tool, &app.dialog) {
+            (Some(tool), _) => Some(tool.cmd.to_string()),
+            // Create Sketch never lands in last_command (it is not repeatable).
+            (None, Some(d)) if matches!(d.kind, crate::dialogs::Kind::Sketch) => Some("sketch.create".to_string()),
+            (None, Some(_)) => app.last_command.as_ref().map(|(id, _)| id.clone()),
+            _ => None,
+        };
         let mut px = r.left() + 112.0;
         let top = r.top() + 26.0;
         let mut drop: Option<(&'static str, &'static str, Option<&'static str>)> = None;
@@ -421,7 +429,9 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 if resp.secondary_clicked() {
                     menu = Some((resp.interact_pointer_pos().unwrap_or(br.left_bottom()), c.id));
                 }
-                if resp.hovered() && info.enabled {
+                if running.as_deref() == Some(c.id) {
+                    painter.rect_filled(br, 4.0, t.border.gamma_multiply(0.7));
+                } else if resp.hovered() && info.enabled {
                     painter.rect_filled(br, 4.0, t.hover);
                 }
                 let (ink, fill, acc) = if info.enabled {
