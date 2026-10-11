@@ -28,6 +28,18 @@ fn is_empty(p: &Value) -> bool {
     ["items", "occurrences", "components", "canvases"].iter().all(|k| p.get(*k).and_then(Value::as_array).is_none_or(|a| a.is_empty()))
 }
 
+fn shared_occurrences(app: &SolveApp, params: &Value) -> bool {
+    let explicit = params.get("occurrences").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_u64);
+    let selected = params
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item["type"] == "occurrence")
+        .filter_map(|item| item["path"].as_array()?.last()?.as_u64());
+    explicit.chain(selected).any(|id| app.session.occurrence_id_scope_count(id).is_ok_and(|n| n > 1))
+}
+
 /// Delete what is selected (the Delete key). A selected sketch dimension or constraint glyph
 /// goes first, as before.
 pub fn delete_selection(app: &mut SolveApp) {
@@ -56,7 +68,8 @@ pub fn request(app: &mut SolveApp, params: Value) {
         params.get("items").and_then(Value::as_array).map_or(0, |a| a.iter().filter(|i| i["type"] == "feature" || i["type"] == "plane").count());
     let extra = report["deleted"].as_array().map_or(0, Vec::len) > asked;
     let fails = report["would_fail"].as_array().is_some_and(|a| !a.is_empty());
-    if extra || fails {
+    let shared = shared_occurrences(app, &params);
+    if extra || fails || shared {
         app.menu.confirm = Some(Pending { params, report });
     } else {
         run(app, &params);
@@ -101,6 +114,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, -60.0))
         .show(ctx, |ui| {
             ui.set_max_width(360.0);
+            if shared_occurrences(app, &p.params) {
+                ui.label("This child is shared. Deleting it removes it from every copy of its parent.");
+            }
             if !deleted.is_empty() {
                 ui.label("These features will be deleted:");
                 for d in deleted.iter().take(20) {

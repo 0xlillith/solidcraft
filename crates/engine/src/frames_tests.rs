@@ -75,12 +75,17 @@ fn world_picks_map_into_the_component() {
     // The edge along X at the top front: world (65, 0, 10).
     run(&mut s, "solid.fillet", json!({"edges": [[65, 0, 10]], "radius": 2}));
     assert!(volume(&mut s) < v0 - 1.0, "the fillet cut material");
-    // A sketch on the moved top face sits at world z = 10 over the moved block.
-    run(&mut s, "sketch.create", json!({"plane": {"face": [70, 10, 10]}, "name": "Pad"}));
-    run(&mut s, "sketch.circle.center", json!({"center": [20, 10], "radius": 2}));
+    // The modified face has no certified lineage; explicitly freeze its picked plane.
+    // Its world pick still maps into the moved component exactly once.
+    run(&mut s, "sketch.create", json!({"plane": {"face": [70, 10, 10],"fixed":true}, "name": "Pad"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [20, 10], "radius": 2, "id": "PadCircle"}));
+    let sketch = run(&mut s, "sketch.inspect", json!({"sketch": "Pad"}));
+    let center = sketch["curves"].as_array().unwrap().iter().find(|c| c["id"] == "PadCircle").unwrap()["center"].as_str().unwrap().to_string();
     run(&mut s, "sketch.finish", json!({}));
-    let pad = sketch_point_world(&mut s, "Pad", "p1");
-    assert!((pad.z - 10.0).abs() < 1e-6 && pad.x > 50.0, "{pad:?}");
+    // A projected boundary's first point is an enumeration detail; check the circle
+    // that was actually authored in the moved component's local sketch coordinates.
+    let pad = sketch_point_world(&mut s, "Pad", &center);
+    assert!(near(pad, Vec3::new(70.0, 10.0, 10.0)), "{pad:?}");
     let v1 = volume(&mut s);
     let h = run(&mut s, "solid.hole", json!({"position": [60, 10, 10], "diameter": 4, "depth": 5}));
     assert!(volume(&mut s) < v1 - 1.0, "the hole cut material: {h}");

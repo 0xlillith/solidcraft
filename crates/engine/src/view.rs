@@ -42,7 +42,7 @@ pub fn bounds(s: &Session) -> Aabb3 {
     let st = s.world_state();
     let mut b = Aabb3::EMPTY;
     let v = &s.visibility;
-    for body in st.bodies.iter().filter(|x| !v.hidden_bodies.contains(&x.name)) {
+    for body in st.bodies.iter().filter(|x| s.body_visible(&x.name)) {
         b = b.union(&body.mesh().bounds());
     }
     for ss in st.sketches.iter().filter(|x| !v.hidden_sketches.contains(&x.feature)) {
@@ -152,8 +152,17 @@ pub fn scene(s: &Session, cam: &Camera) -> Scene {
     for (d, col) in [(Vec3::X, colors::AXIS_X), (Vec3::Y, colors::AXIS_Y), (Vec3::Z, colors::AXIS_Z)] {
         sc.lines.push(SceneLine { points: vec![Vec3::ZERO, d * axis], color: col, width: 1.6, on_top: false });
     }
-    for body in st.bodies.iter().filter(|b| !s.visibility.hidden_bodies.contains(&b.name)) {
-        let selected = s.selection.iter().any(|x| matches!(x, Sel::Body { name } if *name == body.name));
+    let selected_occurrences: Vec<String> = s
+        .selection
+        .iter()
+        .filter_map(|x| match x {
+            Sel::Occurrence { path } => s.occurrence_bodies(path, true).ok(),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    for body in st.bodies.iter().filter(|b| s.body_visible(&b.name)) {
+        let selected = selected_occurrences.contains(&body.name) || s.selection.iter().any(|x| matches!(x, Sel::Body { name } if *name == body.name));
         let mesh = body.mesh();
         // The body's appearance (or imported colour) and faces with looks of their own, as in
         // the viewport.

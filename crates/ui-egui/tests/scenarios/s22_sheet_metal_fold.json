@@ -81,6 +81,28 @@
   }
  },
  {
+  "note": "The sheet flange face is uncertified; choose the displayed fixed-plane option explicitly before drawing the fold line."
+ },
+ {
+  "expect": {
+   "sketching": false,
+   "dialog": "this face has no exact planar source"
+  }
+ },
+ {
+  "widget": "Use fixed plane"
+ },
+ {
+  "expect": {
+   "sketching": true,
+   "query": {
+    "command": "sketch.inspect",
+    "path": ["plane", "origin", 2],
+    "value": 2.5
+   }
+  }
+ },
+ {
   "start": "sketch.line"
  },
  {

@@ -23,8 +23,26 @@ pub fn anchor(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Option<Vec3>)> {
     let (at, normal) = match first {
         Sel::Profile { sketch, index } => {
             let ss = st.sketch(*sketch)?;
+            let plane = profile_plane(app, *sketch)?;
             let p = ss.profiles.get(*index)?;
-            (ss.plane.to_world(p.region.interior_point()), Some(ss.plane.normal()))
+            let centre = if matches!(d.kind, Kind::Extrude { .. }) {
+                let regions: Vec<_> = d
+                    .inputs
+                    .first()?
+                    .items
+                    .iter()
+                    .filter_map(|item| {
+                        if let Sel::Profile { sketch: id, index } = item { (*id == *sketch).then(|| ss.profiles.get(*index)).flatten() } else { None }
+                    })
+                    .map(|p| p.region.clone())
+                    .collect();
+                let regions = solvecraft_engine::sketch::merge_regions(&regions);
+                let points: Vec<_> = regions.iter().flat_map(|r| r.outer.polyline(1e-2)).collect();
+                points.iter().fold(solvecraft_engine::geom::Vec2::default(), |sum, p| sum + *p) * (1.0 / points.len().max(1) as f64)
+            } else {
+                p.region.interior_point()
+            };
+            (plane.to_world(centre), Some(plane.normal()))
         }
         Sel::Face { body, index, point } => (*point, crate::dialogs::planar_face(&app.session, body, *index).map(|(_, n)| n)),
         Sel::Edge { body, index, point } => (*point, st.body(body).and_then(|b| edge_bisector(&b.mesh(), *index, *point))),
@@ -43,13 +61,15 @@ pub fn anchor(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Option<Vec3>)> {
         }
         _ => return None,
     };
-    Some(match d.kind {
-        Kind::Extrude { .. }
-        | Kind::Fillet { .. }
-        | Kind::Section { .. }
-        | Kind::Hole { .. }
-        | Kind::OffsetPlane { .. }
-        | Kind::OffsetFaces { .. } => (at, normal),
+    Some(match &d.kind {
+        Kind::Extrude { start, .. } => {
+            let n = normal?;
+            let plane = solvecraft_engine::geom::Plane::from_normal(at, n)?;
+            let from = reference_height(app, d, "From Object", &plane, at).unwrap_or(0.0);
+            let offset = if start.trim().is_empty() { 0.0 } else { app.session.doc.eval(start, ValueKind::Length).ok()? };
+            (at + n * (from + offset), Some(n))
+        }
+        Kind::Fillet { .. } | Kind::Section { .. } | Kind::Hole { .. } | Kind::OffsetPlane { .. } | Kind::OffsetFaces { .. } => (at, normal),
         // Shell thickness grows into the body.
         Kind::Shell { .. } => (at, normal.map(|n| -n)),
         Kind::Sheet(_) => (at, crate::dialogs_sheet::arrow(app, d).or(normal)),
@@ -57,6 +77,25 @@ pub fn anchor(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Option<Vec3>)> {
         Kind::PatternRect { .. } => (at, d.inputs.get(1).and_then(|i| i.items.first()).and_then(|x| crate::dialogs::axis_of(app, x)).map(|a| a.1)),
         _ => (at, None),
     })
+}
+
+fn profile_plane(app: &SolveApp, sketch: u64) -> Option<solvecraft_engine::geom::Plane> {
+    let component = app.session.doc.feature(sketch)?.component;
+    let state = app.session.model.state();
+    let plane = state.sketch(sketch)?.plane;
+    let frame = crate::dialogs::feature_frame(&app.session, component);
+    solvecraft_engine::geom::Plane::new(
+        solvecraft_engine::doc::apply_point(&frame, plane.origin),
+        solvecraft_engine::doc::apply_vector(&frame, plane.x),
+        solvecraft_engine::doc::apply_vector(&frame, plane.y),
+    )
+}
+
+fn reference_height(app: &SolveApp, d: &Dialog, label: &str, plane: &solvecraft_engine::geom::Plane, centre: Vec3) -> Option<f64> {
+    let point = crate::dialogs::object_point(&d.inputs, label)?;
+    let p = point.as_array()?;
+    let p = Vec3::new(p.first()?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?);
+    Some(solvecraft_engine::doc::object_height(&app.session.world_state(), plane, centre, p))
 }
 
 /// The outward direction between the two faces at an edge (where a fillet's radius arrow
@@ -155,22 +194,57 @@ fn offset_plane_quad(proj: &Proj, c: Vec3, n: Vec3, h: f64) -> Option<Vec<Pos2>>
 #[allow(clippy::too_many_arguments)]
 fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, d: &mut Dialog, base: Vec3, bs: Pos2, dir: Option<Vec3>) {
     let t = Tokens::get();
-    let sign = match d.kind {
-        Kind::Extrude { direction: 1, .. } => -1.0,
+    let to_span = dir.and_then(|n| {
+        let plane = solvecraft_engine::geom::Plane::from_normal(base, n)?;
+        reference_height(app, d, "To Object", &plane, base)
+    });
+    let all_span = if matches!(d.kind, Kind::Extrude { all: true, .. }) {
+        dir.and_then(|n| {
+            let state = app.session.world_state();
+            let plane = match d.inputs.first()?.items.first()? {
+                Sel::Profile { sketch, .. } => profile_plane(app, *sketch)?,
+                _ => solvecraft_engine::geom::Plane::from_normal(base, n)?,
+            };
+            let targets: Vec<String> = d
+                .extra
+                .get("targets")
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            solvecraft_engine::doc::through_all_distance(&state, &plane, &targets).ok()
+        })
+    } else {
+        None
+    };
+    let sign = match (to_span, &d.kind) {
+        (Some(span), _) => {
+            if span < 0.0 {
+                -1.0
+            } else {
+                1.0
+            }
+        }
+        (_, Kind::Extrude { direction: 1, .. }) => -1.0,
         _ => 1.0,
     };
-    let symmetric = matches!(d.kind, Kind::Extrude { direction: 2, .. });
+    let symmetric = to_span.is_none() && matches!(d.kind, Kind::Extrude { direction: 2, .. });
     // Extrudes and moves go either way; radii and thicknesses stay positive.
     let signed =
         matches!(d.kind, Kind::Extrude { .. } | Kind::Move { .. } | Kind::Section { .. } | Kind::OffsetPlane { .. } | Kind::OffsetFaces { .. });
     let focus = std::mem::take(&mut d.focus);
     let half_height = app.cam.half_height();
     let axis = revolve_axis(app, d);
+    if matches!(d.kind, Kind::Revolve { .. }) {
+        if let Some(axis) = axis {
+            draw_revolve(app, ui, painter, proj, d, base, bs, axis, focus);
+        }
+        return;
+    }
     // Two sides: the second distance gets its own arrow the other way.
     if let (Kind::Extrude { direction: crate::dialogs::TWO_SIDES, distance2, .. }, Some(n)) = (&mut d.kind, dir)
         && let Some(l2) = app.session.doc.eval(distance2, ValueKind::Length).ok().filter(|v| v.is_finite())
     {
-        drag_arrow(ui, painter, proj, base, bs, -n, l2, false, egui::Id::new("sc_manipulator2"), half_height, distance2);
+        drag_arrow(ui, painter, proj, base, bs, -n, l2, true, egui::Id::new("sc_manipulator2"), half_height, distance2);
     }
     // An offset plane shows where it will be.
     if let (Kind::OffsetPlane { offset }, Some(n)) = (&d.kind, dir)
@@ -184,16 +258,21 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
     let mut dir = dir;
     // Extrude taper: a handle beside the arrow tip; dragging it sideways tilts the walls.
     let cam_right = app.cam.basis().0;
-    if let (Kind::Extrude { direction: 0 | 1, distance, taper, .. }, Some(n)) = (&mut d.kind, dir) {
+    if let (Kind::Extrude { direction: 0 | 1, distance, taper, taper_present, to_offset, .. }, Some(n)) = (&mut d.kind, dir) {
         let n = n * sign;
-        if let Ok(l) = app.session.doc.eval(distance, ValueKind::Length)
+        let span = to_span.map(|span| span.abs() + app.session.doc.eval(to_offset, ValueKind::Length).unwrap_or(0.0)).or(all_span);
+        if let Ok(l) = span.map(Ok).unwrap_or_else(|| app.session.doc.eval(distance, ValueKind::Length))
             && l.is_finite()
             && l.abs() > 1e-9
             && let Some(e) = (cam_right - n * cam_right.dot(n)).normalized()
         {
             let px = 2.0 * half_height / f64::from(proj.rect.height().max(1.0));
             let ang = app.session.doc.eval(taper, ValueKind::Angle).ok().filter(|v| v.is_finite()).unwrap_or(0.0);
+            let before = taper.clone();
             taper_handle(ui, painter, proj, base - e * (40.0 * px), n * l, -e, ang, taper);
+            if *taper != before {
+                *taper_present = true;
+            }
         }
     }
     if let (Kind::Hole { depth, opts, .. }, Some(n)) = (&mut d.kind, dir) {
@@ -207,16 +286,24 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
         dir = None;
     }
     let Some((label, kind, value)) = d.primary() else { return };
-    let len = app.session.doc.eval(value, kind).ok().filter(|v| v.is_finite());
+    let len = all_span.or_else(|| {
+        if to_span.is_some() && value.trim().is_empty() { Some(0.0) } else { app.session.doc.eval(value, kind).ok().filter(|v| v.is_finite()) }
+    });
+    let before = value.clone();
     let mut box_at = bs + vec2(16.0, -30.0);
-    if let (Some(axis), Some(angle)) = (axis, len.filter(|_| kind == ValueKind::Angle))
-        && let Some(at) = rotator(ui, painter, proj, base, axis, angle, value)
-    {
-        box_at = at + vec2(14.0, -12.0);
-    }
     if let (Some(n), Some(l)) = (dir, len.filter(|_| kind == ValueKind::Length)) {
         let n = n * sign;
-        if let Some(ts) = drag_arrow(ui, painter, proj, base, bs, n, l, signed, egui::Id::new("sc_manipulator"), half_height, value) {
+        let baseline = to_span.map(f64::abs).unwrap_or(0.0);
+        let mut shown_value = format_len(l + baseline);
+        let original_shown = shown_value.clone();
+        let dragged = if to_span.is_some() { &mut shown_value } else { &mut *value };
+        if let Some(ts) = drag_arrow(ui, painter, proj, base, bs, n, l + baseline, signed, egui::Id::new("sc_manipulator"), half_height, dragged) {
+            if to_span.is_some()
+                && shown_value != original_shown
+                && let Ok(v) = app.session.doc.eval(&shown_value, ValueKind::Length)
+            {
+                *value = format_len(v - baseline);
+            }
             if symmetric && let Some(bt) = proj.to_screen(base - n * l) {
                 arrow(painter, bs, bt, t.manipulator);
             }
@@ -241,6 +328,11 @@ fn draw(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj,
             });
         });
     });
+    if *value != before
+        && let Kind::Extrude { all, .. } = &mut d.kind
+    {
+        *all = false;
+    }
 }
 
 /// A draggable arrow from `base` along `n` showing `l` (at least a short stub); dragging writes
@@ -338,63 +430,341 @@ fn taper_handle(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, foot: V
 }
 
 /// The revolve axis (a point on it and its unit direction).
-fn revolve_axis(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Vec3)> {
+pub(crate) fn revolve_axis(app: &SolveApp, d: &Dialog) -> Option<(Vec3, Vec3)> {
     if !matches!(d.kind, Kind::Revolve { .. }) {
         return None;
     }
-    crate::dialogs::axis_of(app, d.inputs.get(1)?.items.first()?)
+    if let Some(selected) = d.inputs.get(1)?.items.first() {
+        if let Sel::Axis { name } = selected
+            && matches!(name.as_str(), "X" | "Y" | "Z")
+            && let Sel::Profile { sketch, .. } = d.inputs.first()?.items.first()?
+        {
+            let component = app.session.doc.feature(*sketch)?.component;
+            let frame = crate::dialogs::feature_frame(&app.session, component);
+            let dir = match name.as_str() {
+                "X" => Vec3::X,
+                "Y" => Vec3::Y,
+                _ => Vec3::Z,
+            };
+            return Some((solvecraft_engine::doc::apply_point(&frame, Vec3::ZERO), solvecraft_engine::doc::apply_vector(&frame, dir)));
+        }
+        if let Sel::Axis { name } = selected
+            && matches!(name.as_str(), "x" | "y")
+            && let Sel::Profile { sketch, .. } = d.inputs.first()?.items.first()?
+        {
+            let plane = profile_plane(app, *sketch)?;
+            return Some((plane.origin, if name == "x" { plane.x } else { plane.y }));
+        }
+        return crate::dialogs::axis_of(app, selected);
+    }
+    let Kind::Revolve { axis: Some(axis), .. } = &d.kind else { return None };
+    let vector = |key: &str| -> Option<Vec3> {
+        let p = axis.get(key)?.as_array()?;
+        Some(Vec3::new(p.first()?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?))
+    };
+    Some((vector("origin")?, vector("dir")?.normalized()?))
 }
 
-/// The revolve angle rotator: an arc from the profile around the axis with a handle at its end
-/// that drags the angle (5° steps; Alt or Ctrl: free). Returns the handle's screen position.
+/// Draw angular extents in the same clockwise sense as the modeled solid.
 #[allow(clippy::too_many_arguments)]
-fn rotator(ui: &mut egui::Ui, painter: &egui::Painter, proj: &Proj, p0: Vec3, (o, a): (Vec3, Vec3), angle: f64, value: &mut String) -> Option<Pos2> {
-    let t = Tokens::get();
-    let c = o + a * (p0 - o).dot(a);
-    let r = (p0 - c).len();
-    if r < 1e-9 {
-        return None;
+fn draw_revolve(
+    app: &SolveApp,
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    proj: &Proj,
+    d: &mut Dialog,
+    base: Vec3,
+    bs: Pos2,
+    axis: (Vec3, Vec3),
+    focus: bool,
+) {
+    let to_mode = d.inputs.iter().any(|input| input.label == "To Object");
+    let extent = revolve_display_extent(app, d, axis).unwrap_or(solvecraft_engine::doc::RevolveExtent {
+        start: 0.0,
+        sweep: f64::NAN,
+        rotation_axis: axis.1,
+        display_start: 0.0,
+        curved_to: false,
+    });
+    let mut box_at = bs + vec2(16.0, -30.0);
+    if !extent.curved_to && extent.sweep.is_finite() {
+        let (origin, direction) = axis;
+        let centre = origin + direction * (base - origin).dot(direction);
+        let radius = (base - centre).len();
+        if radius > 1e-9 {
+            let e1 = (base - centre) / radius;
+            let e2 = extent.rotation_axis.cross(e1);
+            let handed = match revolve_convention(d) {
+                solvecraft_engine::doc::RevolveConvention::LegacyAxisStart => -direction.dot(extent.rotation_axis),
+                solvecraft_engine::doc::RevolveConvention::SketchNormal => 1.0,
+            };
+            let at = |angle: f64| centre + (e1 * angle.cos() + e2 * angle.sin()) * radius;
+            let points: Vec<_> = (0..=48).filter_map(|i| proj.to_screen(at(extent.display_start + extent.sweep * i as f64 / 48.0))).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(2.0, Tokens::get().manipulator)));
+            if let Some(end) = proj.to_screen(at(extent.display_start + extent.sweep)) {
+                box_at = end + vec2(14.0, -12.0);
+            }
+            if !to_mode {
+                let symmetric = !d.extra.contains_key("angle2") && d.extra.get("direction").and_then(serde_json::Value::as_str) == Some("symmetric");
+                let other_angle = d
+                    .extra
+                    .get("angle2")
+                    .and_then(|value| value.as_str())
+                    .and_then(|value| app.session.doc.eval(value, ValueKind::Angle).ok())
+                    .unwrap_or(0.0);
+                let range = if extent.sweep < 0.0 { (-std::f64::consts::TAU, 0.0) } else { (0.0, std::f64::consts::TAU) };
+                if let Kind::Revolve { angle, .. } = &mut d.kind {
+                    let boundary = extent.display_start + extent.sweep;
+                    if let Some(end) = rotation_handle(
+                        ui,
+                        painter,
+                        proj,
+                        centre,
+                        e1,
+                        e2,
+                        direction,
+                        radius,
+                        boundary,
+                        if symmetric { 1.0 / (1.0 - handed * 0.5) } else { 1.0 },
+                        if symmetric { 0.0 } else { -other_angle * (1.0 - handed) },
+                        (range.0 - other_angle, range.1 - other_angle),
+                        "revolve",
+                        angle,
+                    ) {
+                        box_at = end + vec2(14.0, -12.0);
+                    }
+                    if symmetric {
+                        rotation_handle(
+                            ui,
+                            painter,
+                            proj,
+                            centre,
+                            e1,
+                            e2,
+                            direction,
+                            radius,
+                            extent.display_start,
+                            -2.0 * handed,
+                            0.0,
+                            range,
+                            "revolve2",
+                            angle,
+                        );
+                    }
+                }
+                if let Some(other) = d.extra.get_mut("angle2") {
+                    let mut value = other.as_str().map(str::to_owned).unwrap_or_else(|| other.to_string());
+                    let before = value.clone();
+                    let first_angle = extent.sweep - other_angle;
+                    rotation_handle(
+                        ui,
+                        painter,
+                        proj,
+                        centre,
+                        e1,
+                        e2,
+                        direction,
+                        radius,
+                        extent.display_start,
+                        -handed,
+                        0.0,
+                        (range.0 - first_angle, range.1 - first_angle),
+                        "revolve2",
+                        &mut value,
+                    );
+                    if value != before {
+                        *other = serde_json::Value::String(value);
+                    }
+                }
+            }
+        }
     }
-    let e1 = (p0 - c) / r;
-    let e2 = a.cross(e1);
-    let at = |th: f64| c + (e1 * th.cos() + e2 * th.sin()) * r;
-    let n = 48;
-    let pts: Vec<Pos2> = (0..=n).filter_map(|i| proj.to_screen(at(angle * i as f64 / n as f64))).collect();
-    let end = proj.to_screen(at(angle))?;
-    let handle = egui::Rect::from_center_size(end, vec2(20.0, 20.0));
-    let resp = ui.interact(handle, egui::Id::new("sc_rotator"), egui::Sense::drag());
-    let hot = resp.hovered() || resp.dragged();
-    let col = if hot { t.accent } else { t.manipulator };
-    painter.add(egui::Shape::line(pts, Stroke::new(2.0, col)));
-    if let (Some(cs), Some(ps)) = (proj.to_screen(c), proj.to_screen(p0)) {
-        painter.add(egui::Shape::dashed_line(&[cs, ps], Stroke::new(1.0, col), 4.0, 3.0));
-    }
-    painter.circle(end, if hot { 7.0 } else { 5.5 }, col, Stroke::new(1.5, Color32::WHITE));
+    egui::Area::new(egui::Id::new("sc_canvas_area")).fixed_pos(box_at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+        egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
+            if to_mode {
+                let text = if extent.curved_to {
+                    "To surface".into()
+                } else if extent.sweep.is_finite() {
+                    format!("Sweep {:.1}°", extent.sweep.to_degrees())
+                } else {
+                    "Choose target".into()
+                };
+                ui.label(text).on_hover_text("Determined by To Object. Choose Angle to edit the angular extent.");
+            } else if let Kind::Revolve { angle, .. } = &mut d.kind {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Angle").color(Tokens::get().text_dim).size(11.5));
+                    let id = egui::Id::new("sc_canvas_value");
+                    let response = ui.add(egui::TextEdit::singleline(angle).id(id).desired_width(72.0));
+                    crate::params_dialog::complete(ui, &response, angle);
+                    if focus {
+                        response.request_focus();
+                        let n = angle.chars().count();
+                        let mut state = egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text_selection::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+                        state.store(ui.ctx(), id);
+                    }
+                });
+            }
+        });
+    });
+}
+
+fn revolve_convention(d: &Dialog) -> solvecraft_engine::doc::RevolveConvention {
+    d.extra
+        .get("convention")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or(solvecraft_engine::doc::RevolveConvention::SketchNormal)
+}
+
+fn revolve_display_extent(app: &SolveApp, d: &Dialog, axis: (Vec3, Vec3)) -> Option<solvecraft_engine::doc::RevolveExtent> {
+    let Sel::Profile { sketch, .. } = d.inputs.first()?.items.first()? else { return None };
+    let state = app.session.world_state();
+    let ss = state.sketch(*sketch)?;
+    let regions: Vec<_> = d
+        .inputs
+        .first()?
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Sel::Profile { sketch: id, index } if id == sketch => ss.profiles.get(*index).map(|profile| profile.region.clone()),
+            _ => None,
+        })
+        .collect();
+    let regions = solvecraft_engine::sketch::merge_regions(&regions);
+    let plane = profile_plane(app, *sketch)?;
+    let to_mode = d.inputs.iter().any(|input| input.label == "To Object");
+    let to = if to_mode {
+        let point = crate::dialogs::object_point(&d.inputs, "To Object")?;
+        Some(Vec3::new(point.get(0)?.as_f64()?, point.get(1)?.as_f64()?, point.get(2)?.as_f64()?))
+    } else {
+        None
+    };
+    let Kind::Revolve { angle, .. } = &d.kind else { return None };
+    let angles = if to_mode {
+        (0.0, None)
+    } else {
+        let angle = app.session.doc.eval(angle, ValueKind::Angle).ok()?;
+        let other = d.extra.get("angle2").map(|value| app.session.doc.eval(value.as_str().unwrap_or_default(), ValueKind::Angle)).transpose().ok()?;
+        (angle, other)
+    };
+    solvecraft_engine::doc::revolve_extent_with_convention(
+        &state,
+        &plane,
+        &regions,
+        axis,
+        angles,
+        d.extra.get("direction").and_then(serde_json::Value::as_str) == Some("symmetric"),
+        to,
+        revolve_convention(d),
+    )
+    .ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rotation_handle(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    proj: &Proj,
+    centre: Vec3,
+    e1: Vec3,
+    e2: Vec3,
+    axis: Vec3,
+    radius: f64,
+    boundary: f64,
+    scale: f64,
+    offset: f64,
+    range: (f64, f64),
+    name: &str,
+    value: &mut String,
+) -> Option<Pos2> {
+    let end = proj.to_screen(centre + (e1 * boundary.cos() + e2 * boundary.sin()) * radius)?;
+    crate::scenario::publish_handle(name, end);
+    let response = ui.interact(egui::Rect::from_center_size(end, vec2(20.0, 20.0)), egui::Id::new(("sc_rotator", name)), egui::Sense::drag());
+    let hot = response.hovered() || response.dragged();
+    let color = if hot { Tokens::get().accent } else { Tokens::get().manipulator };
+    painter.circle(end, if hot { 7.0 } else { 5.5 }, color, Stroke::new(1.5, Color32::WHITE));
     if hot {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
-    if resp.dragged()
-        && let Some(p) = resp.interact_pointer_pos()
+    if response.dragged()
+        && let Some(pointer) = response.interact_pointer_pos()
     {
-        let (ro, rd) = proj.ray(p);
-        let den = rd.dot(a);
-        if den.abs() > 1e-9 {
-            let q = ro + rd * ((c - ro).dot(a) / den) - c;
-            let mut th = q.dot(e2).atan2(q.dot(e1)).to_degrees().rem_euclid(360.0);
-            let free = ui.input(|i| i.modifiers.alt || i.modifiers.ctrl || i.modifiers.command);
-            if !free {
-                th = (th / 5.0).round() * 5.0;
+        let (origin, direction) = proj.ray(pointer);
+        let den = direction.dot(axis);
+        let (a, b) = ((range.0 - offset) / scale, (range.1 - offset) / scale);
+        let bounds = (a.min(b), a.max(b));
+        // Near edge-on, a plane intersection magnifies subpixel pointer error.
+        let raw = if den.abs() > 0.05 {
+            let point = origin + direction * ((centre - origin).dot(axis) / den) - centre;
+            Some(point.dot(e2).atan2(point.dot(e1)))
+        } else {
+            projected_rotation_angle(proj, pointer, centre, e1, e2, radius, boundary, bounds)
+        };
+        if let Some(raw) = raw {
+            let boundary_angle = (-4..=4)
+                .map(|k| raw + k as f64 * std::f64::consts::TAU)
+                .filter(|angle| *angle >= bounds.0 - 1e-4 && *angle <= bounds.1 + 1e-4)
+                .min_by(|a, b| (a - boundary).abs().total_cmp(&(b - boundary).abs()))
+                .unwrap_or_else(|| raw.clamp(bounds.0, bounds.1));
+            let mut angle = (boundary_angle.clamp(bounds.0, bounds.1) * scale + offset).to_degrees();
+            if !ui.input(|input| input.modifiers.alt || input.modifiers.ctrl || input.modifiers.command) {
+                angle = (angle / 5.0).round() * 5.0;
             }
-            if th < 0.5 {
-                th = 360.0;
+            if angle.abs() < 0.05 {
+                angle = 0.0;
             }
-            let s = format!("{th:.1}");
-            *value = format!("{} deg", s.trim_end_matches('0').trim_end_matches('.'));
+            let text = format!("{angle:.1}");
+            *value = format!("{} deg", text.trim_end_matches('0').trim_end_matches('.'));
         }
     }
     Some(end)
 }
 
+/// An edge-on ring has two equally valid depths; retain the branch nearest the current handle.
+#[allow(clippy::too_many_arguments)]
+fn projected_rotation_angle(
+    proj: &Proj,
+    pointer: Pos2,
+    centre: Vec3,
+    e1: Vec3,
+    e2: Vec3,
+    radius: f64,
+    current: f64,
+    (lo, hi): (f64, f64),
+) -> Option<f64> {
+    let distance = |angle: f64| {
+        proj.to_screen(centre + (e1 * angle.cos() + e2 * angle.sin()) * radius)
+            .map(|point| f64::from(point.distance_sq(pointer)))
+            .unwrap_or(f64::INFINITY)
+    };
+    let step = (hi - lo) / 720.0;
+    let mut best = None;
+    for i in 0..=720 {
+        let angle = lo + step * i as f64;
+        let score = distance(angle);
+        if !score.is_finite() {
+            continue;
+        }
+        if best.is_none_or(|(old_angle, old_score): (f64, f64)| {
+            score < old_score - 1e-4 || (score - old_score).abs() <= 1e-4 && (angle - current).abs() < (old_angle - current).abs()
+        }) {
+            best = Some((angle, score));
+        }
+    }
+    let (angle, _) = best?;
+    let (mut a, mut b) = ((angle - step).max(lo), (angle + step).min(hi));
+    for _ in 0..24 {
+        let (left, right) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+        if distance(left) <= distance(right) {
+            b = right;
+        } else {
+            a = left;
+        }
+    }
+    Some((a + b) / 2.0)
+}
 fn arrow(painter: &egui::Painter, a: Pos2, b: Pos2, col: Color32) {
     let v = b - a;
     let l = v.length();

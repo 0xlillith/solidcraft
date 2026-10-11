@@ -12,6 +12,9 @@ use super::joints::{joint_id, occurrence_id, resolve, value};
 use crate::params::{bad, bool_, str_, vec3};
 use crate::{EngineError, Result, Session};
 
+#[path = "contact_sweep.rs"]
+mod contact_sweep;
+
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("contact.enable_sets", "Enable Contact Sets", enable_sets).at("SOLID", "ASSEMBLE").icon("joint").params(
         "enabled?: bool (default true) — driving joints and motion studies stop where bodies in one contact set would pass through each other",
@@ -86,8 +89,12 @@ fn placed(s: &Session) -> Vec<(Vec<u64>, Body)> {
         if comp == 0 {
             continue;
         }
-        for b in st.bodies.iter().filter(|b| s.doc.body_component(&b.name, b.feature) == comp && !b.body.is_mesh()) {
-            if let Ok(t) = solvecraft_kernel::transform_matrix(&b.body, m) {
+        for b in st.bodies.iter().filter(|b| s.doc.model_body_component(b) == comp && !b.body.is_mesh()) {
+            // Moving a body into another component preserves its world placement using an
+            // offset from its authoring frame. Contact and explode centres must use that
+            // same offset as display and physical properties.
+            let frame = s.doc.model_body_offset(b).map(|offset| solvecraft_doc::mat_mul(&m, offset)).unwrap_or(m);
+            if let Ok(t) = solvecraft_kernel::transform_matrix(&b.body, frame) {
                 out.push((path.clone(), t));
             }
         }
@@ -131,8 +138,11 @@ pub fn collisions(s: &Session) -> Vec<(String, String, f64)> {
 /// tested against the other closed mesh: inside by ray parity, and deeper than the tolerance.
 fn overlap(a: &Body, b: &Body) -> Option<f64> {
     let (ma, mb) = (a.tessellate((a.size() * 1e-3).max(1e-3)).ok()?, b.tessellate((b.size() * 1e-3).max(1e-3)).ok()?);
+    mesh_overlap(&ma, &mb, 1e-4 * a.size().max(b.size()).max(1.0))
+}
+
+fn mesh_overlap(ma: &solvecraft_geom::Mesh, mb: &solvecraft_geom::Mesh, tol: f64) -> Option<f64> {
     let (ba, bb) = (ma.bounds(), mb.bounds());
-    let tol = 1e-4 * a.size().max(b.size()).max(1.0);
     if ba.max.x < bb.min.x + tol
         || bb.max.x < ba.min.x + tol
         || ba.max.y < bb.min.y + tol
@@ -142,7 +152,7 @@ fn overlap(a: &Body, b: &Body) -> Option<f64> {
     {
         return None;
     }
-    let depth = deepest(&ma, &mb, tol).max(deepest(&mb, &ma, tol));
+    let depth = deepest(ma, mb, tol).max(deepest(mb, ma, tol));
     (depth > tol).then_some(depth)
 }
 
@@ -247,9 +257,12 @@ fn closest(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
 /// Set joint values, stopping short where contact sets would collide: the values are moved
 /// from where they are toward `want` as far as they go without a collision.
 fn drive_with_contact(s: &mut Session, want: &[(u64, Vec<f64>)]) -> Result<Value> {
+    let baseline = s.doc.clone();
     let start: Vec<(u64, Vec<f64>)> =
         want.iter().map(|(id, _)| (*id, s.doc.assembly.joints.iter().find(|j| j.id == *id).map(|j| j.values.clone()).unwrap_or_default())).collect();
     let set = |s: &mut Session, t: f64| {
+        // Trial order must not affect free anchors or linked joint placements.
+        s.doc = baseline.clone();
         let doc = s.doc_mut();
         for ((id, a), (_, b)) in start.iter().zip(want) {
             if let Some(j) = doc.assembly.joints.iter_mut().find(|j| j.id == *id) {
@@ -260,25 +273,45 @@ fn drive_with_contact(s: &mut Session, want: &[(u64, Vec<f64>)]) -> Result<Value
         }
         resolve(s)
     };
-    let mut sol = set(s, 1.0);
+    let cache = if s.doc.assembly.contact_enabled { Some(contact_sweep::ContactGeometry::new(s)?) } else { None };
+    let sol;
     let mut stopped = None;
-    if s.doc.assembly.contact_enabled
-        && let Some(hit) = collisions(s).into_iter().next()
-    {
-        // Already colliding where it started: don't search, just report.
+    if let Some(cache) = cache.filter(|cache| cache.has_pairs()) {
+        let mut end = s.scratch();
+        set(&mut end, 1.0);
+        let samples = cache.samples(s, &end)?;
+        let mut work = 0;
         set(s, 0.0);
-        if collisions(s).is_empty() {
-            let (mut lo, mut hi) = (0.0, 1.0);
-            for _ in 0..14 {
-                let mid = (lo + hi) / 2.0;
-                set(s, mid);
-                if collisions(s).is_empty() { lo = mid } else { hi = mid }
+        // Keep the existing recovery behaviour: an initially overlapping assembly may move
+        // out of its invalid placement. Sweeps constrain motions that start collision-free.
+        if cache.first_hit(s, &mut work)?.is_none() {
+            let mut lo = 0.0;
+            let mut bracket = None;
+            for sample in 1..=samples {
+                let hi = sample as f64 / samples as f64;
+                set(s, hi);
+                if let Some(hit) = cache.first_hit(s, &mut work)? {
+                    bracket = Some((lo, hi, hit));
+                    break;
+                }
+                lo = hi;
             }
-            sol = set(s, lo);
-            stopped = Some(json!({"a": hit.0, "b": hit.1, "fraction": lo}));
+            if let Some((mut lo, mut hi, hit)) = bracket {
+                for _ in 0..14 {
+                    let mid = (lo + hi) / 2.0;
+                    set(s, mid);
+                    if cache.first_hit(s, &mut work)?.is_none() { lo = mid } else { hi = mid }
+                }
+                sol = set(s, lo);
+                stopped = Some(json!({"a": hit.0, "b": hit.1, "fraction": lo}));
+            } else {
+                sol = set(s, 1.0);
+            }
         } else {
             sol = set(s, 1.0);
         }
+    } else {
+        sol = set(s, 1.0);
     }
     let values: Vec<Value> = want
         .iter()
