@@ -85,9 +85,10 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   preventing the reproduced thin-web loss. Unknown additional trims refuse; inherited
   common-cylinder trims retain their existing policy, so this is not a general Boolean proof.
 - Exact full-path assembly joint editing remains separate work and is not part of this batch.
-- The replacement README demo records the actual English 0.2.0 UI, with a 2× preview and
-  a full video at real-time speed. Package verification and publication follow
-  [the release workflow](docs/releasing.md); development pushes are not application releases.
+- Stable 0.2.0 is published: all release payload checksums, native cold reopening, deployed
+  web app and both Flatpak architectures were verified. The replacement README demo uses
+  the original electronics enclosure story and animated pointer in the actual English
+  0.2.0 UI, at 4× playback. Publication follows [the release workflow](docs/releasing.md).
 
 ## View navigation
 
@@ -98,6 +99,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Known limitations
 
+- Some shelled planar faces cannot supply the exact source required for an associative
+  face sketch. The enclosure demo uses parameter-driven offset planes (`width/2` for the
+  USB port, `wall` for the mounting bosses), so width and wall edits still rebuild the case.
 - Fillets and chamfers: constant, variable-radius and chord-length fillets; a radius per edge,
   rounds next to earlier rounds of another radius, and smooth corner patches where three rounds
   meet (a sphere for equal radii); straight edges (convex or concave) between planar faces with perpendicular
