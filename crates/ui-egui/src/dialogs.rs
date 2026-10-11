@@ -1265,6 +1265,7 @@ fn auto_operation(app: &SolveApp, d: &mut Dialog) {
 /// Show the active dialog (if any), docked flush to the right edge of the viewport just below
 /// the axis view, sized to its content.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
+    app.viewport.dialog_rect = None;
     let Some(mut d) = app.dialog.take() else { return };
     let _language = crate::i18n::scope(&app.preferences.language);
     auto_operation(app, &mut d);
@@ -1294,7 +1295,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let valid = !has_ok || !d.previews() || (apply_commands(app, &d).is_ok() && app.preview.error.is_none());
     let width = if wide { crate::frame::Width::Wide } else { crate::frame::Width::Normal };
     let wkey = egui::Id::new(("sc_dialog_w", wide));
-    crate::frame::docked(
+    let response = crate::frame::docked(
         RichText::new(heading.clone()).strong().size(13.0),
         egui::Id::new(("sc_dialog", title(&d.kind))),
         anchor,
@@ -1909,9 +1910,16 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     }
                 }
             }
-            if let Some(e) = d.error.as_ref().or(app.preview.error.as_ref()) {
+            if let Some(e) = d.error.as_ref().or(app.preview.error.as_ref()).cloned() {
                 row_label(ui, "");
-                ui.add(egui::Label::new(RichText::new(e.as_str()).color(t.error)).wrap());
+                ui.vertical(|ui| {
+                    ui.add(egui::Label::new(RichText::new(e.as_str()).color(t.error)).wrap());
+                    let response = ui.button("Create Issue…");
+                    crate::scenario::publish_handle("dialog:create_issue", response.rect.center());
+                    if response.clicked() {
+                        crate::issue_report::begin(app, ctx, Some(&d), Some(&e));
+                    }
+                });
                 ui.end_row();
             }
         });
@@ -1959,6 +1967,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         });
         crate::frame::remember_width(ui, wkey);
     });
+    app.viewport.dialog_rect = response.map(|r| r.response.rect);
     // Keyboard: Enter applies (from a value field, or with nothing focused), Esc cancels.
     let (enter_free, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
     let nothing_focused = ctx.memory(|m| m.focused().is_none());
@@ -1966,10 +1975,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     // Tables (configurations, a study's keys) take Enter for their cells.
     let enter_applies = !matches!(d.kind, Kind::Sketch | Kind::Params { .. } | Kind::Measure { .. } | Kind::ConfirmDelete { .. })
         && !matches!(&d.kind, Kind::Motion(k) if k.wide());
-    if enter_applies && (enter || canvas_enter || (enter_free && nothing_focused)) {
+    let report_active = app.issue_report.draft.is_some();
+    if !report_active && enter_applies && (enter || canvas_enter || (enter_free && nothing_focused)) {
         ok = true;
     }
-    if esc && !app.esc_handled {
+    if !report_active && esc && !app.esc_handled {
         app.esc_handled = true;
         cancel = true;
     }
@@ -2262,6 +2272,11 @@ fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
 /// Placement used to edit a definition in the selected authoring occurrence.
 pub(crate) fn feature_frame(s: &Session, component: u64) -> solvecraft_engine::doc::Mat {
     if component == s.active_component { s.active_component_frame() } else { s.placed_document().component_transform(component) }
+}
+
+/// The feature dialog's current operation name for a reviewed issue draft.
+pub(crate) fn report_title(d: &Dialog) -> String {
+    title(&d.kind).to_string()
 }
 
 /// The commands OK runs (an edit rebuilds its feature in place); the live preview runs the same.

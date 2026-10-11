@@ -199,7 +199,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
                 app.animate_view(v);
                 return ok(json!({ "animating": true, "to": app.cam_anim.map(|a| a.to) }));
             }
-            app.cam_anim = None;
+            app.cancel_view_animation();
             match v {
                 "fit" => app.fit_view(),
                 "home" => {

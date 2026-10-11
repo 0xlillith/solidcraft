@@ -1,6 +1,6 @@
 //! The Help menu (the ? button on the application bar): Documentation (the online book), About
 //! SolveCraft (version, commit, build date, licences, attributions, fonts), the keyboard shortcuts
-//! (read only), and Report an Issue, which copies diagnostic information to the clipboard.
+//! (read only), and Report an Issue, which opens a local editable report draft.
 
 use egui::{RichText, vec2};
 
@@ -54,8 +54,9 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
             app.keymap.read_only = true;
         }
         "report" => {
-            ctx.copy_text(diagnostics(app));
-            app.set_status("Diagnostic information copied: paste it into your issue report", false);
+            let dialog = app.dialog.clone();
+            let error = dialog.as_ref().and_then(|d| d.error.clone()).or_else(|| app.preview.error.clone());
+            crate::issue_report::begin(app, ctx, dialog.as_ref(), error.as_deref());
         }
         _ => {}
     }
@@ -65,17 +66,21 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
 pub fn show(app: &mut SolveApp, ctx: &egui::Context, anchor: egui::Pos2) {
     if app.help.menu {
         let mut pick: Option<&str> = None;
-        let resp = egui::Area::new(egui::Id::new("sc_help_menu")).fixed_pos(anchor).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
-            crate::context_menu::menu_frame(ui, |ui| {
-                for (id, label) in
-                    [("docs", "Documentation"), ("about", "About SolveCraft"), ("shortcuts", "Keyboard Shortcuts"), ("report", "Report an Issue…")]
-                {
-                    if crate::context_menu::list_row(ui, &crate::context_menu::Item::action(id, label, "")).is_some() {
-                        pick = Some(id);
+        let resp =
+            crate::frame::area(egui::Id::new("sc_help_menu")).fixed_pos(anchor).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
+                crate::context_menu::menu_frame(ui, |ui| {
+                    for (id, label) in [
+                        ("docs", "Documentation"),
+                        ("about", "About SolveCraft"),
+                        ("shortcuts", "Keyboard Shortcuts"),
+                        ("report", "Report an Issue…"),
+                    ] {
+                        if crate::context_menu::list_row(ui, &crate::context_menu::Item::action(id, label, "")).is_some() {
+                            pick = Some(id);
+                        }
                     }
-                }
-            })
-        });
+                })
+            });
         if let Some(p) = pick {
             run(app, ctx, p);
         } else if ctx.input(|i| i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)) && !resp.response.contains_pointer() {

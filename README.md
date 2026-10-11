@@ -7,9 +7,9 @@ Sketch, constrain, and build solids with a parametric feature timeline. Change a
 and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
 model through the built-in MCP server. Part of the storytold "craft" family.
 
-![An AI agent builds a parametric enclosure in SolveCraft over MCP, then the width is changed in the Parameters dialog and the model rebuilds (3x speed)](docs/screenshots/demo.gif)
+![SolveCraft 0.2.0: dimension a line, extrude a plate with an elliptical hole, and change its width while preserving the hole](docs/screenshots/demo.gif)
 
-*An agent builds an electronics enclosure over MCP: sketches on faces, shell, a port cut, one screw boss patterned to four, then width 80 → 100 mm in the Parameters dialog and the timeline rebuilds. 3× speed; [full video](https://github.com/bherbruck/solvecraft/releases/download/v0.1.0/enclosure-demo-v3.mp4), script in [examples/demo](examples/demo).*
+*The actual 0.2.0 desktop UI: dimension a line from its endpoints, build a plate with an elliptical hole, then change its width from 25 → 35 mm and watch it rebuild. Includes the new axis navigation. 2× GIF preview; [full video at real-time speed](https://github.com/bherbruck/solvecraft/releases/download/v0.2.0/solvecraft-0.2.0-demo.mp4).*
 
 **Documentation:** the [SolveCraft book](https://bherbruck.github.io/solvecraft/) (user guide,
 developer guide and command reference; sources in [docs/book](docs/book)), and the
@@ -39,6 +39,8 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
   equal, concentric, collinear, midpoint, symmetry, fix; linear, aligned, horizontal, vertical,
   radius, diameter and angle dimensions driven by parameters. Over-constraining edits are
   rejected; fully constrained geometry turns black.
+  Select a line or its two endpoints, type its dimension and press Enter to commit one undo
+  step. Fit keeps sketch geometry clear of the palette and navigation controls.
 - **Profiles** found automatically, including regions split by lines and holes inside outlines.
   Newly captured complete adaptive boundaries retain their outer and hole source identities
   when spline span counts change. Partial or ambiguous boundaries do not qualify.
@@ -69,6 +71,8 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Desktop app** (egui + wgpu): toolbar with workspace tabs, browser, timeline, 3D viewport with
   axis view and navigation bar, sketch tools, feature dialogs, command palette, and a JSON-lines
   control channel so agents and tests can drive it.
+  Feature errors and Help can open an editable **Create Issue** draft with relevant context
+  and an optional reviewed screenshot; opening GitHub does not submit the report.
 - **Headless CLI** `solvecraft-cli`: run command scripts, measure (volume, area, centre of mass,
   face/edge/vertex counts), export, render PNG snapshots, replay Fusion oracle recipes.
 - **MCP server** `solvecraft-cli mcp`: AI agents model, measure and look at parts headless or

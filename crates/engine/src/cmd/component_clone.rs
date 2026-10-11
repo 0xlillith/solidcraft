@@ -664,7 +664,15 @@ pub(super) fn paste(
                 }
             }
         }
-        if (ma.volume - mb.volume).abs() > 1e-5 * (1.0 + ma.volume.abs())
+        // Meshes of the same current circular section can have different
+        // chord-volume biases after STEP. Only independently certified current
+        // sections may replace that volume comparison; shape mismatches still
+        // refuse even when their volumes happen to agree.
+        let volume_matches = match solvecraft_kernel::certified_prism_equivalent(&a, &b)? {
+            Some(same) => same,
+            None => (ma.volume - mb.volume).abs() <= 1e-5 * (1.0 + ma.volume.abs()),
+        };
+        if !volume_matches
             || (ma.area - mb.area).abs() > 1e-5 * (1.0 + ma.area.abs())
             || ma.centroid.dist(mb.centroid) > tolerance
             || ma.bbox.min.dist(mb.bbox.min) > tolerance

@@ -22,6 +22,11 @@
   keep the nearest quarter-turn heading. The house and navigation bar's Home button go home.
   Right-click for the marking menu: eight commands around the cursor, plus a
   menu for whatever is under it.
+  Shaded views omit certified smooth joins between spline spans on extruded
+  walls. Real creases, cap outlines and authored face splits remain visible.
+  Wireframe retains its edge presentation, and hiding a join does not remove its CAD
+  identity or change the exported solid. Unsupported or uncertain wall geometry
+  keeps its existing edge presentation.
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
   value box in the viewport.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll

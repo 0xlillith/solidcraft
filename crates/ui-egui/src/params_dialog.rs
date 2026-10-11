@@ -463,7 +463,7 @@ pub fn complete(ui: &mut egui::Ui, resp: &egui::Response, text: &mut String) -> 
     }
     let mut pick: Option<String> = if tab { list.first().map(|s| s.text.clone()) } else { None };
     let t = Tokens::get();
-    egui::Area::new(resp.id.with("completions")).order(egui::Order::Tooltip).fixed_pos(resp.rect.left_bottom() + egui::vec2(0.0, 2.0)).show(
+    crate::frame::area(resp.id.with("completions")).order(egui::Order::Tooltip).fixed_pos(resp.rect.left_bottom() + egui::vec2(0.0, 2.0)).show(
         &ctx,
         |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {

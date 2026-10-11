@@ -235,7 +235,7 @@ pub fn scene_with_section_and_sketch_sampler(
         };
         sc.meshes.push(SceneMesh { mesh: Arc::clone(&mesh), color, face_colors });
         for (i, e) in mesh.edges.iter().enumerate() {
-            if mesh.seams.get(i).copied().unwrap_or(false) {
+            if !mesh.shaded_edge_visible(i) {
                 continue;
             }
             sc.lines.push(SceneLine { points: e.clone(), color: colors::EDGE, width: 1.2, on_top: false });

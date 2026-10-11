@@ -57,19 +57,37 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 | M9 | Components and assemblies (Fusion-style): New Component / Create Components from Bodies, active component, per-component origin/bodies/sketches/timeline entries, occurrences with transforms, Copy/Paste vs Paste New, nested Browser tree with visibility and isolate; Ground, Move/Copy of occurrences, joints (rigid, revolute, slider, cylindrical, pin-slot, planar, ball) by joint origins with limits and Drive Joints, As-built Joint, Rigid Group, Contact Sets (driving and motion studies stop where bodies in a set would pass through each other), Motion Study (joint values keyed along a timeline, playback, export of occurrence positions as JSON/CSV), Exploded views (automatic or by hand, shown without changing placements); interference, per-component physical properties; STEP with assembly structure. Physical properties now measure material-aware component/occurrence placements, descendants and repeated instances, including pending moves and body reassignment offsets; contact geometry and automatic exploded centres respect those offsets. Groundwork done: component tree, occurrences with transforms (instances, Paste New), world placement, active component as authoring frame, ground, Capture/Revert Position, moving bodies and sketches. UI: ASSEMBLE panel dialogs for New Component, Joint (snaps on faces, edges, circles and vertices; animated motion preview; offsets, flip, limits), As-built Joint, Joint Origin, Rigid Group, Drive Joints (live slider), Motion Link and Interference (overlaps shown red); joints in the timeline and the Browser | in progress | 32 |
 | M10 | Sheet metal: flange (base, edge, contour), hem, unfold/refold, convert, flat pattern + DXF, rules: done (oracle 67-76). PLASTIC enclosure subset: Boss, Rib, Web, Lip/Groove, Snap Fit, Rest, Plastic Rules (library, edit, assign; rule draft and clearance as feature defaults): done, no Fusion oracle (licence), tested against hand-computed geometry. UI: SHEET METAL and PLASTIC tabs in Fusion's layout with dialogs (live preview, Edit Feature, pre-selection) for Flange, Hem, Unfold/Refold, Convert, Sheet Metal Rules, Create Flat Pattern (flat view with bend lines, bend table CSV/JSON and DXF export with exact circle/arc/line cutouts), Boss, Lip/Groove, Snap Fit, Rest, Manage and Assign Plastic Rules; Fold (bend along a sketch line) | in progress | 36 |
 | M11 | 2D drawings | deferred | — |
-| M12 | Release: installers, signing, docs, performance | planned | 16 |
+| M12 | Release: cross-platform packages, verification and deliberate publication implemented; original current-UI demo refreshed. Trusted distribution signing and broader performance work remain | in progress | 16 |
 | M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Ordered typed configuration rules, atomic validation and structured rule editing: done. Component appearance and certified semantic face style columns, atomic preview/apply and independent-copy remapping: done. Exact constructed sketch-side and immutable imported-face lineage now preserve legacy names and reject retargeting. Left: ambiguous shifted/two-sided caps | in progress | 4 |
 | M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/12"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
 
-## Next usability work
+## Dimensioning and error reporting
 
-- Single-line and rectangle-side dimensioning: keep endpoints reachable after Fit when the
-  Sketch Palette is open; support selecting a line or its two endpoints, with typed creation
-  committed as one undo step and cancellation leaving the sketch unchanged.
+- Single-line and rectangle-side dimensioning supports selecting a line or its two endpoints.
+  Type a value and press Enter to commit one undo step; rejected values remain editable and
+  cancellation leaves the sketch unchanged. Fit keeps geometry clear of the Sketch Palette
+  and navigation controls, including enlarged displays and nested pending placements.
 - Contextual error reporting: a **Create Issue** action beside feature errors opens a
   reviewable GitHub issue draft with the error, operation settings, build diagnostics and
-  useful reproduction context. Include relevant screenshots or a small reproduction when
-  they make a geometry failure or unexpected result easier to understand.
+  useful reproduction context. The draft is editable, with optional capture of the actual
+  viewport and copy/save controls. Opening GitHub does not submit the issue. Help also exposes
+  reporting for unexpected results that did not produce an error.
+
+## 0.2.0 release batch
+
+- Includes the new axis navigation, adaptive sketch drawing/picking, origin-corner repairs,
+  durable supported profile/face references, endpoint dimensioning and contextual reporting.
+- Smooth ruled-wall display joins are hidden only within the supported geometric certificate;
+  authored splits and actual creases remain protected. Wireframe retains physical edges.
+- Paste New uses a bounded current-geometry comparison for supported convex line/circle
+  prisms with separated circular holes; unsupported shapes retain the existing strict check.
+- Common-bore Union retries check additional boundary curves before recutting the bore,
+  preventing the reproduced thin-web loss. Unknown additional trims refuse; inherited
+  common-cylinder trims retain their existing policy, so this is not a general Boolean proof.
+- Exact full-path assembly joint editing remains separate work and is not part of this batch.
+- The replacement README demo records the actual English 0.2.0 UI, with a 2× preview and
+  a full video at real-time speed. Package verification and publication follow
+  [the release workflow](docs/releasing.md); development pushes are not application releases.
 
 ## View navigation
 

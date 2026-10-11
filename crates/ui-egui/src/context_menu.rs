@@ -1369,7 +1369,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         let area = Rect::from_center_size(c, vec2(2.0 * (RX + 165.0), 2.0 * (RY + 34.0)));
         inside |= pointer.is_some_and(|p| area.contains(p));
         let hot = pointer.and_then(|p| sector(p - c));
-        let resp = egui::Area::new(egui::Id::new("sc_marking_menu")).fixed_pos(area.min).order(egui::Order::Foreground).show(ctx, |ui| {
+        let resp = crate::frame::area(egui::Id::new("sc_marking_menu")).fixed_pos(area.min).order(egui::Order::Foreground).show(ctx, |ui| {
             let (r, _) = ui.allocate_exact_size(area.size(), Sense::hover());
             let painter = ui.painter_at(r.expand(4.0));
             let font = FontId::proportional(13.0);
@@ -1435,15 +1435,16 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         picked = Some(item.clone());
     }
     let key_row = app.menu.key_row;
-    let resp = egui::Area::new(egui::Id::new("sc_context_menu")).fixed_pos(list_at).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
-        menu_frame(ui, |ui| {
-            for (k, item) in list.iter().enumerate() {
-                if let Some(p) = list_row_lit(ui, item, key_row == Some(k)) {
-                    picked = Some(p);
+    let resp =
+        crate::frame::area(egui::Id::new("sc_context_menu")).fixed_pos(list_at).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
+            menu_frame(ui, |ui| {
+                for (k, item) in list.iter().enumerate() {
+                    if let Some(p) = list_row_lit(ui, item, key_row == Some(k)) {
+                        picked = Some(p);
+                    }
                 }
-            }
+            });
         });
-    });
     inside |= resp.response.contains_pointer() || resp.response.rect.contains(pointer.unwrap_or(Pos2::ZERO));
 
     let (primary, secondary, esc) = ctx.input(|i| {
@@ -1508,6 +1509,7 @@ pub fn list_row_lit(ui: &mut egui::Ui, item: &Item, lit: bool) -> Option<Item> {
         return None;
     }
     let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), if item.enabled { Sense::click() } else { Sense::hover() });
+    crate::scenario::publish_handle(&format!("menu:{}", item.id), r.center());
     if item.enabled && (resp.hovered() || lit) {
         ui.painter().rect_filled(r.shrink2(vec2(2.0, 1.0)), 4.0, t.hover);
     }
@@ -1536,7 +1538,7 @@ fn show_rename(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut r) = app.menu.rename.take() else { return };
     let t = Tokens::get();
     let mut done: Option<bool> = None;
-    let resp = egui::Area::new(egui::Id::new("sc_rename")).fixed_pos(r.at).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
+    let resp = crate::frame::area(egui::Id::new("sc_rename")).fixed_pos(r.at).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
         menu_frame(ui, |ui| {
             ui.add_space(2.0);
             ui.label(egui::RichText::new("Rename").size(11.0).color(t.text_dim));

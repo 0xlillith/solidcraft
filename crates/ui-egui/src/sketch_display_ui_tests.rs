@@ -90,6 +90,11 @@ fn pixel_cache_full_view_resize_and_hidpi_invalidate_within_same_grid_bucket() {
     let mut h = Harness::new();
     h.app.run("solid.box", json!({"corner":[-0.1,-0.1,-0.2],"length":0.2,"width":0.2,"height":0.2,"body_name":"CachedStock"})).unwrap();
     let sid = circle(&mut h);
+    // This cache test needs a controlled projected radius, independent of floating controls
+    // used by Fit. At this radius, doubling physical scale crosses a subdivision threshold.
+    h.app.cancel_view_animation();
+    h.app.cam.distance = 5.0;
+    h.app.cam.target = Vec3::ZERO;
     let baseline = h.app.session.doc.to_json();
     let history = (h.app.session.undo.len(), h.app.session.redo.len());
     let state = h.app.session.world_state();

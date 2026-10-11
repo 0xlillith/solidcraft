@@ -168,15 +168,19 @@ install. If you work on geometry and want to check against it, ask in an issue.
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
 
-Words alone can leave a change hard to picture. When a screenshot, short demo, diagram or
-before/after model view helps explain what is broken or changed, please include that concrete
-context in the issue or PR. This applies to kernel, geometry, assembly and backend work as well
-as the UI. Coding agents should run the relevant example and capture the actual reproduction
-or result themselves, with a brief expected/actual explanation and annotations where useful;
-please don't ask a human for evidence the agent can produce. Changes with no useful visual
-explanation do not need media. Use a small example without private designs or sensitive
-details; attach the media or link to an accessible recording rather than committing generated
-review artifacts.
+Help reviewers see what the words mean. For observable CAD, UI or model behavior, please
+include actual descriptive screenshots or a short recording in the issue or PR. This evidence
+is required for changes or bugs that can be demonstrated in the app, including kernel,
+geometry, assembly and backend work. Coding agents should run a small reproduction and
+capture the evidence themselves; please don't ask a human for evidence the agent can produce.
+Show the actual failure or result, preferably before and after, with brief steps and
+expected/actual behavior. An arrow or annotation can help identify the detail that matters.
+
+Flowcharts and Mermaid diagrams cannot replace evidence of visible behavior. Diagrams are
+useful for architectural reasoning when actual screenshots cannot illustrate the point.
+Changes with no useful observable behavior do not need screenshot or video evidence. Use a
+small example without private designs or sensitive details; attach the media or link to an
+accessible recording rather than committing generated review artifacts.
 
 Keep checking upstream commits and the relevant PR's merge status throughout the work and
 before handoff. Integrate upstream merges, resolve conflicts without losing others' changes,
