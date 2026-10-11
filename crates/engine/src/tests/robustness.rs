@@ -202,10 +202,30 @@ fn fillet_into_an_earlier_round() {
     }
 }
 
-/// Seeds that run clean: no failure, no invalid body, no volume going the wrong way.
+/// Clean seeds and the original seed 5 edge contact, now rejected without distortion.
 #[test]
 fn fixed_seeds_run_clean() {
     for seed in FIXED_SEEDS {
+        if *seed == 5 {
+            // Seed 5 originally joined these boxes along only an edge. Accepting
+            // it required silently shifting the tool; that is now invalid input.
+            let mut s = Session::default();
+            run(&mut s, "solid.box", json!({"length": 25, "width": 15, "height": 10}));
+            let error = s
+                .execute(
+                    "solid.box",
+                    &json!({
+                        "corner": [25, 2.5, 10], "length": 17.5, "width": 17.5,
+                        "height": 20, "operation": "join"
+                    }),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("zero-thickness edge contact"), "{error}");
+            assert!((total_volume(&s) - 3750.0).abs() < 1e-6);
+            assert_eq!(s.model.state().bodies.len(), 1);
+            assert!(s.model.state().bodies.first().unwrap().body.validity().is_empty());
+            continue;
+        }
         let r = fuzz::run(*seed, 8);
         assert!(!r.outcome.is_bug(), "seed {seed}: {:?}\n{}", r.outcome, r.script());
     }
