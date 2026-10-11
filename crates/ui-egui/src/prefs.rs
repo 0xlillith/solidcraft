@@ -35,6 +35,8 @@ pub struct Prefs {
     pub default_units: String,
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
     pub nav: String,
+    /// Show the radial ring and enable hold/flick gestures for viewport context menus.
+    pub radial_context_menu: bool,
     /// The wheel zooms out when turned forward.
     pub zoom_reverse: bool,
     /// Orbit around the point under the cursor (else around the view's centre).
@@ -70,6 +72,7 @@ impl Default for Prefs {
         Prefs {
             default_units: "mm".into(),
             nav: "fusion".into(),
+            radial_context_menu: false,
             zoom_reverse: false,
             orbit_cursor: false,
             space_mouse_enabled: true,
@@ -178,6 +181,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
         }
         1 => {
             p.nav = d.nav;
+            p.radial_context_menu = d.radial_context_menu;
             p.zoom_reverse = d.zoom_reverse;
             p.zoom_to_cursor = d.zoom_to_cursor;
             p.orbit_cursor = d.orbit_cursor;
@@ -563,6 +567,9 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 });
             ui.end_row();
             note(ui, &format!("{}; hold Shift during orbit to snap; the wheel zooms", nav_help(&app.preferences.nav)));
+            ui.label("Context menu");
+            ui.checkbox(&mut app.preferences.radial_context_menu, "Radial context menu");
+            ui.end_row();
             ui.label("Reverse zoom direction");
             ui.checkbox(&mut app.preferences.zoom_reverse, "");
             ui.end_row();
@@ -752,6 +759,28 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn radial_context_menu_defaults_off_and_follows_preferences_transactions() {
+        assert!(!Prefs::default().radial_context_menu);
+        let old: Prefs = serde_json::from_value(json!({"nav":"solidworks","zoom_reverse":true})).unwrap();
+        assert!(!old.radial_context_menu && old.zoom_reverse && old.nav == "solidworks");
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.prefs", json!({"open":"Navigation"}));
+        h.step(&json!({"widget":"Radial context menu"})).unwrap();
+        assert!(h.app.preferences.radial_context_menu, "the actual checkbox enables radial menus");
+        let mut restored = SolveApp::new(solvecraft_engine::Session::default(), Default::default());
+        restored.load_prefs(&h.app.prefs());
+        assert!(restored.preferences.radial_context_menu, "enabled preference survives save/load");
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert!(!h.app.preferences.radial_context_menu, "Cancel restores the default-off setting");
+        h.call("ui.prefs", json!({"open":"Navigation","radial_context_menu":true}));
+        h.call("ui.prefs", json!({"button":"apply"}));
+        h.call("ui.prefs", json!({"button":"defaults"}));
+        assert!(!h.app.preferences.radial_context_menu, "Navigation defaults disable the ring");
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert!(h.app.preferences.radial_context_menu, "Cancel restores the last Apply");
+    }
 
     #[test]
     fn presets_map_the_mouse_and_prefs_round_trip() {

@@ -253,6 +253,18 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Parameters and Configurations have distinct actions in the SOLID toolbar's CONFIGURE panel.
   Parameters opens the user/model variable editor; Configurations opens the configuration table.
   Configure remains available in the panel dropdown.
+- Parameter creation supports Enter with validation and continued keyboard entry. Shared
+  expression autocomplete supports Up/Down selection, Enter/Tab acceptance and Escape dismissal;
+  accepting a suggestion does not submit a parameter or trigger viewport shortcuts.
+- Movable window title bars follow the app's dark/light header palette. Radial right-click
+  menus are opt-in in Preferences > Navigation; ordinary context menus remain the default.
+- Desktop distribution: running Windows windows and executable resources use the app icon;
+  packaging validates icon resources. Nix installs launchers, MIME data and generated icons,
+  with explicit launch apps and Vulkan-loader/driver discovery. Flatpak feed instructions
+  register the required runtime source; release checks exercise desktop modelling on X11/Wayland.
+- OpenGL rendering clamps effective anti-aliasing to 1x across UI pipelines, textures and CAD
+  callbacks to prevent black frames. Other backends retain the requested sample count, and
+  stored preferences remain unchanged.
 - Configuration rules: ordered typed conditions can drive parameters and suppressions or
   restrict values. Preview explains effective values without modifying the document; applying
   rules validates rows atomically. Length expressions retain their authoring units across
