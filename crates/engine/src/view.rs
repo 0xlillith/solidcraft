@@ -35,6 +35,8 @@ pub mod colors {
     pub const AXIS_Z: Rgb = Rgb(60, 100, 230);
     pub const BG_TOP: Rgb = Rgb(240, 243, 247);
     pub const BG_BOTTOM: Rgb = Rgb(203, 210, 221);
+    /// What the section cap is tinted toward.
+    pub const SECTION_CAP: Rgb = solvecraft_render::SECTION_CAP;
 }
 
 /// Bounds of everything visible.
@@ -119,10 +121,23 @@ pub fn sketch_point_visible(sk: &Sketch, i: usize) -> bool {
     }
 }
 
-/// The scene for a headless render.
+/// The scene for a headless render, cut by the session's section.
 pub fn scene(s: &Session, cam: &Camera) -> Scene {
+    scene_with_section(s, cam, s.section)
+}
+
+/// The scene for a headless render, cut by `section` (origin, normal) instead of the session's:
+/// the app passes the cut its viewport shows (an open Section Analysis dialog's preview, a
+/// sketch's Slice), so model renders match the window.
+pub fn scene_with_section(s: &Session, cam: &Camera, section: Option<(Vec3, Vec3)>) -> Scene {
     let st = s.world_state();
-    let mut sc = Scene { background: Some((colors::BG_TOP, colors::BG_BOTTOM)), clip: s.section.map(|(o, n)| (n, n.dot(o))), ..Default::default() };
+    let section = section.filter(|(o, n)| o.is_finite() && n.is_finite() && n.len() > 1e-9);
+    let mut sc = Scene {
+        background: Some((colors::BG_TOP, colors::BG_BOTTOM)),
+        clip: section.map(|(o, n)| (n, n.dot(o))),
+        cap: Some(colors::SECTION_CAP),
+        ..Default::default()
+    };
     let b = bounds(s);
     sc.radius = (b.diagonal() * 0.5).max(cam.half_height()).max(10.0) + b.center().dist(cam.target);
     // Grid on the ground plane (XY with Z up, XZ with Y up).
@@ -172,6 +187,12 @@ pub fn scene(s: &Session, cam: &Camera) -> Scene {
             }
             sc.lines.push(SceneLine { points: e.clone(), color: colors::EDGE, width: 1.2, on_top: false });
         }
+        // The outline of the body where the section cuts it.
+        if let Some((o, n)) = section {
+            for (a, b) in section_segments(&mesh, o, n) {
+                sc.lines.push(SceneLine { points: vec![a, b], color: colors::EDGE, width: 1.6, on_top: false });
+            }
+        }
     }
     for ss in &st.sketches {
         let active = s.active_sketch == Some(ss.feature);
@@ -183,6 +204,28 @@ pub fn scene(s: &Session, cam: &Camera) -> Scene {
         }
     }
     sc
+}
+
+/// Where the plane through `o` with normal `n` cuts a mesh: one segment per crossed triangle,
+/// nudged a hair to the kept side (so the clip leaves them drawn).
+pub fn section_segments(m: &solvecraft_geom::Mesh, o: Vec3, n: Vec3) -> Vec<(Vec3, Vec3)> {
+    let eps = 1e-4 * (1.0 + m.bounds().diagonal());
+    let mut out = Vec::new();
+    for t in &m.triangles {
+        let Some(p) = m.tri(t) else { continue };
+        let d = p.map(|q| n.dot(q - o));
+        let mut pts = Vec::with_capacity(2);
+        for (i, j) in [(0, 1), (1, 2), (2, 0)] {
+            if (d[i] < 0.0) != (d[j] < 0.0) {
+                let s = d[i] / (d[i] - d[j]);
+                pts.push(p[i] + (p[j] - p[i]) * s - n * eps);
+            }
+        }
+        if let [a, b] = pts[..] {
+            out.push((a, b));
+        }
+    }
+    out
 }
 
 /// Is a sketch drawn? The active one is; others unless hidden. Finished sketches are hidden
@@ -314,5 +357,32 @@ mod tests {
         let cut = solvecraft_render::render(&sc, &cam, 200, 140).rgba;
         let changed = whole.chunks(4).zip(cut.chunks(4)).filter(|(a, b)| a != b).count();
         assert!(changed > 500, "{changed} pixels changed");
+    }
+
+    /// The section's cut face hides what lies inside the body behind it (it is drawn at the
+    /// plane's depth, not on the far wall like a pane of glass), shows in the cap colour, and
+    /// the cut's outline is drawn.
+    #[test]
+    fn snapshot_section_caps_hide_the_inside() {
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20})).unwrap();
+        // Cut away the front half (y < 15), so the iso camera looks into the cut.
+        s.execute("inspect.section", &json!({"plane": {"origin": [0, 15, 0], "normal": [0, -1, 0]}})).unwrap();
+        for fov in [0.0, 0.6] {
+            let mut cam = home_camera(&s);
+            cam.fov = fov;
+            let mut sc = scene(&s, &cam);
+            assert!(!section_segments(&s.world_state().bodies[0].mesh(), Vec3::new(0.0, 15.0, 0.0), -Vec3::Y).is_empty());
+            // A marker inside the body, behind the cut face.
+            let red = Rgb(255, 0, 0);
+            sc.lines.push(SceneLine { points: vec![Vec3::new(5.0, 25.0, 10.0), Vec3::new(35.0, 25.0, 10.0)], color: red, width: 3.0, on_top: false });
+            let img = solvecraft_render::render(&sc, &cam, 300, 220);
+            let px = || img.rgba.chunks(4);
+            let marker = px().filter(|p| p[0] > 200 && p[1] < 60 && p[2] < 60).count();
+            assert_eq!(marker, 0, "fov {fov}: the inside shows through the cut face");
+            // The cap: warm (red over blue), unlike the grey-blue body and background.
+            let cap = px().filter(|p| p[0] as i32 - p[2] as i32 > 20).count();
+            assert!(cap > 500, "fov {fov}: cap pixels {cap}");
+        }
     }
 }
