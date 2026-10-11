@@ -13,7 +13,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "CREATE")
         .icon("extrude")
         .key("E")
-        .params("distance: expr (or through_all: true); taper?: angle expr; sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [[curve ids]] | [{point:[x,y]}]; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); direction?: positive|negative|symmetric; distance2?; start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body]; name?; body_name?"),
+        .params("distance: expr (or through_all: true); taper?: angle expr; sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [{curves: [ids]}] (the profile whose outer loop is made of exactly these curves, or pieces of them; found again on every recompute, so it follows parameter changes; islands inside are its holes; an error when no profile or several match) | [{point:[x,y]}] (index and point picks are stored by their curves when that finds the same profile); face?: [x,y,z] (extrude a planar body face instead of a sketch profile); direction?: positive|negative|symmetric; distance2?; start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body]; name?; body_name?"),
     CommandSpec::new("solid.revolve", "Revolve", revolve)
         .at("SOLID", "CREATE")
         .icon("revolve")
@@ -124,18 +124,7 @@ fn extrude_base(s: &Session, p: &Value) -> Option<(Vec3, Vec3)> {
         ProfileSel::All => ps.first()?.region.interior_point(),
         ProfileSel::Indices { indices } => ps.get(*indices.first()?)?.region.interior_point(),
         ProfileSel::Points { points } => *points.first()?,
-        ProfileSel::Curves { loops } => {
-            let mut want: Vec<&String> = loops.first()?.iter().collect();
-            want.sort();
-            ps.iter()
-                .find(|x| {
-                    let mut have: Vec<&String> = x.outer_curves.iter().collect();
-                    have.sort();
-                    have == want
-                })?
-                .region
-                .interior_point()
-        }
+        ProfileSel::Curves { loops } => ps.get(solvecraft_doc::sketch::profile_by_curves(ps, loops.first()?).ok()?)?.region.interior_point(),
     };
     Some((ss.plane.to_world(q), ss.plane.normal()))
 }
@@ -212,35 +201,53 @@ pub(super) fn feature_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
         .ok_or_else(|| bad(cmd, "there is no sketch to use (create one first)"))
 }
 
-/// Profile indices become the curve ids of each profile's loops as the sketch is now solved.
-fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
+/// Profiles picked by index or point are stored by the curve ids of each profile's outer loop
+/// as the sketch is now solved, so they follow the geometry when parameters move it. A pick
+/// whose curves would not find that same profile again (two profiles bounded by the same
+/// curves) stays as given. Curve picks are checked: one that names no profile, or several, is
+/// refused now rather than failing later.
+pub(super) fn stable_profiles(s: &Session, kind: &mut FeatureKind) -> Result<()> {
+    use solvecraft_doc::sketch::{distinct_curves, profile_at_point, profile_by_curves};
     let st = s.model.state();
     'sels: for (sketch, sel) in kind.profile_sels_mut() {
-        let ProfileSel::Indices { indices } = sel else { continue };
         let Some(ss) = st.sketch(sketch) else { continue };
-        let mut loops = Vec::with_capacity(indices.len());
-        for i in indices.iter() {
-            let pr = ss
-                .profiles
-                .get(*i)
-                .ok_or_else(|| EngineError::Other(format!("no profile {i} in sketch `{}` (it has {})", ss.name, ss.profiles.len())))?;
-            // Two profiles with the same outer curves (one inside the other's holes cannot be):
-            // keep the index then.
-            if pr.outer_curves.is_empty() || ss.profiles.iter().filter(|q| same_loop(&q.outer_curves, &pr.outer_curves)).count() != 1 {
+        let picked: Vec<usize> = match sel {
+            ProfileSel::Indices { indices } => indices
+                .iter()
+                .map(|i| {
+                    if *i < ss.profiles.len() {
+                        Ok(*i)
+                    } else {
+                        Err(EngineError::Other(format!("no profile {i} in sketch `{}` (it has {})", ss.name, ss.profiles.len())))
+                    }
+                })
+                .collect::<Result<_>>()?,
+            ProfileSel::Points { points } => {
+                let Some(v) = points.iter().map(|q| profile_at_point(&ss.profiles, *q)).collect::<Option<Vec<_>>>() else { continue };
+                v
+            }
+            ProfileSel::Curves { loops } => {
+                for l in loops.iter() {
+                    profile_by_curves(&ss.profiles, l)
+                        .map_err(|e| EngineError::Other(solvecraft_doc::curve_pick_error(e, l, &ss.name).to_string()))?;
+                }
+                continue;
+            }
+            ProfileSel::All => continue,
+        };
+        let mut loops = Vec::with_capacity(picked.len());
+        for i in picked {
+            let Some(pr) = ss.profiles.get(i) else { continue 'sels };
+            let ids = distinct_curves(&pr.outer_curves);
+            // Keep the pick as given when its curves don't lead back to this profile.
+            if ids.is_empty() || profile_by_curves(&ss.profiles, &ids) != Ok(i) {
                 continue 'sels;
             }
-            loops.push(pr.outer_curves.clone());
+            loops.push(ids);
         }
         *sel = ProfileSel::Curves { loops };
     }
     Ok(())
-}
-
-fn same_loop(a: &[String], b: &[String]) -> bool {
-    let (mut a, mut b) = (a.to_vec(), b.to_vec());
-    a.sort();
-    b.sort();
-    a == b
 }
 
 pub(super) fn profiles(p: &Value, cmd: &str) -> Result<ProfileSel> {

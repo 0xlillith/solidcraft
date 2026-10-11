@@ -28,8 +28,8 @@ pub mod sheet;
 pub use assembly::{IDENTITY, Mat, Occurrence, apply_point, apply_vector, is_identity, map_point_expr, mat_inverse, mat_mul, rigid};
 pub use document::*;
 pub use eval::{
-    EdgeRef, FeatureResult, Model, ModelBody, ModelState, SolvedSketch, ThreadInfo, edge_names_for, edge_refs, parse_metric_thread, pattern_matrices,
-    state_in_frame, world_state,
+    EdgeRef, FeatureResult, Model, ModelBody, ModelState, SolvedSketch, ThreadInfo, curve_pick_error, edge_names_for, edge_refs, parse_metric_thread,
+    pattern_matrices, state_in_frame, world_state,
 };
 pub use params::{ParamRow, ParamUser, cycles};
 pub use solvecraft_kernel as kernel;
