@@ -46,6 +46,32 @@ fn empty_space_offers_view_items_and_greys_out_undo() {
 }
 
 #[test]
+fn appearance_browser_action_targets_the_clicked_body() {
+    let mut app = sample_app();
+    let b = body(&app);
+    app.run("select.clear", json!({})).unwrap();
+    act(&mut app, &Target::Body { name: b.clone() }, "Appearance");
+    let dialog = app.dialog.as_ref().unwrap();
+    assert!(matches!(dialog.kind, crate::dialogs::Kind::Appearance(_)));
+    assert_eq!(dialog.inputs[0].items, vec![solvecraft_engine::Sel::Body { name: b }]);
+}
+
+#[test]
+fn appearance_component_action_assigns_an_inherited_look() {
+    let mut app = sample_app();
+    let created = app.run("component.create", json!({"name": "Painted part"})).unwrap();
+    let id = created["component"].as_u64().unwrap();
+    act(&mut app, &Target::Component { id }, "Appearance");
+    let d = app.dialog.clone().unwrap();
+    let commands = crate::dialogs::apply_commands(&app, &d).unwrap();
+    assert_eq!(commands[0].1["components"], json!(["Painted part"]));
+    for (id, p) in commands {
+        app.run(&id, p).unwrap();
+    }
+    assert!(app.session.doc.appearances.components.contains_key(&id));
+}
+
+#[test]
 fn face_menu_hides_and_finds_the_body() {
     let mut app = sample_app();
     let b = body(&app);
@@ -54,7 +80,7 @@ fn face_menu_hides_and_finds_the_body() {
     for l in ["Create Sketch", "Offset Plane", "Press Pull", "Extrude", "Measure", "Find in Browser", "Find in Timeline"] {
         assert!(find(&items, l).enabled, "{l}");
     }
-    assert!(!find(&items, "Appearance").enabled);
+    assert!(find(&items, "Appearance").enabled);
     context_menu::run_item(&mut app, &find(&items, "Find in Timeline"), pos2(0.0, 0.0));
     assert!(matches!(app.session.selection.as_slice(), [solvecraft_engine::Sel::Feature { .. }]));
     context_menu::run_item(&mut app, &find(&items, "Show/Hide"), pos2(0.0, 0.0));
@@ -95,6 +121,24 @@ fn properties_measure_the_body() {
     let (_, v) = app.menu.props.clone().unwrap();
     assert!(v["total"]["volume_mm3"].as_f64().unwrap() > 1000.0);
     assert!(v["total"]["mass_g"].as_f64().unwrap() > 0.0);
+}
+
+#[test]
+fn component_properties_measure_one_assembly_placement() {
+    let mut session = Session::default();
+    let component = session.execute("component.create", &json!({"name": "Subassembly"})).unwrap()["component"].as_u64().unwrap();
+    session.execute("component.create", &json!({"name": "Block"})).unwrap();
+    session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
+    session.execute("occurrence.copy", &json!({"component": component, "translate": [100, 0, 0]})).unwrap();
+    let mut app = SolveApp::new(session, Services::default());
+    act(&mut app, &Target::Component { id: component }, "Properties");
+    let (title, properties) = app.menu.props.as_ref().unwrap();
+    assert_eq!(title, "Subassembly");
+    assert_eq!(properties["body_count"], 1);
+    assert!((properties["total"]["volume_mm3"].as_f64().unwrap() - 1000.0).abs() < 1e-6);
+    assert!((properties["total"]["center_of_mass"][0].as_f64().unwrap() - 5.0).abs() < 1e-6);
+    act(&mut app, &Target::Component { id: 0 }, "Properties");
+    assert_eq!(app.menu.props.as_ref().unwrap().1["body_count"], 2);
 }
 
 #[test]

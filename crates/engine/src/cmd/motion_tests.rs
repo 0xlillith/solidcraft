@@ -72,6 +72,40 @@ fn contact_sets_stop_a_driven_joint_at_touching() {
 }
 
 #[test]
+fn contact_uses_preserved_body_placements_after_component_reassignment() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Transferred"}));
+    let component = run(&mut s, "component.create", json!({"name": "Carrier"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": component["occurrence"], "translate": [100, 0, 0]}));
+    run(&mut s, "component.move_bodies", json!({"bodies": ["Transferred"], "component": component["component"]}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let probe = run(&mut s, "component.create", json!({"name": "Probe"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [5, 0, 0]}));
+    run(&mut s, "contact.create", json!({"occurrences": [component["occurrence"], probe["occurrence"]]}));
+    let collisions = run(&mut s, "contact.check", json!({}));
+    assert_eq!(collisions["collisions"].as_array().map(Vec::len), Some(1), "body stayed at x=0: {collisions}");
+    run(&mut s, "occurrence.move", json!({"occurrence": probe["occurrence"], "translate": [100, 0, 0]}));
+    let collisions = run(&mut s, "contact.check", json!({}));
+    assert_eq!(collisions["collisions"].as_array().map(Vec::len), Some(0), "probe moved away: {collisions}");
+}
+
+#[test]
+fn automatic_explode_centres_follow_reassigned_bodies() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Transferred"}));
+    let component = run(&mut s, "component.create", json!({"name": "Carrier"}));
+    run(&mut s, "occurrence.move", json!({"occurrence": component["occurrence"], "translate": [100, 0, 0]}));
+    run(&mut s, "component.move_bodies", json!({"bodies": ["Transferred"], "component": component["component"]}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "component.create", json!({"name": "Neighbour"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0]}));
+    let exploded = run(&mut s, "explode.create", json!({"scale": 1}));
+    let moves = exploded["moves"].as_array().unwrap();
+    let carrier = moves.iter().find(|m| m["occurrence"] == component["occurrence"]).unwrap();
+    assert!((carrier["translate"][0].as_f64().unwrap() + 10.0).abs() < 1e-6, "{exploded}");
+}
+
+#[test]
 fn motion_study_plays_and_exports() {
     let mut s = rail();
     let r = run(&mut s, "motion.study", json!({"name": "Push", "steps": 100, "keys": [{"joint": "Rail", "points": [[0, 10], [100, -5]]}]}));

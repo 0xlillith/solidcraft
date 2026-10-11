@@ -458,6 +458,41 @@ fn sketch_entity(app: &SolveApp, hits: &[Hit]) -> Option<(String, bool)> {
     })
 }
 
+/// Corner tools accept endpoints shared by two editable curves. Pick among those endpoints
+/// directly so the origin, a circle centre or an overlapping loose point cannot hide a corner.
+pub(super) fn corner_point(app: &SolveApp, proj: &Proj, pos: Pos2, cmd: &str) -> Option<(Vec2, String)> {
+    let st = app.session.world_state();
+    let ss = st.sketch(active_sketch(app)?)?;
+    let sk = &ss.sketch;
+    sk.points
+        .iter()
+        .enumerate()
+        .filter_map(|(pi, point)| {
+            let distance = proj.to_screen(ss.plane.to_world(point.pos))?.distance(pos);
+            if distance >= 8.0 {
+                return None;
+            }
+            let curves: Vec<_> = sk
+                .curves
+                .iter()
+                .enumerate()
+                .filter(|(ci, c)| !sk.is_linked_curve(*ci) && c.kind.ends().is_some_and(|(a, b)| a == pi || b == pi))
+                .take(3)
+                .collect();
+            if curves.len() != 2
+                || curves.iter().any(|(_, c)| {
+                    !matches!(c.kind, solvecraft_engine::sketch::CurveKind::Line { .. })
+                        && (cmd != "sketch.fillet" || !matches!(c.kind, solvecraft_engine::sketch::CurveKind::Arc { .. }))
+                })
+            {
+                return None;
+            }
+            Some((distance, point.pos, point.id.clone()))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, at, id)| (at, id))
+}
+
 fn xy(p: Vec2) -> Value {
     json!([p.x, p.y])
 }
@@ -624,6 +659,12 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             }
         }
         Mode::Entities(n) => {
+            if cmd == "sketch.fillet" || cmd.starts_with("sketch.chamfer.") {
+                if let Some((_, id)) = corner_point(app, proj, pos, cmd) {
+                    run_corner(app, cmd, &id);
+                }
+                return;
+            }
             if cmd == "sketch.offset" && !tool.picks.is_empty() {
                 if let Some((p, _)) = at {
                     offset_side(app, tool, p);
@@ -637,12 +678,6 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
                     tool.picks.push(id);
                 } else if let Some((p, _)) = at {
                     offset_side(app, tool, p);
-                }
-                return;
-            }
-            if cmd == "sketch.fillet" || cmd.starts_with("sketch.chamfer.") {
-                if is_point {
-                    run_corner(app, cmd, &id);
                 }
                 return;
             }
@@ -1132,3 +1167,7 @@ fn text_entry(app: &mut SolveApp, ctx: &egui::Context) {
         None => TEXT.with(|t| *t.borrow_mut() = Some((at, text))),
     }
 }
+
+#[cfg(test)]
+#[path = "sketch_corner_ui_tests.rs"]
+mod corner_ui_tests;

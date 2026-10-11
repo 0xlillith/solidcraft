@@ -11,6 +11,9 @@ use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, string_list, vec3};
 use crate::{Result, Session};
 
+#[path = "component_properties.rs"]
+mod properties;
+
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("component.create", "New Component", new_component)
         .at("SOLID", "ASSEMBLE")
@@ -21,6 +24,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("bodies: [names] → one new component per body, named after it"),
     CommandSpec::new("component.activate", "Activate Component", activate).noundo().params("component: id or name (0 or \"root\" for the design)"),
     CommandSpec::new("component.list", "List Components", list).noundo(),
+    CommandSpec::new("component.properties", "Component Physical Properties", properties::component)
+        .icon("measure").noundo()
+        .params("component?: id or name (default active); descendants?: bool (default true). Measures the first placement, or all placements for root, including pending moves; material-aware mass and center of mass in world coordinates"),
+    CommandSpec::new("occurrence.properties", "Occurrence Physical Properties", properties::occurrence)
+        .icon("measure").noundo()
+        .params("occurrence: id or name; path?: [occurrence ids] (required if nested under multiple instances); descendants?: bool (default true). Physical properties of this placement in world coordinates, including pending moves"),
     CommandSpec::new("component.rename", "Rename Component", rename).params("component, name"),
     CommandSpec::new("component.delete", "Delete Component", delete).params("component: deletes it, its subcomponents, occurrences and features"),
     CommandSpec::new("component.move_bodies", "Move Bodies to Component", move_bodies).params("bodies: [names], component"),

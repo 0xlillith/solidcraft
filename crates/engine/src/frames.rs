@@ -345,7 +345,13 @@ impl Drop for Nested {
 pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
     if id == "timeline.redefine" {
         let cmd = params.get("command")?.as_str()?;
-        let inner = to_local(s, cmd, params.get("params")?)?;
+        let key = params.get("feature").and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|id| id.to_string())))?;
+        let feature = s.doc.find_feature(&key)?;
+        // Edit Feature authors in the existing feature's frame, even when another
+        // component is active. Body-relative picks still use the picked body's frame.
+        let mut context = s.scratch();
+        context.active_component = feature.component;
+        let inner = to_local(&context, cmd, params.get("params")?)?;
         let mut out = params.clone();
         out["params"] = inner;
         return Some(out);

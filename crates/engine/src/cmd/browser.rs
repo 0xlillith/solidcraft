@@ -413,6 +413,14 @@ fn rename_body(s: &mut Session, p: &Value) -> Result<Value> {
     for f in d.appearances.faces.iter_mut().filter(|f| f.body == old) {
         f.body = name.to_string();
     }
+    for column in &mut d.configs.columns {
+        match column {
+            solvecraft_doc::config::Column::Material(body) | solvecraft_doc::config::Column::Appearance(body) if *body == old => {
+                *body = name.to_string();
+            }
+            _ => {}
+        }
+    }
     if let Some(o) = d.body_offsets.remove(&old) {
         d.body_offsets.insert(name.to_string(), o);
     }

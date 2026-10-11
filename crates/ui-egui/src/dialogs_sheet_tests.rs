@@ -106,3 +106,46 @@ fn hem_and_rules() {
     run_all(&mut app, c);
     assert!(app.session.doc.sheet.rules.iter().any(|r| r.name == "Alu"));
 }
+
+#[test]
+fn flat_exports_use_the_save_picker() {
+    use std::sync::{Arc, Mutex};
+    let mut app = plate();
+    app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    let picks = Arc::new(Mutex::new(Vec::new()));
+    let captured = picks.clone();
+    app.services.pick_save = Some(Box::new(move |name, extensions| {
+        captured.lock().unwrap().push((name.to_string(), extensions.iter().map(|x| x.to_string()).collect::<Vec<_>>()));
+        None
+    }));
+    assert_eq!(export_flat(&mut app, "Base", "csv"), "Export cancelled");
+    assert_eq!(export_flat(&mut app, "Base", "dxf"), "Export cancelled");
+    let picks = picks.lock().unwrap();
+    assert!(picks[0].0.ends_with("-Base.csv"));
+    assert_eq!(picks[0].1, vec!["csv"]);
+    assert!(picks[1].0.ends_with("-Base.dxf"));
+    assert_eq!(picks[1].1, vec!["dxf"]);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn bend_table_picker_writes_the_current_body() {
+    let mut app = plate();
+    app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    app.run("sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20})).unwrap();
+    let body = app.session.model.state().sheets[0].body.clone();
+    let path = std::env::temp_dir().join(format!("solvecraft-bend-table-{}.csv", std::process::id()));
+    let output = path.to_string_lossy().into_owned();
+    let chosen = output.clone();
+    app.services.pick_save = Some(Box::new(move |_, extensions| {
+        assert_eq!(extensions, &["csv"]);
+        Some(chosen.clone())
+    }));
+    let undo = app.session.undo.len();
+    assert_eq!(export_flat(&mut app, &body, "csv"), format!("Saved {output}"));
+    let contents = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(contents.lines().count(), 2);
+    assert!(contents.contains(",90.000000000,up,2.500000000,"), "{contents}");
+    assert_eq!(app.session.undo.len(), undo);
+}

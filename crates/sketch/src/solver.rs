@@ -9,7 +9,7 @@
 //! gives the remaining degrees of freedom and which points are fully determined.
 
 use serde::{Deserialize, Serialize};
-use solvecraft_geom::Vec2;
+use solvecraft_geom::{Seg2, Vec2};
 
 use crate::linalg::{Mat, determined_vars, solve as lin_solve};
 use crate::model::{ConstraintKind, CurveKind, Sketch};
@@ -177,6 +177,51 @@ impl State<'_> {
             _ => Vec::new(),
         }
     }
+    /// Point-on-curve constraints use the exact shape. A polyline residual would move an
+    /// exact crossing onto its chord, changing geometry merely by splitting it.
+    fn freeform_dist(&self, c: usize, q: Vec2) -> f64 {
+        let segs: Vec<Seg2> = match self.sk.curves.get(c).map(|c| &c.kind) {
+            Some(CurveKind::Ellipse { c: ci, m, .. }) => {
+                let center = self.p(*ci);
+                let u = self.p(*m) - center;
+                let a = u.len();
+                let r = self.radius_of(c);
+                if a <= 1e-12 || r <= 1e-12 {
+                    return q.dist(center);
+                }
+                let delta = q - center;
+                let x = delta.dot(u) / (a * a);
+                let y = delta.cross(u) / (a * r);
+                return (x.hypot(y) - 1.0) * a.min(r);
+            }
+            Some(CurveKind::Spline { pts, control, degree }) => {
+                let p: Vec<Vec2> = pts.iter().map(|i| self.p(*i)).collect();
+                if p.len() < 2 {
+                    return q.dist(p.first().copied().unwrap_or_default());
+                }
+                if *control {
+                    let k = (*degree as usize).min(solvecraft_geom::MAX_BEZIER_DEGREE).min(p.len().saturating_sub(1)).max(1);
+                    crate::curves::bspline_beziers(&p, k).iter().filter_map(|span| solvecraft_geom::bezier(span)).collect()
+                } else {
+                    crate::curves::fit_beziers(&p).into_iter().map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 }).collect()
+                }
+            }
+            Some(CurveKind::Conic { a, b, apex, rho }) => {
+                vec![Seg2::Conic { a: self.p(*a), b: self.p(*b), apex: self.p(*apex), w: rho / (1.0 - rho).max(1e-9) }]
+            }
+            _ => Vec::new(),
+        };
+        segs.iter()
+            .map(|seg| {
+                let t = seg.closest_param(q);
+                let delta = q - seg.point_at(t);
+                let d = delta.len();
+                (d, if seg.derivative(t).cross(delta) >= 0.0 { d } else { -d })
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, signed)| signed)
+            .unwrap_or_else(|| crate::curves::polyline_signed_dist(&self.poly(c), q))
+    }
     /// Radius of a circle or arc; an ellipse's minor radius.
     fn radius_of(&self, c: usize) -> f64 {
         match self.sk.curves.get(c).map(|x| &x.kind) {
@@ -281,7 +326,7 @@ fn residuals(s: &State, k: &ConstraintKind, out: &mut Vec<f64>) {
         PointOnCurve { p, c } => {
             let pp = s.p(p);
             if s.is_freeform(c) {
-                out.push(crate::curves::polyline_signed_dist(&s.poly(c), pp));
+                out.push(s.freeform_dist(c, pp));
             } else if s.is_line(c) {
                 let (a, b) = s.line(c);
                 out.push(line_dist(pp, a, b));

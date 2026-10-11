@@ -300,6 +300,13 @@ fn same_geometry(a: &[(LCurve, Vec<Vec2>)], b: &[(LCurve, Vec<Vec2>)]) -> bool {
     if a.len() != b.len() {
         return false;
     }
+    // Unchanged ordered links are common; avoid a quadratic permutation scan.
+    if a.iter().zip(b).all(|(x, y)| matches(x, y)) {
+        return true;
+    }
+    if a.len() > 512 {
+        return false;
+    }
     let mut used = vec![false; b.len()];
     a.iter().all(|x| {
         let hit = b.iter().enumerate().find(|(j, y)| !used.get(*j).copied().unwrap_or(true) && matches(x, y)).map(|(j, _)| j);
@@ -328,6 +335,48 @@ fn curve_points(c: &LCurve) -> Vec<usize> {
             v
         }
     }
+}
+
+/// Incidence roles distinguish nearby arc centres, endpoints and hole centres during a
+/// resize. Spatial proximity alone can select a different kind of point in a dense rim.
+fn point_roles(curves: &[LCurve], point_count: usize) -> Vec<[usize; 10]> {
+    let mut roles = vec![[0; 10]; point_count];
+    let mut add = |point: usize, role: usize| {
+        if let Some(count) = roles.get_mut(point).and_then(|r| r.get_mut(role)) {
+            *count += 1;
+        }
+    };
+    for curve in curves {
+        match *curve {
+            LCurve::Line(a, b) => {
+                add(a, 0);
+                add(b, 0);
+            }
+            LCurve::Circle(c, _) => add(c, 1),
+            LCurve::Arc(c, a, b) => {
+                add(c, 2);
+                add(a, 3);
+                add(b, 3);
+            }
+            LCurve::Conic(a, b, x, _) => {
+                add(a, 4);
+                add(b, 4);
+                add(x, 5);
+            }
+            LCurve::Ellipse(c, m, _) => {
+                add(c, 6);
+                add(m, 7);
+            }
+            LCurve::Spline(a, b, first, count, ..) => {
+                add(a, 8);
+                add(b, 8);
+                for i in first..first + count {
+                    add(i, 9);
+                }
+            }
+        }
+    }
+    roles
 }
 
 impl Sketch {
@@ -539,26 +588,6 @@ impl Sketch {
         if let Some(l) = self.links.iter_mut().find(|l| l.id == id) {
             l.lost = false;
         }
-        if same {
-            for (k, pi) in points.iter().enumerate() {
-                let p = order.get(k).and_then(|li| lay.pts.get(*li)).copied();
-                if let (Some(p), Some(sp)) = (p, self.points.get_mut(*pi)) {
-                    sp.pos = p;
-                }
-            }
-            for (ci, c) in curves.iter().zip(&new) {
-                if let (LCurve::Circle(_, r), Some(Curve { kind: CurveKind::Circle { r: slot, .. }, .. })) = (c, self.curves.get_mut(*ci)) {
-                    *slot = *r;
-                }
-                if let (LCurve::Conic(.., r), Some(Curve { kind: CurveKind::Conic { rho, .. }, .. })) = (c, self.curves.get_mut(*ci)) {
-                    *rho = *r;
-                }
-                if let (LCurve::Ellipse(.., r), Some(Curve { kind: CurveKind::Ellipse { r: slot, .. }, .. })) = (c, self.curves.get_mut(*ci)) {
-                    *slot = *r;
-                }
-            }
-            return Ok(false);
-        }
         // The same geometry walked in another order or direction (e.g. a face loop re-read after
         // a rollback) is not a change: keep the entities, and the constraints on them.
         if let Some(cur) = &cur {
@@ -588,6 +617,7 @@ impl Sketch {
             && points.len() == lay.pts.len()
             && cur.len() == lay.curves.len()
             && points.len() <= 512
+            && cur.len() <= 512
         {
             let old: Vec<Vec2> = points.iter().filter_map(|i| self.point(*i)).collect();
             let normalized = |ps: &[Vec2]| -> Vec<Vec2> {
@@ -596,9 +626,11 @@ impl Sketch {
                 ps.iter().map(|p| Vec2::new((p.x - lo.x) / (hi.x - lo.x).max(1e-9), (p.y - lo.y) / (hi.y - lo.y).max(1e-9))).collect()
             };
             let (a, b) = (normalized(&old), normalized(&lay.pts));
+            let (old_roles, fresh_roles) = (point_roles(cur, old.len()), point_roles(&lay.curves, lay.pts.len()));
             let mut mapping = Vec::new();
-            for p in &a {
-                let mut candidates: Vec<(usize, f64)> = b.iter().enumerate().map(|(i, q)| (i, p.dist(*q))).collect();
+            for (old_i, p) in a.iter().enumerate() {
+                let mut candidates: Vec<(usize, f64)> =
+                    b.iter().enumerate().filter(|(i, _)| old_roles.get(old_i) == fresh_roles.get(*i)).map(|(i, q)| (i, p.dist(*q))).collect();
                 candidates.sort_by(|x, y| x.1.total_cmp(&y.1));
                 if let Some((i, d)) = candidates.first()
                     && *d < 0.1
@@ -613,22 +645,59 @@ impl Sketch {
             let mut used = Vec::new();
             let mut curve_map = Vec::new();
             if mapping.len() == points.len() {
-                for c in cur {
+                for (curve_i, c) in cur.iter().enumerate() {
                     let mapped: Option<Vec<usize>> = curve_points(c).iter().map(|i| mapping.get(*i).copied()).collect();
-                    let found = lay
+                    let candidates: Vec<usize> = lay
                         .curves
                         .iter()
                         .enumerate()
-                        .find(|(i, fresh)| {
-                            if used.contains(i) || !same_shape(c, fresh) {
-                                return false;
+                        .filter_map(|(i, fresh)| {
+                            if !same_shape(c, fresh) {
+                                return None;
                             }
                             let fresh_pts = curve_points(fresh);
-                            mapped.as_ref().is_some_and(|p| {
-                                *p == fresh_pts || matches!(c, LCurve::Line(..)) && p.iter().rev().copied().collect::<Vec<_>>() == fresh_pts
-                            })
+                            mapped
+                                .as_ref()
+                                .is_some_and(|p| {
+                                    *p == fresh_pts || matches!(c, LCurve::Line(..)) && p.iter().rev().copied().collect::<Vec<_>>() == fresh_pts
+                                })
+                                .then_some(i)
                         })
-                        .map(|(i, _)| i);
+                        .collect();
+                    let found = if candidates.len() == 1 {
+                        candidates.first().copied()
+                    } else if let LCurve::Circle(center, _) = c {
+                        // Concentric circular boundaries share a point graph. Their radius
+                        // order identifies the inner/outer rings through an upstream resize.
+                        let mut previous: Vec<(usize, f64)> = cur
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, x)| match x {
+                                LCurve::Circle(p, r) if p == center => Some((i, *r)),
+                                _ => None,
+                            })
+                            .collect();
+                        let mut incoming: Vec<(usize, f64)> = candidates
+                            .iter()
+                            .filter_map(|i| match lay.curves.get(*i) {
+                                Some(LCurve::Circle(_, r)) => Some((*i, *r)),
+                                _ => None,
+                            })
+                            .collect();
+                        previous.sort_by(|a, b| a.1.total_cmp(&b.1));
+                        incoming.sort_by(|a, b| a.1.total_cmp(&b.1));
+                        let distinct = |xs: &[(usize, f64)]| {
+                            xs.windows(2).all(|w| matches!(w, [a, b] if b.1 - a.1 > MERGE_TOL * (1.0 + a.1.abs().max(b.1.abs()))))
+                        };
+                        if previous.len() == incoming.len() && distinct(&previous) && distinct(&incoming) {
+                            previous.iter().position(|(i, _)| *i == curve_i).and_then(|rank| incoming.get(rank).map(|(i, _)| *i))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let found = found.filter(|i| !used.contains(i));
                     if let Some(i) = found {
                         used.push(i);
                         curve_map.push(i);
@@ -649,9 +718,46 @@ impl Sketch {
                     {
                         *r = *value;
                     }
+                    if let (Some(Curve { kind: CurveKind::Conic { rho, .. }, .. }), Some(LCurve::Conic(.., value))) =
+                        (self.curves.get_mut(*ci), lay.curves.get(li))
+                    {
+                        *rho = *value;
+                    }
+                    if let (Some(Curve { kind: CurveKind::Ellipse { r, .. }, .. }), Some(LCurve::Ellipse(.., value))) =
+                        (self.curves.get_mut(*ci), lay.curves.get(li))
+                    {
+                        *r = *value;
+                    }
                 }
                 return Ok(false);
             }
+        }
+        // Equal topology alone does not identify a face boundary: an outer rim and a
+        // hole can have identical point graphs. Never move saved curve ids between them
+        // when the geometric match is ambiguous; the document reports a lost link.
+        if same && self.link(id).is_some_and(|l| matches!(l.source, LinkSource::Face { .. })) {
+            self.set_link_lost(id, true);
+            return Err(SketchError::Invalid("projected face boundary identity is ambiguous; last geometry retained".into()));
+        }
+        if same {
+            for (k, pi) in points.iter().enumerate() {
+                let p = order.get(k).and_then(|li| lay.pts.get(*li)).copied();
+                if let (Some(p), Some(sp)) = (p, self.points.get_mut(*pi)) {
+                    sp.pos = p;
+                }
+            }
+            for (ci, c) in curves.iter().zip(&new) {
+                if let (LCurve::Circle(_, r), Some(Curve { kind: CurveKind::Circle { r: slot, .. }, .. })) = (c, self.curves.get_mut(*ci)) {
+                    *slot = *r;
+                }
+                if let (LCurve::Conic(.., r), Some(Curve { kind: CurveKind::Conic { rho, .. }, .. })) = (c, self.curves.get_mut(*ci)) {
+                    *rho = *r;
+                }
+                if let (LCurve::Ellipse(.., r), Some(Curve { kind: CurveKind::Ellipse { r: slot, .. }, .. })) = (c, self.curves.get_mut(*ci)) {
+                    *slot = *r;
+                }
+            }
+            return Ok(false);
         }
         // Rebuild: drop the old entities (constraints on them go too) and make new ones.
         self.drop_link_entities(id);
@@ -724,3 +830,7 @@ impl Sketch {
         self.links.retain(|_| k.next().copied().unwrap_or(true));
     }
 }
+
+#[cfg(test)]
+#[path = "link_identity_tests.rs"]
+mod identity_tests;

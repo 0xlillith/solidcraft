@@ -9,7 +9,22 @@ The SHEET METAL tab builds parts from a sheet of constant thickness under a **sh
 - **Unfold / Refold** (`sheet.unfold`, `sheet.refold`) for working on the flat part.
 - **Convert** (`sheet.convert`) turns a solid of constant thickness into sheet metal.
 - **Create Flat Pattern** (`sheet.flat_pattern`) shows the flat part with its bend lines and a
-  bend table, and exports it as DXF.
+  bend table, and exports it as DXF or a bend-table CSV through the save picker.
 
 Bends follow the rule's K-factor, so flat lengths match what a press brake will make. The
 oracle checks these against parts built in Fusion.
+
+For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
+`format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
+radii, allowances and flat centre-line coordinates. Lengths use millimetres and angles use
+degrees. Supply `path` to save it, or omit `path` to receive the content through the command
+response. `body` defaults to the last sheet body. Exporting does not add a timeline entry or
+consume an undo step.
+
+```json
+{"command":"sheet.export_bend_table","params":{"format":"csv","path":"bracket-bends.csv"}}
+{"command":"sheet.export_dxf","params":{"path":"bracket-flat.dxf"}}
+```
+
+DXF cutout geometry preserves lines, circles and circular arcs; other curves are sampled
+adaptively. The `OUTLINE`, `BEND_UP` and `BEND_DOWN` layers separate cuts from bend centres.

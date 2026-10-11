@@ -366,7 +366,7 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.push(act("ui.editFeature", "Edit Feature", "").with(json!({ "feature": feature })).on(feature.is_some()));
         v.push(act("ui.editSketch", "Edit Profile Sketch", "sketch").with(json!({ "sketch": sketch })).on(sketch.is_some()));
         v.push(Item::sep());
-        v.push(act("ui.appearance", "Appearance", "").key("A").on(false));
+        v.push(act("ui.appearance", "Appearance", "appearance").key("A"));
         v.push(act("ui.properties", "Properties", "measure").with(json!({ "bodies": [face] })));
         v.push(Item::sep());
         v.push(act("ui.delete", "Delete", "delete").key("Del"));
@@ -437,7 +437,7 @@ fn body_items(app: &SolveApp, bodies: &[String], browser: bool) -> Vec<Item> {
         cmd(app, "component.from_bodies", "Create Components from Bodies").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.material", "Physical Material", "").with(json!({ "bodies": names })),
-        act("ui.appearance", "Appearance", "").key("A").on(false),
+        act("ui.appearance", "Appearance", "appearance").key("A").with(json!({ "bodies": names })),
         act("ui.properties", "Properties", "measure").with(json!({ "bodies": names })),
         Item::sep(),
         act("ui.saveMesh", "Save As Mesh", "export").with(json!({ "bodies": names })),
@@ -530,8 +530,13 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     }
     v.push(Item::sep());
     v.push(act("ui.material", "Physical Material", "").with(json!({ "bodies": names })).on(!bodies.is_empty()));
-    v.push(act("ui.appearance", "Appearance", "").key("A").on(false));
-    v.push(act("ui.properties", "Properties", "measure").with(json!({ "bodies": names })).on(!bodies.is_empty()));
+    v.push(
+        act("ui.appearance", "Appearance", "appearance")
+            .key("A")
+            .with(if id == 0 { json!({ "bodies": names }) } else { json!({"component": id}) })
+            .on(id != 0 || !bodies.is_empty()),
+    );
+    v.push(act("ui.properties", "Properties", "measure").with(json!({ "component": id })));
     v.push(Item::sep());
     v.push(act("ui.export", "Export…", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
     v.push(act("ui.saveMesh", "Save As Mesh", "export").with(json!({ "bodies": names })).on(!bodies.is_empty()));
@@ -716,10 +721,20 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             };
             start_rename(app, what, at);
         }
-        "ui.properties" => match app.session.execute("inspect.measure", &json!({ "bodies": bodies })) {
-            Ok(v) => app.menu.props = Some((if bodies.len() == 1 { bodies.join("") } else { format!("{} bodies", bodies.len()) }, v)),
-            Err(e) => app.set_status(e.to_string(), true),
-        },
+        "ui.properties" => {
+            let command = if p.get("component").is_some() { "component.properties" } else { "inspect.measure" };
+            let params = if command == "component.properties" { p.clone() } else { json!({ "bodies": bodies }) };
+            match app.session.execute(command, &params) {
+                Ok(v) => {
+                    let title = v["name"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| if bodies.len() == 1 { bodies.join("") } else { format!("{} bodies", bodies.len()) });
+                    app.menu.props = Some((title, v));
+                }
+                Err(e) => app.set_status(e.to_string(), true),
+            }
+        }
         "ui.export" => {
             let name = bodies.first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
             if let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&format!("{name}.step"), &["step", "stp", "igs", "stl", "3mf", "obj"]))
@@ -845,6 +860,26 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.editFeature" => {
             if let Some(f) = id_of(&p, "feature") {
                 app.edit_feature(f);
+            }
+        }
+        "ui.appearance" => {
+            if item.params.is_some() {
+                let items: Vec<Value> = bodies.iter().map(|b| json!({"type": "body", "name": b})).collect();
+                let _ = app.run("select.set", json!({ "items": items }));
+            }
+            app.start("appearance.assign");
+            if let Some(name) = id_of(&p, "component").and_then(|id| app.session.doc.components.iter().find(|c| c.id == id).map(|c| c.name.clone()))
+                && let Some(d) = app.dialog.as_mut()
+                && let crate::dialogs::Kind::Appearance(k) = &mut d.kind
+            {
+                if let Some(id) = id_of(&p, "component")
+                    && let Some(look) = app.session.doc.appearances.components.get(&id)
+                {
+                    k.color = look.color;
+                    k.opacity = look.opacity;
+                    k.look = Some(look.name.clone());
+                }
+                k.component = Some(name);
             }
         }
         "ui.material" => {
@@ -1502,7 +1537,8 @@ fn show_props(app: &mut SolveApp, ctx: &egui::Context) {
                 ui.label("Area");
                 ui.label(crate::prefs::show_mm(app, f(total, "area_mm2"), 2));
                 ui.end_row();
-                if let [b] = bodies.as_slice() {
+                let geometry = if total.get("center_of_mass").is_some() { Some(total) } else { bodies.first().filter(|_| bodies.len() == 1) };
+                if let Some(b) = geometry {
                     if let Some(c) = b["center_of_mass"].as_array() {
                         let c: Vec<String> = c.iter().map(|x| crate::prefs::show_mm_bare(app, x.as_f64().unwrap_or(f64::NAN))).collect();
                         ui.label("Center of mass");

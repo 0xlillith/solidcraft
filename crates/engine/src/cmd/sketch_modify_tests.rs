@@ -38,6 +38,102 @@ fn close(a: f64, b: f64) -> bool {
 }
 
 #[test]
+fn explicit_freeform_break_preserves_exact_geometry_and_undo() {
+    for (command, params) in [
+        ("sketch.spline.control_point", json!({"points": [[0,0], [0,12], [20,12], [20,0]], "connect": false})),
+        ("sketch.spline.control_point_5", json!({"points": [[0,0], [0,12], [5,20], [12,20], [20,12], [20,0]], "connect": false})),
+        ("sketch.spline.fit_point", json!({"points": [[0,0], [6,12], [14,8], [20,0]], "connect": false})),
+        ("sketch.conic", json!({"start": [0,0], "end": [20,0], "apex": [10,20], "rho": 0.65, "connect": false})),
+    ] {
+        let mut s = new_sketch();
+        let id = ids(&run(&mut s, command, params)["curves"])[0].clone();
+        let before = sketch(&s);
+        let exact = before.exact_segs(before.curve_index(&id).unwrap()).unwrap();
+        let a = exact.first().unwrap().point_at(0.25);
+        let b = exact.last().unwrap().point_at(0.75);
+        let out = run(&mut s, "sketch.break", json!({"curve": id, "points": [b, a, a]}));
+        assert!(ids(&out["curves"]).len() >= 3, "{command}: {out}");
+        let after = sketch(&s);
+        let segs: Vec<_> = after.curves.iter().enumerate().flat_map(|(i, _)| after.exact_segs(i).unwrap_or_default()).collect();
+        for old in &exact {
+            for k in 0..=40 {
+                let q = old.point_at(k as f64 / 40.0);
+                let d = segs.iter().map(|seg| seg.point_at(seg.closest_param(q)).dist(q)).fold(f64::INFINITY, f64::min);
+                assert!(d < 1e-6, "{command}: geometry moved {d} at {q:?}");
+            }
+        }
+        let encoded = serde_json::to_value(&after).unwrap();
+        let restored: solvecraft_sketch::Sketch = serde_json::from_value(encoded).unwrap();
+        assert_eq!(restored.curves.len(), after.curves.len());
+        run(&mut s, "edit.undo", json!({}));
+        assert!(sketch(&s).curve_index(&id).is_some());
+    }
+}
+
+#[test]
+fn explicit_ellipse_break_keeps_closed_profile() {
+    let mut s = new_sketch();
+    let id = ids(&run(&mut s, "sketch.ellipse", json!({"center": [0,0], "major": [10,0], "minor": [0,4]}))["curves"])[0].clone();
+    let area = profiles(&s)[0];
+    let out = run(&mut s, "sketch.break", json!({"curve": id, "points": [[10,0], [0,4], [10,0]]}));
+    assert_eq!(ids(&out["curves"]).len(), 4, "{out}");
+    let after = sketch(&s);
+    assert!(after.curves.iter().all(|c| matches!(c.kind, CurveKind::Conic { .. })));
+    assert_eq!(profiles(&s).len(), 1);
+    assert!((profiles(&s)[0] - area).abs() < 1e-6);
+    run(&mut s, "edit.undo", json!({}));
+    let original = sketch(&s);
+    let q = original.exact_segs(original.curve_index(&id).unwrap()).unwrap()[0].point_at(0.4);
+    let out = run(&mut s, "sketch.break", json!({"curve": id, "points": [q]}));
+    assert_eq!(ids(&out["curves"]).len(), 5, "a single cut inside a quadrant: {out}");
+    assert_eq!(profiles(&s).len(), 1);
+    assert!((profiles(&s)[0] - area).abs() < 1e-6);
+}
+
+#[test]
+fn explicit_break_rejects_bad_points_atomically_and_merges_duplicates() {
+    for freeform in [false, true] {
+        let mut s = new_sketch();
+        let out = if freeform {
+            run(&mut s, "sketch.spline.control_point", json!({"points": [[0,0], [0,10], [20,10], [20,0]], "connect": false}))
+        } else {
+            run(&mut s, "sketch.line", json!({"points": [[0,0], [20,0]], "connect": false}))
+        };
+        let id = ids(&out["curves"])[0].clone();
+        let before = serde_json::to_value(sketch(&s)).unwrap();
+        for points in [json!([]), json!("wrong"), json!([[8, 4], ["bad", 0]]), json!([[0, 0]]), json!([[1e20, 0]]), json!(vec![[10, 5]; 1001])] {
+            assert!(s.execute("sketch.break", &json!({"curve": id, "points": points})).is_err());
+            assert_eq!(serde_json::to_value(sketch(&s)).unwrap(), before);
+        }
+        let out = run(&mut s, "sketch.break", json!({"curve": id, "points": [[10,7], [10,7]]}));
+        assert_eq!(ids(&out["curves"]).len(), 2, "{out}");
+    }
+}
+
+#[test]
+fn analytic_trim_and_break_use_freeform_cutters() {
+    let mut s = new_sketch();
+    let line = ids(&run(&mut s, "sketch.line", json!({"points": [[-5,5], [25,5]], "connect": false}))["curves"])[0].clone();
+    run(&mut s, "sketch.spline.control_point", json!({"points": [[0,0], [0,10], [20,10], [20,0]], "connect": false}));
+    let out = run(&mut s, "sketch.break", json!({"curve": line, "at": [10,5]}));
+    assert_eq!(ids(&out["curves"]).len(), 3, "{out}");
+    let sk = sketch(&s);
+    for id in ids(&out["curves"]) {
+        let shape = sk.shape(sk.curve_index(&id).unwrap()).unwrap();
+        assert!(matches!(shape, solvecraft_sketch::Shape::Line { a, b } if (a.y - 5.0).abs() < 1e-6 && (b.y - 5.0).abs() < 1e-6));
+    }
+
+    let mut s = new_sketch();
+    let circle = ids(&run(&mut s, "sketch.circle.center", json!({"center": [0,0], "radius": 5}))["curves"])[0].clone();
+    run(&mut s, "sketch.ellipse", json!({"center": [0,0], "major": [8,0], "minor": [0,3]}));
+    run(&mut s, "sketch.trim", json!({"curve": circle, "at": [5,0]}));
+    let sk = sketch(&s);
+    let ci = sk.curve_index(&circle).unwrap();
+    assert!(matches!(sk.curves[ci].kind, CurveKind::Arc { .. }));
+    assert!(sk.shape(ci).unwrap().dist(Vec2::new(-5.0, 0.0)) < 1e-6);
+}
+
+#[test]
 fn trim_extend_break() {
     let mut s = new_sketch();
     // A cross: horizontal line crossed by a vertical one.
@@ -219,13 +315,9 @@ fn ellipse_splines_conic() {
     run(&mut s, "sketch.constraint.coincident", json!({"a": "q", "b": eid}));
     let sk = sketch(&s);
     let q = sk.point(sk.point_index("q").unwrap()).unwrap();
-    let poly = sk.polyline(sk.curve_index(&eid).unwrap());
-    let d = poly.windows(2).map(|w| {
-        let (a, b) = (w[0], w[1]);
-        let t = ((q - a).dot(b - a) / (b - a).len2()).clamp(0.0, 1.0);
-        q.dist(a + (b - a) * t)
-    });
-    assert!(d.fold(f64::INFINITY, f64::min) < 1e-6, "{q:?}");
+    let exact = sk.exact_segs(sk.curve_index(&eid).unwrap()).unwrap();
+    let distance = exact.iter().map(|seg| q.dist(seg.point_at(seg.closest_param(q)))).fold(f64::INFINITY, f64::min);
+    assert!(distance < 1e-6, "on the exact ellipse: {q:?}");
     // Fit spline closed by a line: one profile.
     let sp = run(&mut s, "sketch.spline.fit_point", json!({"points": [[100, 0], [110, 8], [120, 3], [130, 0]]}));
     let sid = ids(&sp["curves"])[0].clone();

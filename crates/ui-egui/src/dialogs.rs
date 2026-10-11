@@ -1226,6 +1226,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         .stroke(Stroke::new(1.0, t.dialog_border))
         .corner_radius(egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 })
         .shadow(egui::Shadow { offset: [-2, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(40) });
+    // The area includes the border as well as the inner margins; reserve all of it so a
+    // horizontally scrolling table cannot push a wide dialog two pixels past its limit.
+    let horizontal_frame = frame.inner_margin.leftf() + frame.inner_margin.rightf() + 2.0 * frame.stroke.width;
     // OK is offered once the inputs make a feature.
     let has_ok = !matches!(d.kind, Kind::Sketch | Kind::Params { .. } | Kind::Measure { .. });
     let valid = !has_ok || !d.previews() || (apply_commands(app, &d).is_ok() && app.preview.error.is_none());
@@ -1245,7 +1248,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         ui.spacing_mut().text_edit_width = FIELD_W;
         // Long texts (errors, notes) wrap instead of widening the dialog.
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-        let margin = 2.0 * ui.style().spacing.window_margin.leftf();
+        let margin = horizontal_frame;
         let min_w = if wide { 480.0 } else { DIALOG_MIN_W } - margin;
         ui.set_min_width(min_w);
         ui.set_max_width(if wide { DIALOG_WIDE_MAX_W } else { DIALOG_MAX_W } - margin);
@@ -1268,7 +1271,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             return;
         }
         ui.add_space(2.0);
+        // Configuration tables own their column widths and scrolling; the two-column form
+        // grid would squeeze their row names and action buttons into a label-sized cell.
+        if let Kind::Motion(k @ crate::dialogs_motion::Mo::Configurations { .. }) = &mut d.kind {
+            enter |= crate::dialogs_motion::rows(app, ui, k, &mut d.inputs);
+        }
         egui::Grid::new("sc_dialog_grid").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+            if matches!(&d.kind, Kind::Motion(crate::dialogs_motion::Mo::Configurations { .. })) {
+                return;
+            }
             placement_row(&mut d, ui);
             input_rows(&mut d, ui);
             match &mut d.kind {

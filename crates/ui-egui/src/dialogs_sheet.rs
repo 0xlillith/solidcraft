@@ -360,7 +360,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     }
                     row_label(ui, "");
                     if ui.button("Export DXF…").clicked() {
-                        *status = Some(export_dxf(app, v["body"].as_str().unwrap_or("")));
+                        *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "dxf"));
+                    }
+                    ui.end_row();
+                    row_label(ui, "");
+                    if ui.button("Export Bend Table…").clicked() {
+                        *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "csv"));
                     }
                     ui.end_row();
                     if let Some(s) = status {
@@ -381,12 +386,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     enter
 }
 
-fn export_dxf(app: &mut SolveApp, body: &str) -> String {
-    let name = format!("{}-{body}.dxf", app.session.doc.name);
-    let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&name, &["dxf"])) else {
+fn export_flat(app: &mut SolveApp, body: &str, extension: &str) -> String {
+    let name = format!("{}-{body}.{extension}", app.session.doc.name);
+    let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&name, &[extension])) else {
         return "Export cancelled".into();
     };
-    match app.run("sheet.export_dxf", json!({"body": body, "path": path})) {
+    let command = if extension == "csv" { "sheet.export_bend_table" } else { "sheet.export_dxf" };
+    match app.run(command, json!({"body": body, "path": path})) {
         Ok(_) => {
             app.set_status(format!("Exported {path}"), false);
             format!("Saved {path}")

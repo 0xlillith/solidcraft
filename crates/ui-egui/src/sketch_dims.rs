@@ -240,6 +240,30 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
     let px = 2.0 * app.cam.half_height() / f64::from(proj.rect.height().max(1.0));
     let lv = live(t, e, px);
     let focus = std::mem::take(&mut t.dims_focus);
+    // Egui processes ordinary Tab navigation before these floating text edits are drawn.
+    // Remember the box that owned the keyboard and restore a focus within this tool after
+    // drawing, so the last dimension wraps to the first rather than reaching the panels.
+    let tab = ui.input(|input| {
+        input.raw.events.iter().find_map(|event| match event {
+            egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } if !modifiers.ctrl && !modifiers.alt && !modifiers.command => {
+                Some(modifiers.shift)
+            }
+            _ => None,
+        })
+    });
+    let source = tab.and_then(|_| {
+        ui.ctx().memory(|memory| {
+            (0..t.dims.len())
+                .find(|i| memory.had_focus_last_frame(egui::Id::new(("sc_dim", i))))
+                .or_else(|| (0..t.dims.len()).find(|i| memory.has_focus(egui::Id::new(("sc_dim", i)))))
+        })
+    });
+    if source.is_some() {
+        // Also cancel navigation on the first focused frame, before the text edit's focus
+        // filter has been installed (e.g. immediately repeated keyboard input).
+        ui.ctx().memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+    }
+    let mut completed = false;
     let mut any_focused = false;
     for (i, b) in t.dims.iter_mut().enumerate() {
         let Some((v, at)) = lv.get(i).copied() else { continue };
@@ -260,9 +284,19 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
         egui::Area::new(egui::Id::new(("sc_dim_area", i))).fixed_pos(pos).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
             let fill = if b.locked { tk.accent_soft } else { tk.panel };
             egui::Frame::popup(ui.style()).fill(fill).inner_margin(egui::Margin::symmetric(3, 1)).show(ui, |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut b.value).id(id).desired_width(66.0)).on_hover_text(b.label);
-                crate::params_dialog::complete(ui, &r, &mut b.value);
-                if r.changed() {
+                let r = ui
+                    .add(egui::TextEdit::singleline(&mut b.value).id(id).desired_width(66.0).event_filter(egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..Default::default()
+                    }))
+                    .on_hover_text(b.label);
+                // A completion gets first use of forward Tab. Shift+Tab always moves back;
+                // the box reached by egui's generic traversal must not complete its text.
+                let changed = (source.is_none() || (source == Some(i) && tab != Some(true))) && crate::params_dialog::complete(ui, &r, &mut b.value);
+                completed |= changed && source == Some(i);
+                if r.changed() || changed {
                     b.locked = true;
                 }
                 if focus && i == 0 {
@@ -271,6 +305,21 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
                 any_focused |= r.has_focus() || r.lost_focus();
             });
         });
+    }
+    if let Some(source) = source
+        && !completed
+    {
+        let next = if tab == Some(true) { (source + t.dims.len() - 1) % t.dims.len() } else { (source + 1) % t.dims.len() };
+        let id = egui::Id::new(("sc_dim", next));
+        if let Some(dimension) = t.dims.get(next) {
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(dimension.value.chars().count()),
+            )));
+            state.store(ui.ctx(), id);
+        }
+        ui.ctx().memory_mut(|memory| memory.request_focus(id));
     }
     let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
     let nothing = ui.ctx().memory(|m| m.focused().is_none());
@@ -281,3 +330,7 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
 pub fn dimension_params(entities: &[String], ty: &str, value: &str) -> Value {
     json!({"entities": entities, "type": ty, "value": value})
 }
+
+#[cfg(test)]
+#[path = "sketch_dims_tests.rs"]
+mod tests;

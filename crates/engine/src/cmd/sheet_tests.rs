@@ -344,3 +344,80 @@ fn fold_keeps_the_larger_side_either_way() {
         }
     }
 }
+
+#[test]
+fn bend_table_exports_shop_dimensions_and_tracks_parameter_changes() {
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name": "Shop, \"steel\"", "thickness": 2, "bend_radius": 3, "k_factor": 0.4}));
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20}));
+    let undo = s.undo.len();
+    let csv = run(&mut s, "sheet.export_bend_table", json!({}));
+    let text = csv["text"].as_str().unwrap();
+    assert!(text.starts_with("body,rule,thickness_mm,k_factor,bend,angle_deg,direction,"));
+    assert!(text.contains("\"Shop, \"\"steel\"\"\""), "{text}");
+    assert_eq!(text.lines().count(), 2);
+    assert_eq!(csv["bends"], 1);
+    let exported = run(&mut s, "sheet.export_bend_table", json!({"format": "JSON"}));
+    let table: Value = serde_json::from_str(exported["text"].as_str().unwrap()).unwrap();
+    assert_eq!(table["thickness"], 2.0);
+    assert_eq!(table["bends"][0]["direction"], "up");
+    assert!((table["bends"][0]["allowance"].as_f64().unwrap() - FRAC_PI_2 * 3.8).abs() < 1e-9);
+    assert_eq!(s.undo.len(), undo, "export does not create an undo step");
+    run(&mut s, "sheet.manage_rules", json!({"name": "Shop, \"steel\"", "k_factor": 0.5}));
+    let updated = run(&mut s, "sheet.export_bend_table", json!({"format": "json"}));
+    let table: Value = serde_json::from_str(updated["text"].as_str().unwrap()).unwrap();
+    assert!((table["bends"][0]["allowance"].as_f64().unwrap() - FRAC_PI_2 * 4.0).abs() < 1e-9);
+    assert!(s.execute("sheet.export_bend_table", &json!({"format": "xml"})).is_err());
+    assert!(s.execute("sheet.export_bend_table", &json!({"body": "Missing"})).is_err());
+    let mut empty = Session::default();
+    assert!(empty.execute("sheet.export_bend_table", &json!({})).is_err());
+}
+
+#[test]
+fn malformed_fold_points_are_rejected_atomically() {
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    let before = serde_json::to_value(&s.doc).unwrap();
+    for points in [
+        json!([[40, 0, 2.5], null, [40, 60, 2.5]]),
+        json!([[40, 0, 2.5], [40, 60, 2.5], "junk"]),
+        json!([[40, 0, 2.5], [40, 60]]),
+        json!([[40, 0, 2.5]]),
+        json!("not points"),
+    ] {
+        assert!(s.execute("sheet.fold", &json!({"points": points})).is_err());
+        assert_eq!(serde_json::to_value(&s.doc).unwrap(), before);
+    }
+}
+
+#[test]
+fn flat_dxf_preserves_exact_cutout_entities() {
+    use solvecraft_geom::{Loop2, Region2, Seg2, Vec2};
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    let mut sh = s.model.state().sheets[0].clone();
+    sh.holes = vec![Region2 {
+        outer: Loop2 { segs: vec![Seg2::Arc { center: Vec2::new(40.0, 30.0), radius: 5.0, start: -PI, sweep: -2.0 * PI }] },
+        holes: Vec::new(),
+    }];
+    let dxf = super::flat_dxf(&sh).unwrap();
+    assert_eq!(dxf.matches("0\nCIRCLE\n").count(), 1, "{dxf}");
+    assert!(!dxf.contains("0\nARC\n"), "a full circle must not become a zero-length ARC");
+    let read = solvecraft_io::read_dxf(&dxf).unwrap();
+    assert_eq!(read.len(), 5);
+    assert!(read.iter().any(|g| matches!(g, solvecraft_io::Geom2::Circle(c, r) if *c == Vec2::new(40.0, 30.0) && (*r - 5.0).abs() < 1e-9)));
+    sh.holes[0].outer = Loop2 {
+        segs: vec![
+            Seg2::Line { a: Vec2::new(10.0, 10.0), b: Vec2::new(30.0, 10.0) },
+            Seg2::Arc { center: Vec2::new(20.0, 10.0), radius: 10.0, start: 0.0, sweep: PI },
+        ],
+    };
+    let dxf = super::flat_dxf(&sh).unwrap();
+    assert_eq!(dxf.matches("0\nLINE\n").count(), 5, "four outline lines and one exact cutout line");
+    assert_eq!(dxf.matches("0\nARC\n").count(), 1);
+    assert!(dxf.contains("50\n0.000000\n51\n180.000000\n"));
+    let read = solvecraft_io::read_dxf(&dxf).unwrap();
+    assert_eq!(read.len(), 6);
+    assert!(read.iter().any(|g| matches!(g, solvecraft_io::Geom2::Arc { c, a, b } if *c == Vec2::new(20.0, 10.0) && a.dist(Vec2::new(30.0, 10.0)) < 1e-9 && b.dist(Vec2::new(10.0, 10.0)) < 1e-9)));
+}

@@ -10,21 +10,33 @@ use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("config.configure", "Configure", configure).at("SOLID", "CONFIGURE").icon("params").params(
-        "params?: [parameter names]; features?: [feature names] (columns to add; with no rows yet, a \"Default\" row takes the current values)",
+        "params?: [parameter names]; features?: [feature names]; materials?: [body names]; appearances?: [body names] (columns to add; with no rows yet, a \"Default\" row takes the current values)",
     ),
     CommandSpec::new("config.table", "Display Configuration Table", show)
         .at("SOLID", "CONFIGURE")
         .icon("params")
         .noundo()
         .params("→ columns (param:<name> or suppress:<feature>), rows, the active row and whether the design still matches it"),
-    CommandSpec::new("config.column", "Configuration Column", column).params("param? | feature? (name); delete?: bool"),
+    CommandSpec::new("config.column", "Configuration Column", column).params("param? | feature? | material? | appearance? (target name); delete?: bool"),
     CommandSpec::new("config.row", "Configuration Row", row).params(
-        "name; from? (row to copy; default the current values); values?: {param name or feature name: expression or true/false}; rename?; delete?: bool",
+        "name; from? (row to copy; default current values); values?: {column key: expression, suppression, material name, appearance name or Look object}; rename?; delete?: bool",
     ),
     CommandSpec::new("config.activate", "Activate Configuration", activate).params("row: name — sets its parameter values and suppressions"),
 ];
 
 fn column_of(s: &Session, p: &Value, cmd: &str) -> Result<Column> {
+    if ["param", "feature", "material", "appearance"].iter().filter(|k| p.get(**k).is_some()).count() != 1 {
+        return Err(bad(cmd, "give exactly one of `param`, `feature`, `material`, or `appearance`"));
+    }
+    for (key, appearance) in [("material", false), ("appearance", true)] {
+        if let Some(body) = str_(p, key) {
+            let c = if appearance { Column::Appearance(body.to_string()) } else { Column::Material(body.to_string()) };
+            if !s.doc.configs.columns.contains(&c) && s.model.state().body(body).is_none() {
+                return Err(bad(cmd, format!("no body `{body}`")));
+            }
+            return Ok(c);
+        }
+    }
     if let Some(n) = str_(p, "param") {
         if !s.doc.all_param_exprs().iter().any(|(m, _, _)| m == n) {
             return Err(bad(cmd, format!("no parameter `{n}`")));
@@ -62,6 +74,13 @@ fn configure(s: &mut Session, p: &Value) -> Result<Value> {
     for n in string_list(p, "features") {
         let c = column_of(s, &json!({ "feature": n }), cmd)?;
         add_column(s, c, cmd)?;
+    }
+    for key in ["materials", "appearances"] {
+        for n in string_list(p, key) {
+            let field = if key == "materials" { "material" } else { "appearance" };
+            let c = column_of(s, &json!({ field: n }), cmd)?;
+            add_column(s, c, cmd)?;
+        }
     }
     if s.doc.configs.rows.is_empty() {
         let cells = s.doc.configs.columns.iter().map(|c| s.doc.config_current(c).unwrap_or_default()).collect();
@@ -122,32 +141,54 @@ fn row(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(vals) = p.get("values") {
         let vals = vals.as_object().ok_or_else(|| bad(cmd, "`values` must map columns to values"))?;
         for (k, v) in vals {
-            let text = match v {
+            let mut text = match v {
                 Value::String(t) => t.clone(),
                 Value::Bool(b) => b.to_string(),
                 Value::Number(n) => n.to_string(),
+                Value::Object(_) if k.starts_with("appearance:") => serde_json::to_string(v).map_err(|e| bad(cmd, e.to_string()))?,
                 _ => return Err(bad(cmd, format!("value for `{k}` must be an expression or true/false"))),
             };
             if text.len() > 4096 {
                 return Err(bad(cmd, "value too long"));
             }
-            let key = k.strip_prefix("param:").or_else(|| k.strip_prefix("suppress:")).unwrap_or(k);
             let col = s
                 .doc
                 .configs
                 .columns
                 .iter()
-                .position(|c| match c {
-                    Column::Param(n) => n == key,
-                    Column::Suppress(id) => s.doc.feature(*id).is_some_and(|f| f.name == key),
+                .position(|c| {
+                    s.doc.config_key(c) == *k
+                        || match c {
+                            Column::Param(n) => n == k,
+                            Column::Suppress(id) => s.doc.feature(*id).is_some_and(|f| f.name == *k),
+                            Column::Material(_) | Column::Appearance(_) => false,
+                        }
                 })
                 .ok_or_else(|| bad(cmd, format!("`{k}` is not a column (config.column adds one)")))?;
+            match s.doc.configs.columns.get(col) {
+                Some(Column::Material(_)) => {
+                    text = solvecraft_doc::config::material_cell(&text).map_err(|e| bad(cmd, e.to_string()))?.unwrap_or_else(|| "Default".into());
+                }
+                Some(Column::Appearance(_)) => {
+                    text = match solvecraft_doc::config::appearance_cell(&text).map_err(|e| bad(cmd, e.to_string()))? {
+                        Some(look) => serde_json::to_string(&look).map_err(|e| bad(cmd, e.to_string()))?,
+                        None => String::new(),
+                    };
+                }
+                _ => {}
+            }
             if let Some(cell) = cells.get_mut(col) {
                 *cell = text;
             }
         }
     }
     let rename = str_(p, "rename").map(str::trim).filter(|n| !n.is_empty() && n.len() <= 128).map(str::to_string);
+    if p.get("rename").is_some() && (rename.is_none() || idx.is_none()) {
+        return Err(bad(cmd, "rename requires an existing row and a nonempty name up to 128 bytes"));
+    }
+    if rename.as_ref().is_some_and(|n| n != &name && s.doc.configs.rows.iter().any(|r| &r.name == n)) {
+        return Err(bad(cmd, "configuration name already exists"));
+    }
     let t = &mut s.doc_mut().configs;
     match idx {
         Some(i) => {
@@ -235,5 +276,137 @@ mod tests {
         run(&mut s, "config.row", json!({"name": "Broken", "delete": true}));
         run(&mut s, "config.column", json!({"feature": fillet, "delete": true}));
         assert_eq!(run(&mut s, "config.table", json!({}))["columns"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn configuration_materials_and_looks_are_undoable_and_persistent() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+        let body = s.model.state().bodies.first().unwrap().name.clone();
+        run(&mut s, "config.configure", json!({"materials": [body], "appearances": [body]}));
+        let material = format!("material:{body}");
+        let appearance = format!("appearance:{body}");
+        run(&mut s, "config.row", json!({"name": "Metal", "values": {material.clone(): "steel", appearance.clone(): "ABS - Red"}}));
+        run(
+            &mut s,
+            "config.row",
+            json!({"name": "Custom", "from": "Metal", "values": {
+                material.clone(): "Aluminum", appearance.clone(): {"name": "Ocean", "color": [1, 2, 3], "opacity": 0.4}
+            }}),
+        );
+        run(&mut s, "config.activate", json!({"row": "Metal"}));
+        assert_eq!(s.doc.materials.get(&body).map(String::as_str), Some("Steel"));
+        assert_eq!(s.doc.appearances.bodies.get(&body).unwrap().color, [196, 40, 40]);
+        let mass = run(&mut s, "inspect.measure", json!({}));
+        assert!((mass["bodies"][0]["mass_g"].as_f64().unwrap() - 7.85).abs() < 1e-6);
+        assert_eq!(run(&mut s, "config.table", json!({}))["matches"], true);
+        run(&mut s, "config.activate", json!({"row": "Custom"}));
+        let mass = run(&mut s, "inspect.measure", json!({}));
+        assert!((mass["bodies"][0]["mass_g"].as_f64().unwrap() - 2.7).abs() < 1e-6);
+        assert_eq!(s.doc.appearances.bodies.get(&body).unwrap().opacity, 0.4);
+        let reopened = solvecraft_doc::format::read(&s.doc.to_json()).unwrap();
+        assert_eq!(reopened, *s.doc);
+        assert!(reopened.configuration_matches());
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.materials.get(&body).map(String::as_str), Some("Steel"));
+        run(&mut s, "config.activate", json!({"row": "Default"}));
+        assert!(!s.doc.materials.contains_key(&body));
+        assert!(!s.doc.appearances.bodies.contains_key(&body));
+        run(&mut s, "config.activate", json!({"row": "Metal"}));
+        run(&mut s, "appearance.assign", json!({"bodies": [body], "appearance": "ABS - Blue"}));
+        assert!(!s.doc.configuration_matches());
+        run(&mut s, "config.column", json!({"appearance": body, "delete": true}));
+        assert_eq!(s.doc.configs.columns.len(), 1);
+        assert!(s.doc.configs.rows.iter().all(|r| r.cells.len() == 1));
+    }
+
+    #[test]
+    fn configuration_styles_reject_hostile_values_without_changes() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+        let body = s.model.state().bodies.first().unwrap().name.clone();
+        run(&mut s, "config.configure", json!({"materials": [body], "appearances": [body]}));
+        let material = format!("material:{body}");
+        let appearance = format!("appearance:{body}");
+        for params in [
+            json!({"name": "Bad", "values": {material: "Unobtainium"}}),
+            json!({"name": "Bad", "values": {appearance.clone(): "#oops"}}),
+            json!({"name": "Bad", "values": {appearance.clone(): {"name": "Invalid", "color": [1, 2, 300], "opacity": 1}}}),
+            json!({"name": "Bad", "values": {appearance: {"name": "Invalid", "color": [1, 2, 3], "opacity": -1}}}),
+            json!({"name": "Default", "rename": ""}),
+        ] {
+            let before = s.doc.clone();
+            assert!(s.execute("config.row", &params).is_err(), "{params}");
+            assert_eq!(s.doc, before);
+        }
+        assert!(s.execute("config.column", &json!({"appearance": "missing"})).is_err());
+        assert!(s.execute("config.column", &json!({"appearance": body, "material": body})).is_err());
+        run(&mut s, "config.row", json!({"name": "Other"}));
+        assert!(s.execute("config.row", &json!({"name": "Other", "rename": "Default"})).is_err());
+        // A malformed persisted row must fail atomically rather than silently apply its prefix.
+        s.doc_mut().configs.rows.first_mut().unwrap().cells.pop();
+        let before = s.doc.clone();
+        assert!(s.execute("config.activate", &json!({"row": "Default"})).is_err());
+        assert_eq!(s.doc, before);
+    }
+
+    #[test]
+    fn configuration_captures_unicode_custom_appearance_names() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+        let body = s.model.state().bodies.first().unwrap().name.clone();
+        let name = "é".repeat(128);
+        run(&mut s, "appearance.assign", json!({"bodies": [body], "appearance": name, "color": [40, 90, 186]}));
+        run(&mut s, "config.configure", json!({"appearances": [body]}));
+        run(&mut s, "appearance.assign", json!({"bodies": [body]}));
+        run(&mut s, "config.activate", json!({"row": "Default"}));
+        assert_eq!(s.doc.appearances.bodies.get(&body).unwrap().name, name);
+        assert!(s.doc.configuration_matches());
+        let reopened = solvecraft_doc::format::read(&s.doc.to_json()).unwrap();
+        assert!(reopened.configuration_matches());
+    }
+
+    #[test]
+    fn configuration_styles_survive_parameter_and_body_renames() {
+        let mut s = Session::default();
+        run(&mut s, "parameters.change", json!({"name": "Steel", "expression": "10 mm"}));
+        run(&mut s, "parameters.change", json!({"name": "double", "expression": "Steel * 2"}));
+        run(&mut s, "solid.box", json!({"length": "double", "width": 10, "height": 10, "body_name": "Block"}));
+        run(&mut s, "config.configure", json!({"params": ["Steel", "double"], "materials": ["Block"], "appearances": ["Block"]}));
+        run(
+            &mut s,
+            "config.row",
+            json!({"name": "Styled", "values": {
+                "param:Steel": "20 mm", "param:double": "Steel * 3", "material:Block": "Steel", "appearance:Block": "Steel - Satin"
+            }}),
+        );
+        run(&mut s, "config.activate", json!({"row": "Styled"}));
+        let styles: Vec<Vec<String>> = s.doc.configs.rows.iter().map(|r| r.cells.iter().skip(2).cloned().collect()).collect();
+        run(&mut s, "parameters.rename", json!({"name": "Steel", "new_name": "gauge"}));
+        let after: Vec<Vec<String>> = s.doc.configs.rows.iter().map(|r| r.cells.iter().skip(2).cloned().collect()).collect();
+        assert_eq!(after, styles, "renaming an expression reference must preserve style cells verbatim");
+        let table = run(&mut s, "config.table", json!({}));
+        assert_eq!(table["columns"][0], "param:gauge");
+        assert_eq!(table["rows"][1]["values"]["param:double"], "gauge * 3");
+        assert!(s.doc.configuration_matches());
+        run(&mut s, "body.rename", json!({"body": "Block", "name": "Housing"}));
+        let table = run(&mut s, "config.table", json!({}));
+        assert_eq!(table["columns"][2], "material:Housing");
+        assert_eq!(table["columns"][3], "appearance:Housing");
+        assert!(s.doc.configuration_matches());
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(run(&mut s, "config.table", json!({}))["columns"][2], "material:Block");
+        run(&mut s, "edit.redo", json!({}));
+        let mut reopened = Session::new(solvecraft_doc::format::read(&s.doc.to_json()).unwrap());
+        run(&mut reopened, "config.activate", json!({"row": "Default"}));
+        assert!(!reopened.doc.materials.contains_key("Housing"));
+        assert!(!reopened.doc.appearances.bodies.contains_key("Housing"));
+        run(&mut reopened, "config.activate", json!({"row": "Styled"}));
+        assert_eq!(reopened.doc.materials.get("Housing").map(String::as_str), Some("Steel"));
+        assert_eq!(reopened.doc.appearances.bodies.get("Housing").unwrap().name, "Steel - Satin");
+        assert!(!reopened.doc.materials.contains_key("Block"));
+        assert!(!reopened.doc.appearances.bodies.contains_key("Block"));
+        assert!((volume(&mut reopened) - 6000.0).abs() < 1e-6);
+        assert!(reopened.doc.configuration_matches());
     }
 }

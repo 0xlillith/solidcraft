@@ -20,3 +20,12 @@ couples two joints. Contact sets stop motion where bodies would pass through eac
 volumes in red.
 
 STEP export writes the component tree as an assembly.
+
+Right-click a component in the Browser and choose **Properties** to inspect
+material-aware mass, volume, surface area, centre of mass and world bounds. Descendants and
+repeated instances contribute to assembly totals; pending moves are included. A component
+uses its first placement; `occurrence.properties` selects a specific instance. Root Properties
+measures the complete assembly. Volumes are summed, including overlapping bodies, rather than
+measuring their union. The same workflow is available through `component.properties` and
+`occurrence.properties`; see
+[placement and measurement details](https://github.com/bherbruck/solvecraft/blob/main/docs/assembly-properties.md).

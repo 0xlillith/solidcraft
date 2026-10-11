@@ -597,56 +597,115 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
             let run = |app: &mut SolveApp, error: &mut Option<String>, id: &str, p: Value| {
                 *error = app.run(id, p).err();
             };
-            // Header.
-            ui.label(RichText::new("Configuration").strong());
-            ui.horizontal(|ui| {
-                for c in &tb.columns {
-                    let (kind, n) = column_parts(c);
-                    ui.add_sized(vec2(96.0, 18.0), egui::Label::new(RichText::new(n).strong()).truncate())
-                        .on_hover_text(format!("{} {n}", if kind == "suppress" { "Suppress" } else { "Parameter" }));
-                    if ui.small_button("×").on_hover_text("Remove the column").clicked() {
-                        let key = if kind == "suppress" { "feature" } else { "param" };
-                        run(app, error, "config.column", json!({ key: n, "delete": true }));
-                    }
-                }
-            });
-            ui.end_row();
-            for (name, vals) in &tb.rows {
-                let active = tb.active.as_deref() == Some(name.as_str());
-                ui.horizontal(|ui| {
-                    ui.label(if active { RichText::new(name).strong() } else { RichText::new(name) });
-                    if active {
-                        ui.label(RichText::new("Active").color(t.accent));
-                    } else if ui.button("Activate").clicked() {
-                        run(app, error, "config.activate", json!({ "row": name }));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    for (c, val) in tb.columns.iter().zip(vals) {
-                        let id = egui::Id::new(("cfg", name, c));
-                        let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| val.clone());
-                        let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(96.0));
-                        if r.changed() {
-                            ui.data_mut(|d| d.insert_temp(id, text.clone()));
+            egui::ScrollArea::horizontal().id_salt("configuration_columns").auto_shrink([false, true]).show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                egui::Grid::new("configuration_table").num_columns(2).min_col_width(210.0).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                    // Header.
+                    ui.label(RichText::new("Configuration").strong());
+                    ui.horizontal(|ui| {
+                        for c in &tb.columns {
+                            ui.allocate_ui_with_layout(vec2(190.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let (kind, n) = column_parts(c);
+                                let label = match kind {
+                                    "material" => format!("Material: {n}"),
+                                    "appearance" => format!("Appearance: {n}"),
+                                    "suppress" => format!("Suppress: {n}"),
+                                    _ => n.to_string(),
+                                };
+                                ui.add_sized(vec2(156.0, 22.0), egui::Label::new(RichText::new(label).strong()).truncate()).on_hover_text(c);
+                                if ui.small_button("×").on_hover_text("Remove the column").clicked() {
+                                    let key = if kind == "suppress" { "feature" } else { kind };
+                                    run(app, error, "config.column", json!({ key: n, "delete": true }));
+                                }
+                            });
                         }
-                        if r.lost_focus() {
-                            ui.data_mut(|d| d.remove::<String>(id));
-                            if text != *val {
-                                let (_, n) = column_parts(c);
-                                run(app, error, "config.row", json!({"name": name, "values": { n: cell_value(c, &text) }}));
+                    });
+                    ui.end_row();
+                    for (name, vals) in &tb.rows {
+                        let active = tb.active.as_deref() == Some(name.as_str());
+                        ui.horizontal(|ui| {
+                            ui.add_sized(
+                                vec2(100.0, 22.0),
+                                egui::Label::new(if active { RichText::new(name).strong() } else { RichText::new(name) }).truncate(),
+                            )
+                            .on_hover_text(name);
+                            if active {
+                                ui.label(RichText::new("Active").color(t.accent));
+                                if v.get("matches").and_then(Value::as_bool) == Some(false) && ui.button("Apply").clicked() {
+                                    run(app, error, "config.activate", json!({ "row": name }));
+                                }
+                            } else if ui.button("Activate").clicked() {
+                                run(app, error, "config.activate", json!({ "row": name }));
                             }
-                        }
-                        ui.add_space(18.0);
-                    }
-                    if ui.small_button("×").on_hover_text("Delete the row").clicked() {
-                        run(app, error, "config.row", json!({"name": name, "delete": true}));
+                        });
+                        ui.horizontal(|ui| {
+                            for (c, val) in tb.columns.iter().zip(vals) {
+                                ui.allocate_ui_with_layout(vec2(190.0, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let (kind, _) = column_parts(c);
+                                    let shown = if kind == "appearance" {
+                                        solvecraft_engine::doc::config::appearance_cell(val)
+                                            .ok()
+                                            .flatten()
+                                            .filter(|look| solvecraft_engine::doc::appearance::library(&look.name).as_ref() == Some(look))
+                                            .map(|look| look.name)
+                                            .unwrap_or_else(|| val.clone())
+                                    } else {
+                                        val.clone()
+                                    };
+                                    let style = matches!(kind, "material" | "appearance");
+                                    if style {
+                                        let mut choice = None;
+                                        ui.menu_button("Library", |ui| {
+                                            if ui.button(if kind == "appearance" { "Follow material" } else { "Default material" }).clicked() {
+                                                choice = Some("Default".to_string());
+                                                ui.close();
+                                            }
+                                            if kind == "material" {
+                                                for (name, _) in solvecraft_engine::doc::MATERIALS.iter().filter(|(n, _)| *n != "Default") {
+                                                    if ui.button(*name).clicked() {
+                                                        choice = Some(name.to_string());
+                                                        ui.close();
+                                                    }
+                                                }
+                                            } else {
+                                                for (name, _, _) in solvecraft_engine::doc::appearance::LIBRARY {
+                                                    if ui.button(name).clicked() {
+                                                        choice = Some(name.to_string());
+                                                        ui.close();
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        if let Some(choice) = choice {
+                                            run(app, error, "config.row", json!({"name": name, "values": { c: choice }}));
+                                        }
+                                    }
+                                    let id = egui::Id::new(("cfg", name, c));
+                                    let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
+                                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(if style { 106.0 } else { 164.0 }));
+                                    if r.changed() {
+                                        ui.data_mut(|d| d.insert_temp(id, text.clone()));
+                                    }
+                                    if r.lost_focus() {
+                                        ui.data_mut(|d| d.remove::<String>(id));
+                                        if text != shown {
+                                            run(app, error, "config.row", json!({"name": name, "values": { c: cell_value(c, &text) }}));
+                                        }
+                                    }
+                                });
+                            }
+                            if ui.small_button("×").on_hover_text("Delete the row").clicked() {
+                                run(app, error, "config.row", json!({"name": name, "delete": true}));
+                            }
+                        });
+                        ui.end_row();
                     }
                 });
-                ui.end_row();
-            }
+            });
             // New row (a copy of the active one) and new column.
-            ui.add(egui::TextEdit::singleline(new_row).hint_text("new configuration").desired_width(130.0));
             ui.horizontal(|ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.add(egui::TextEdit::singleline(new_row).hint_text("new configuration").desired_width(160.0));
                 if ui.button("Add Row").on_hover_text("A new configuration, a copy of the active one").clicked() {
                     let name = if new_row.trim().is_empty() {
                         (tb.rows.len() + 1..).map(|k| format!("Configuration{k}")).find(|n| !tb.rows.iter().any(|r| &r.0 == n)).unwrap_or_default()
@@ -672,6 +731,13 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                         options.push((format!("Suppress {}", f.name), json!({ "feature": f.name })));
                     }
                 }
+                for body in &app.session.model.state().bodies {
+                    for kind in ["material", "appearance"] {
+                        if !tb.columns.contains(&format!("{kind}:{}", body.name)) {
+                            options.push((format!("{} ({kind})", body.name), json!({kind: body.name})));
+                        }
+                    }
+                }
                 let mut pick: Option<Value> = None;
                 ui.menu_button("Add Column", |ui| {
                     egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
@@ -688,9 +754,14 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                     let (id, p) = if tb.columns.is_empty() {
                         (
                             "config.configure",
-                            match p.get("param") {
-                                Some(n) => json!({ "params": [n] }),
-                                None => json!({ "features": [p.get("feature")] }),
+                            if let Some(n) = p.get("param") {
+                                json!({ "params": [n] })
+                            } else if let Some(n) = p.get("feature") {
+                                json!({ "features": [n] })
+                            } else if let Some(n) = p.get("material") {
+                                json!({ "materials": [n] })
+                            } else {
+                                json!({ "appearances": [p.get("appearance")] })
                             },
                         )
                     } else {
@@ -835,6 +906,86 @@ mod tests {
         assert_eq!(cell_value("suppress:Fillet1", "Suppressed"), json!(true));
         assert_eq!(cell_value("suppress:Fillet1", "on"), json!(false));
         assert_eq!(cell_value("param:width", "90 mm"), json!("90 mm"));
+    }
+
+    #[test]
+    fn configuration_style_picker_applies_then_inherits_material() {
+        let steps: Value = serde_json::from_str(include_str!("../tests/scenarios/s80_configuration_styles.json")).unwrap();
+        let mut harness = crate::scenario::Harness::new();
+        for step in steps.as_array().unwrap() {
+            harness.step(step).unwrap();
+            match step.get("shot").and_then(Value::as_str) {
+                Some("configuration_red") => {
+                    let look = harness.app.session.doc.appearances.bodies.get("Block").unwrap();
+                    assert_eq!(look.color, [196, 40, 40]);
+                    assert!(harness.app.session.doc.configuration_matches());
+                }
+                Some("configuration_default") => {
+                    assert!(!harness.app.session.doc.appearances.bodies.contains_key("Block"));
+                    let state = harness.app.session.model.state();
+                    let body = state.body("Block").unwrap();
+                    let look = harness.app.session.doc.body_look("Block", body.feature).unwrap();
+                    assert_eq!(look.name, "Steel");
+                    assert_eq!(look.color, [158, 164, 172]);
+                    assert!(harness.app.session.doc.configuration_matches());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn configuration_table_actions_stay_on_one_line_at_normal_and_narrow_widths() {
+        for width in [1400, 900] {
+            let mut harness = crate::scenario::Harness::new();
+            harness.call("ui.resize", json!({"width": width, "height": 720}));
+            harness
+                .run(&json!([
+                    {"call":"engine.execute","params":{"command":"solid.box","params":{"length":40,"width":20,"height":10,"body_name":"Block"}}},
+                    {"start":"config.table"}
+                ]))
+                .unwrap();
+            assert_single_line(&harness, "Configuration");
+            for name in ["span", "thickness", "depth", "clearance"] {
+                harness.call("engine.execute", json!({"command":"parameters.change","params":{"name":name,"expression":"10 mm"}}));
+            }
+            harness
+                .run(&json!([
+                    {"call":"engine.execute","params":{"command":"config.configure","params":{
+                        "params":["span","thickness","depth","clearance"],"materials":["Block"],"appearances":["Block"]
+                    }}},
+                    {"call":"engine.execute","params":{"command":"config.row","params":{"name":"Default","values":{"param:span":"20 mm"}}}}
+                ]))
+                .unwrap();
+            harness.frames(4);
+            for label in ["Configuration", "Active", "Apply", "Add Row", "Add Column"] {
+                assert_single_line(&harness, label);
+            }
+            crate::scenario::check(&mut harness, &json!({"windows_fit":{"max_width":560}})).unwrap();
+            for name in ["span", "thickness", "depth", "clearance"] {
+                harness.call("engine.execute", json!({"command":"config.column","params":{"param":name,"delete":true}}));
+            }
+            harness.call("engine.execute", json!({"command":"config.column","params":{"appearance":"Block","delete":true}}));
+            assert_single_line(&harness, "Material: Block");
+            harness.call("engine.execute", json!({"command":"config.column","params":{"material":"Block","delete":true}}));
+            harness.call("engine.execute", json!({"command":"config.column","params":{"feature":"Box1"}}));
+            assert_single_line(&harness, "Suppress: Box1");
+        }
+        fn assert_single_line(harness: &crate::scenario::Harness, label: &str) {
+            let tree = harness.output.accesskit_update.as_ref().unwrap();
+            let bounds = tree
+                .nodes
+                .iter()
+                .filter(|(_, n)| n.label() == Some(label) || n.value() == Some(label))
+                .filter_map(|(_, n)| n.bounds())
+                .collect::<Vec<_>>();
+            assert!(
+                !bounds.is_empty(),
+                "missing {label}; labels/values: {:?}",
+                tree.nodes.iter().filter_map(|(_, n)| n.label().or(n.value())).collect::<Vec<_>>()
+            );
+            assert!(bounds.iter().all(|b| b.y1 - b.y0 <= 24.0), "{label} wrapped: {bounds:?}");
+        }
     }
 
     #[test]

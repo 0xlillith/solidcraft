@@ -9,7 +9,7 @@ use solvecraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, interse
 
 use super::sketch::{add_c, edit, ids_of};
 use super::{CommandSpec, in_sketch};
-use crate::params::{bad, bool_, expr, num, req_vec2, str_, string_list, vec2};
+use crate::params::{bad, bool_, expr, num, req_vec2, str_, string_list, vec2, vec2_list};
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -54,7 +54,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "MODIFY")
         .icon("break")
         .enabled(in_sketch)
-        .params("curve: id, at: [x,y] (split at the nearest intersections around it) | params: split at points: [[x,y]…]"),
+        .params("curve: id, at: [x,y] (split at intersections) | points: [[x,y]…] (1…1000 positions projected onto the curve; duplicates are merged)"),
     CommandSpec::new("sketch.scale", "Sketch Scale", scale)
         .at("SKETCH", "MODIFY")
         .icon("scale")
@@ -133,6 +133,13 @@ fn cut_points(sk: &Sketch, ci: usize) -> Vec<(f64, Vec2, usize)> {
             {
                 out.push((t, q, oi));
             }
+        }
+    }
+    for (q, oi) in super::sketch_freeform::analytic_cut_points(sk, ci) {
+        if let Some(t) = on_bounded(&sh, q)
+            && !out.iter().any(|(_, x, _)| x.dist(q) < TOL * 10.0)
+        {
+            out.push((t, q, oi));
         }
     }
     out
@@ -314,17 +321,24 @@ fn trim(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn break_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.break";
-    let (out, info) = edit(s, p, cmd, false, |sk, _| {
+    let points = if p.get("points").is_some() { Some(vec2_list(cmd, p, "points", 1000)?) } else { None };
+    let (out, info) = edit(s, p, cmd, false, |sk, doc| {
         let ci = curve_arg(sk, p, cmd)?;
         if sk.curves.get(ci).is_some_and(|c| c.kind.is_freeform()) {
-            let at = req_vec2(cmd, p, "at")?;
-            let r = super::sketch_freeform::trim_or_break(sk, ci, at, false, cmd)?;
+            let r = if let Some(points) = &points {
+                super::sketch_freeform::break_at_points(sk, ci, points, cmd)?
+            } else {
+                let at = req_vec2(cmd, p, "at")?;
+                super::sketch_freeform::trim_or_break(sk, ci, at, false, cmd)?
+            };
+            doc.prune_model_params();
             return Ok(r["curves"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default());
         }
         let sh = sk.shape(ci).ok_or_else(|| bad(cmd, "curve"))?;
-        let (ts, cutters): (Vec<f64>, Vec<Option<usize>>) = if let Some(list) = p.get("points").and_then(Value::as_array) {
-            let mut v: Vec<f64> = list.iter().take(1000).filter_map(vec2).map(|q| sh.param(sh.project(q))).collect();
+        let (ts, cutters): (Vec<f64>, Vec<Option<usize>>) = if let Some(list) = &points {
+            let mut v: Vec<f64> = list.iter().map(|q| sh.param(sh.project(*q))).collect();
             v.sort_by(|a, b| a.total_cmp(b));
+            v.dedup_by(|a, b| (*a - *b).abs() <= 1e-9);
             let n = v.len();
             (v, vec![None; n])
         } else {

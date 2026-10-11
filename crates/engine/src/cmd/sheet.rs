@@ -45,6 +45,9 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sheet.export_dxf", "Export Flat Pattern as DXF", export_dxf)
         .noundo()
         .params("body?, path? → DXF (mm): OUTLINE, BEND_UP and BEND_DOWN (centre lines) layers"),
+    CommandSpec::new("sheet.export_bend_table", "Export Bend Table", export_bend_table)
+        .noundo()
+        .params("body?, format?: csv|json (default csv), path? → bend table in mm and degrees, including rule and flat centre-line coordinates"),
 ];
 
 fn points(p: &Value, k: &str, cmd: &str) -> Result<Vec<Vec3>> {
@@ -142,8 +145,9 @@ fn fold(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sheet.fold";
     let (sketch, curve, a, b) = match p.get("points") {
         Some(v) => {
-            let pts = v.as_array().map(|a| a.iter().filter_map(vec3).collect::<Vec<Vec3>>()).unwrap_or_default();
-            let [a, b] = pts[..] else { return Err(bad(cmd, "`points` must be two points [x, y, z]")) };
+            let pts = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad(cmd, "`points` must be two points [x, y, z]"))?;
+            let a = pts.first().and_then(vec3).ok_or_else(|| bad(cmd, "`points` must be two finite points [x, y, z]"))?;
+            let b = pts.get(1).and_then(vec3).ok_or_else(|| bad(cmd, "`points` must be two finite points [x, y, z]"))?;
             (None, None, a, b)
         }
         None => {
@@ -306,6 +310,7 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
     w(2, "TABLES");
     w(0, "TABLE");
     w(2, "LAYER");
+    w(70, "3");
     for (name, colour) in [("OUTLINE", "7"), ("BEND_UP", "1"), ("BEND_DOWN", "5")] {
         w(0, "LAYER");
         w(2, name);
@@ -338,17 +343,25 @@ pub fn flat_dxf(sh: &SheetBody) -> Result<String> {
         for seg in &h.outer.segs {
             match *seg {
                 solvecraft_geom::Seg2::Arc { center, radius, start, sweep } => {
+                    if (sweep.abs() - std::f64::consts::TAU).abs() < 1e-9 {
+                        w(0, "CIRCLE");
+                        w(8, "OUTLINE");
+                        w(10, &f(center.x));
+                        w(20, &f(center.y));
+                        w(40, &f(radius));
+                        continue;
+                    }
                     let (a0, a1) = if sweep >= 0.0 { (start, start + sweep) } else { (start + sweep, start) };
                     w(0, "ARC");
                     w(8, "OUTLINE");
                     w(10, &f(center.x));
                     w(20, &f(center.y));
                     w(40, &f(radius));
-                    w(50, &f(a0.to_degrees()));
-                    w(51, &f(a1.to_degrees()));
+                    w(50, &f(a0.to_degrees().rem_euclid(360.0)));
+                    w(51, &f(a1.to_degrees().rem_euclid(360.0)));
                 }
                 other => {
-                    let pts: Vec<Vec2> = (0..=8).map(|k| other.point_at(k as f64 / 8.0)).collect();
+                    let pts = other.polyline(1e-3);
                     for p in pts.windows(2) {
                         line(&mut w, "OUTLINE", p[0], p[1]);
                     }
@@ -373,6 +386,50 @@ fn export_dxf(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"path": path, "bends": sh.bends().len()}));
     }
     Ok(json!({"dxf": text, "bends": sh.bends().len()}))
+}
+
+fn export_bend_table(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sheet.export_bend_table";
+    let format = str_(p, "format").unwrap_or("csv").to_ascii_lowercase();
+    if !matches!(format.as_str(), "csv" | "json") {
+        return Err(bad(cmd, "`format` must be csv or json"));
+    }
+    let sh = sheet_of(s, p, cmd)?;
+    let table = flat_json(&sh)?;
+    let text = if format == "json" {
+        serde_json::to_string_pretty(&table).map_err(|e| EngineError::Other(e.to_string()))?
+    } else {
+        // Always quote text fields: body/rule names may include commas, quotes or newlines.
+        let quote = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+        let mut csv =
+            "body,rule,thickness_mm,k_factor,bend,angle_deg,direction,radius_mm,allowance_mm,length_mm,start_x_mm,start_y_mm,end_x_mm,end_y_mm\r\n"
+                .to_string();
+        for b in sh.bends() {
+            csv.push_str(&format!(
+                "{},{},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}\r\n",
+                quote(&sh.body),
+                quote(&sh.rule),
+                sh.t,
+                sh.k,
+                b.index,
+                b.angle_deg,
+                if b.up { "up" } else { "down" },
+                b.radius,
+                b.allowance,
+                b.length,
+                b.start.x,
+                b.start.y,
+                b.end.x,
+                b.end.y
+            ));
+        }
+        csv
+    };
+    if let Some(path) = str_(p, "path").filter(|x| !x.trim().is_empty()) {
+        solvecraft_io::vfs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+        return Ok(json!({"path": path, "format": format, "bends": sh.bends().len()}));
+    }
+    Ok(json!({"format": format, "text": text, "bends": sh.bends().len()}))
 }
 
 #[cfg(test)]

@@ -829,8 +829,10 @@ impl Document {
         }
         // Configuration cells refer to parameters too.
         for r in &mut self.configs.rows {
-            for cell in &mut r.cells {
-                *cell = expr::rename_reference(cell, old, new);
+            for (column, cell) in self.configs.columns.iter().zip(&mut r.cells) {
+                if matches!(column, crate::config::Column::Param(_)) {
+                    *cell = expr::rename_reference(cell, old, new);
+                }
             }
         }
         if let Some(c) = self.param_comments.remove(old) {

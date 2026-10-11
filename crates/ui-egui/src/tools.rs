@@ -100,7 +100,11 @@ fn xy(p: &(Vec2, Option<String>)) -> Value {
 
 pub fn on_hover(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
     crate::sketch3d::on_hover(app, proj, pos);
-    let h = sketch_point_at(app, proj, pos);
+    let h = if let Some(tool) = app.tool.as_ref().filter(|t| t.cmd == "sketch.fillet" || t.cmd.starts_with("sketch.chamfer.")) {
+        crate::sketch_tools::corner_point(app, proj, pos, tool.cmd).map(|(at, id)| (at, Some(id)))
+    } else {
+        sketch_point_at(app, proj, pos)
+    };
     if let Some(t) = app.tool.as_mut() {
         t.hover = h;
     }

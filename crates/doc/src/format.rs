@@ -20,13 +20,16 @@
 //!   "don't mate". Older joints keep their placement: their `flip` is inverted.
 //! - 6: XZ origin planes use sketch y = -Z and normal +Y. Older XZ references become
 //!   explicit planes retaining their previous axes, including offset-plane expressions.
+//! - 7: configuration tables can include body material and appearance columns. Version 6
+//!   rows need no transformation; the version stamp lets older readers request an update
+//!   instead of encountering an unknown column variant.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 6;
+pub const FORMAT: u32 = 7;
 
 pub fn format_string(n: u32) -> String {
     format!("solvecraft/{n}")
@@ -39,7 +42,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 5] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6];
+const JSON_STEPS: [JsonStep; 6] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(())];
 
 /// Old XZ references retain their exact frame, including nested offset and angled planes.
 /// New origin references use +Y; freezing the old frame avoids changing sketch coordinates,
@@ -209,6 +212,65 @@ fn normalise(d: &mut Document) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_six_configuration_rows_upgrade_without_changing_values_or_features() {
+        use crate::config::{Column, ConfigRow};
+        let mut d = Document::new("legacy configurations");
+        d.set_param("width", "10 mm", None, None).unwrap();
+        let feature = d
+            .add_feature(
+                crate::FeatureKind::Box {
+                    corner: ["0".into(), "0".into(), "0".into()],
+                    length: "width".into(),
+                    width: "20".into(),
+                    height: "5".into(),
+                    operation: crate::Operation::NewBody,
+                },
+                None,
+            )
+            .unwrap();
+        d.configs.columns = vec![Column::Param("width".into()), Column::Suppress(feature)];
+        d.configs.rows = vec![
+            ConfigRow { name: "Default".into(), cells: vec!["10 mm".into(), "false".into()] },
+            ConfigRow { name: "Alternate".into(), cells: vec!["width / 2 + 5 mm".into(), "yes".into()] },
+        ];
+        d.configs.active = Some("Default".into());
+        let mut legacy: Value = serde_json::from_str(&d.to_json()).unwrap();
+        legacy["format"] = Value::from("solvecraft/6");
+        let original_table = legacy["configs"].clone();
+        let upgraded = read(&legacy.to_string()).unwrap();
+        assert_eq!(upgraded, d, "the identity migration preserves the complete design");
+        assert_eq!(serde_json::to_value(&upgraded.configs).unwrap(), original_table);
+        assert_eq!(upgraded.format, "solvecraft/7");
+        assert!(upgraded.configuration_matches());
+        legacy.as_object_mut().unwrap().remove("configs");
+        assert!(read(&legacy.to_string()).unwrap().configs.is_empty());
+        legacy["configs"] = serde_json::json!({"columns":[],"rows":[]});
+        assert!(read(&legacy.to_string()).unwrap().configs.is_empty());
+    }
+
+    #[test]
+    fn version_seven_styles_roundtrip_and_newer_versions_are_refused_before_columns() {
+        use crate::config::{Column, ConfigRow};
+        let mut d = Document::new("configured styles");
+        d.configs.columns = vec![Column::Material("Body".into()), Column::Appearance("Body".into())];
+        d.configs.rows = vec![ConfigRow {
+            name: "Blue steel".into(),
+            cells: vec!["Steel".into(), r#"{"name":"Custom blue","color":[40,90,186],"opacity":0.4}"#.into()],
+        }];
+        d.apply_configuration("Blue steel").unwrap();
+        let mut value: Value = serde_json::from_str(&d.to_json()).unwrap();
+        assert_eq!(value["format"], "solvecraft/7");
+        let roundtrip = read(&value.to_string()).unwrap();
+        assert_eq!(roundtrip, d);
+        assert!(roundtrip.configuration_matches());
+        value["format"] = Value::from(format_string(FORMAT + 1));
+        value["configs"]["columns"] = serde_json::json!([{"unknown_future_column":"Body"}]);
+        let error = read(&value.to_string()).unwrap_err().to_string();
+        assert!(error.contains("newer SolveCraft") && error.contains("update SolveCraft"), "{error}");
+        assert!(!error.contains("unknown variant"), "format refusal precedes decoding new variants");
+    }
 
     #[test]
     fn bulk_input_repair_preserves_existing_names_and_reuses_surplus_names() {

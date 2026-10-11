@@ -20,6 +20,9 @@ const AXIS_HALF: f64 = 100.0;
 /// Points in one fitted chain at most (longer chains are thinned).
 const MAX_CHAIN: usize = 4000;
 
+#[path = "project_order.rs"]
+mod order;
+
 /// A resolved link: its geometry in sketch coordinates and the (possibly moved) reference.
 #[derive(Clone, Debug)]
 pub struct Resolved {
@@ -133,7 +136,7 @@ fn resolve_uncached(
                 LinkKind::Intersect => section(plane, &mesh, Some(f)),
                 _ => {
                     let mut g = Vec::new();
-                    for e in mesh.face_edges(f) {
+                    for e in order::face_edges(&mesh, f, plane)? {
                         if mesh.seams.get(e).copied().unwrap_or(false) {
                             continue;
                         }
