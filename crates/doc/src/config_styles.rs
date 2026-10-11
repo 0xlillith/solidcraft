@@ -109,6 +109,13 @@ impl Document {
         let feature = self.feature(target.origin_feature).ok_or_else(|| DocError::Unknown("face origin feature is gone".into()))?;
         if let Some(certificate) = &target.certificate {
             let valid = match (certificate, &feature.kind) {
+                (super::FaceCertificate::Box { axis, high }, FeatureKind::Box { operation: crate::Operation::NewBody, .. }) => {
+                    ["x", "y", "z"].get(*axis as usize).is_some_and(|axis| role == format!("{}{axis}", if *high { "+" } else { "-" }))
+                }
+                (super::FaceCertificate::ExtrudeCap { sketch, high, outer, holes }, FeatureKind::Extrude { sketch: producer_sketch, extent, operation: crate::Operation::NewBody, .. }) => {
+                    sketch == producer_sketch && extent.taper.is_none()
+                        && role == format!("cap:{}:{}", if *high { "high" } else { "low" }, super::cap_key(outer, holes))
+                }
                 (super::FaceCertificate::ExtrudeSide { sketch, curve }, FeatureKind::Extrude { sketch: producer_sketch, extent, operation: crate::Operation::NewBody, .. }) => {
                     sketch == producer_sketch && extent.taper.is_none() && role == format!("side:{curve}")
                         && self.feature(*sketch).is_some_and(|feature| matches!(&feature.kind, FeatureKind::Sketch { sketch, .. } if sketch.curves.iter().any(|candidate| candidate.id == *curve && !candidate.construction && matches!(candidate.kind, solvecraft_sketch::CurveKind::Line { .. } | solvecraft_sketch::CurveKind::Circle { .. } | solvecraft_sketch::CurveKind::Arc { .. }))))
@@ -149,9 +156,49 @@ impl Document {
         if body.body.is_mesh() || body.definition_name() != target.body {
             return Err(DocError::Invalid("configured face definition does not match".into()));
         }
+        if matches!(target.certificate, Some(super::FaceCertificate::Box { .. } | super::FaceCertificate::ExtrudeCap { .. })) {
+            let indices: Vec<_> = body
+                .body
+                .face_sources()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .filter_map(|(index, source)| {
+                    let matched = match (&target.certificate, source) {
+                        (
+                            Some(super::FaceCertificate::Box { axis, high }),
+                            Some(solvecraft_kernel::FaceSource::Box { producer: Some(producer), axis: current_axis, high: current_high, .. }),
+                        ) => *producer == target.origin_feature && axis == current_axis && high == current_high,
+                        (
+                            Some(super::FaceCertificate::ExtrudeCap { sketch, high, outer, holes }),
+                            Some(solvecraft_kernel::FaceSource::CertifiedExtrudeCap {
+                                producer,
+                                sketch: current_sketch,
+                                high: current_high,
+                                outer: current_outer,
+                                holes: current_holes,
+                                ..
+                            }),
+                        ) => {
+                            *producer == target.origin_feature
+                                && sketch == current_sketch
+                                && high == current_high
+                                && outer == current_outer
+                                && holes == current_holes
+                        }
+                        _ => false,
+                    };
+                    matched.then_some(index)
+                })
+                .collect();
+            if indices.len() != 1 {
+                return Err(DocError::Unknown("attached planar face certificate is missing or ambiguous".into()));
+            }
+            return Ok(indices);
+        }
         if let Some(super::FaceCertificate::ExtrudeSide { sketch, curve }) = &target.certificate {
             let indices: Vec<_> = body.body.face_sources().into_iter().flatten().enumerate().filter_map(|(index, source)| {
-                matches!(source, Some(solvecraft_kernel::FaceSource::CertifiedExtrudeSide { producer, sketch: current_sketch, curve: current_curve }) if *producer == target.origin_feature && current_sketch == sketch && current_curve == curve).then_some(index)
+                matches!(source, Some(solvecraft_kernel::FaceSource::CertifiedExtrudeSide { producer, sketch: current_sketch, curve: current_curve, .. }) if *producer == target.origin_feature && current_sketch == sketch && current_curve == curve).then_some(index)
             }).collect();
             if indices.is_empty() {
                 return Err(DocError::Unknown("constructed side certificate no longer exists".into()));

@@ -26,11 +26,15 @@ fn placed_doc(s: &Session) -> Document {
 
 /// A property total must cover the entire assembly. The display traversal intentionally
 /// truncates hostile designs, so use an explicit error instead of accepting its prefix.
-pub(super) fn placements(doc: &Document, cmd: &str) -> Result<Vec<(u64, Vec<u64>, Mat)>> {
+pub(in crate::cmd) fn placements(doc: &Document, cmd: &str) -> Result<Vec<(u64, Vec<u64>, Mat)>> {
     let mut out = vec![(0, Vec::new(), solvecraft_doc::IDENTITY)];
     let mut stack = vec![(0, Vec::<u64>::new(), solvecraft_doc::IDENTITY)];
+    let mut children: std::collections::BTreeMap<u64, Vec<_>> = std::collections::BTreeMap::new();
+    for occurrence in &doc.occurrences {
+        children.entry(occurrence.parent).or_default().push(occurrence);
+    }
     while let Some((component, path, transform)) = stack.pop() {
-        for occurrence in doc.occurrences.iter().filter(|o| o.parent == component) {
+        for occurrence in children.get(&component).into_iter().flatten() {
             if path.len() >= 64 || out.len() >= 100_000 {
                 return Err(bad(cmd, "assembly exceeds physical-properties traversal limits (64 levels or 100000 placements)"));
             }

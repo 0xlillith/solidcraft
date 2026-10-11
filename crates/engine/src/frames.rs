@@ -369,12 +369,25 @@ pub fn to_local(s: &Session, id: &str, params: &Value) -> Option<Value> {
         out["params"] = inner;
         return Some(out);
     }
+    // Exact face capture retains the original world pick and occurrence identity.
+    if matches!(id, "sketch.create" | "sketch.redefine") && params.get("plane").and_then(|plane| plane.get("face")).is_some() {
+        return None;
+    }
     let keys = table(id);
     if keys.is_empty() || !placed(s) {
         return None;
     }
     let obj = params.as_object()?;
-    let mut m = Mapper { s, f: frames(s), first: None, changed: false, here: false };
+    let mut command_frames = frames(s);
+    if id == "sketch.redefine" {
+        let key = params.get("sketch").and_then(|value| value.as_str().map(str::to_string).or_else(|| value.as_u64().map(|id| id.to_string())))?;
+        let feature = s.doc.find_feature(&key)?;
+        let path = crate::cmd::author_path_for_rebind(s, feature, params, id).ok()?;
+        let frame = solvecraft_doc::EmbossFace::component_frame(&s.placed_document(), feature.component, &path).ok()?;
+        command_frames.active = frame;
+        command_frames.sketch = frame;
+    }
+    let mut m = Mapper { s, f: command_frames, first: None, changed: false, here: false };
     let body = obj.get("body").and_then(Value::as_str).map(str::to_string);
     let mut out: Map<String, Value> = obj.clone();
     // Picks first: their frame turns the directions.

@@ -529,7 +529,10 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         return hash.finish();
     }
     let FeatureKind::Sketch { plane, sketch } = &f.kind else { return 0 };
-    if doc.occurrences.is_empty() || (!matches!(plane, PlaneRef::Face { .. }) && sketch.links.is_empty()) {
+    let anchor = crate::face_anchor::plane_face_anchor(plane);
+    if (doc.occurrences.is_empty() && (anchor.is_none() || doc.body_offsets.is_empty()))
+        || (!matches!(plane, PlaneRef::Face { .. }) && anchor.is_none() && sketch.links.is_empty())
+    {
         return 0;
     }
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1495,16 +1498,52 @@ pub fn revolve_extent(
     symmetric: bool,
     to: Option<Vec3>,
 ) -> Result<RevolveExtent> {
+    revolve_extent_with_convention(st, plane, regions, (origin, axis), (angle, angle2), symmetric, to, crate::RevolveConvention::LegacyAxisStart)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn revolve_extent_with_convention(
+    st: &ModelState,
+    plane: &Plane,
+    regions: &[Region2],
+    (origin, axis): (Vec3, Vec3),
+    (angle, angle2): (f64, Option<f64>),
+    symmetric: bool,
+    to: Option<Vec3>,
+    convention: crate::RevolveConvention,
+) -> Result<RevolveExtent> {
     let (start, sweep) = match (to, angle2, symmetric) {
         (Some(point), _, _) => {
             let points: Vec<Vec2> = regions.iter().flat_map(|r| r.outer.polyline(1e-2)).collect();
-            let centre = plane.to_world(points.iter().fold(Vec2::default(), |sum, point| sum + *point) * (1.0 / points.len().max(1) as f64));
+            let centre = if convention == crate::RevolveConvention::SketchNormal {
+                regions.first().map(|r| plane.to_world(r.centroid())).ok_or_else(|| DocError::Invalid("no profile selected".into()))?
+            } else {
+                plane.to_world(points.iter().fold(Vec2::default(), |sum, point| sum + *point) * (1.0 / points.len().max(1) as f64))
+            };
+            let projection_axis = if convention == crate::RevolveConvention::SketchNormal {
+                axis.normalized().ok_or_else(|| DocError::Invalid("revolve axis has no direction".into()))?
+            } else {
+                axis
+            };
             let flat = |point: Vec3| {
                 let v = point - origin;
-                v - axis * v.dot(axis)
+                v - projection_axis * v.dot(projection_axis)
             };
             let (u, v) = (flat(centre), flat(point));
-            let sweep = (-axis).dot(u.cross(v)).atan2(u.dot(v));
+            let angle_axis = if convention == crate::RevolveConvention::SketchNormal {
+                if v.len() < 1e-9 {
+                    return Err(DocError::Invalid("the revolve target lies on the axis; pick a point away from the axis".into()));
+                }
+                kernel::canonical_revolve_axis(
+                    plane,
+                    regions.first().ok_or_else(|| DocError::Invalid("no profile selected".into()))?,
+                    plane.to_local(origin),
+                    Vec2::new(projection_axis.dot(plane.x), projection_axis.dot(plane.y)),
+                )?
+            } else {
+                -axis
+            };
+            let sweep = angle_axis.dot(u.cross(v)).atan2(u.dot(v));
             (0.0, if sweep <= 1e-9 { sweep + std::f64::consts::TAU } else { sweep })
         }
         (None, Some(other), _) => (-other, angle + other),
@@ -1519,8 +1558,22 @@ pub fn revolve_extent(
     let unit_axis = axis.normalized().ok_or_else(|| DocError::Invalid("revolve axis has no direction".into()))?;
     let radial_centre = regions.first().map(|region| plane.to_world(region.centroid())).unwrap_or(centre);
     let radial = radial_centre - origin - unit_axis * (radial_centre - origin).dot(unit_axis);
-    let rotation_axis = if unit_axis.cross(radial).dot(plane.normal()) < 0.0 { -unit_axis } else { unit_axis };
-    let display_start = start * -unit_axis.dot(rotation_axis);
+    let rotation_axis = match (convention, regions.first()) {
+        (crate::RevolveConvention::SketchNormal, Some(region)) => {
+            kernel::canonical_revolve_axis(plane, region, plane.to_local(origin), Vec2::new(unit_axis.dot(plane.x), unit_axis.dot(plane.y)))?
+        }
+        _ => {
+            if unit_axis.cross(radial).dot(plane.normal()) < 0.0 {
+                -unit_axis
+            } else {
+                unit_axis
+            }
+        }
+    };
+    let display_start = match convention {
+        crate::RevolveConvention::LegacyAxisStart => start * -unit_axis.dot(rotation_axis),
+        crate::RevolveConvention::SketchNormal => start,
+    };
     Ok(RevolveExtent { start, sweep, rotation_axis, display_start, curved_to: to.is_some_and(|point| curved_target_any(st, point).is_some()) })
 }
 
@@ -1629,25 +1682,33 @@ fn feature_tools(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st
                 tools = trim_to_body(tools, &tb.body, |q: Vec3| ((q - ss.plane.origin).dot(n) - start).abs())?;
             }
             if *operation == Operation::NewBody && extent.taper.is_none() {
+                let cap_bindings = crate::config::extrude_cap_bindings(&ss, &tools, 10_000_000);
                 tools = tools
                     .into_iter()
-                    .map(|body| {
+                    .enumerate()
+                    .map(|(body_index, body)| {
                         let curves: Vec<_> = body
                             .face_sources()
                             .into_iter()
                             .flatten()
                             .map(|source| match source {
-                                Some(kernel::FaceSource::ExtrudeSide { segment }) => crate::config::exact_sketch_curve(&ss, segment),
+                                Some(kernel::FaceSource::ExtrudeSide { segment, .. }) if cap_bindings.is_some() => {
+                                    crate::config::exact_sketch_curve(&ss, segment)
+                                }
                                 _ => None,
                             })
                             .collect();
-                        body.with_extrude_certificates(f.id, *sketch, &curves).map_err(DocError::from)
+                        let caps =
+                            cap_bindings.as_ref().and_then(|bindings| bindings.get(body_index)).cloned().unwrap_or_else(|| vec![None; curves.len()]);
+                        body.with_extrude_certificates(f.id, *sketch, &curves)?
+                            .with_extrude_cap_certificates(f.id, *sketch, &caps)
+                            .map_err(DocError::from)
                     })
                     .collect::<Result<Vec<_>>>()?;
             }
             Ok(tools)
         }
-        FeatureKind::Revolve { sketch, profiles, axis, angle, angle2, symmetric, to, .. } => {
+        FeatureKind::Revolve { sketch, profiles, axis, angle, angle2, symmetric, convention, to, .. } => {
             let ss = st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch} (it must come earlier in the timeline)")))?.clone();
             let regions = solvecraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
             let (o, d) = revolve_axis(&ss, axis)?;
@@ -1656,26 +1717,66 @@ fn feature_tools(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st
             } else {
                 (val(vals, angle, Kind::Angle)?, angle2.as_ref().map(|a| val(vals, a, Kind::Angle)).transpose()?)
             };
-            let extent = revolve_extent(st, &ss.plane, &regions, (ss.plane.to_world(o), ss.plane.dir_to_world(d)), angles, *symmetric, *to)?;
+            let extent = revolve_extent_with_convention(
+                st,
+                &ss.plane,
+                &regions,
+                (ss.plane.to_world(o), ss.plane.dir_to_world(d)),
+                angles,
+                *symmetric,
+                *to,
+                *convention,
+            )?;
             let (start, ang) = (extent.start, extent.sweep);
+            let region_extents = regions
+                .iter()
+                .map(|r| {
+                    if *convention == crate::RevolveConvention::SketchNormal && to.is_some() {
+                        revolve_extent_with_convention(
+                            st,
+                            &ss.plane,
+                            std::slice::from_ref(r),
+                            (ss.plane.to_world(o), ss.plane.dir_to_world(d)),
+                            angles,
+                            *symmetric,
+                            *to,
+                            *convention,
+                        )
+                    } else {
+                        Ok(extent)
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
             let (operation, targets) = feature_op(f);
             let axis_w = ss.plane.dir_to_world(d);
             let origin_w = ss.plane.to_world(o);
-            let probe = |p: Vec2| {
-                let q = ss.plane.to_world(p);
-                (1..4)
-                    .map(|k| {
-                        let a = ang * k as f64 / 4.0;
-                        let v = q - origin_w;
-                        origin_w + v * a.cos() + axis_w.cross(v) * a.sin() + axis_w * (axis_w.dot(v) * (1.0 - a.cos()))
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let regions: Vec<Region2> = regions.iter().map(|r| grow_profile_for_coplanar(st, r, operation, &targets, &probe)).collect();
+            let regions: Vec<Region2> = regions
+                .iter()
+                .zip(&region_extents)
+                .map(|(r, region_extent)| {
+                    let rotation_axis = match convention {
+                        crate::RevolveConvention::LegacyAxisStart => axis_w,
+                        crate::RevolveConvention::SketchNormal => kernel::canonical_revolve_axis(&ss.plane, r, o, d)?,
+                    };
+                    let probe = |p: Vec2| {
+                        let q = ss.plane.to_world(p);
+                        (1..4)
+                            .map(|k| {
+                                let a = region_extent.sweep * k as f64 / 4.0
+                                    + if *convention == crate::RevolveConvention::SketchNormal { region_extent.start } else { 0.0 };
+                                let v = q - origin_w;
+                                origin_w + v * a.cos() + rotation_axis.cross(v) * a.sin() + rotation_axis * (rotation_axis.dot(v) * (1.0 - a.cos()))
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    Ok(grow_profile_for_coplanar(st, r, operation, &targets, &probe))
+                })
+                .collect::<Result<Vec<_>>>()?;
             // To a curved face: turn past the whole target body, then cut back to its surface
             // (the piece that starts at the profile).
             let curved = to.and_then(|p| curved_target_any(st, p));
-            if let Some(tb) = curved.and_then(|bi| st.bodies.get(bi)) {
+            let curved_body = curved.and_then(|bi| st.bodies.get(bi));
+            let build_curved = |regions: &[Region2], angle_axis: Vec3, tb: &ModelBody| -> Result<Vec<Body>> {
                 let pts: Vec<Vec2> = regions.iter().flat_map(|r| r.outer.polyline(1e-2)).collect();
                 let c = ss.plane.to_world(pts.iter().fold(Vec2::default(), |a, q| a + *q) * (1.0 / pts.len().max(1) as f64));
                 let flat = |q: Vec3| {
@@ -1685,15 +1786,36 @@ fn feature_tools(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st
                 let u0 = flat(c);
                 let angle_of = |q: Vec3| {
                     let v = flat(q);
-                    let a = (axis_w * -1.0).dot(u0.cross(v)).atan2(u0.dot(v));
+                    let a = angle_axis.dot(u0.cross(v)).atan2(u0.dot(v));
                     if a < 0.0 { a + std::f64::consts::TAU } else { a }
                 };
                 let far = tb.mesh().positions.iter().map(|q| angle_of(*q)).fold(0.0, f64::max);
                 let sweep = (far + 0.05).min(std::f64::consts::TAU - 1e-3);
-                let bodies = kernel::revolve(&ss.plane, &regions, o, d, sweep)?;
+                let bodies = kernel::revolve(&ss.plane, regions, o, d, sweep)?;
                 let n = ss.plane.normal();
                 let tol_side = |q: Vec3| if flat(q).dot(u0) > 0.0 { ((q - ss.plane.origin).dot(n)).abs() } else { f64::MAX };
-                return trim_to_body(bodies, &tb.body, tol_side);
+                trim_to_body(bodies, &tb.body, tol_side)
+            };
+            if *convention == crate::RevolveConvention::LegacyAxisStart
+                && let Some(tb) = curved_body
+            {
+                return build_curved(&regions, -axis_w, tb);
+            }
+            if *convention == crate::RevolveConvention::SketchNormal {
+                let mut out = Vec::new();
+                for (region, region_extent) in regions.iter().zip(&region_extents) {
+                    let rotation_axis = kernel::canonical_revolve_axis(&ss.plane, region, o, d)?;
+                    if let Some(tb) = curved_body {
+                        out.extend(build_curved(std::slice::from_ref(region), rotation_axis, tb)?);
+                        continue;
+                    }
+                    let bodies = kernel::revolve(&ss.plane, std::slice::from_ref(region), o, d, region_extent.sweep)?;
+                    let m = crate::rigid(Vec3::ZERO, origin_w, rotation_axis, region_extent.start);
+                    for body in bodies {
+                        out.push(if region_extent.start.abs() < 1e-12 { body } else { kernel::transform_matrix(&body, m)? });
+                    }
+                }
+                return Ok(out);
             }
             let bodies = kernel::revolve(&ss.plane, &regions, o, d, ang)?;
             if start.abs() < 1e-12 {
@@ -2565,13 +2687,21 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         | FeatureKind::Align { .. }
         | FeatureKind::Remove { .. } => more::eval(doc, vals, f, st),
         FeatureKind::Sketch { plane, sketch } => {
-            let fst = state_in_frame(doc, st, f.component);
-            let (plane, face_warning) = match plane {
-                PlaneRef::Face { plane: picked, at, name } => face_plane(&fst, picked, *at, name.as_deref()),
-                other => (doc.resolve_plane_in(vals, other, 0, Some(&fst))?, None),
+            let anchor = crate::face_anchor::plane_face_anchor(plane);
+            let fst = match anchor {
+                Some(anchor) => crate::state_in_face_anchor_frame(doc, st, anchor, f.component)?,
+                None => state_in_frame(doc, st, f.component),
+            };
+            let (plane, face_warning) = match (anchor, plane) {
+                (Some(_), plane) => (doc.resolve_attached_plane(vals, plane, f.component, st, &fst)?, None),
+                (None, PlaneRef::Face { plane: picked, at, name, anchor: None }) => face_plane(&fst, picked, *at, name.as_deref()),
+                (None, other) => (doc.resolve_plane_in(vals, other, 0, Some(&fst))?, None),
             };
             let mut sk = sketch.clone();
-            let mut warns = crate::project::refresh_links(doc, vals, &fst, &plane, &mut sk);
+            let mut warns = match anchor {
+                Some(anchor) => crate::project::refresh_face_anchor_links(doc, vals, &fst, &plane, &mut sk, anchor),
+                None => crate::project::refresh_links(doc, vals, &fst, &plane, &mut sk),
+            };
             drop(fst);
             sk.refresh_offsets()?;
             if let Some(w) = face_warning {
@@ -2590,6 +2720,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             if !warns.is_empty() {
                 *warning = Some(warns.join("; "));
             }
+            sk.validate_periodic_splines()?;
             let profiles = find_profiles(&sk);
             st.sketches.retain(|s| s.feature != f.id);
             st.sketches.push(SolvedSketch { feature: f.id, name: f.name.clone(), plane, sketch: sk, report, profiles });
@@ -2953,6 +3084,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let s = Vec3::new(val(vals, length, Kind::Length)?, val(vals, width, Kind::Length)?, val(vals, height, Kind::Length)?);
             let corner = point(vals, corner)?;
             let b = kernel::box_solid(corner, corner + s)?;
+            let b = if *operation == Operation::NewBody { b.with_box_certificate(f.id)? } else { b };
             apply_op(st, f, vec![b], *operation, &[])
         }
         FeatureKind::Cylinder { base, axis, radius, height, operation } => {

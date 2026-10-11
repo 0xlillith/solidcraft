@@ -61,6 +61,18 @@
   }
  },
  {
+  "note": "The shelled floor is picked rather than the origin plane. Its uncertified mesh face requires an explicit fixed-plane choice."
+ },
+ {
+  "expect": {
+   "sketching": false,
+   "dialog": "this face has no exact planar source"
+  }
+ },
+ {
+  "widget": "Use fixed plane"
+ },
+ {
   "expect": {
    "sketching": true
   }

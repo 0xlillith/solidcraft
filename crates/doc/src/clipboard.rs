@@ -146,10 +146,10 @@ fn remap_geo(
     names: &BTreeMap<String, String>,
     bodies: &BTreeMap<String, String>,
     depth: usize,
-) {
+) -> crate::Result<()> {
     use crate::construct::GeoRef;
     if depth > 64 {
-        return;
+        return Err(crate::DocError::Invalid("clone plane reference depth exceeded".into()));
     }
     match g {
         GeoRef::SketchPoint { sketch, .. } | GeoRef::SketchCurve { sketch, .. } => {
@@ -159,25 +159,40 @@ fn remap_geo(
         }
         GeoRef::Face { name: Some(n), .. } | GeoRef::Edge { name: Some(n), .. } => *n = remap_topology(n, ids, bodies),
         GeoRef::ConstructPoint { name } | GeoRef::Axis { name } => mapped_name(name, names),
-        GeoRef::Plane { plane } => remap_plane(plane, ids, names, bodies, depth + 1),
+        GeoRef::Plane { plane } => remap_plane(plane, ids, names, bodies, depth + 1)?,
         _ => {}
     }
+    Ok(())
 }
 
-fn remap_plane(p: &mut PlaneRef, ids: &BTreeMap<u64, u64>, names: &BTreeMap<String, String>, bodies: &BTreeMap<String, String>, depth: usize) {
+fn remap_plane(
+    p: &mut PlaneRef,
+    ids: &BTreeMap<u64, u64>,
+    names: &BTreeMap<String, String>,
+    bodies: &BTreeMap<String, String>,
+    depth: usize,
+) -> crate::Result<()> {
     if depth > 64 {
-        return;
+        return Err(crate::DocError::Invalid("clone plane reference depth exceeded".into()));
     }
     match p {
-        PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } => remap_plane(base, ids, names, bodies, depth + 1),
+        PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } => remap_plane(base, ids, names, bodies, depth + 1)?,
         PlaneRef::Construction { name } => mapped_name(name, names),
-        PlaneRef::Face { name: Some(n), .. } => *n = remap_topology(n, ids, bodies),
+        PlaneRef::Face { name, anchor, .. } => {
+            if let Some(name) = name {
+                *name = remap_topology(name, ids, bodies);
+            }
+            if let Some(anchor) = anchor {
+                anchor.remap_target(ids, bodies)?;
+            }
+        }
         _ => {
             for r in p.refs_mut() {
-                remap_geo(r, ids, names, bodies, depth + 1);
+                remap_geo(r, ids, names, bodies, depth + 1)?;
             }
         }
     }
+    Ok(())
 }
 
 fn remap_link(
@@ -348,7 +363,7 @@ impl crate::Feature {
         }
         match &mut self.kind {
             K::Sketch { plane, sketch } => {
-                remap_plane(plane, ids, names, bodies, 0);
+                remap_plane(plane, ids, names, bodies, 0)?;
                 for c in &mut sketch.constraints {
                     if let Some(n) = &mut c.param {
                         mapped_name(n, parameters);
@@ -365,17 +380,17 @@ impl crate::Feature {
             | K::Split { plane, .. }
             | K::SplitFace { plane, .. }
             | K::Mirror { plane, .. }
-            | K::SurfaceTrim { plane, .. } => remap_plane(plane, ids, names, bodies, 0),
-            K::Draft { neutral, .. } => remap_plane(neutral, ids, names, bodies, 0),
-            K::ReplaceFace { target, .. } => remap_plane(target, ids, names, bodies, 0),
+            | K::SurfaceTrim { plane, .. } => remap_plane(plane, ids, names, bodies, 0)?,
+            K::Draft { neutral, .. } => remap_plane(neutral, ids, names, bodies, 0)?,
+            K::ReplaceFace { target, .. } => remap_plane(target, ids, names, bodies, 0)?,
             K::ConstructionAxis { def } => {
                 for r in def.refs_mut() {
-                    remap_geo(r, ids, names, bodies, 0);
+                    remap_geo(r, ids, names, bodies, 0)?;
                 }
             }
             K::ConstructionPoint { def } => {
                 for r in def.refs_mut() {
-                    remap_geo(r, ids, names, bodies, 0);
+                    remap_geo(r, ids, names, bodies, 0)?;
                 }
             }
             _ => {}

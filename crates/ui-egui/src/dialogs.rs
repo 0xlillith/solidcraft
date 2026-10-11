@@ -1330,7 +1330,30 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             placement_row(&mut d, ui);
             input_rows(&mut d, ui);
             match &mut d.kind {
-                Kind::Sketch => {}
+                Kind::Sketch => {
+                    if d.error.is_some()
+                        && let Some(selection @ Sel::Face { .. }) = d.inputs.first().and_then(|i| i.items.first())
+                    {
+                        row_label(ui, "Attachment");
+                        ui.label("This face cannot provide a durable attachment. Choose another face or explicitly use a fixed plane.");
+                        ui.end_row();
+                        row_label(ui, "");
+                        if ui.button("Use fixed plane").clicked()
+                            && let Some(mut plane) = crate::sketch_attachment_ui::face_plane(app, selection)
+                        {
+                            plane["fixed"] = json!(true);
+                            match app.run("sketch.create", json!({"plane":plane})) {
+                                Ok(_) => {
+                                    app.pre_sketch_cam = Some(app.cam);
+                                    look_at_sketch(app);
+                                    cancel = true;
+                                }
+                                Err(error) => d.error = Some(error),
+                            }
+                        }
+                        ui.end_row();
+                    }
+                }
                 Kind::Extrude { distance, direction, operation, auto_op, distance2, taper, taper_present, to_offset, start, all } => {
                     row_label(ui, "Start");
                     let old = if object_on(&d.inputs, FROM_OBJECT) { 2 } else { usize::from(!start.is_empty()) };
@@ -1931,10 +1954,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     // A plane picked for a new sketch starts it right away.
     if matches!(d.kind, Kind::Sketch)
+        && d.error.is_none()
         && let Some(sel) = d.inputs.first().and_then(|i| i.items.first()).cloned()
     {
-        start_sketch(app, &sel);
-        cancel = true;
+        match start_sketch(app, &sel) {
+            Ok(()) => cancel = true,
+            Err(error) => d.error = Some(error),
+        }
     }
     if ok {
         match run_dialog(app, &d) {
@@ -2154,25 +2180,25 @@ fn params_table(app: &mut SolveApp, ui: &mut egui::Ui, new_name: &mut String, ne
 }
 
 /// Start a sketch on a picked plane or planar face and turn the view to face it.
-pub fn start_sketch(app: &mut SolveApp, sel: &Sel) {
+pub fn start_sketch(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
     let plane = match sel {
         Sel::Plane { name } => json!(name),
-        Sel::Face { point, .. } => json!({"face": pt(*point)}),
-        _ => return,
+        Sel::Face { .. } => crate::sketch_attachment_ui::face_plane(app, sel).ok_or("Selected face placement no longer exists")?,
+        _ => return Err("Select an origin plane, construction plane or planar body face".into()),
     };
     let before = app.cam;
-    if app.run("sketch.create", json!({ "plane": plane })).is_ok() {
-        app.pre_sketch_cam = Some(before);
-        look_at_sketch(app);
-        // On a face: look at the picked point, not the plane's origin (a corner of the face),
-        // which left the face filling the view off-centre like a big square.
-        if let Sel::Face { point, .. } = sel
-            && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
-        {
-            to.target = *point;
-            app.animate_to(to);
-        }
+    app.run("sketch.create", json!({ "plane": plane }))?;
+    app.pre_sketch_cam = Some(before);
+    look_at_sketch(app);
+    // On a face: look at the picked point, not the plane's origin (a corner of the face),
+    // which left the face filling the view off-centre like a big square.
+    if let Sel::Face { point, .. } = sel
+        && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
+    {
+        to.target = *point;
+        app.animate_to(to);
     }
+    Ok(())
 }
 
 /// Animate the camera to look straight at the active sketch plane.
@@ -3060,7 +3086,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Revolve { sketch, profiles, axis, angle, operation, targets, angle2, symmetric, to } => {
+        FeatureKind::Revolve { sketch, profiles, axis, angle, operation, targets, angle2, symmetric, convention, to } => {
             let mut d = start("solid.revolve")?;
             let frame = feature_frame(s, f.component);
             let stored_axis = match axis {
@@ -3071,6 +3097,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                 _ => None,
             };
             d.kind = Kind::Revolve { angle: angle.clone(), operation: op_index(operation), axis: stored_axis };
+            d.extra.insert("convention".into(), json!(convention));
             if let Some(a2) = angle2 {
                 d.extra.insert("angle2".into(), json!(a2));
             }

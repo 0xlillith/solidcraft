@@ -51,15 +51,28 @@ fn to_object_noop_preserves_cut_targets_and_untargeted_body() {
     }
     let mut h = make_params(h, json!("Y"), json!({"to":[0,2,12],"angle":"45 deg","operation":"cut","targets":["A"]}));
     let state = h.app.session.world_state();
-    let before_a = solvecraft_engine::doc::kernel::measure(&state.body("A").unwrap().body).unwrap().volume;
-    assert!((before_a - (2000.0 - 490.873852)).abs() < 0.2);
+    // A quarter annulus separates the stock into inner and outer solids. Both are
+    // results of cutting A; checking only the first named solid loses material.
+    let cut_volume = |state: &solvecraft_engine::doc::ModelState| -> f64 {
+        state.bodies.iter().filter(|b| b.name != "B").map(|b| solvecraft_engine::doc::kernel::measure(&b.body).unwrap().volume).sum()
+    };
+    let before_a = cut_volume(&state);
+    let removed = 0.5 * (15.0f64.powi(2) - 10.0f64.powi(2)) * 5.0 * std::f64::consts::FRAC_PI_2;
+    assert!((before_a - (2000.0 - removed)).abs() < 0.2, "cut results {:?}: {before_a}", state.bodies.iter().map(|b| &b.name).collect::<Vec<_>>());
+    let in_cut_stock = |p| state.bodies.iter().filter(|b| b.name != "B").any(|b| b.body.contains(p));
+    assert!(in_cut_stock(solvecraft_engine::geom::Vec3::new(2.0, 2.0, 2.0)));
+    assert!(in_cut_stock(solvecraft_engine::geom::Vec3::new(18.0, 2.0, 18.0)));
+    assert!(!in_cut_stock(solvecraft_engine::geom::Vec3::new(9.0, 2.0, 9.0)));
+    assert!(state.body("B").unwrap().body.contains(solvecraft_engine::geom::Vec3::new(9.0, 2.0, 9.0)));
+    let before_bounds: Vec<_> = state.bodies.iter().map(|b| (b.name.clone(), b.mesh().bounds())).collect();
     let undo = h.app.session.undo.len();
     open(&mut h);
     h.step(&json!({"widget":"OK"})).unwrap();
     assert!(h.app.dialog.is_none());
     let state = h.app.session.world_state();
     assert!((solvecraft_engine::doc::kernel::measure(&state.body("B").unwrap().body).unwrap().volume - 2000.0).abs() < 1e-7);
-    assert!((solvecraft_engine::doc::kernel::measure(&state.body("A").unwrap().body).unwrap().volume - before_a).abs() < 1e-7);
+    assert!((cut_volume(&state) - before_a).abs() < 1e-7);
+    assert_eq!(state.bodies.iter().map(|b| (b.name.clone(), b.mesh().bounds())).collect::<Vec<_>>(), before_bounds);
     assert_eq!(h.app.session.undo.len(), undo + 1);
     let FeatureKind::Revolve { targets, .. } = &h.app.session.doc.find_feature("Turn").unwrap().kind else { panic!("revolve") };
     assert_eq!(targets, &["A"]);

@@ -31,13 +31,15 @@
 //! - 10: timeline body transfers, explicit 3D wire coordinate spaces and certified face
 //!   bindings. Legacy ownership maps remain unchanged. Retained wire associations determine
 //!   their space; saved coordinates are never rewritten during migration.
+//! - 11: durable sketch face anchors, explicitly periodic fit splines and versioned revolve
+//!   conventions. Absent markers retain legacy attachment and interpolation behavior.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 10;
+pub const FORMAT: u32 = 11;
 
 pub fn format_string(n: u32) -> String {
     format!("solvecraft/{n}")
@@ -50,7 +52,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 9] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(()), |_| Ok(()), |_| Ok(())];
+const JSON_STEPS: [JsonStep; 10] = [|_| Ok(()), v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, |_| Ok(()), |_| Ok(()), |_| Ok(()), |_| Ok(()), |_| Ok(())];
 
 /// Old XZ references retain their exact frame, including nested offset and angled planes.
 /// New origin references use +Y; freezing the old frame avoids changing sketch coordinates,
@@ -143,6 +145,8 @@ pub fn read(s: &str) -> Result<Document> {
     check_numbers(&v, 0)?;
     crate::config::validate_rules_json(&v)?;
     crate::config::validate_styles_json(&v)?;
+    crate::face_anchor::validate_face_anchors_json(&v)?;
+    validate_versioned_geometry(&v)?;
     validate_emboss_targets(&v)?;
     validate_freeform_offsets(&v)?;
     let legacy_wires = validate_wires(&v, version)?;
@@ -184,6 +188,7 @@ pub fn read(s: &str) -> Result<Document> {
         if let crate::FeatureKind::Sketch { sketch, .. } = &feature.kind {
             sketch.validate_freeform_offsets().map_err(|e| DocError::Invalid(format!("damaged design: {e}")))?;
             sketch.validate_wires().map_err(|e| DocError::Invalid(format!("damaged design: {e}")))?;
+            sketch.validate_periodic_splines().map_err(|e| DocError::Invalid(format!("damaged design: {e}")))?;
         }
         if let crate::FeatureKind::BodyTransfer { from, to, .. } = &feature.kind
             && [from, to].into_iter().any(|id| !component_ids.contains(id))
@@ -351,6 +356,58 @@ fn validate_emboss_targets(value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// Bound explicitly versioned geometry before allocating typed spline point arrays.
+fn validate_versioned_geometry(value: &Value) -> Result<()> {
+    let invalid = || DocError::Invalid("damaged design: invalid periodic spline or revolve convention".into());
+    let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(()) };
+    for feature in features {
+        if feature.get("type").and_then(Value::as_str) == Some("revolve")
+            && let Some(convention) = feature.get("convention")
+            && !matches!(convention.as_str(), Some("legacy_axis_start" | "sketch_normal"))
+        {
+            return Err(invalid());
+        }
+        if feature.get("type").and_then(Value::as_str) != Some("sketch") {
+            continue;
+        }
+        let Some(sketch) = feature.get("sketch") else { continue };
+        if let Some(links) = sketch.get("links").and_then(Value::as_array) {
+            for link in links {
+                if link.get("auto_face").is_some_and(|marker| !marker.is_boolean()) {
+                    return Err(invalid());
+                }
+            }
+        }
+        let Some(curves) = sketch.get("curves").and_then(Value::as_array) else { continue };
+        let points = sketch.get("points").and_then(Value::as_array);
+        let mut work = 0usize;
+        for curve in curves {
+            if curve.get("type").and_then(Value::as_str) != Some("spline") {
+                continue;
+            }
+            let Some(marker) = curve.get("periodic") else { continue };
+            let periodic = marker.as_bool().ok_or_else(invalid)?;
+            if !periodic {
+                continue;
+            }
+            let indices = curve.get("pts").and_then(Value::as_array).ok_or_else(invalid)?;
+            work = work.saturating_add(indices.len());
+            if !(4..=solvecraft_sketch::MAX_SPLINE_POINTS).contains(&indices.len())
+                || work > 1_000_000
+                || curve.get("control").is_some_and(|control| control.as_bool() != Some(false))
+                || curve.get("degree").is_some_and(|degree| degree.as_u64() != Some(3))
+            {
+                return Err(invalid());
+            }
+            let count = points.ok_or_else(invalid)?.len();
+            if indices.iter().any(|index| index.as_u64().is_none_or(|index| index >= count as u64)) {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_freeform_offsets(value: &Value) -> Result<()> {
     let Some(features) = value.get("features").and_then(Value::as_array) else { return Ok(()) };
     for feature in features {
@@ -362,6 +419,27 @@ fn validate_freeform_offsets(value: &Value) -> Result<()> {
         let records = records.as_array().ok_or_else(invalid)?;
         if records.len() > 128 {
             return Err(invalid());
+        }
+        let periodic_outputs: std::collections::BTreeSet<_> = records
+            .iter()
+            .filter(|record| record.get("certificate").and_then(Value::as_u64) == Some(2))
+            .filter_map(|record| record.get("output").and_then(Value::as_str))
+            .collect();
+        let mut periodic_curves = std::collections::BTreeMap::new();
+        if !periodic_outputs.is_empty()
+            && let Some(curves) = feature.get("sketch").and_then(|sketch| sketch.get("curves")).and_then(Value::as_array)
+        {
+            if curves.len() > 1_000_000 {
+                return Err(invalid());
+            }
+            for curve in curves {
+                if let Some(id) = curve.get("id").and_then(Value::as_str)
+                    && periodic_outputs.contains(id)
+                    && periodic_curves.insert(id, curve).is_some()
+                {
+                    return Err(invalid());
+                }
+            }
         }
         let mut outputs = std::collections::BTreeSet::new();
         for record in records {
@@ -396,11 +474,21 @@ fn validate_freeform_offsets(value: &Value) -> Result<()> {
                 || !(1e-9..=MAX_REAL).contains(&distance.abs())
                 || !tolerance.is_finite()
                 || !(tolerance > 0.0 && tolerance <= 0.002)
-                || record.get("certificate").and_then(Value::as_u64) != Some(1)
+                || !matches!(record.get("certificate").and_then(Value::as_u64), Some(1 | 2))
                 || record.get("forward").and_then(Value::as_bool).is_none()
                 || record.get("closed").and_then(Value::as_bool).is_none()
             {
                 return Err(invalid());
+            }
+            if record.get("certificate").and_then(Value::as_u64) == Some(2) {
+                let output_curve = periodic_curves.get(output);
+                if record.get("closed").and_then(Value::as_bool) != Some(true)
+                    || output_curve.is_none_or(|curve| {
+                        curve.get("type").and_then(Value::as_str) != Some("spline") || curve.get("periodic").and_then(Value::as_bool) != Some(true)
+                    })
+                {
+                    return Err(invalid());
+                }
             }
         }
         let mut resolved = std::collections::BTreeSet::new();
@@ -671,6 +759,129 @@ mod tests {
         assert!(validate_freeform_offsets(&value).is_ok());
         let error = read(&value.to_string()).unwrap_err().to_string();
         assert!(error.contains("damaged design"), "{error}");
+    }
+
+    #[test]
+    fn malformed_face_anchors_are_refused_before_typed_decoding() {
+        let anchor = serde_json::json!({
+            "target":{"body":"Base", "origin_feature":1, "name":"Base:+z", "point":[0,0,10],
+                "certificate":{"kind":"box", "axis":2, "high":true}},
+            "component":0, "path":[], "author_path":[], "coordinates":[0,0], "x_axis":[1,0]
+        });
+        let make = |anchor: Value| {
+            serde_json::json!({"features":[{"type":"sketch", "plane":{
+                "type":"face", "anchor":anchor
+            }}]})
+        };
+        assert!(crate::face_anchor::validate_face_anchors_json(&make(anchor.clone())).is_ok());
+        let mut nested = serde_json::json!({"features":[{"type":"sketch", "plane":{
+            "type":"offset", "base":{"type":"at_angle", "base":{"type":"face", "anchor":anchor.clone()}}
+        }}]});
+        assert!(crate::face_anchor::validate_face_anchors_json(&nested).is_ok());
+        nested["features"][0]["plane"]["base"]["base"]["anchor"]["coordinates"] = serde_json::json!([0, 0, 0]);
+        assert!(crate::face_anchor::validate_face_anchors_json(&nested).is_err());
+        let mut malformed = Vec::new();
+        for (key, damaged) in [
+            ("component", serde_json::json!(-1)),
+            ("path", serde_json::json!([0])),
+            ("author_path", serde_json::json!((1..=65).collect::<Vec<u64>>())),
+            ("coordinates", serde_json::json!([1_000_000_001_u64, 0])),
+            ("coordinates", serde_json::json!([0])),
+            ("x_axis", serde_json::json!([0, 0])),
+            ("unknown", serde_json::json!(true)),
+        ] {
+            let mut candidate = anchor.clone();
+            candidate[key] = damaged;
+            malformed.push(candidate);
+        }
+        let mut missing_certificate = anchor.clone();
+        missing_certificate["target"].as_object_mut().unwrap().remove("certificate");
+        malformed.push(missing_certificate);
+        let mut invalid_role = anchor;
+        invalid_role["target"]["certificate"]["axis"] = Value::from(3);
+        malformed.push(invalid_role);
+        for candidate in malformed {
+            let value = make(candidate);
+            assert!(crate::face_anchor::validate_face_anchors_json(&value).is_err());
+            let error = read(&value.to_string()).unwrap_err().to_string();
+            assert!(!error.contains("design file:"), "must refuse before typed decode: {error}");
+        }
+    }
+
+    #[test]
+    fn periodic_markers_are_bounded_before_typed_decoding() {
+        let curve = serde_json::json!({"id":"closed", "type":"spline", "pts":[0,1,2,3], "periodic":true});
+        let make = |curve: Value| {
+            serde_json::json!({"features":[{"type":"sketch", "sketch":{
+                "points":[{}, {}, {}, {}], "curves":[curve]
+            }}]})
+        };
+        assert!(validate_versioned_geometry(&make(curve.clone())).is_ok());
+        for (key, malformed) in [
+            ("periodic", serde_json::json!("true")),
+            ("control", serde_json::json!(true)),
+            ("degree", serde_json::json!(2)),
+            ("pts", serde_json::json!([0, 1, 2])),
+            ("pts", serde_json::json!([0, 1, 2, u64::MAX])),
+            ("pts", serde_json::json!(vec![0; solvecraft_sketch::MAX_SPLINE_POINTS + 1])),
+        ] {
+            let mut damaged = curve.clone();
+            damaged[key] = malformed;
+            assert!(validate_versioned_geometry(&make(damaged)).is_err(), "{key}");
+        }
+        let mut legacy = curve;
+        legacy.as_object_mut().unwrap().remove("periodic");
+        legacy["control"] = Value::Bool(true);
+        assert!(validate_versioned_geometry(&make(legacy)).is_ok());
+        for convention in [serde_json::json!(null), serde_json::json!(false), serde_json::json!("unknown")] {
+            assert!(validate_versioned_geometry(&serde_json::json!({"features":[{"type":"revolve", "convention":convention}]})).is_err());
+        }
+    }
+
+    #[test]
+    fn periodic_offset_certificate_requires_closed_periodic_output() {
+        let record = serde_json::json!({"source":"ellipse", "output":"offset", "forward":true,
+            "distance":2.0, "divisions":8, "pieces":4, "closed":true,
+            "tolerance":0.002, "certificate":2});
+        let mut value = serde_json::json!({"features":[{"type":"sketch", "sketch":{
+            "freeform_offsets":[record], "curves":[{"id":"offset", "type":"spline", "periodic":true}]
+        }}]});
+        assert!(validate_freeform_offsets(&value).is_ok());
+        let duplicate = value["features"][0]["sketch"]["curves"][0].clone();
+        value["features"][0]["sketch"]["curves"].as_array_mut().unwrap().push(duplicate);
+        assert!(validate_freeform_offsets(&value).is_err(), "periodic output ID must be unique");
+        value["features"][0]["sketch"]["curves"].as_array_mut().unwrap().pop();
+        value["features"][0]["sketch"]["curves"][0]["periodic"] = Value::Bool(false);
+        assert!(validate_freeform_offsets(&value).is_err());
+        value["features"][0]["sketch"]["curves"][0]["periodic"] = Value::Bool(true);
+        value["features"][0]["sketch"]["freeform_offsets"][0]["closed"] = Value::Bool(false);
+        assert!(validate_freeform_offsets(&value).is_err());
+        value["features"][0]["sketch"]["freeform_offsets"][0]["certificate"] = Value::from(1);
+        assert!(validate_freeform_offsets(&value).is_ok(), "legacy certificate semantics remain valid");
+    }
+
+    #[test]
+    fn periodic_file_validation_refuses_damaged_closed_geometry() {
+        use solvecraft_geom::Vec2;
+        use solvecraft_sketch::{CurveKind, Sketch};
+        let mut sketch = Sketch::new();
+        let mut pts = Vec::new();
+        for point in [Vec2::ZERO, Vec2::new(10.0, 0.0), Vec2::new(0.0, 10.0), Vec2::ZERO] {
+            pts.push(sketch.add_point(point, None).unwrap());
+        }
+        let first = pts[0];
+        let neighbor = pts[1];
+        let closing = pts[3];
+        sketch.add_curve(CurveKind::Spline { pts, control: false, degree: 3, periodic: true }, None).unwrap();
+        let mut document = Document::new("periodic file validation");
+        document.add_feature(crate::FeatureKind::Sketch { plane: crate::PlaneRef::Origin { name: "XY".into() }, sketch }, None).unwrap();
+        assert_eq!(read(&document.to_json()).unwrap(), document);
+        let mut value: Value = serde_json::from_str(&document.to_json()).unwrap();
+        value["features"][0]["sketch"]["points"][closing]["pos"] = serde_json::json!([1, 0]);
+        assert!(read(&value.to_string()).unwrap_err().to_string().contains("periodic"));
+        value["features"][0]["sketch"]["points"][closing]["pos"] = value["features"][0]["sketch"]["points"][first]["pos"].clone();
+        value["features"][0]["sketch"]["points"][neighbor]["pos"] = value["features"][0]["sketch"]["points"][first]["pos"].clone();
+        assert!(read(&value.to_string()).unwrap_err().to_string().contains("periodic"));
     }
 
     #[test]

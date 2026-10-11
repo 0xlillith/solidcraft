@@ -50,6 +50,7 @@ pub struct TreeState {
     pub occurrence_move: Option<OccMove>,
     /// The Redefine Sketch Plane panel (sketch id).
     pub redefine: Option<u64>,
+    pub redefine_draft: Option<crate::sketch_attachment_ui::Draft>,
     /// Components picked in the tree (they have no viewport selection).
     pub picked_components: Vec<u64>,
     /// Canvases picked in the tree.
@@ -112,6 +113,7 @@ pub fn set_sketch_visible(app: &mut SolveApp, id: u64, on: bool) {
 
 pub fn redefine_sketch(app: &mut SolveApp, id: u64) {
     app.tree.redefine = Some(id);
+    app.tree.redefine_draft = Some(crate::sketch_attachment_ui::Draft::new(app, id));
 }
 
 fn find_group(app: &SolveApp, id: u64) -> Option<&solvecraft_engine::doc::BrowserGroup> {
@@ -523,7 +525,8 @@ pub fn browser(app: &mut SolveApp, ui: &mut egui::Ui) {
     occurrence_panel(app, ui);
     capture_prompt(app, ui.ctx());
     canvas_panel(app, ui.ctx());
-    redefine_panel(app, ui.ctx());
+    let repair_anchor = app.viewport.rect.map(|rect| rect.right_top() + vec2(-16.0, 16.0)).unwrap_or_else(|| ui.ctx().content_rect().right_top());
+    crate::sketch_attachment_ui::panel(app, ui.ctx(), repair_anchor);
 }
 
 fn component_name(app: &SolveApp, id: u64) -> String {
@@ -1141,14 +1144,22 @@ fn entries(app: &SolveApp, comp: u64, folder: &str) -> Vec<Entry> {
             .filter(|f| f.component == comp && matches!(f.kind, FeatureKind::Sketch { .. }))
             .map(|f| {
                 let active = app.session.active_sketch == Some(f.id);
+                let lost = app.session.model.result(f.id).is_some_and(|result| result.error.is_some())
+                    && matches!(doc.sketch_face_attachment(f.id, &app.session.model), solvecraft_engine::doc::FaceAttachmentStatus::Lost { .. });
                 Entry {
                     key: f.id.to_string(),
                     row_key: format!("s:{}", f.id),
-                    label: if active { format!("{}  (editing)", f.name) } else { f.name.clone() },
+                    label: if lost {
+                        format!("{}  (attachment lost)", f.name)
+                    } else if active {
+                        format!("{}  (editing)", f.name)
+                    } else {
+                        f.name.clone()
+                    },
                     icon: "sketch",
                     visible: sketch_visible(app, f.id),
                     selected: active || sel.iter().any(|x| matches!(x, Sel::Feature { id } if *id == f.id)),
-                    color: active.then_some(t.sketch_accent),
+                    color: if lost { Some(t.error) } else { active.then_some(t.sketch_accent) },
                     locked: false,
                     sel: Some(Sel::Feature { id: f.id }),
                     target: Some(Target::Sketch { id: f.id }),
@@ -1804,47 +1815,4 @@ fn occurrence_origin(app: &SolveApp, occurrence: u64) -> Option<solvecraft_engin
     let parent = app.session.doc.component_transform(o.parent);
     let own = app.session.pending_moves.get(&occurrence).copied().unwrap_or(o.transform);
     Some(solvecraft_engine::doc::apply_point(&solvecraft_engine::doc::mat_mul(&parent, &own), solvecraft_engine::geom::Vec3::ZERO))
-}
-
-/// Redefine Sketch Plane: pick an origin or construction plane, or the selected planar face.
-fn redefine_panel(app: &mut SolveApp, ctx: &egui::Context) {
-    let Some(id) = app.tree.redefine else { return };
-    let name = app.session.doc.feature(id).map(|f| f.name.clone()).unwrap_or_default();
-    let mut planes: Vec<String> = vec!["XY".into(), "XZ".into(), "YZ".into()];
-    planes.extend(app.session.doc.features.iter().filter(|f| matches!(f.kind, FeatureKind::ConstructionPlane { .. })).map(|f| f.name.clone()));
-    let face = app.session.selection.iter().find_map(|s| if let Sel::Face { point, .. } = s { Some(*point) } else { None });
-    let mut open = true;
-    let mut pick: Option<Value> = None;
-    crate::frame::window(ctx, format!("Redefine Sketch Plane: {name}"), crate::frame::Width::Normal)
-        .id(egui::Id::new("sc_redefine"))
-        .pivot(egui::Align2::LEFT_TOP)
-        .default_pos(panel_pos(app))
-        .open(&mut open)
-        .resizable(false)
-        .collapsible(false)
-        .show(ctx, |ui| {
-            ui.label(RichText::new("Move the sketch to").color(Tokens::get().text_dim));
-            ui.horizontal_wrapped(|ui| {
-                for p in &planes {
-                    if ui.button(p).clicked() {
-                        pick = Some(json!(p));
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            let b = ui.add_enabled(face.is_some(), egui::Button::new("Selected face"));
-            if b.clicked()
-                && let Some(f) = face
-            {
-                pick = Some(json!({ "face": [f.x, f.y, f.z] }));
-            }
-            b.on_disabled_hover_text("Select a planar face in the viewport first");
-        });
-    if let Some(plane) = pick {
-        if app.run("sketch.redefine", json!({ "sketch": id, "plane": plane })).is_ok() {
-            app.tree.redefine = None;
-        }
-    } else if !open {
-        app.tree.redefine = None;
-    }
 }

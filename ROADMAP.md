@@ -46,7 +46,7 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 | # | Milestone | Status | Hours left |
 |---|---|---|---|
 | M0 | Vertical slice | done | — |
-| M1 | Sketch depth: command coverage implemented — projection/intersect/include as linked geometry (auto-project on faces, lost-reference warnings, break link), full SKETCH create/modify set (slots, polygons, tangent arcs/circles, ellipse, fit/control splines, conic, text, trim/extend/break, fillet/chamfer, offset, mirror, patterns, move/scale, blend curve, centerline), constraints incl. curvature and polygon with over-constraint refusal, driven/arc-length/linear-diameter dimensions, AutoConstrain, DXF/SVG insert, 3D sketch curves (Project To Surface, Intersection Curve, Isoparametric Curve, Spun Profile), exact free-form profiles (B-spline/NURBS edges, any spline degree, curves cut by crossings), sweeps and pipes along 3D sketch curves, canvases and decals, curvature combs. Exact free-form Extend and certified associative offsets now preserve geometry and IDs through edits, deletion and reopen. Occurrence-frame 3D wires now store explicit coordinate spaces and retain points and analytic fits through moves, refresh, undo and reopen. Remaining workflow repairs: mixed offset junctions, periodic closed spline seams, and damaged legacy wire links lacking frame provenance | in progress | 4 |
+| M1 | Sketch depth: command coverage implemented — projection/intersect/include as linked geometry (auto-project on faces, lost-reference warnings, break link), full SKETCH create/modify set (slots, polygons, tangent arcs/circles, ellipse, fit/control splines, conic, text, trim/extend/break, fillet/chamfer, offset, mirror, patterns, move/scale, blend curve, centerline), constraints incl. curvature and polygon with over-constraint refusal, driven/arc-length/linear-diameter dimensions, AutoConstrain, DXF/SVG insert, 3D sketch curves (Project To Surface, Intersection Curve, Isoparametric Curve, Spun Profile), exact free-form profiles (B-spline/NURBS edges, any spline degree, curves cut by crossings), sweeps and pipes along 3D sketch curves, canvases and decals, curvature combs. Exact free-form Extend and certified associative offsets now preserve geometry and IDs through edits, deletion and reopen. Occurrence-frame 3D wires now store explicit coordinate spaces and retain points and analytic fits through moves, refresh, undo and reopen. Remaining workflow repairs: mixed offset junctions, legacy natural-spline seams, and damaged legacy wire links lacking frame provenance | in progress | 4 |
 | M2 | Robust modelling: coplanar booleans in the kernel, holes (placed on faces and on sketch points), threads (cosmetic, then modelled), patterns, mirror, shell, draft, split, construction geometry | in progress | 16 |
 | M3 | General fillets and chamfers (curved edges, chains, vertex blends); saddle rolling-ball surfaces now use continuous seam sections and arc-length fitting with shared contact boundaries and bounded accuracy checks | in progress | 30 |
 | M4 | Files: STEP import (done: all 29 Fusion STEP files — [docs/step-import.md](docs/step-import.md)), 3MF export and 3MF/STL import as mesh bodies (done), DXF sketches, OBJ import | in progress | 6 |
@@ -59,7 +59,7 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 | M11 | 2D drawings | deferred | — |
 | M12 | Release: installers, signing, docs, performance | planned | 16 |
 | M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Ordered typed configuration rules, atomic validation and structured rule editing: done. Component appearance and certified semantic face style columns, atomic preview/apply and independent-copy remapping: done. Exact constructed sketch-side and immutable imported-face lineage now preserve legacy names and reject retargeting. Left: ambiguous shifted/two-sided caps | in progress | 4 |
-| M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/10"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
+| M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solvecraft/11"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solvecraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
 
 ## Known limitations
 
@@ -100,6 +100,11 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Persistent naming (plan/adr/0002) names faces from their history and edges by their faces;
   references resolve by name first and warn when the entity split or vanished. Kernel-reported
   face history (exact through coincident surfaces) is not wired in yet.
+  New planar sketch attachments use exact box, extrusion cap/side and immutable imported-face
+  source certificates with checked target and author occurrence paths. A missing or changed
+  source fails explicitly; Redefine Sketch Plane previews reattachment or a fixed plane while
+  retaining current geometry and dimension identities. Unsupported modified faces need an
+  explicit fixed plane. Legacy attachments retain their original resolver behavior.
 - Modelled threads are cut as a faceted body (curved faces within 1/200 of the pitch); Extrude
   and Revolve To Object on a curved face cut the tool back to the target's surface.
 - Explicit sketch breaks preserve exact ellipses, fit/control splines (including high degrees)
@@ -110,7 +115,12 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   circular support. Associative free-form offsets have a whole-span 0.002 mm normal-distance
   certificate and refine within bounded node limits while retaining existing IDs. Singular,
   self-intersecting and ambiguous curves refuse atomically; mixed junctions and nonsmooth
-  closed natural-spline seams remain limitations.
+  closed natural-spline seams remain limitations. New explicitly closed fit splines and closed
+  offset outputs use periodic C2 interpolation, supporting repeated certified offsets; older
+  natural splines are preserved. Clicking the starting fit point deliberately closes a new loop.
+  Projected analytic boundaries follow nested loop identities through resizing, including
+  stationary holes and rounded corners. An inset that consumes a corner arc still reports
+  a collapse error; changing the associated output topology remains unfinished.
 - Extrude and Revolve editors retain original direction, extent expressions, explicit targets,
   axes, From/To inputs and All-profile intent. No-op edits preserve downstream dimension names
   and selected occurrence frames; cancel and successful edits preserve one-step undo history.
@@ -118,7 +128,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   use the sketch's actual target, author or uniquely placed third-component frame.
   Revolve rotators follow the actual signed axis and support symmetric and two-sided extents;
   dragging a To Object extent converts its derived value to an explicit angle. Legacy reversed-axis
-  symmetric geometry is preserved; correcting that saved behavior needs versioned semantics.
+  symmetric geometry is preserved through format 11's explicit legacy convention. New revolves
+  use the sketch-normal direction for each selected profile, including To Object and curved
+  target trimming, independently of the selected axis sign.
 - Cylindrical emboss/deboss wraps bounded orthogonal line profiles, including holes, concave
   outlines and nested islands, onto complete exterior cylinders or coaxial sleeves with exact
   radial walls. New features infer a unique eligible cylinder when the face field is empty;

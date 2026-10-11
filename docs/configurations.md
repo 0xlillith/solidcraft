@@ -146,6 +146,6 @@ value lists support up to 128 expressions. These bounds are checked before saved
 decoded. Driven appearance/material rules and repeated fixed-point evaluation are outside
 the current rule scope.
 
-Designs saved with source-certified face styles use file format 10. Older designs upgrade on opening without
+Newly saved designs use file format 11, including optional durable face attachments. Older designs upgrade on opening without
 changing their existing configuration values. Older SolveCraft versions must be updated to
 open newly saved designs.

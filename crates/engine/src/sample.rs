@@ -21,14 +21,14 @@ pub fn script() -> Value {
         {"command": "sketch.circle.center", "params": {"center": [68, 25], "diameter": 8}},
         {"command": "sketch.finish", "params": {}},
         {"command": "solid.extrude", "params": {"distance": "thickness", "operation": "cut", "name": "Holes"}},
-        {"command": "sketch.create", "params": {"plane": {"face": [40, 25, 8]}, "name": "Boss"}},
+        {"command": "sketch.create", "params": {"plane": "XY", "offset": "thickness", "name": "Boss"}},
         {"command": "sketch.circle.center", "params": {"center": [40, 25], "diameter": 24}},
         {"command": "sketch.finish", "params": {}},
         {"command": "solid.extrude", "params": {"distance": 14, "operation": "join", "name": "Boss"}},
-        {"command": "sketch.create", "params": {"plane": {"face": [40, 37, 22]}, "name": "Bore"}},
+        {"command": "sketch.create", "params": {"plane": "XY", "offset": "thickness + 14 mm", "name": "Bore"}},
         {"command": "sketch.circle.center", "params": {"center": [40, 25], "diameter": 12}},
         {"command": "sketch.finish", "params": {}},
-        {"command": "solid.extrude", "params": {"distance": 22, "direction": "negative", "operation": "cut", "name": "Bore"}},
+        {"command": "solid.extrude", "params": {"distance": "thickness + 14 mm", "direction": "negative", "operation": "cut", "name": "Bore"}},
     ]})
 }
 
@@ -139,6 +139,44 @@ fn vents() -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn plate_boss_and_bore_planes_follow_thickness_without_weak_face_references() {
+        let mut session = crate::Session::default();
+        session.run_script(&super::script()).unwrap();
+        let boss = session
+            .doc
+            .features
+            .iter()
+            .find(|feature| feature.name == "Boss" && matches!(feature.kind, solvecraft_doc::FeatureKind::Sketch { .. }))
+            .unwrap()
+            .id;
+        let bore = session
+            .doc
+            .features
+            .iter()
+            .find(|feature| feature.name == "Bore" && matches!(feature.kind, solvecraft_doc::FeatureKind::Sketch { .. }))
+            .unwrap()
+            .id;
+        session.execute("parameters.change", &serde_json::json!({"name":"thickness","expression":"12 mm"})).unwrap();
+        assert!(session.model.results.iter().all(|result| result.error.is_none()));
+        assert!((session.model.state().sketch(boss).unwrap().plane.origin.z - 12.).abs() < 1e-6);
+        assert!((session.model.state().sketch(bore).unwrap().plane.origin.z - 26.).abs() < 1e-6);
+        let world = session.world_state();
+        let plate = world.body("Plate").unwrap().mesh();
+        assert!((plate.bounds().max.z - 26.).abs() < 1e-6);
+        assert!(plate.contains(solvecraft_geom::Vec3::new(5., 25., 10.)));
+        assert!(plate.contains(solvecraft_geom::Vec3::new(40., 35., 24.)));
+        assert!(!plate.contains(solvecraft_geom::Vec3::new(40., 25., 24.)));
+        assert!(!plate.contains(solvecraft_geom::Vec3::new(40., 25., 2.)));
+        assert!(plate.contains(solvecraft_geom::Vec3::new(40., 35., 2.)));
+        let reopened = crate::Session::new(solvecraft_doc::Document::from_json(&session.doc.to_json()).unwrap());
+        assert!((reopened.model.state().sketch(bore).unwrap().plane.origin.z - 26.).abs() < 1e-6);
+        let reopened_world = reopened.world_state();
+        let reopened_plate = reopened_world.body("Plate").unwrap().mesh();
+        assert!(!reopened_plate.contains(solvecraft_geom::Vec3::new(40., 25., 2.)));
+        assert!(reopened_plate.contains(solvecraft_geom::Vec3::new(40., 35., 2.)));
+    }
+
     /// Every built-in sample builds without a failing feature or joint.
     #[test]
     fn samples_build_cleanly() {

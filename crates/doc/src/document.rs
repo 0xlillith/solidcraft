@@ -56,15 +56,18 @@ pub enum PlaneRef {
     AlongPath { path: Box<GeoRef>, t: String },
     /// Through a straight edge (or line, axis) and square to a plane (or planar face).
     Perpendicular { plane: Box<GeoRef>, line: Box<GeoRef> },
-    /// A planar body face: found again on each evaluation (the face with this plane's normal
-    /// nearest `at`), so sketches on it follow when earlier features change; `plane` is the
-    /// plane as picked (its frame, and the fallback when the face is gone). `name` is the face's
-    /// persistent name (found first; see `naming`).
+    /// A planar body face. Certified attachments resolve only their exact source and report
+    /// an error when it is lost; `plane` then supplies a repair guide. Legacy references without
+    /// an anchor try the persistent `name`, then the nearest parallel face at `at`, and retain
+    /// the picked `plane` as their historical fallback.
     Face {
         plane: Plane,
         at: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Exact attachment identity for newly certified faces; absent on legacy designs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        anchor: Option<Box<crate::FaceAnchor>>,
     },
 }
 
@@ -114,6 +117,16 @@ pub enum Direction {
     Negative,
     /// Both sides; `distance` per side.
     Symmetric,
+}
+
+/// Angular starts in older designs used the raw axis sign. New revolves measure starts
+/// along the same sketch-normal sweep direction as the kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevolveConvention {
+    #[default]
+    LegacyAxisStart,
+    SketchNormal,
 }
 
 /// Extent of an extrude.
@@ -282,6 +295,9 @@ pub enum FeatureKind {
         /// Symmetric: `angle` split evenly either side of the profile.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         symmetric: bool,
+        /// Missing fields retain the angular placement of existing designs.
+        #[serde(default)]
+        convention: RevolveConvention,
         /// To Object: turn until the face, vertex or point here.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to: Option<Vec3>,

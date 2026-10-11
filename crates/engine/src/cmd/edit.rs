@@ -352,6 +352,12 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
     let mut params = p.get("params").cloned().unwrap_or_else(|| json!({}));
     let idx = s.doc.feature_index(id).ok_or_else(|| bad(cmd, "feature"))?;
     let old = s.doc.feature(id).cloned().ok_or_else(|| bad(cmd, "feature"))?;
+    if let FeatureKind::Revolve { convention, .. } = &old.kind
+        && cid == "solid.revolve"
+        && let Some(parameters) = params.as_object_mut()
+    {
+        parameters.entry("convention").or_insert_with(|| json!(convention));
+    }
     if !old.participants.is_empty()
         && let Some(parameters) = params.as_object_mut()
     {

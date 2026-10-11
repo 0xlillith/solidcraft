@@ -26,6 +26,9 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Sketches** on origin planes, offset planes or planar faces: lines, rectangles, circles,
   arcs, polygons, slots, ellipses, fit/control splines, conics and text; construction geometry,
   projection, trimming, fillets and chamfers, including corners at the origin.
+  New face attachments retain supported construction identities and chosen occurrences;
+  missing sources expose an explicit plane repair workflow. See [face attachments](docs/face-attachments.md).
+  Explicitly closed fit splines and closed associative offsets use periodic C2 interpolation.
 - **Constraints and dimensions** solved by our own solver (damped Gauss–Newton with
   degree-of-freedom analysis): coincident, horizontal/vertical, parallel, perpendicular, tangent,
   equal, concentric, collinear, midpoint, symmetry, fix; linear, aligned, horizontal, vertical,
@@ -36,6 +39,8 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
   shell, draft, holes, threads, patterns, mirror, split, combine, move and construction geometry.
   The timeline rebuilds incrementally; features can be edited, suppressed, renamed, reordered
   and deleted. Supported geometry and current limitations are described in [ROADMAP.md](ROADMAP.md).
+  New revolves preserve symmetric and two-sided angular placement across reversed axes;
+  older designs retain their saved convention when reopened or edited.
 - **Parameters and configurations** with unit-aware expressions (`2 * width + 5 mm`,
   `angle / 2`), ordered rules, feature suppression and per-row body materials/appearances.
 - **Assemblies** with nested components and occurrences, joints, motion studies, contact sets,

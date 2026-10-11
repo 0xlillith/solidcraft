@@ -18,6 +18,8 @@ pub mod construct;
 mod document;
 mod eval;
 pub mod expr;
+pub mod face_anchor;
+pub use face_anchor::{FaceAnchor, FaceAttachmentStatus};
 pub mod format;
 pub mod joints;
 pub mod motion;
@@ -33,7 +35,8 @@ pub use assembly::{IDENTITY, Mat, Occurrence, apply_point, apply_vector, is_iden
 pub use document::*;
 pub use eval::{
     EdgeRef, FeatureResult, Model, ModelBody, ModelState, RevolveExtent, SolvedSketch, ThreadInfo, edge_names_for, edge_refs, object_height,
-    parse_metric_thread, pattern_matrices, revolve_extent, select_profiles, state_in_frame, state_in_frame_at, through_all_distance, world_state,
+    parse_metric_thread, pattern_matrices, revolve_extent, revolve_extent_with_convention, select_profiles, state_in_frame, state_in_frame_at,
+    through_all_distance, world_state,
 };
 pub use params::{ParamRow, ParamUser, cycles};
 pub use solvecraft_kernel as kernel;
@@ -56,4 +59,9 @@ pub enum DocError {
 pub type Result<T> = std::result::Result<T, DocError>;
 
 #[cfg(test)]
+mod named_projection_tests;
+#[cfg(test)]
 mod tests;
+
+mod anchor_frame;
+pub use anchor_frame::state_in_face_anchor_frame;

@@ -655,6 +655,21 @@ pub fn face_names_at(st: &ModelState, pts: &[Vec3]) -> Vec<String> {
         .collect()
 }
 
+/// Capture a face name from the recorded projection body only.
+pub fn face_name_at_body(body: &ModelBody, point: Vec3) -> Option<String> {
+    if body.body.is_mesh() || !point.is_finite() {
+        return None;
+    }
+    let mesh = body.mesh();
+    let count = face_count(body);
+    if mesh.triangles.len() > 2_000_000 || count > 50_000 {
+        return None;
+    }
+    let tolerance = (body.body.size() * 1e-3).max(1e-3);
+    let index = FaceIndex::new(&mesh, count).face_at(point, tolerance)?;
+    face_names(body).get(index).filter(|name| !name.is_empty()).cloned()
+}
+
 /// The point on the face with this name nearest `p` (a split face: its nearest piece, with
 /// `true` for "it was split"); `None` when no face has the name.
 pub fn point_on_face(st: &ModelState, name: &str, p: Vec3) -> Option<(Vec3, bool)> {
@@ -678,4 +693,32 @@ pub fn point_on_face(st: &ModelState, name: &str, p: Vec3) -> Option<(Vec3, bool
         }
     }
     best.map(|(_, q, split)| (q, split))
+}
+
+/// Resolve a legacy named face only on its recorded source body. Return the
+/// selected face index as well as the closest point, which may lie on a shared
+/// edge and therefore must not be used to pick the face a second time.
+pub fn face_on_body(body: &ModelBody, name: &str, p: Vec3) -> Option<(usize, Vec3, bool)> {
+    if body.body.is_mesh() {
+        return None;
+    }
+    let names = face_names(body);
+    let mesh = body.mesh();
+    let stem = strip_piece(name);
+    let mut best: Option<(f64, usize, Vec3, bool)> = None;
+    for (triangle, face) in mesh.triangles.iter().zip(&mesh.tri_face) {
+        let index = usize::try_from(*face).ok()?;
+        let Some(candidate) = names.get(index) else { continue };
+        let exact = candidate == name;
+        if !exact && strip_piece(candidate) != stem {
+            continue;
+        }
+        let Some([a, b, c]) = mesh.tri(triangle) else { continue };
+        let q = closest(p, a, b, c);
+        let distance = q.dist(p) - if exact { 1e-9 } else { 0. };
+        if best.is_none_or(|(old, _, _, _)| distance < old) {
+            best = Some((distance, index, q, !exact));
+        }
+    }
+    best.map(|(_, index, q, split)| (index, q, split))
 }

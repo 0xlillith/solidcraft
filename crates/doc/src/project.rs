@@ -32,6 +32,9 @@ pub struct Resolved {
     pub source: LinkSource,
     /// The reference was not exactly where it was and was re-found on the nearest geometry.
     pub moved: bool,
+    /// Exact face selected during this resolution, before its closest point is
+    /// projected onto an edge shared with another face. Computed metadata only.
+    pub face_index: Option<usize>,
 }
 
 /// Resolutions of body-based references, keyed by the reference, the sketch plane and the
@@ -94,6 +97,7 @@ fn resolve_uncached(
 ) -> Result<Resolved> {
     let lost = |what: &str| DocError::Invalid(format!("{what} no longer exists"));
     let mut moved = false;
+    let mut face_index = None;
     let mut source = src.clone();
     let mut wires: Vec<Vec<Vec3>> = Vec::new();
     // Included curves that leave the sketch plane stay 3D.
@@ -125,6 +129,7 @@ fn resolve_uncached(
         LinkSource::Face { body, at } => {
             let (bi, mesh) = body_mesh(st, body, *at)?;
             let (f, q, d) = nearest_face(&mesh, *at).ok_or_else(|| lost("the face"))?;
+            face_index = Some(usize::try_from(f).map_err(|_| DocError::Invalid("face index exceeds platform limit".into()))?);
             let size = mesh.bounds().diagonal().max(1e-9);
             if d > size * 0.25 {
                 return Err(lost("the face"));
@@ -267,19 +272,130 @@ fn resolve_uncached(
     if geom.is_empty() && wires.is_empty() {
         return Err(DocError::Invalid(format!("the {} projects to nothing on this sketch plane", src.describe())));
     }
-    Ok(Resolved { geom: merge_split_circles(geom), wires, source, moved })
+    Ok(Resolved { geom: merge_split_circles(geom), wires, source, moved, face_index })
 }
 
 /// Re-resolve every link of a sketch (in place). Returns warnings for lost, moved or rebuilt
 /// links; lost links keep their last geometry.
+fn lost(reference: &str) -> DocError {
+    DocError::Unknown(format!("{reference} no longer exists"))
+}
+
+fn resolve_named_face(st: &ModelState, plane: &Plane, kind: LinkKind, body: &str, index: usize, at: Vec3) -> Result<Resolved> {
+    let target = st.body(body).ok_or_else(|| lost("named projection body"))?;
+    let mesh = target.mesh();
+    if mesh.triangles.len() > 2_000_000 || mesh.edges.len() > 2_000_000 {
+        return Err(DocError::Invalid("named face projection work limit exceeded".into()));
+    }
+    let face_index = Some(index);
+    let index = u32::try_from(index).map_err(|_| DocError::Invalid("named projection face index exceeds limit".into()))?;
+    let geom = if kind == LinkKind::Intersect {
+        section(plane, &mesh, Some(index))
+    } else {
+        let mut geom = Vec::new();
+        for edge in order::face_edges(&mesh, index, plane)? {
+            if mesh.seams.get(edge).copied().unwrap_or(false) {
+                continue;
+            }
+            if let Some(points) = mesh.edges.get(edge) {
+                geom.extend(fit_world(plane, points));
+            }
+        }
+        merge_split_circles(geom)
+    };
+    if geom.is_empty() {
+        return Err(DocError::Invalid("named face projects to nothing on this sketch plane".into()));
+    }
+    Ok(Resolved { geom, wires: Vec::new(), source: LinkSource::Face { body: body.into(), at }, moved: false, face_index })
+}
+
+pub fn resolve_anchored_face(doc: &Document, st: &ModelState, plane: &Plane, kind: LinkKind, anchor: &crate::FaceAnchor) -> Result<Resolved> {
+    let body = st.body(&anchor.target.body).ok_or_else(|| lost("anchored projection body"))?;
+    let indices = doc.configuration_face_indices(body, &anchor.target)?;
+    resolve_face_indices(st, plane, kind, &body.name, &indices)
+}
+
+/// Project explicitly selected current face indices, without claiming persistent provenance.
+/// Callers retaining a link must supply their own replay identity policy.
+pub fn resolve_face_indices(st: &ModelState, plane: &Plane, kind: LinkKind, body_name: &str, indices: &[usize]) -> Result<Resolved> {
+    let body = st.body(body_name).ok_or_else(|| lost("projection body"))?;
+    let mesh = body.mesh();
+    if mesh.triangles.len() > 2_000_000 || indices.len() > 10_000 {
+        return Err(DocError::Invalid("anchored projection work limit exceeded".into()));
+    }
+    let work = mesh.triangles.len().saturating_add(mesh.edges.len()).saturating_mul(indices.len());
+    if work > 10_000_000 {
+        return Err(DocError::Invalid("anchored projection aggregate work limit exceeded".into()));
+    }
+    let selected: std::collections::BTreeSet<_> = indices.iter().copied().collect();
+    let mut geometry = Vec::new();
+    for index in indices {
+        let index = u32::try_from(*index).map_err(|_| DocError::Invalid("anchored face index exceeds format bounds".into()))?;
+        if kind == LinkKind::Intersect {
+            geometry.extend(section(plane, &mesh, Some(index)));
+        } else {
+            for edge in order::face_edges(&mesh, index, plane)? {
+                if mesh.seams.get(edge).copied().unwrap_or(false) {
+                    continue;
+                }
+                if let Some(points) = mesh.edges.get(edge) {
+                    geometry.extend(fit_world(plane, points));
+                }
+            }
+        }
+    }
+    let point = mesh
+        .triangles
+        .iter()
+        .zip(&mesh.tri_face)
+        .find_map(|(triangle, face)| selected.contains(&(*face as usize)).then(|| mesh.tri(triangle)).flatten().map(|[a, b, c]| (a + b + c) / 3.0))
+        .ok_or_else(|| lost("anchored projection face"))?;
+    if geometry.is_empty() {
+        return Err(lost("anchored projection boundaries"));
+    }
+    Ok(Resolved {
+        geom: merge_split_circles(geometry),
+        wires: Vec::new(),
+        source: LinkSource::Face { body: body.name.clone(), at: point },
+        moved: false,
+        face_index: if indices.len() == 1 { indices.first().copied() } else { None },
+    })
+}
+
+pub fn refresh_face_anchor_links(
+    doc: &Document,
+    vals: &BTreeMap<String, Value>,
+    st: &ModelState,
+    plane: &Plane,
+    sk: &mut Sketch,
+    anchor: &crate::FaceAnchor,
+) -> Vec<String> {
+    refresh_links_in(doc, vals, st, plane, sk, Some(anchor))
+}
+
 pub fn refresh_links(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelState, plane: &Plane, sk: &mut Sketch) -> Vec<String> {
+    refresh_links_in(doc, vals, st, plane, sk, None)
+}
+
+fn refresh_links_in(
+    doc: &Document,
+    vals: &BTreeMap<String, Value>,
+    st: &ModelState,
+    plane: &Plane,
+    sk: &mut Sketch,
+    anchor: Option<&crate::FaceAnchor>,
+) -> Vec<String> {
     let mut warn = Vec::new();
     let links = sk.links.clone();
     for l in &links {
         let mut source = l.source.clone();
-        if let (Some(name), LinkSource::Face { at, .. }) = (&l.face_name, &mut source) {
-            if let Some((p, split)) = crate::naming::point_on_face(st, name, *at) {
+        let mut named_face = None;
+        if !l.auto_face
+            && let (Some(name), LinkSource::Face { body, at }) = (&l.face_name, &mut source)
+        {
+            if let Some((index, p, split)) = st.body(body).and_then(|target| crate::naming::face_on_body(target, name, *at)) {
                 *at = p;
+                named_face = Some((body.clone(), index, p));
                 if split {
                     warn.push(format!("projected face `{name}` was split; using the nearest piece"));
                 }
@@ -289,7 +405,19 @@ pub fn refresh_links(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelS
                 continue;
             }
         }
-        match resolve(doc, vals, st, plane, l.kind, &source) {
+        let resolved = if l.auto_face {
+            anchor
+                .filter(|anchor| {
+                    l.face_name.as_ref() == Some(&anchor.target.name) && matches!(&l.source,LinkSource::Face {body,..} if *body==anchor.target.body)
+                })
+                .ok_or_else(|| lost("exact auto-projected attachment"))
+                .and_then(|anchor| resolve_anchored_face(doc, st, plane, l.kind, anchor))
+        } else if let Some((body, index, at)) = named_face {
+            resolve_named_face(st, plane, l.kind, &body, index, at)
+        } else {
+            resolve(doc, vals, st, plane, l.kind, &source)
+        };
+        match resolved {
             Ok(r) => {
                 sk.set_link_source(&l.id, r.source);
                 let _ = sk.set_link_wires(&l.id, &r.wires);
@@ -442,9 +570,9 @@ fn project_sketch_curve(sk: &Sketch, from: &Plane, ci: usize, to: &Plane) -> Vec
             (Some(c), Some(m)) => vec![LinkGeom::Ellipse { c: map(c), major: map(m), minor: *r }],
             _ => Vec::new(),
         },
-        Some(CurveKind::Spline { pts, control, degree }) if parallel => {
+        Some(CurveKind::Spline { pts, control, degree, periodic }) if parallel => {
             let p: Option<Vec<Vec2>> = pts.iter().map(|q| sk.point(*q).map(map)).collect();
-            p.map(|pts| vec![LinkGeom::Spline { pts, control: *control, degree: *degree }]).unwrap_or_default()
+            p.map(|pts| vec![LinkGeom::Spline { pts, control: *control, degree: *degree, periodic: *periodic }]).unwrap_or_default()
         }
         Some(CurveKind::Conic { a, b, apex, rho }) if parallel => match (sk.point(*a), sk.point(*apex), sk.point(*b)) {
             (Some(a), Some(x), Some(b)) => vec![LinkGeom::Conic { a: map(a), apex: map(x), b: map(b), rho: *rho }],
@@ -560,7 +688,7 @@ fn as_spline(pts: &[Vec2], tol: f64) -> Option<LinkGeom> {
                 <= tol
         });
         if ok {
-            return Some(LinkGeom::Spline { pts: fit, control: false, degree: 3 });
+            return Some(LinkGeom::Spline { pts: fit, control: false, degree: 3, periodic: false });
         }
     }
     None

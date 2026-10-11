@@ -690,6 +690,119 @@ fn certified_offset_delete_output_undo_reopen_and_refuse_dependent_source() {
     run(&mut s, "sketch.delete", json!({"entities":[node]}));
     assert!(sketch(&s).freeform_offsets.is_empty());
     assert!(sketch(&s).curve_index(&id).is_none());
+    assert_eq!(sketch(&s).points.len(), 3, "all private derived nodes must be removed");
+}
+
+#[test]
+fn periodic_closed_offset_chain_break_drag_reopen_and_material_volume() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.ellipse", json!({"center":[0,0],"major":[10,0],"minor_radius":5}));
+    run(&mut s, "sketch.dimension", json!({"entities":["e1"],"type":"major","value":10}));
+    let source = sketch(&s).points.clone();
+    let a = run(&mut s, "sketch.offset", json!({"curves":["e1"],"distance":-1,"chain":false}))["curves"][0].as_str().unwrap().to_string();
+    let before_second = s.doc.to_json();
+    let b = run(&mut s, "sketch.offset", json!({"curves":[a],"distance":-0.5,"chain":false}))["curves"][0].as_str().unwrap().to_string();
+    assert_eq!(&sketch(&s).points[..source.len()], source.as_slice());
+    let check = |session: &Session| {
+        let sk = sketch(session);
+        assert_eq!(sk.freeform_offsets.iter().map(|r| r.certificate).collect::<Vec<_>>(), [2, 2]);
+        assert_eq!(solvecraft_sketch::find_profiles(&sk).len(), 3);
+        for id in [&a, &b] {
+            assert!(matches!(sk.curves[sk.curve_index(id).unwrap()].kind, CurveKind::Spline { periodic: true, .. }));
+        }
+    };
+    check(&s);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before_second);
+    run(&mut s, "edit.redo", json!({}));
+    check(&s);
+    run(&mut s, "parameters.change", json!({"name":"d1","expression":12}));
+    check(&s);
+    let mut reopened =
+        Session { doc: solvecraft_doc::format::read(&s.doc.to_json()).unwrap().into(), active_sketch: s.active_sketch, ..Default::default() };
+    reopened.refresh();
+    check(&reopened);
+    let attached = reopened.doc.to_json();
+    let exact_before = sketch(&reopened).exact_segs(sketch(&reopened).curve_index(&b).unwrap()).unwrap();
+    run(&mut reopened, "sketch.offset.break", json!({"curve":b}));
+    let sk = sketch(&reopened);
+    assert_eq!(sk.exact_segs(sk.curve_index(&b).unwrap()).unwrap(), exact_before);
+    let points = sk.curves[sk.curve_index(&b).unwrap()].kind.point_ids();
+    let first = sk.points[points[0]].id.clone();
+    let from = sk.points[points[0]].pos;
+    run(&mut reopened, "sketch.drag", json!({"entity":first,"from":from,"to":[from.x+0.2,from.y+0.1]}));
+    let moved = sketch(&reopened);
+    moved.validate_periodic_splines().unwrap();
+    let indices = moved.curves[moved.curve_index(&b).unwrap()].kind.point_ids();
+    assert_eq!(moved.point(indices[0]), moved.point(*indices.last().unwrap()));
+    assert!(moved.point(indices[0]).unwrap().dist(from) > 0.1);
+    assert_eq!(solvecraft_doc::format::read(&reopened.doc.to_json()).unwrap().to_json(), reopened.doc.to_json());
+    run(&mut reopened, "edit.undo", json!({}));
+    run(&mut reopened, "edit.undo", json!({}));
+    assert_eq!(reopened.doc.to_json(), attached);
+    // An independent ring area multiplied by height probes actual profile material.
+    let regions = solvecraft_sketch::find_profiles(&sketch(&s));
+    let selected = regions.iter().enumerate().min_by(|(_, x), (_, y)| x.area.total_cmp(&y.area)).unwrap();
+    let n = 4096;
+    let h = std::f64::consts::TAU / n as f64;
+    let perimeter = (0..=n)
+        .map(|i| {
+            let t = i as f64 * h;
+            (144.0 * t.sin().powi(2) + 25.0 * t.cos().powi(2)).sqrt()
+                * if i == 0 || i == n {
+                    1.0
+                } else if i % 2 == 0 {
+                    2.0
+                } else {
+                    4.0
+                }
+        })
+        .sum::<f64>()
+        * h
+        / 3.0;
+    let analytic_ring = 0.5 * perimeter + 1.25 * std::f64::consts::PI;
+    assert!((selected.1.area - analytic_ring).abs() < 0.03);
+    let expected = analytic_ring * 3.0;
+    let sketch_id = s.active_sketch.unwrap();
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch":sketch_id,"profiles":[selected.0],"distance":3,"operation":"new"}));
+    let state = s.world_state();
+    let volume = solvecraft_kernel::measure(&state.bodies.last().unwrap().body).unwrap().volume;
+    assert!((volume - expected).abs() < 0.05, "{volume} vs {expected}");
+}
+
+#[test]
+fn periodic_fit_creator_keeps_legacy_and_refuses_hostile_intent_atomically() {
+    let mut s = new_sketch();
+    let p = json!({"points":[[0,0],[4,0],[3,2],[-1,1]],"periodic":true});
+    let id = run(&mut s, "sketch.spline.fit_point", p.clone())["curves"][0].as_str().unwrap().to_string();
+    let sk = sketch(&s);
+    let i = sk.curve_index(&id).unwrap();
+    assert!(matches!(sk.curves[i].kind, CurveKind::Spline { periodic: true, .. }));
+    sk.validate_periodic_splines().unwrap();
+    assert_eq!(solvecraft_sketch::find_profiles(&sk).len(), 1);
+    let before = s.doc.to_json();
+    let history = s.undo.len();
+    for (cmd, p) in [
+        ("sketch.spline.control_point", p),
+        ("sketch.spline.fit_point", json!({"points":[[0,0],[1,0],[0,0],[1,0]],"periodic":true})),
+        ("sketch.spline.fit_point", json!({"points":[[0,0],[1,0],[1,1]],"periodic":"yes"})),
+    ] {
+        assert!(s.execute(cmd, &p).is_err());
+        assert_eq!(s.doc.to_json(), before);
+        assert_eq!(s.undo.len(), history);
+    }
+    let indices = sk.curves[i].kind.point_ids();
+    let point = sk.points[indices[1]].id.clone();
+    let target = sk.points[indices[0]].pos;
+    let redo = s.redo.len();
+    assert!(s.execute("sketch.drag", &json!({"entity":point,"from":sk.points[indices[1]].pos,"to":target})).is_err());
+    assert_eq!(s.doc.to_json(), before);
+    assert_eq!(s.undo.len(), history);
+    assert_eq!(s.redo.len(), redo);
+    let legacy =
+        run(&mut s, "sketch.spline.fit_point", json!({"points":[[0,0],[4,0],[3,2],[-1,1],[0,0]]}))["curves"][0].as_str().unwrap().to_string();
+    assert!(matches!(sketch(&s).curves[sketch(&s).curve_index(&legacy).unwrap()].kind, CurveKind::Spline { periodic: false, .. }));
 }
 
 #[test]

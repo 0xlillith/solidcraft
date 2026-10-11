@@ -251,7 +251,21 @@ fn edge_on_ring_drag_uses_nearest_projected_branch() {
 
 #[test]
 fn legacy_reversed_axis_symmetric_interval_is_shown_and_preserved_exactly() {
-    let mut h = fixture(Harness::new(), json!({"axis":{"origin":[0,0,0],"dir":[0,-2,0]},"direction":"symmetric","angle":"120 deg"}));
+    let mut h = fixture(
+        Harness::new(),
+        json!({"axis":{"origin":[0,0,0],"dir":[0,-2,0]},"direction":"symmetric","angle":"120 deg","convention":"legacy_axis_start"}),
+    );
+    // Exercise an actual older design: no convention marker was stored by version 10.
+    let mut saved: Value = serde_json::from_str(&h.app.session.doc.to_json()).unwrap();
+    saved["format"] = json!("solvecraft/10");
+    for feature in saved["features"].as_array_mut().unwrap() {
+        feature.as_object_mut().unwrap().remove("convention");
+    }
+    let path = h.dir.join("legacy-revolve.solvecraft");
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    h.app.run("doc.open", json!({"path":path})).unwrap();
+    let FeatureKind::Revolve { convention, .. } = &h.app.session.doc.find_feature("Turn").unwrap().kind else { panic!("revolve") };
+    assert_eq!(*convention, solvecraft_engine::doc::RevolveConvention::LegacyAxisStart);
     let original = serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap();
     let before = h.app.session.world_state().body("Main").unwrap().mesh().bounds();
     assert!(before.min.x < -14.9 && before.max.x < 7.6 && before.min.z > -1e-6 && before.max.z > 14.9);
@@ -269,4 +283,84 @@ fn legacy_reversed_axis_symmetric_interval_is_shown_and_preserved_exactly() {
     assert!((after.min.x + 15.0 / 2.0f64.sqrt()).abs() < 0.03 && (after.max.x - 15.0 / 2.0f64.sqrt()).abs() < 0.03);
     assert!(after.min.z > 7.0 && after.max.z > 14.9);
     assert!((volume(&h) - expected_volume(90.0)).abs() < 0.1);
+}
+
+#[test]
+fn canonical_symmetric_ring_preview_drag_and_reopen_match_material() {
+    for axis in [json!("Y"), json!({"origin":[0,0,0],"dir":[0,-2,0]})] {
+        let mut h = Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY","name":"Profile"})).unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[2,0],"p1":[4,10]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app
+            .run("solid.revolve", json!({"sketch":"Profile","axis":axis,"angle":"90 deg","direction":"symmetric","name":"Turn","body_name":"Main"}))
+            .unwrap();
+        let before = serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap();
+        let names = h.app.session.doc.find_feature("Turn").unwrap().param_names.clone();
+        open(&mut h);
+        let at = |degrees: f64| {
+            let a = degrees.to_radians();
+            json!([3.0 * a.cos(), 5.0, 3.0 * a.sin()])
+        };
+        handle_at(&mut h, "revolve", at(45.0));
+        handle_at(&mut h, "revolve2", at(-45.0));
+        let commands = crate::dialogs::apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+        let preview = h.app.session.preview_world(&commands).unwrap();
+        let body = &preview.after.body("Main").unwrap().body;
+        assert!(body.contains(solvecraft_engine::geom::Vec3::new(3.0, 5.0, 0.0)));
+        assert!(!body.contains(solvecraft_engine::geom::Vec3::new(0.0, 5.0, 3.0)));
+        let bounds = preview.after.body("Main").unwrap().mesh().bounds();
+        assert!((bounds.min.x - 2.0f64.sqrt()).abs() < 0.02 && (bounds.max.x - 4.0).abs() < 0.02, "{bounds:?}");
+        assert!((bounds.min.z + 2.0 * 2.0f64.sqrt()).abs() < 0.02 && (bounds.max.z - 2.0 * 2.0f64.sqrt()).abs() < 0.02);
+        h.step(&json!({"widget":"OK"})).unwrap();
+        assert_eq!(serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap(), before);
+        open(&mut h);
+        h.step(&json!({"drag":[{"handle":"revolve2"},{"world":at(-30.0)}]})).unwrap();
+        h.step(&json!({"widget":"OK"})).unwrap();
+        assert_eq!(angle(&h), "60 deg");
+        assert_eq!(h.app.session.doc.find_feature("Turn").unwrap().param_names, names);
+        assert!((volume(&h) - 60.0 * std::f64::consts::FRAC_PI_3).abs() < 0.03);
+        let path = h.dir.join("canonical-revolve.solvecraft");
+        h.app.run("file.save", json!({"path":path})).unwrap();
+        h.app.run("doc.open", json!({"path":path})).unwrap();
+        open(&mut h);
+        handle_at(&mut h, "revolve", at(30.0));
+        handle_at(&mut h, "revolve2", at(-30.0));
+        let FeatureKind::Revolve { convention, .. } = &h.app.session.doc.find_feature("Turn").unwrap().kind else { panic!("revolve") };
+        assert_eq!(*convention, solvecraft_engine::doc::RevolveConvention::SketchNormal);
+        h.step(&json!({"widget":"Cancel"})).unwrap();
+    }
+}
+
+#[test]
+fn reversed_axis_to_object_canvas_sweep_and_preview_follow_the_quarter_target() {
+    let mut h = fixture(Harness::new(), json!({"axis":{"origin":[0,0,0],"dir":[0,-2,0]},"to":[0,2,12],"angle":"45 deg"}));
+    let original = serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap();
+    let names = h.app.session.doc.find_feature("Turn").unwrap().param_names.clone();
+    let before = h.app.session.world_state().body("Main").unwrap().mesh().bounds();
+    let p = 12.5 / 2.0f64.sqrt();
+    open(&mut h);
+    assert!(h.widget("Sweep 90.0°").is_some());
+    assert!(crate::scenario::handle_at("revolve").is_none());
+    assert!(crate::scenario::handle_at("revolve2").is_none());
+    let commands = crate::dialogs::apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+    let preview = h.app.session.preview_world(&commands).unwrap();
+    let result = preview.after.body("Main").unwrap();
+    assert_eq!(result.mesh().bounds(), before);
+    assert!(result.body.contains(solvecraft_engine::geom::Vec3::new(p, 2.5, p)));
+    for (x, z) in [(-p, p), (-p, -p), (p, -p)] {
+        assert!(!result.body.contains(solvecraft_engine::geom::Vec3::new(x, 2.5, z)));
+    }
+    assert!((kernel::measure(&result.body).unwrap().volume - expected_volume(90.0)).abs() < 0.03);
+    h.step(&json!({"widget":"OK"})).unwrap();
+    assert_eq!(serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap(), original);
+    assert_eq!(h.app.session.doc.find_feature("Turn").unwrap().param_names, names);
+    let path = h.dir.join("reversed-to-object.solvecraft");
+    h.app.run("file.save", json!({"path":path})).unwrap();
+    h.app.run("doc.open", json!({"path":path})).unwrap();
+    open(&mut h);
+    assert!(h.widget("Sweep 90.0°").is_some());
+    h.step(&json!({"widget":"OK"})).unwrap();
+    assert_eq!(serde_json::to_value(&h.app.session.doc.find_feature("Turn").unwrap().kind).unwrap(), original);
+    assert_eq!(h.app.session.world_state().body("Main").unwrap().mesh().bounds(), before);
 }

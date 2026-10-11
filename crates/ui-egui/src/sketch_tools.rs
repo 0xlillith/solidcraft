@@ -403,7 +403,7 @@ pub fn hint(id: &str) -> Option<String> {
             "sketch.slot.center_point" => "Slot: click the centre, an arc centre, then the width",
             "sketch.slot.arc_three_point" => "Arc slot: click start, a point on the arc, the end, then the width",
             "sketch.slot.arc_center" => "Arc slot: click the centre, the start, the end, then the width",
-            "sketch.spline.fit_point" => "Spline: click fit points; right-click to finish",
+            "sketch.spline.fit_point" => "Spline: click fit points; click the start to close smoothly, or right-click to finish",
             "sketch.spline.control_point" | "sketch.spline.control_point_5" => "Control point spline: click control points; right-click to finish",
             "sketch.text" => "Text: click where the text starts",
             "sketch.blend_curve" => "Blend curve: click the ends of two curves",
@@ -546,6 +546,29 @@ fn round_nice(x: f64) -> f64 {
 }
 
 /// A click with an extra tool.
+pub fn periodic_start_snap(app: &SolveApp, tool: &Tool, proj: &Proj, pos: Pos2) -> Option<Vec2> {
+    if tool.cmd != "sketch.spline.fit_point" || tool.pts.len() < 3 || crate::drag_snap::suppressed() {
+        return None;
+    }
+    let first = tool.pts.first()?.0;
+    let mut distinct = Vec::new();
+    for p in &tool.pts {
+        if !distinct.contains(&p.0) {
+            distinct.push(p.0);
+        }
+        if distinct.len() == 3 {
+            break;
+        }
+    }
+    if distinct.len() < 3 {
+        return None;
+    }
+    let state = app.session.world_state();
+    let plane = &state.sketch(app.session.active_sketch?)?.plane;
+    let screen = proj.to_screen(plane.to_world(first))?;
+    (screen.distance(pos) <= 8.0).then_some(first)
+}
+
 pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
     let Some(m) = mode(tool.cmd) else { return };
     let hits = pick(app, proj, pos);
@@ -658,6 +681,16 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
             }
         }
         Mode::Points(n) => {
+            if periodic_start_snap(app, tool, proj, pos).is_some() {
+                // Only this deliberate click selects periodic interpolation. A
+                // right-click finish and all previously saved splines stay natural.
+                let params = json!({"points":tool.pts.iter().map(arg).collect::<Vec<_>>(),"periodic":true});
+                if app.run(cmd, params).is_ok() {
+                    tool.pts.clear();
+                    crate::sketch_dims::reset(tool);
+                }
+                return;
+            }
             let Some(p) = at else { return };
             tool.pts.push(p);
             if n > 0 && tool.pts.len() >= n {
@@ -673,21 +706,30 @@ pub fn on_click(app: &mut SolveApp, tool: &mut Tool, proj: &Proj, pos: Pos2) {
                 return;
             }
             if cmd == "sketch.offset" && !tool.picks.is_empty() {
-                if let Some((p, _)) = at {
+                // Dense derived fit nodes must not snap a nearby side click back
+                // onto the source, reducing a deliberate offset to zero.
+                let state = app.session.world_state();
+                let side = active_sketch(app).and_then(|sid| state.sketch(sid)).and_then(|ss| {
+                    let (o, d) = proj.ray(pos);
+                    ss.plane.intersect_ray(o, d).map(|p| ss.plane.to_local(p))
+                });
+                if let Some(p) = side {
                     offset_side(app, tool, p);
                 }
                 return;
             }
-            let Some((id, is_point)) = sketch_entity(app, &hits) else { return };
             if cmd == "sketch.offset" {
-                // First the curve, then the side point.
-                if tool.picks.is_empty() && !is_point {
+                if let Some(sid) = active_sketch(app)
+                    && let Some(id) = hits.iter().find_map(|hit| match hit {
+                        Hit::SketchCurve { sketch, id, .. } if *sketch == sid => Some(id.clone()),
+                        _ => None,
+                    })
+                {
                     tool.picks.push(id);
-                } else if let Some((p, _)) = at {
-                    offset_side(app, tool, p);
                 }
                 return;
             }
+            let Some((id, _)) = sketch_entity(app, &hits) else { return };
             if cmd == "sketch.centerline" {
                 let _ = app.run(cmd, json!({"curves": [id]}));
                 return;
@@ -890,8 +932,14 @@ fn offset_side(app: &mut SolveApp, tool: &mut Tool, p: Vec2) -> bool {
     let st = app.session.world_state();
     let d = active_sketch(app)
         .and_then(|s| st.sketch(s))
-        .and_then(|ss| ss.sketch.curve_index(&tool.picks[0]).and_then(|c| ss.sketch.shape(c)))
-        .map(|sh| sh.dist(p))
+        .and_then(|ss| {
+            let curve = ss.sketch.curve_index(&tool.picks[0])?;
+            if let Some(shape) = ss.sketch.shape(curve) {
+                Some(shape.dist(p))
+            } else {
+                ss.sketch.exact_segs(curve)?.iter().map(|s| s.point_at(s.closest_param(p)).dist(p)).min_by(f64::total_cmp)
+            }
+        })
         .unwrap_or(0.0);
     if d > 1e-6 {
         let _ = app.run("sketch.offset", json!({"curves": [tool.picks[0]], "distance": d, "side": xy(p)}));

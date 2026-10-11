@@ -424,7 +424,7 @@ fn exact_profiles_for_high_degree_and_cut_free_form_curves() {
         .iter()
         .map(|p| sk.add_point(*p, None).unwrap())
         .collect();
-    sk.add_curve(CurveKind::Spline { pts: ids.clone(), control: true, degree: 5 }, None).unwrap();
+    sk.add_curve(CurveKind::Spline { pts: ids.clone(), control: true, degree: 5, periodic: false }, None).unwrap();
     sk.add_line_pts(ids[5], ids[0], None).unwrap();
     let pr = find_profiles(&sk);
     assert_eq!(pr.len(), 1);
@@ -433,7 +433,7 @@ fn exact_profiles_for_high_degree_and_cut_free_form_curves() {
     // A fit spline arch over a base line, cut by a vertical line at x = 10.
     let mut sk = Sketch::default();
     let ids: Vec<usize> = [v(0.0, 0.0), v(6.0, 9.0), v(14.0, 9.0), v(20.0, 0.0)].iter().map(|p| sk.add_point(*p, None).unwrap()).collect();
-    sk.add_curve(CurveKind::Spline { pts: ids.clone(), control: false, degree: 3 }, None).unwrap();
+    sk.add_curve(CurveKind::Spline { pts: ids.clone(), control: false, degree: 3, periodic: false }, None).unwrap();
     sk.add_line_pts(ids[3], ids[0], None).unwrap();
     let (a, b) = (sk.add_point(v(10.0, -5.0), None).unwrap(), sk.add_point(v(10.0, 20.0), None).unwrap());
     sk.add_line_pts(a, b, None).unwrap();

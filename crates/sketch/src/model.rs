@@ -53,6 +53,9 @@ pub enum CurveKind {
         control: bool,
         #[serde(default = "three")]
         degree: u8,
+        /// Explicit cyclic C2 fit interpolation; absent retains natural endpoints.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        periodic: bool,
     },
     /// Conic from `a` to `b` shaped by the `apex` point and `rho` in (0, 1) (0.5 parabola,
     /// less elliptical, more hyperbolic).
@@ -111,6 +114,7 @@ impl CurveKind {
     pub fn ends(&self) -> Option<(usize, usize)> {
         match self {
             CurveKind::Line { a, b } | CurveKind::Arc { a, b, .. } | CurveKind::Conic { a, b, .. } => Some((*a, *b)),
+            CurveKind::Spline { periodic: true, .. } => None,
             CurveKind::Spline { pts, .. } => Some((*pts.first()?, *pts.last()?)),
             CurveKind::Circle { .. } | CurveKind::Ellipse { .. } => None,
         }
@@ -962,11 +966,13 @@ impl Sketch {
                 )
             }
             CurveKind::Conic { a, b, apex, rho } => Some(vec![Seg2::Conic { a: pt(a)?, apex: pt(apex)?, b: pt(b)?, w: rho / (1.0 - rho).max(1e-9) }]),
-            CurveKind::Spline { pts, control: false, .. } => {
+            CurveKind::Spline { pts, control: false, periodic, .. } => {
                 let p: Vec<Vec2> = pts.iter().map(pt).collect::<Option<_>>()?;
-                Some(crate::curves::fit_beziers(&p).into_iter().map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 }).collect())
+                Some(
+                    crate::curves::fit_beziers_mode(&p, *periodic).ok()?.into_iter().map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 }).collect(),
+                )
             }
-            CurveKind::Spline { pts, control: true, degree } if (*degree as usize) <= solvecraft_geom::MAX_BEZIER_DEGREE => {
+            CurveKind::Spline { pts, control: true, degree, .. } if (*degree as usize) <= solvecraft_geom::MAX_BEZIER_DEGREE => {
                 let p: Vec<Vec2> = pts.iter().map(pt).collect::<Option<_>>()?;
                 let k = (*degree as usize).min(p.len().saturating_sub(1)).max(1);
                 Some(crate::curves::bspline_beziers(&p, k).iter().filter_map(|c| solvecraft_geom::bezier(c)).collect())
@@ -985,9 +991,9 @@ impl Sketch {
                 (Some(c), Some(m)) => crate::curves::ellipse_polyline(c, m, *r),
                 _ => Vec::new(),
             },
-            CurveKind::Spline { pts, control, degree } => {
+            CurveKind::Spline { pts, control, degree, periodic } => {
                 let p: Option<Vec<Vec2>> = pts.iter().map(pt).collect();
-                p.map(|p| crate::curves::spline_polyline(&p, *control, *degree)).unwrap_or_default()
+                p.map(|p| crate::curves::spline_polyline_mode(&p, *control, *degree, *periodic)).unwrap_or_default()
             }
             CurveKind::Conic { a, b, apex, rho } => match (pt(a), pt(apex), pt(b)) {
                 (Some(a), Some(x), Some(b)) => crate::curves::conic_polyline(a, x, b, *rho),
@@ -1023,9 +1029,19 @@ impl Sketch {
                 }
                 "e"
             }
-            CurveKind::Spline { pts, degree, .. } => {
+            CurveKind::Spline { pts, control, degree, periodic } => {
                 if pts.len() < 2 || pts.len() > crate::curves::MAX_SPLINE_POINTS || !(1..=7).contains(degree) {
                     return Err(SketchError::Invalid("a spline needs 2 to 500 points and degree 1 to 7".into()));
+                }
+                if *periodic {
+                    if *control || *degree != 3 {
+                        return Err(SketchError::Invalid("periodic mode requires a cubic fit spline".into()));
+                    }
+                    let p = pts
+                        .iter()
+                        .map(|i| self.point(*i).ok_or_else(|| SketchError::Invalid("missing periodic point".into())))
+                        .collect::<Result<Vec<_>>>()?;
+                    crate::periodic_beziers(&p)?;
                 }
                 "s"
             }
@@ -1092,7 +1108,34 @@ impl Sketch {
         let gone = |p: usize| p != 0 && which.contains(&p);
         let dead_curves: Vec<usize> =
             self.curves.iter().enumerate().filter(|(_, c)| c.kind.point_ids().into_iter().any(gone)).map(|(i, _)| i).collect();
+        let private = dead_curves
+            .iter()
+            .filter_map(|i| self.curves.get(*i))
+            .filter(|c| self.freeform_offsets.iter().any(|r| r.output == c.id))
+            .flat_map(|c| c.kind.point_ids())
+            .collect::<std::collections::BTreeSet<_>>();
         self.drop_curves(&dead_curves);
+        let mut removed = which.iter().copied().filter(|i| *i != 0).collect::<std::collections::BTreeSet<_>>();
+        // Keep any node still named by a surviving curve or constraint.
+        let referenced = self.curves.iter().flat_map(|c| c.kind.point_ids()).collect::<std::collections::BTreeSet<_>>();
+        let constraint_points = std::cell::RefCell::new(std::collections::BTreeSet::new());
+        for constraint in &self.constraints {
+            let mut kind = constraint.kind.clone();
+            kind.remap(
+                &|p| {
+                    constraint_points.borrow_mut().insert(p);
+                    Some(p)
+                },
+                &Some,
+            );
+        }
+        let constraint_points = constraint_points.into_inner();
+        for index in private {
+            if index != 0 && !referenced.contains(&index) && !constraint_points.contains(&index) {
+                removed.insert(index);
+            }
+        }
+        let gone = |p: usize| removed.contains(&p);
         let mut pmap = vec![None; self.points.len()];
         let mut n = 0;
         for (i, slot) in pmap.iter_mut().enumerate() {

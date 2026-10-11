@@ -1,14 +1,19 @@
 //! Persistent free-form offsets with a whole-span normal-distance error certificate.
 //! The certificate bounds the second derivative of the exact normal offset and of
-//! the actual natural cubic interpolant. The endpoint interpolation theorem then
+//! the actual cubic interpolant (natural for legacy output, periodic for new closed output). The endpoint interpolation theorem then
 //! bounds their distance everywhere, rather than just at selected samples.
-use crate::{CurveKind, Sketch, SketchError, fit_beziers};
+use crate::{CurveKind, Sketch, SketchError, fit_beziers_mode};
 use serde::{Deserialize, Serialize};
 use solvecraft_geom::{Seg2, Vec2};
 
 pub const OFFSET_TOLERANCE: f64 = 0.002;
 const MAX_PIECES: usize = 256;
 const MAX_ASSOCIATIONS: usize = 128;
+const MAX_OFFSET_WORK: usize = 1_048_576;
+struct Fit {
+    tolerance: f64,
+    periodic: bool,
+}
 type Result<T> = std::result::Result<T, SketchError>;
 fn bad(message: &str) -> SketchError {
     SketchError::Invalid(message.into())
@@ -285,7 +290,11 @@ fn verify_simple(points: &[Vec2], cubics: &[[Vec2; 4]], closed: bool) -> Result<
     Ok(())
 }
 
-fn geometry(sk: &Sketch, source: usize, forward: bool, d: f64, divisions: usize, tolerance: f64) -> Result<(Vec<Vec2>, usize, bool)> {
+fn geometry(sk: &Sketch, source: usize, forward: bool, d: f64, divisions: usize, fit: Fit, work: &mut usize) -> Result<(Vec<Vec2>, usize, bool)> {
+    if *work == 0 {
+        return Err(bad("offset transaction certificate work limit exceeded"));
+    }
+    let Fit { tolerance, periodic } = fit;
     let mut pieces = sk.exact_segs(source).ok_or_else(|| bad("offset source changed shape"))?;
     if pieces.is_empty()
         || pieces.len() > MAX_PIECES
@@ -333,11 +342,12 @@ fn geometry(sk: &Sketch, source: usize, forward: bool, d: f64, divisions: usize,
             *last = first;
         }
     }
-    let cubics = fit_beziers(&points);
-    let mut budget = 65_536;
-    for (h, c) in restricted.iter().zip(&cubics) {
-        certify(h, c, d, tolerance, 0, &mut budget)?;
-    }
+    let cubics = fit_beziers_mode(&points, periodic && closed)?;
+    let allowance = (*work).min(65_536);
+    let mut budget = allowance;
+    let result = restricted.iter().zip(&cubics).try_for_each(|(h, c)| certify(h, c, d, tolerance, 0, &mut budget));
+    *work -= allowance - budget;
+    result?;
     verify_simple(&points, &cubics, closed)?;
     Ok((points, pieces.len(), closed))
 }
@@ -377,7 +387,7 @@ impl Sketch {
                 || record.output.is_empty()
                 || record.output.len() > 512
                 || record.source == record.output
-                || record.certificate != 1
+                || !matches!(record.certificate, 1 | 2)
                 || record.pieces == 0
                 || record.pieces > MAX_PIECES
                 || record.divisions == 0
@@ -400,8 +410,10 @@ impl Sketch {
             }
             let output = self.curve_index(&record.output).ok_or_else(|| bad("offset output vanished"))?;
             match &self.curves[output].kind {
-                CurveKind::Spline { pts, control: false, degree: 3 }
-                    if pts.len() == record.pieces * record.divisions + 1
+                CurveKind::Spline { pts, control: false, degree: 3, periodic }
+                    if *periodic == (record.certificate == 2)
+                        && (record.certificate != 2 || record.closed)
+                        && pts.len() == record.pieces * record.divisions + 1
                         && pts.iter().all(|i| *i < self.points.len())
                         && pts.iter().copied().collect::<std::collections::BTreeSet<_>>().len() == pts.len()
                         && pts
@@ -420,11 +432,12 @@ impl Sketch {
         let source_pieces = self.exact_segs(source).ok_or_else(|| bad("offset source changed shape"))?.len();
         let mut result = None;
         let mut failure = None;
+        let mut work = MAX_OFFSET_WORK;
         for divisions in [1, 2, 4, 8, 16, 32, 64, 128, 256] {
             if source_pieces.saturating_mul(divisions) >= crate::MAX_SPLINE_POINTS {
                 break;
             }
-            match geometry(self, source, forward, distance, divisions, OFFSET_TOLERANCE) {
+            match geometry(self, source, forward, distance, divisions, Fit { tolerance: OFFSET_TOLERANCE, periodic: true }, &mut work) {
                 Ok(g) => {
                     result = Some((divisions, g));
                     break;
@@ -442,7 +455,7 @@ impl Sketch {
                 p.fixed = true;
             }
         }
-        let output = candidate.add_curve(CurveKind::Spline { pts: indices, control: false, degree: 3 }, None)?;
+        let output = candidate.add_curve(CurveKind::Spline { pts: indices, control: false, degree: 3, periodic: closed }, None)?;
         candidate.freeform_offsets.push(FreeformOffset {
             source: source_id,
             output: candidate.curves[output].id.clone(),
@@ -452,7 +465,7 @@ impl Sketch {
             pieces,
             closed,
             tolerance: OFFSET_TOLERANCE,
-            certificate: 1,
+            certificate: if closed { 2 } else { 1 },
         });
         *self = candidate;
         Ok(output)
@@ -462,8 +475,9 @@ impl Sketch {
         self.validate_freeform_offsets()?;
         let mut candidate = self.clone();
         let mut seen = std::collections::BTreeSet::new();
+        let mut work = MAX_OFFSET_WORK;
         for (record_index, record) in self.freeform_offsets.clone().into_iter().enumerate() {
-            if record.certificate != 1
+            if !matches!(record.certificate, 1 | 2)
                 || record.source == record.output
                 || !seen.insert(record.output.clone())
                 || candidate.freeform_offsets.iter().any(|later| later.output == record.source && !seen.contains(&later.output))
@@ -486,7 +500,15 @@ impl Sketch {
                 divisions = (record.divisions / ratio).max(1);
             }
             let (points, pieces, closed) = loop {
-                match geometry(&candidate, source, record.forward, record.distance, divisions, record.tolerance) {
+                match geometry(
+                    &candidate,
+                    source,
+                    record.forward,
+                    record.distance,
+                    divisions,
+                    Fit { tolerance: record.tolerance, periodic: record.certificate == 2 },
+                    &mut work,
+                ) {
                     Ok(geometry) => break geometry,
                     Err(error) => {
                         if divisions >= 256 || source_pieces.saturating_mul(divisions.saturating_mul(2)) >= crate::MAX_SPLINE_POINTS {
@@ -500,7 +522,13 @@ impl Sketch {
                 return Err(bad("offset source topology changed"));
             }
             let old_indices = match &candidate.curves[output].kind {
-                CurveKind::Spline { pts, control: false, degree: 3 } if pts.len() == record.pieces * record.divisions + 1 => pts.clone(),
+                CurveKind::Spline { pts, control: false, degree: 3, periodic }
+                    if *periodic == (record.certificate == 2)
+                        && (record.certificate != 2 || record.closed)
+                        && pts.len() == record.pieces * record.divisions + 1 =>
+                {
+                    pts.clone()
+                }
                 _ => return Err(bad("offset output was edited; break its association first")),
             };
             // Refinement never reuses or removes an old node ID. Existing dyadic
@@ -526,7 +554,7 @@ impl Sketch {
                 p.pos = pos;
                 p.fixed = true;
             }
-            candidate.curves[output].kind = CurveKind::Spline { pts: indices, control: false, degree: 3 };
+            candidate.curves[output].kind = CurveKind::Spline { pts: indices, control: false, degree: 3, periodic: record.certificate == 2 };
             candidate.freeform_offsets[record_index].divisions = divisions;
             candidate.freeform_offsets[record_index].pieces = pieces;
         }
@@ -689,9 +717,124 @@ mod tests {
     fn certified_offset_closed_chain_refuses_natural_spline_seam_atomically() {
         let (mut sk, source) = ellipse();
         let first = sk.add_freeform_offset(source, true, -1.0).unwrap();
+        // Explicitly reconstruct the old saved semantics, not the new periodic output.
+        if let CurveKind::Spline { periodic, .. } = &mut sk.curves[first].kind {
+            *periodic = false;
+        }
+        sk.freeform_offsets[0].certificate = 1;
+        sk.refresh_offsets().unwrap();
         let before = sk.clone();
         let error = sk.add_freeform_offset(first, true, -0.5).unwrap_err();
         assert!(error.to_string().contains("nonsmooth seam"), "{error}");
         assert_eq!(sk, before);
+    }
+
+    #[test]
+    fn certified_offset_periodic_closed_chain_has_c2_seams_and_stable_roles() {
+        let (mut sk, source) = ellipse();
+        let source_points = sk.curves[source].kind.point_ids();
+        let unchanged = source_points.iter().map(|i| sk.points[*i].clone()).collect::<Vec<_>>();
+        let a = sk.add_freeform_offset(source, true, -1.0).unwrap();
+        let b = sk.add_freeform_offset(a, true, -0.5).unwrap();
+        assert_eq!(source_points.iter().map(|i| sk.points[*i].clone()).collect::<Vec<_>>(), unchanged);
+        let old = sk.freeform_offsets.clone();
+        let ids = [a, b].map(|i| sk.curves[i].kind.point_ids().iter().map(|p| sk.points[*p].id.clone()).collect::<Vec<_>>());
+        let verify = |sk: &Sketch| {
+            for output in [a, b] {
+                let record = sk.freeform_offsets.iter().find(|r| r.output == sk.curves[output].id).unwrap();
+                assert_eq!(record.certificate, 2);
+                let points = sk.curves[output].kind.point_ids().iter().map(|p| sk.point(*p).unwrap()).collect::<Vec<_>>();
+                let cubics = crate::periodic_beziers(&points).unwrap();
+                let first = cubics[0];
+                let last = *cubics.last().unwrap();
+                let (h0, h1) = (points[0].dist(points[1]), points[points.len() - 2].dist(points[points.len() - 1]));
+                assert_eq!(first[0], last[3]);
+                assert!(((first[1] - first[0]) / h0 - (last[3] - last[2]) / h1).len() < 1e-10);
+                assert!(((first[2] - first[1] * 2.0 + first[0]) / (h0 * h0) - (last[3] - last[2] * 2.0 + last[1]) / (h1 * h1)).len() < 1e-9);
+                let source = sk.curve_index(&record.source).unwrap();
+                for (i, piece) in sk.exact_segs(source).unwrap().iter().enumerate() {
+                    for j in 0..record.divisions {
+                        for t in [0.0, 0.13, 0.41, 0.79, 1.0] {
+                            let exact = normal_point(piece, (j as f64 + t) / record.divisions as f64, record.distance).unwrap();
+                            let got = sk.exact_segs(output).unwrap()[i * record.divisions + j].point_at(t);
+                            assert!(got.dist(exact) <= OFFSET_TOLERANCE);
+                            if source == 0 {
+                                // Independent ellipse implicit-gradient normal, rather
+                                // than using the offset implementation as its own oracle.
+                                let base = piece.point_at((j as f64 + t) / record.divisions as f64);
+                                let major = sk.point(source_points[1]).unwrap().x;
+                                let normal = Vec2::new(base.x / (major * major), base.y / 25.0).normalized().unwrap();
+                                assert!(got.dist(base + normal) <= OFFSET_TOLERANCE);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        verify(&sk);
+        // Steiner's formula is independent of fitted output: both offsets expand
+        // the original ellipse by 1.5mm, within the accumulated two certificates.
+        let n = 4096;
+        let h = std::f64::consts::TAU / n as f64;
+        let perimeter = (0..=n)
+            .map(|i| {
+                let t = i as f64 * h;
+                (100.0 * t.sin().powi(2) + 25.0 * t.cos().powi(2)).sqrt()
+                    * if i == 0 || i == n {
+                        1.0
+                    } else if i % 2 == 0 {
+                        2.0
+                    } else {
+                        4.0
+                    }
+            })
+            .sum::<f64>()
+            * h
+            / 3.0;
+        let expected = 50.0 * std::f64::consts::PI + 1.5 * perimeter + 2.25 * std::f64::consts::PI;
+        let area = sk.exact_segs(b).unwrap().iter().map(Seg2::area_term).sum::<f64>();
+        assert!((area - expected).abs() < 0.03, "{area} vs {expected}");
+        let profiles = crate::find_profiles(&sk);
+        assert_eq!(profiles.len(), 3);
+        if let CurveKind::Ellipse { m, .. } = sk.curves[source].kind {
+            sk.points[m].pos.x = 12.0;
+        }
+        sk.refresh_offsets().unwrap();
+        verify(&sk);
+        for (j, i) in [a, b].into_iter().enumerate() {
+            let now = &sk.freeform_offsets[j];
+            let factor = now.pieces * now.divisions / (old[j].pieces * old[j].divisions);
+            assert_eq!(sk.curves[i].kind.point_ids().iter().step_by(factor).map(|p| sk.points[*p].id.clone()).collect::<Vec<_>>(), ids[j]);
+        }
+        let encoded = serde_json::to_string(&sk).unwrap();
+        let mut reopened: Sketch = serde_json::from_str(&encoded).unwrap();
+        reopened.validate_periodic_splines().unwrap();
+        reopened.refresh_offsets().unwrap();
+        assert_eq!(sk, reopened);
+    }
+
+    #[test]
+    fn certified_offset_periodic_circle_and_reverse_have_analytic_normals() {
+        for forward in [true, false] {
+            let mut sk = Sketch::new();
+            let center = sk.add_point(Vec2::ZERO, None).unwrap();
+            let major = sk.add_point(Vec2::new(5.0, 0.0), None).unwrap();
+            let source = sk.add_curve(CurveKind::Ellipse { c: center, m: major, r: 5.0 }, None).unwrap();
+            let distance = if forward { -1.0 } else { 1.0 };
+            let a = sk.add_freeform_offset(source, forward, distance).unwrap();
+            let b = sk.add_freeform_offset(a, true, distance * 0.5).unwrap();
+            for (output, radius) in [(a, 6.0), (b, 6.5)] {
+                let pieces = sk.exact_segs(output).unwrap();
+                for curve in &pieces {
+                    for t in [0.0, 0.13, 0.41, 0.79, 1.0] {
+                        assert!((curve.point_at(t).len() - radius).abs() <= 2.0 * OFFSET_TOLERANCE);
+                    }
+                }
+                let area = pieces.iter().map(Seg2::area_term).sum::<f64>().abs();
+                assert!((area - std::f64::consts::PI * radius * radius).abs() < 0.03);
+            }
+            sk.refresh_offsets().unwrap();
+            sk.validate_periodic_splines().unwrap();
+        }
     }
 }

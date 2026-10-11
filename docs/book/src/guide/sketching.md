@@ -25,9 +25,20 @@ error bound of 0.002 mm. Singular tangents, curvature cusps, possible self-inter
 excessive subdivisions are refused. Offset these curves individually: mixed chain junctions
 currently require separate geometry. `sketch.offset.break` releases an offset for independent
 editing, and undo restores its association. Older independently sampled offsets remain independent.
-Smooth open offsets can be offset again, including bounded refinement after a source edit.
-A closed offset uses a natural cubic spline whose seam can have different end tangents;
-offsetting that result again is refused when the seam has no unique normal.
+Smooth open and newly created smooth closed offsets can be offset again, including bounded
+refinement after a source edit. New closed outputs use a periodic cubic fit with continuous
+tangent and curvature at the seam. Break Offset Association preserves that interpolation,
+and its closing point remains joined when dragged. Deleting an output also removes its
+unused private fit points; deleting a source with a retained dependent is refused.
+
+For explicit closed fit splines, `sketch.spline.fit_point` accepts `periodic: true` and at
+least three distinct cyclic samples. It closes the loop automatically. Existing calls and
+older saved closed splines retain natural interpolation; older associative closed offsets
+also retain their saved natural fit. A legacy seam without a unique normal still refuses
+another offset. Periodic intent is stored on each curve and survives save, reopen and Break.
+While drawing a fit spline, click its starting point after three distinct samples to close
+it smoothly. Right-click finishes an ordinary natural fit. Offset accepts both ellipse
+handles and dense fitted curves; the second click sets the side and distance from the curve.
 
 Enable **3D Sketch** in the Sketch Palette to draw lines, fit splines and points off the plane.
 New 3D geometry follows its sketch's component placement, including the selected occurrence

@@ -494,7 +494,10 @@ fn draw_revolve(
         if radius > 1e-9 {
             let e1 = (base - centre) / radius;
             let e2 = extent.rotation_axis.cross(e1);
-            let handed = -direction.dot(extent.rotation_axis);
+            let handed = match revolve_convention(d) {
+                solvecraft_engine::doc::RevolveConvention::LegacyAxisStart => -direction.dot(extent.rotation_axis),
+                solvecraft_engine::doc::RevolveConvention::SketchNormal => 1.0,
+            };
             let at = |angle: f64| centre + (e1 * angle.cos() + e2 * angle.sin()) * radius;
             let points: Vec<_> = (0..=48).filter_map(|i| proj.to_screen(at(extent.display_start + extent.sweep * i as f64 / 48.0))).collect();
             painter.add(egui::Shape::line(points, Stroke::new(2.0, Tokens::get().manipulator)));
@@ -608,6 +611,13 @@ fn draw_revolve(
     });
 }
 
+fn revolve_convention(d: &Dialog) -> solvecraft_engine::doc::RevolveConvention {
+    d.extra
+        .get("convention")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or(solvecraft_engine::doc::RevolveConvention::SketchNormal)
+}
+
 fn revolve_display_extent(app: &SolveApp, d: &Dialog, axis: (Vec3, Vec3)) -> Option<solvecraft_engine::doc::RevolveExtent> {
     let Sel::Profile { sketch, .. } = d.inputs.first()?.items.first()? else { return None };
     let state = app.session.world_state();
@@ -639,7 +649,7 @@ fn revolve_display_extent(app: &SolveApp, d: &Dialog, axis: (Vec3, Vec3)) -> Opt
         let other = d.extra.get("angle2").map(|value| app.session.doc.eval(value.as_str().unwrap_or_default(), ValueKind::Angle)).transpose().ok()?;
         (angle, other)
     };
-    solvecraft_engine::doc::revolve_extent(
+    solvecraft_engine::doc::revolve_extent_with_convention(
         &state,
         &plane,
         &regions,
@@ -647,6 +657,7 @@ fn revolve_display_extent(app: &SolveApp, d: &Dialog, axis: (Vec3, Vec3)) -> Opt
         angles,
         d.extra.get("direction").and_then(serde_json::Value::as_str) == Some("symmetric"),
         to,
+        revolve_convention(d),
     )
     .ok()
 }

@@ -169,9 +169,9 @@ impl State<'_> {
                 };
                 crate::curves::ellipse_polyline(self.p(*ci), self.p(*m), r)
             }
-            Some(CurveKind::Spline { pts, control, degree }) => {
-                let p: Vec<Vec2> = pts.iter().map(|q| self.p(*q)).collect();
-                crate::curves::spline_polyline(&p, *control, *degree)
+            Some(CurveKind::Spline { pts, control, degree, periodic }) => {
+                let p = self.spline_points(pts, *periodic);
+                crate::curves::spline_polyline_mode(&p, *control, *degree, *periodic)
             }
             Some(CurveKind::Conic { a, b, apex, rho }) => crate::curves::conic_polyline(self.p(*a), self.p(*apex), self.p(*b), *rho),
             _ => Vec::new(),
@@ -179,6 +179,16 @@ impl State<'_> {
     }
     /// Point-on-curve constraints use the exact shape. A polyline residual would move an
     /// exact crossing onto its chord, changing geometry merely by splitting it.
+    fn spline_points(&self, pts: &[usize], periodic: bool) -> Vec<Vec2> {
+        let mut points: Vec<Vec2> = pts.iter().map(|i| self.p(*i)).collect();
+        if periodic
+            && let Some(first) = points.first().copied()
+            && let Some(last) = points.last_mut()
+        {
+            *last = first;
+        }
+        points
+    }
     fn freeform_dist(&self, c: usize, q: Vec2) -> f64 {
         let segs: Vec<Seg2> = match self.sk.curves.get(c).map(|c| &c.kind) {
             Some(CurveKind::Ellipse { c: ci, m, .. }) => {
@@ -194,8 +204,8 @@ impl State<'_> {
                 let y = delta.cross(u) / (a * r);
                 return (x.hypot(y) - 1.0) * a.min(r);
             }
-            Some(CurveKind::Spline { pts, control, degree }) => {
-                let p: Vec<Vec2> = pts.iter().map(|i| self.p(*i)).collect();
+            Some(CurveKind::Spline { pts, control, degree, periodic }) => {
+                let p = self.spline_points(pts, *periodic);
                 if p.len() < 2 {
                     return q.dist(p.first().copied().unwrap_or_default());
                 }
@@ -203,7 +213,11 @@ impl State<'_> {
                     let k = (*degree as usize).min(solvecraft_geom::MAX_BEZIER_DEGREE).min(p.len().saturating_sub(1)).max(1);
                     crate::curves::bspline_beziers(&p, k).iter().filter_map(|span| solvecraft_geom::bezier(span)).collect()
                 } else {
-                    crate::curves::fit_beziers(&p).into_iter().map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 }).collect()
+                    crate::curves::fit_beziers_mode(&p, *periodic)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|[p0, p1, p2, p3]| Seg2::Cubic { p0, p1, p2, p3 })
+                        .collect()
                 }
             }
             Some(CurveKind::Conic { a, b, apex, rho }) => {
@@ -269,10 +283,10 @@ impl State<'_> {
                 let (cc, r) = self.round(c);
                 (cc - self.p(p)) / (r * r).max(1e-24)
             }
-            CurveKind::Spline { pts, control, degree } => {
-                let q: Vec<Vec2> = pts.iter().map(|i| self.p(*i)).collect();
+            CurveKind::Spline { pts, control, degree, periodic } => {
+                let q = self.spline_points(pts, *periodic);
                 let at_end = pts.last() == Some(&p) && pts.first() != Some(&p);
-                crate::curves::end_curvature(&|t| crate::curves::spline_point(&q, *control, *degree, t), at_end)
+                crate::curves::end_curvature(&|t| crate::curves::spline_point_mode(&q, *control, *degree, *periodic, t), at_end)
             }
             CurveKind::Conic { a, b, apex, rho } => {
                 let (pa, pb, px) = (self.p(*a), self.p(*b), self.p(*apex));
@@ -285,9 +299,9 @@ impl State<'_> {
         match self.sk.curves.get(c).map(|c| &c.kind)? {
             CurveKind::Line { a, b } => (self.p(*b) - self.p(*a)).normalized(),
             CurveKind::Circle { .. } | CurveKind::Arc { .. } => (self.p(p) - self.round(c).0).perp().normalized(),
-            CurveKind::Spline { pts, control, .. } => {
-                let q: Vec<Vec2> = pts.iter().map(|i| self.p(*i)).collect();
-                crate::curves::spline_end_tangent(&q, *control, pts.last() == Some(&p) && pts.first() != Some(&p))
+            CurveKind::Spline { pts, control, periodic, .. } => {
+                let q = self.spline_points(pts, *periodic);
+                crate::curves::spline_end_tangent_mode(&q, *control, *periodic, pts.last() == Some(&p) && pts.first() != Some(&p))
             }
             CurveKind::Conic { a, b, apex, .. } => {
                 if p == *a {
@@ -540,6 +554,7 @@ pub fn measure_dimension(sk: &Sketch, k: &ConstraintKind) -> Option<f64> {
 /// One residual block: implicit arc radius equality, a user constraint, or a tangency at a known
 /// touch point (better conditioned than the distance form when an end point is on the curve).
 enum Block<'a> {
+    Closure { a: usize, b: usize },
     Arc { c: usize, a: usize, b: usize },
     User(usize, &'a ConstraintKind),
     TangentAt(usize, &'a ConstraintKind, usize),
@@ -547,6 +562,7 @@ enum Block<'a> {
 
 fn copy_block<'a>(b: &Block<'a>) -> Block<'a> {
     match b {
+        Block::Closure { a, b } => Block::Closure { a: *a, b: *b },
         Block::Arc { c, a, b } => Block::Arc { c: *c, a: *a, b: *b },
         Block::User(i, k) => Block::User(*i, k),
         Block::TangentAt(i, k, p) => Block::TangentAt(*i, k, *p),
@@ -555,6 +571,10 @@ fn copy_block<'a>(b: &Block<'a>) -> Block<'a> {
 
 fn block_residuals(s: &State, b: &Block, out: &mut Vec<f64>) {
     match b {
+        Block::Closure { a, b } => {
+            let d = s.p(*a) - s.p(*b);
+            out.extend([d.x, d.y]);
+        }
         Block::Arc { c, a, b } => {
             let cc = s.p(*c);
             out.push(cc.dist(s.p(*b)) - cc.dist(s.p(*a)));
@@ -625,6 +645,10 @@ fn block_vars(sk: &Sketch, lay: &Layout, b: &Block) -> Vec<usize> {
     };
     use ConstraintKind::*;
     match b {
+        Block::Closure { a, b } => {
+            pt(&mut v, *a);
+            pt(&mut v, *b);
+        }
         Block::Arc { c, a, b } => {
             pt(&mut v, *c);
             pt(&mut v, *a);
@@ -947,6 +971,14 @@ pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
 
     let mut blocks: Vec<(Block, Vec<usize>)> = Vec::new();
     for c in &sk.curves {
+        if let CurveKind::Spline { pts, periodic: true, .. } = &c.kind
+            && let (Some(a), Some(b)) = (pts.first(), pts.last())
+            && a != b
+        {
+            let bl = Block::Closure { a: *a, b: *b };
+            let vars = block_vars(sk, &lay, &bl);
+            blocks.push((bl, vars));
+        }
         if let CurveKind::Arc { c, a, b } = c.kind {
             let bl = Block::Arc { c, a, b };
             let vars = block_vars(sk, &lay, &bl);
@@ -1067,6 +1099,63 @@ pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
         let (r, _, owner) = system(sk, &lay, &consts, &mut x, false);
         check(&r, &owner, &consts, &mut failing);
     }
+    // Weld the whole connected closure graph, preserving every immutable node.
+    // Validate the actual prospective geometry before accepting a numerical solve.
+    let has_periodic = sk.curves.iter().any(|c| matches!(c.kind, CurveKind::Spline { periodic: true, .. }));
+    let periodic_positions = if has_periodic {
+        let state = State { sk, lay: &lay, x: &x };
+        let mut positions = (0..sk.points.len()).map(|i| state.p(i)).collect::<Vec<_>>();
+        let mut parent = (0..positions.len()).collect::<Vec<_>>();
+        for curve in &sk.curves {
+            if let CurveKind::Spline { pts, periodic: true, .. } = &curve.kind
+                && let (Some(a), Some(b)) = (pts.first(), pts.last())
+                && *a < parent.len()
+                && *b < parent.len()
+            {
+                let (a, b) = (find(&mut parent, *a), find(&mut parent, *b));
+                if let Some(slot) = parent.get_mut(b) {
+                    *slot = a;
+                }
+            }
+        }
+        let mut representatives = std::collections::BTreeMap::new();
+        let mut valid = true;
+        for i in 0..positions.len() {
+            let root = find(&mut parent, i);
+            if let Some(previous) = representatives.get(&root).copied() {
+                let fixed = |p| lay.pvar.get(p).is_some_and(Option::is_none);
+                if fixed(i) && fixed(previous) && positions[i] != positions[previous] {
+                    valid = false;
+                }
+                if fixed(i) && !fixed(previous) {
+                    representatives.insert(root, i);
+                }
+            } else {
+                representatives.insert(root, i);
+            }
+        }
+        for (i, position) in positions.iter_mut().enumerate() {
+            if let Some(index) = representatives.get(&find(&mut parent, i)) {
+                *position = state.p(*index);
+            }
+        }
+        for curve in &sk.curves {
+            if let CurveKind::Spline { pts, control, degree, periodic: true } = &curve.kind {
+                let points = pts.iter().map(|i| positions.get(*i).copied()).collect::<Option<Vec<_>>>();
+                if *control || *degree != 3 || points.as_ref().is_none_or(|p| crate::periodic::validate_periodic_points(p).is_err()) {
+                    valid = false;
+                }
+            }
+        }
+        if !valid {
+            max_residual = max_residual.max(1.0);
+            None
+        } else {
+            Some(positions)
+        }
+    } else {
+        None
+    };
     let status = if max_residual < ACCEPT { SolveStatus::Solved } else { SolveStatus::Failed };
     let use_x = if status == SolveStatus::Solved { &x } else { &x0 };
     // Write back.
@@ -1078,6 +1167,13 @@ pub fn solve_holding(sk: &mut Sketch, hold: &Hold) -> SolveReport {
     for (i, c) in sk.curves.iter_mut().enumerate() {
         if let (CurveKind::Circle { r, .. } | CurveKind::Ellipse { r, .. }, Some(v)) = (&mut c.kind, lay.rvar.get(i).copied().flatten()) {
             *r = use_x.get(v).copied().unwrap_or(*r).abs().max(1e-9);
+        }
+    }
+    if status == SolveStatus::Solved
+        && let Some(positions) = periodic_positions
+    {
+        for (point, position) in sk.points.iter_mut().zip(positions) {
+            point.pos = position;
         }
     }
     if status == SolveStatus::Failed {

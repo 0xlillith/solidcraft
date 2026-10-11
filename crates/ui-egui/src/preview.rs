@@ -132,6 +132,7 @@ impl PreviewState {
 pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
     let cmds = match app.dialog.as_ref().filter(|d| d.previews()).map(|d| crate::dialogs::preview_commands(app, d)) {
         Some(Ok(c)) if !c.is_empty() => c,
+        _ if crate::sketch_attachment_ui::commands(app).is_some() => crate::sketch_attachment_ui::commands(app).unwrap_or_default(),
         // A parameter being edited in Change Parameters.
         _ if app.params.as_ref().and_then(|p| p.preview_commands()).is_some() => {
             app.params.as_ref().and_then(|p| p.preview_commands()).unwrap_or_default()
@@ -185,6 +186,15 @@ fn spawn(pv: &mut PreviewState, key: u64, scratch: Session, cmds: Vec<(String, V
 /// show their result in place of the bodies they change. When the feature fails (a boolean the
 /// kernel can't do yet), the tool body is still shown, with the error.
 pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
+    if cmds.iter().any(|(command, _)| command == "sketch.redefine") {
+        let preview = s.preview_visible_world(cmds).map_err(|error| error.to_string())?;
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut built = build(&preview.before, &preview.after, colors);
+            built.bounds = state_bounds(&preview.after);
+            built
+        }))
+        .map_err(|_| "the preview failed".to_string());
+    }
     // Joints and drives move occurrences: shown on the placed model.
     if let Some(job) = crate::dialogs_assembly::world_preview(s, cmds, colors) {
         return job;

@@ -12,7 +12,7 @@ use crate::params::{bad, bool_, str_, string_list, vec3};
 use crate::{Result, Session};
 
 #[path = "component_properties.rs"]
-mod properties;
+pub(super) mod properties;
 #[path = "component_transfer.rs"]
 mod transfer;
 

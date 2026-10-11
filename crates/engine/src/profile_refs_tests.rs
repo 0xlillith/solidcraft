@@ -30,7 +30,8 @@ fn enclosure() -> Session {
         {"command": "solid.extrude", "params": {"distance": "height", "body_name": "Enclosure"}},
         {"command": "solid.fillet", "params": {"edges": [[40, 30, 15], [-40, 30, 15], [-40, -30, 15], [40, -30, 15]], "radius": 6}},
         {"command": "solid.shell", "params": {"faces": [[0, 0, 30]], "thickness": "wall"}},
-        {"command": "sketch.create", "params": {"plane": {"face": [40, 10, 20]}, "name": "USB port"}},
+        {"command": "sketch.create", "params": {"plane": "YZ", "offset":"width / 2", "name": "USB port"}},
+        {"command": "sketch.project", "params": {"refs":[{"face":[40,10,20],"body":"Enclosure"}]}},
         {"command": "sketch.rectangle.center", "params": {"center": [0, 12], "corner": [6, 15.5]}},
         {"command": "sketch.finish", "params": {}},
         {"command": "solid.extrude", "params": {"distance": "-wall", "operation": "cut", "profiles": [1]}}
@@ -58,6 +59,18 @@ fn a_port_picked_by_index_stays_a_cut_after_a_width_change() {
     assert!(after[0].1 > before[0].1 + 1000.0, "{before:?} {after:?}");
     let id = s.doc.features.last().unwrap().id;
     assert!(s.model.result(id).is_some_and(|r| r.error.is_none()), "{:?}", s.model.result(id));
+    let port = s.doc.find_feature("USB port").unwrap().id;
+    assert!((s.model.state().sketch(port).unwrap().plane.origin.x - 50.).abs() < 1e-6);
+    let world = s.world_state();
+    let mesh = world.body("Enclosure").unwrap().mesh();
+    assert!(!mesh.contains(solvecraft_geom::Vec3::new(49., 0., 12.)));
+    assert!(mesh.contains(solvecraft_geom::Vec3::new(49., 0., 20.)));
+    let reopened = Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(reopened.model.result(id).unwrap().error.is_none());
+    let world = reopened.world_state();
+    let mesh = world.body("Enclosure").unwrap().mesh();
+    assert!(!mesh.contains(solvecraft_geom::Vec3::new(49., 0., 12.)));
+    assert!(mesh.contains(solvecraft_geom::Vec3::new(49., 0., 20.)));
 }
 
 /// A pick the sketch no longer has is an error on the feature, never a different profile.

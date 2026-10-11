@@ -75,6 +75,9 @@ pub mod shortcut_box;
 pub mod sketch3d;
 #[cfg(test)]
 mod sketch3d_frame_ui_tests;
+pub(crate) mod sketch_attachment_ui;
+#[cfg(test)]
+mod sketch_attachment_ui_tests;
 pub mod sketch_dims;
 #[cfg(test)]
 mod sketch_edit_tests;
@@ -414,6 +417,7 @@ impl SolveApp {
                 self.session.echo(format!("{} done", command_label(id)));
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
                     self.menu.props = None;
+                    sketch_attachment_ui::clear(self);
                     // The old document is already replaced: discard its editor without
                     // applying cancellation hooks (such as restoring its timeline marker).
                     self.dialog = None;
@@ -574,6 +578,13 @@ impl SolveApp {
     /// puts them back. Editing the sketch that is already open does nothing; editing another one
     /// finishes the current sketch first, so edit sessions never nest.
     pub fn edit_sketch(&mut self, id: u64) {
+        if let solvecraft_engine::doc::FaceAttachmentStatus::Lost { message, .. } =
+            self.session.placed_document().sketch_face_attachment(id, &self.session.model)
+        {
+            browser::redefine_sketch(self, id);
+            self.set_status(message, true);
+            return;
+        }
         if self.session.active_sketch == Some(id) {
             return;
         }

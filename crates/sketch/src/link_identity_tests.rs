@@ -156,3 +156,178 @@ fn resized_dense_rim_matches_arc_centres_by_role_before_proximity() {
     }
     assert_eq!(ids, arcs.iter().map(|i| sk.curves[*i].id.clone()).collect::<Vec<_>>());
 }
+
+#[test]
+fn nested_face_resize_matches_each_loop_before_nearby_outer_vertices() {
+    let rectangle = |x: f64, y: f64| {
+        let p = [Vec2::new(-x, -y), Vec2::new(x, -y), Vec2::new(x, y), Vec2::new(-x, y)];
+        (0..4).map(|i| LinkGeom::Line(p[i], p[(i + 1) % 4])).collect::<Vec<_>>()
+    };
+    let mut sk = Sketch::new();
+    let old: Vec<_> = rectangle(38.0, 28.0).into_iter().chain(rectangle(40.0, 30.0)).collect();
+    let link = sk.add_link(LinkKind::Project, face(), &old).unwrap();
+    let ids: Vec<_> = sk.link_curves(&link).iter().map(|i| sk.curves[*i].id.clone()).collect();
+    let points = sk.link_points(&link);
+    let before: Vec<_> = points.iter().map(|i| sk.points[*i].pos).collect();
+    let fresh: Vec<_> = rectangle(41.0, 36.0).into_iter().chain(rectangle(38.0, 33.0)).collect();
+    assert!(!sk.update_link(&link, &fresh).unwrap());
+    assert!(!sk.link(&link).unwrap().lost);
+    for (i, p) in points.iter().zip(before) {
+        let expected = if p.x.abs() == 38.0 { Vec2::new(p.x, p.y.signum() * 33.0) } else { Vec2::new(p.x.signum() * 41.0, p.y.signum() * 36.0) };
+        assert_eq!(sk.points[*i].pos, expected);
+    }
+    assert_eq!(ids, sk.link_curves(&link).iter().map(|i| sk.curves[*i].id.clone()).collect::<Vec<_>>());
+}
+
+#[test]
+fn growing_face_retains_stationary_hole_arcs_and_shared_centre() {
+    let geometry = |width: f64| {
+        let p = [Vec2::ZERO, Vec2::new(width, 0.0), Vec2::new(width, 30.0), Vec2::new(0.0, 30.0)];
+        let mut out: Vec<_> = (0..4).map(|i| LinkGeom::Line(p[i], p[(i + 1) % 4])).collect();
+        let c = Vec2::new(20.0, 15.0);
+        out.extend([
+            LinkGeom::Arc { c, a: c + Vec2::X * 5.0, b: c - Vec2::X * 5.0 },
+            LinkGeom::Arc { c, a: c - Vec2::X * 5.0, b: c + Vec2::X * 5.0 },
+        ]);
+        out
+    };
+    let mut sk = Sketch::new();
+    let link = sk.add_link(LinkKind::Project, face(), &geometry(40.0)).unwrap();
+    let saved = sk.clone();
+    assert!(!sk.update_link(&link, &geometry(50.0)).unwrap());
+    assert!(!sk.link(&link).unwrap().lost);
+    for i in sk.link_curves(&link) {
+        assert_eq!(sk.curves[i].id, saved.curves[i].id);
+        if matches!(sk.curves[i].kind, CurveKind::Arc { .. }) {
+            assert_eq!(sk.curves[i], saved.curves[i]);
+            for p in sk.curves[i].kind.point_ids() {
+                assert_eq!(sk.points[p], saved.points[p]);
+            }
+        }
+    }
+}
+
+#[test]
+fn touching_or_crossed_face_boundaries_refuse_without_retargeting_ids() {
+    for x in [9.0, 11.0] {
+        let mut sk = Sketch::new();
+        let link = sk.add_link(LinkKind::Project, face(), &[LinkGeom::Circle(Vec2::ZERO, 10.0), LinkGeom::Circle(Vec2::ZERO, 1.0)]).unwrap();
+        let saved = sk.clone();
+        assert!(sk.update_link(&link, &[LinkGeom::Circle(Vec2::ZERO, 10.0), LinkGeom::Circle(Vec2::new(x, 0.0), 1.0)]).is_err());
+        assert_eq!(sk.points, saved.points);
+        assert_eq!(sk.curves, saved.curves);
+        assert!(sk.link(&link).unwrap().lost);
+    }
+}
+
+#[test]
+fn resized_rounded_rim_retains_inner_outer_roles_with_shared_arc_centres() {
+    let rounded = |x: f64, y: f64, r: f64| {
+        let centres = [Vec2::new(x - r, -y + r), Vec2::new(x - r, y - r), Vec2::new(-x + r, y - r), Vec2::new(-x + r, -y + r)];
+        let mut out = Vec::new();
+        for i in 0..4 {
+            let start = -std::f64::consts::FRAC_PI_2 + i as f64 * std::f64::consts::FRAC_PI_2;
+            let previous = centres[(i + 3) % 4] + Vec2::from_angle(start) * r;
+            let a = centres[i] + Vec2::from_angle(start) * r;
+            let b = centres[i] + Vec2::from_angle(start + std::f64::consts::FRAC_PI_2) * r;
+            out.push(LinkGeom::Line(previous, a));
+            out.push(LinkGeom::Arc { c: centres[i], a, b });
+        }
+        out
+    };
+    let mut sk = Sketch::new();
+    let old: Vec<_> = rounded(38.0, 28.0, 2.0).into_iter().chain(rounded(40.0, 30.0, 4.0)).collect();
+    let link = sk.add_link(LinkKind::Project, face(), &old).unwrap();
+    let curves = sk.link_curves(&link);
+    let ids: Vec<_> = curves.iter().map(|i| sk.curves[*i].id.clone()).collect();
+    let fresh: Vec<_> = rounded(41.0, 36.0, 4.0).into_iter().chain(rounded(38.0, 33.0, 1.0)).collect();
+    assert!(!sk.update_link(&link, &fresh).unwrap());
+    assert!(!sk.link(&link).unwrap().lost);
+    assert_eq!(ids, sk.link_curves(&link).iter().map(|i| sk.curves[*i].id.clone()).collect::<Vec<_>>());
+    for (old, fresh) in curves.iter().zip(rounded(38.0, 33.0, 1.0).into_iter().chain(rounded(41.0, 36.0, 4.0))) {
+        match (&sk.curves[*old].kind, fresh) {
+            (CurveKind::Line { a, b }, LinkGeom::Line(p, q)) => {
+                assert!(sk.points[*a].pos.dist(p) < 1e-10);
+                assert!(sk.points[*b].pos.dist(q) < 1e-10);
+            }
+            (CurveKind::Arc { c, a, b }, LinkGeom::Arc { c: p, a: q, b: r }) => {
+                assert!(sk.points[*c].pos.dist(p) < 1e-10);
+                assert!(sk.points[*a].pos.dist(q) < 1e-10);
+                assert!(sk.points[*b].pos.dist(r) < 1e-10);
+            }
+            _ => panic!(),
+        }
+    }
+}
+
+#[test]
+fn far_translated_small_hole_crossing_long_edge_is_not_certified_separate() {
+    let mut sk = Sketch::new();
+    let p = [Vec2::new(-1e8, 1.0), Vec2::new(1e8, 1.0), Vec2::new(1e8, 10.0), Vec2::new(-1e8, 10.0)];
+    let mut old: Vec<_> = (0..4).map(|i| LinkGeom::Line(p[i], p[(i + 1) % 4])).collect();
+    old.push(LinkGeom::Circle(Vec2::new(1e6, 5.0), 2.0));
+    let link = sk.add_link(LinkKind::Project, face(), &old).unwrap();
+    let saved = sk.clone();
+    let mut fresh: Vec<_> = (0..4).map(|i| LinkGeom::Line(p[i], p[(i + 1) % 4])).collect();
+    fresh.push(LinkGeom::Circle(Vec2::new(1e6, 0.0), 2.0));
+    assert!(sk.update_link(&link, &fresh).is_err());
+    assert_eq!(sk.points, saved.points);
+    assert_eq!(sk.curves, saved.curves);
+    assert!(sk.link(&link).unwrap().lost);
+}
+
+#[test]
+fn equal_nested_sibling_candidates_remain_ambiguous_after_loop_classification() {
+    let mut sk = Sketch::new();
+    let link = sk
+        .add_link(
+            LinkKind::Project,
+            face(),
+            &[LinkGeom::Circle(Vec2::ZERO, 10.0), LinkGeom::Circle(Vec2::new(-2.0, 0.0), 1.0), LinkGeom::Circle(Vec2::new(2.0, 0.0), 1.0)],
+        )
+        .unwrap();
+    let saved = sk.clone();
+    assert!(
+        sk.update_link(
+            &link,
+            &[LinkGeom::Circle(Vec2::ZERO, 10.0), LinkGeom::Circle(Vec2::new(0.0, -2.0), 1.0), LinkGeom::Circle(Vec2::new(0.0, 2.0), 1.0)]
+        )
+        .is_err()
+    );
+    assert_eq!(sk.points, saved.points);
+    assert_eq!(sk.curves, saved.curves);
+    assert!(sk.link(&link).unwrap().lost);
+}
+
+#[test]
+fn tiny_circle_crossing_huge_round_boundary_is_not_certified_separate() {
+    let mut sk = Sketch::new();
+    let direction = Vec2::new(std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2);
+    let link = sk.add_link(LinkKind::Project, face(), &[LinkGeom::Circle(Vec2::ZERO, 1e8), LinkGeom::Circle(direction * (1e8 + 10.0), 2.0)]).unwrap();
+    let saved = sk.clone();
+    assert!(sk.update_link(&link, &[LinkGeom::Circle(Vec2::ZERO, 1e8), LinkGeom::Circle(direction * (1e8 + 1.0), 2.0)]).is_err());
+    assert_eq!(sk.points, saved.points);
+    assert_eq!(sk.curves, saved.curves);
+    assert!(sk.link(&link).unwrap().lost);
+}
+
+#[test]
+fn huge_loop_does_not_make_nearby_bowtie_edges_topologically_adjacent() {
+    let mut sk = Sketch::new();
+    let link = sk.add_link(LinkKind::Project, face(), &square(10.0)).unwrap();
+    let saved = sk.clone();
+    let p = [
+        Vec2::ZERO,
+        Vec2::new(0.04, 0.04),
+        Vec2::new(0.0, 0.04),
+        Vec2::new(0.04, 0.0),
+        Vec2::new(9e8, 0.0),
+        Vec2::new(9e8, 10.0),
+        Vec2::new(0.0, 10.0),
+    ];
+    let crossed: Vec<_> = (0..p.len()).map(|i| LinkGeom::Line(p[i], p[(i + 1) % p.len()])).collect();
+    assert!(sk.update_link(&link, &crossed).is_err());
+    assert_eq!(sk.points, saved.points);
+    assert_eq!(sk.curves, saved.curves);
+    assert!(sk.link(&link).unwrap().lost);
+}

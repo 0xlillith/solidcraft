@@ -152,8 +152,21 @@ pub(super) fn refresh(s: &Session, doc: &Document, id: u64, sk: &mut Sketch) -> 
     let (vals, _) = doc.param_values();
     let st = s.model.state_before(id);
     let comp = doc.feature(id).map(|f| f.component).unwrap_or(0);
-    let st = solvecraft_doc::state_in_frame_at(&doc, &st, comp, owner_frame(s, &doc, comp));
-    solvecraft_doc::project::refresh_links(&doc, &vals, &st, &plane, sk)
+    let attachment = doc.feature(id).and_then(|feature| match &feature.kind {
+        solvecraft_doc::FeatureKind::Sketch { plane, .. } => super::sketch::face::anchor(plane),
+        _ => None,
+    });
+    let st = match attachment {
+        Some(anchor) => solvecraft_doc::state_in_face_anchor_frame(&doc, &st, anchor, comp),
+        None => Ok(solvecraft_doc::state_in_frame_at(&doc, &st, comp, owner_frame(s, &doc, comp))),
+    };
+    let Ok(st) = st else {
+        return vec!["lost face attachment; reattach explicitly".into()];
+    };
+    match attachment {
+        Some(anchor) => solvecraft_doc::project::refresh_face_anchor_links(&doc, &vals, &st, &plane, sk, anchor),
+        None => solvecraft_doc::project::refresh_links(&doc, &vals, &st, &plane, sk),
+    }
 }
 
 /// Add a link for `src` to sketch `id` in `doc` (not stored in the session). Returns the link id.
@@ -164,10 +177,24 @@ pub(super) fn add_link(s: &Session, doc: &Document, id: u64, sk: &mut Sketch, ki
     let st = s.model.state_before(id);
     // The model as the sketch's component sees it.
     let comp = doc.feature(id).map(|f| f.component).unwrap_or(0);
-    let st = solvecraft_doc::state_in_frame_at(&doc, &st, comp, owner_frame(s, &doc, comp));
+    let attachment = doc.feature(id).and_then(|feature| match &feature.kind {
+        solvecraft_doc::FeatureKind::Sketch { plane, .. } => super::sketch::face::anchor(plane),
+        _ => None,
+    });
+    let st = match attachment {
+        Some(anchor) => solvecraft_doc::state_in_face_anchor_frame(&doc, &st, anchor, comp),
+        None => Ok(solvecraft_doc::state_in_frame_at(&doc, &st, comp, owner_frame(s, &doc, comp))),
+    };
+    let st = st?;
     let r = resolve(&doc, &vals, &st, &plane, kind, &src)?;
-    let name = if let LinkSource::Face { at, .. } = &r.source {
-        solvecraft_doc::naming::face_names_at(&st, &[*at]).into_iter().next().filter(|n| !n.is_empty())
+    let name = if let LinkSource::Face { body, at } = &r.source {
+        st.body(body).and_then(|body| {
+            if let Some(index) = r.face_index {
+                solvecraft_doc::naming::face_names(body).get(index).filter(|name| !name.is_empty()).cloned()
+            } else {
+                solvecraft_doc::naming::face_name_at_body(body, *at)
+            }
+        })
     } else {
         None
     };
@@ -455,17 +482,53 @@ pub(super) fn snap_points(s: &mut Session, p: &Value, cmd: &str) -> Result<Value
     Ok(out)
 }
 
-/// Project the edges of the face a new sketch was created on (Fusion's default).
-pub(super) fn auto_project_face(s: &mut Session, id: u64, at: Vec3) -> Result<Option<String>> {
+/// Private compatibility projection for generated face profiles. Named legacy links follow
+/// edits, but cannot provide the construction certificate required by public attachments.
+pub(super) fn project_internal_face(s: &mut Session, id: u64, body: &str, index: usize) -> Result<String> {
     let mut doc = (*s.doc).clone();
+    let plane = sketch_plane(&doc, id)?;
+    let raw = s.model.state_before(id);
+    let component = doc.feature(id).map(|feature| feature.component).unwrap_or(0);
+    let state = solvecraft_doc::state_in_frame_at(&doc, &raw, component, owner_frame(s, &doc, component));
+    let resolved = solvecraft_doc::project::resolve_face_indices(&state, &plane, LinkKind::Project, body, &[index])?;
+    let face_name = state.body(body).and_then(|body| solvecraft_doc::naming::face_names(body).get(index).cloned());
     let mut sk = doc.sketch(id)?.clone();
-    let l = match add_link(s, &doc, id, &mut sk, LinkKind::Project, LinkSource::Face { body: String::new(), at }) {
-        Ok(l) => l,
-        Err(_) => return Ok(None),
-    };
+    let link = sk.add_link_with_wires(LinkKind::Project, resolved.source, &resolved.geom, &resolved.wires)?;
+    if let Some(entry) = sk.links.iter_mut().find(|entry| entry.id == link) {
+        entry.face_name = face_name;
+    }
     *doc.sketch_mut(id)? = sk;
     *s.doc_mut() = doc;
-    Ok(Some(l))
+    Ok(link)
+}
+
+/// Project the edges of the face a new sketch was created on (Fusion's default).
+pub(super) fn auto_project_face(s: &mut Session, id: u64, _at: Vec3) -> Result<Option<String>> {
+    let mut doc = (*s.doc).clone();
+    let Some(anchor) = doc
+        .feature(id)
+        .and_then(|feature| match &feature.kind {
+            solvecraft_doc::FeatureKind::Sketch { plane, .. } => super::sketch::face::anchor(plane),
+            _ => None,
+        })
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let raw = s.model.state_before(id);
+    let author = doc.feature(id).map(|feature| feature.component).unwrap_or(0);
+    let state = solvecraft_doc::state_in_face_anchor_frame(&doc, &raw, &anchor, author)?;
+    let plane = doc.resolve_face_anchor(&anchor, author, &raw)?;
+    let resolved = solvecraft_doc::project::resolve_anchored_face(&doc, &state, &plane, LinkKind::Project, &anchor)?;
+    let mut sk = doc.sketch(id)?.clone();
+    let link = sk.add_link_with_wires(LinkKind::Project, resolved.source, &resolved.geom, &resolved.wires)?;
+    if let Some(link) = sk.links.iter_mut().find(|entry| entry.id == link) {
+        link.face_name = Some(anchor.target.name.clone());
+        link.auto_face = true;
+    }
+    *doc.sketch_mut(id)? = sk;
+    *s.doc_mut() = doc;
+    Ok(Some(link))
 }
 
 #[cfg(test)]

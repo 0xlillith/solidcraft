@@ -970,7 +970,7 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
                     idx.push(pb);
                     idx.dedup();
                     if idx.len() >= 2 {
-                        made.push(sk.add_curve(CurveKind::Spline { pts: idx, control: false, degree: 3 }, None)?);
+                        made.push(sk.add_curve(CurveKind::Spline { pts: idx, control: false, degree: 3, periodic: false }, None)?);
                     }
                 }
                 Piece::Line(..) => {
@@ -1002,14 +1002,26 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn break_offset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.offset.break";
-    let (out, info) = edit(s, p, cmd, true, |sk, _| {
+    let (out, info) = edit(s, p, cmd, true, |sk, doc| {
         let output = str_(p, "curve").ok_or_else(|| bad(cmd, "`curve` must name an offset output"))?;
         let record = sk
             .freeform_offsets
             .iter()
             .position(|record| record.output == output)
             .ok_or_else(|| bad(cmd, "that curve has no free-form offset association"))?;
+        // A parameter edit may have changed the evaluated source without
+        // rewriting the stored fit points. Break must freeze the displayed,
+        // current dimensioned geometry, rather than its stale stored predecessor.
+        let (values, _) = doc.param_values();
+        doc.apply_dimension_values(&values, sk)?;
+        if !solvecraft_sketch::solve(sk).ok() {
+            return Err(bad(cmd, "cannot break an offset with conflicting source dimensions"));
+        }
         sk.refresh_offsets()?;
+        if !solvecraft_sketch::solve(sk).ok() {
+            return Err(bad(cmd, "cannot break an offset with conflicting derived dimensions"));
+        }
+        sk.validate_periodic_splines()?;
         let ci = sk.curve_index(output).ok_or_else(|| bad(cmd, "missing offset output"))?;
         let indices = sk.curves[ci].kind.point_ids();
         sk.freeform_offsets.remove(record);

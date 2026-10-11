@@ -225,6 +225,7 @@ fn scene_key(app: &SolveApp) -> u64 {
     app.session.active_component.hash(&mut h);
     app.session.active_occurrence_path.hash(&mut h);
     app.preview.replaced.hash(&mut h);
+    app.tree.redefine.hash(&mut h);
     crate::theme::is_dark().hash(&mut h);
     app.session.active_sketch.hash(&mut h);
     let (minor, _) = grid_step(app.cam.half_height());
@@ -372,6 +373,12 @@ fn build_scene(app: &SolveApp) -> GpuScene {
             for (a, b) in segs {
                 sc.line(a.to_f32(), b.to_f32(), sketch_color(&tk, col), if cons { 1.2 } else { 2.0 }, active);
             }
+        }
+    }
+    let guide_unit = grid_step(app.cam.half_height()).0;
+    for points in crate::sketch_attachment_ui::guide_lines(app) {
+        for (a, b) in dashes(&points, &[guide_unit * 0.25, guide_unit * 0.15]) {
+            sc.line(a.to_f32(), b.to_f32(), c4(tk.warning), 1.5, true);
         }
     }
     sc
@@ -593,6 +600,9 @@ pub fn model_bounds(app: &SolveApp) -> solvecraft_engine::geom::Aabb3 {
                 b.add(ss.plane.to_world(p));
             }
         }
+    }
+    for point in crate::sketch_attachment_ui::guide_lines(app).into_iter().flatten() {
+        b.add(point);
     }
     b
 }
@@ -1795,6 +1805,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::drag_snap::show(app, &painter, &proj);
     hover_highlight(app, &painter, &proj);
     points_2d(app, &painter, &proj);
+    if let Some((plane, sketch)) = crate::sketch_attachment_ui::lost_guide(app)
+        && let Some((low, high)) = sketch.bounds()
+        && let Some(at) = proj.to_screen(plane.to_world(solvecraft_engine::geom::Vec2::new((low.x + high.x) * 0.5, high.y)))
+    {
+        painter.text(at - vec2(0.0, 12.0), Align2::CENTER_BOTTOM, "Saved sketch plane — attachment lost", FontId::proportional(12.0), t.warning);
+    }
     if let Some(bx) = app.viewport.boxsel {
         let col = if bx.crossing { t.box_crossing } else { t.box_window };
         painter.rect_filled(bx.rect, 0.0, col.gamma_multiply(0.12));

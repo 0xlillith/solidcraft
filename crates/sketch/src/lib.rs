@@ -15,6 +15,7 @@ mod linalg;
 mod link;
 mod model;
 mod offset;
+mod periodic;
 mod profiles;
 mod shape;
 mod solver;
@@ -22,13 +23,15 @@ mod text;
 mod wire;
 
 pub use curves::{
-    MAX_SPLINE_POINTS, bspline_beziers, conic_point, ellipse_point, end_curvature, fit_beziers, spline_end_tangent, spline_point, spline_polyline,
+    MAX_SPLINE_POINTS, bspline_beziers, conic_point, ellipse_point, end_curvature, fit_beziers, fit_beziers_mode, spline_end_tangent,
+    spline_end_tangent_mode, spline_point, spline_point_mode, spline_polyline, spline_polyline_mode,
 };
 pub use dims::{DimFrame, DimLayout, chain_centres, default_text, dim_frame, dim_layout, encode_text};
 pub use freeform_offset::{FreeformOffset, OFFSET_TOLERANCE};
 pub use link::{Link, LinkGeom, LinkKind, LinkSource, MAX_LINK_ENTITIES};
 pub use model::{Constraint, ConstraintKind, Curve, CurveKind, SPoint, Sketch, SketchError, SketchView};
 pub use offset::OffsetChain;
+pub use periodic::periodic_beziers;
 pub use profiles::{Profile, find_drawn_profiles, find_profiles, merge_regions};
 pub use shape::{Shape, intersections};
 pub use solver::{Hold, SolveReport, SolveStatus, measure_dimension, solve, solve_holding};

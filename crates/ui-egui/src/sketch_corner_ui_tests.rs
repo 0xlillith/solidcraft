@@ -2,6 +2,66 @@ use super::*;
 use solvecraft_engine::sketch::CurveKind;
 
 #[test]
+fn clicked_periodic_fit_closes_at_start_and_right_click_keeps_natural() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.settle();
+    h.step(&json!({"start":"sketch.spline.fit_point"})).unwrap();
+    for point in [[2, 2, 0], [8, 2, 0], [9, 7, 0], [1, 6, 0]] {
+        h.step(&json!({"click":{"world":point}})).unwrap();
+    }
+    let sid = h.app.session.active_sketch.unwrap();
+    assert!(h.app.session.model.state().sketch(sid).unwrap().sketch.curves.is_empty());
+    h.step(&json!({"move":{"world":[2,2,0]}})).unwrap();
+    assert_eq!(h.app.tool.as_ref().unwrap().hover.as_ref().unwrap().1.as_deref(), Some("Close smooth loop"));
+    h.step(&json!({"click":{"world":[2,2,0]}})).unwrap();
+    let sk = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
+    assert_eq!(sk.curves.len(), 1, "{:?}", h.app.status);
+    assert!(matches!(sk.curves[0].kind, CurveKind::Spline { periodic: true, .. }));
+    sk.validate_periodic_splines().unwrap();
+    assert_eq!(solvecraft_engine::sketch::find_profiles(&sk).len(), 1);
+    assert!(h.app.tool.as_ref().unwrap().pts.is_empty());
+    for point in [[15, 2, 0], [20, 2, 0], [20, 6, 0]] {
+        h.step(&json!({"click":{"world":point}})).unwrap();
+    }
+    h.step(&json!({"click":{"world":[20,6,0]},"button":"right"})).unwrap();
+    let sk = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
+    assert_eq!(sk.curves.len(), 2);
+    assert!(matches!(sk.curves[1].kind, CurveKind::Spline { periodic: false, .. }));
+}
+
+#[test]
+fn clicked_ellipse_offset_then_closed_offset_preserves_exact_distance_and_undo() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+    h.app.run("sketch.ellipse", json!({"center":[0,0],"major":[10,0],"minor_radius":5})).unwrap();
+    h.settle();
+    let sid = h.app.session.active_sketch.unwrap();
+    h.step(&json!({"start":"sketch.offset"})).unwrap();
+    // Major tip is also a source handle: Offset must choose the actual curve.
+    h.step(&json!({"click":{"world":[10,0,0]}})).unwrap();
+    assert_eq!(h.app.tool.as_ref().unwrap().picks, vec!["e1"]);
+    h.step(&json!({"click":{"world":[11,0,0]}})).unwrap();
+    let sk = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
+    assert_eq!(sk.freeform_offsets.len(), 1, "{:?}", h.app.status);
+    assert!((sk.freeform_offsets[0].distance + 1.0).abs() < 1e-4);
+    let first = sk.freeform_offsets[0].output.clone();
+    let saved = h.app.session.doc.to_json();
+    h.step(&json!({"click":{"world":[11,0,0]}})).unwrap();
+    assert_eq!(h.app.tool.as_ref().unwrap().picks, vec![first]);
+    h.step(&json!({"click":{"world":[11.5,0,0]}})).unwrap();
+    let sk = h.app.session.model.state().sketch(sid).unwrap().sketch.clone();
+    assert_eq!(sk.freeform_offsets.len(), 2, "{:?}", h.app.status);
+    assert!((sk.freeform_offsets[1].distance + 0.5).abs() < 1e-4);
+    assert!(sk.freeform_offsets.iter().all(|r| r.certificate == 2));
+    assert_eq!(solvecraft_engine::sketch::find_profiles(&sk).len(), 3);
+    let last = sk.curve_index(&sk.freeform_offsets[1].output).unwrap();
+    assert!(sk.exact_segs(last).unwrap()[0].point_at(0.0).dist(Vec2::new(11.5, 0.0)) < 1e-4);
+    h.app.run("edit.undo", json!({})).unwrap();
+    assert_eq!(h.app.session.doc.to_json(), saved);
+}
+
+#[test]
 fn clicked_extend_endpoint_reaches_exact_ellipse_and_preserves_support() {
     let mut h = crate::scenario::Harness::new();
     h.app.ui.show_origin = true;

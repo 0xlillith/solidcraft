@@ -82,6 +82,7 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     app.preview = crate::preview::PreviewState::default();
     app.viewport.hover = None;
     app.menu.props = None;
+    crate::sketch_attachment_ui::clear(app);
     let out_rev = app.session.revision;
     let out = DocSlot {
         session: std::mem::replace(&mut app.session, slot.session),
@@ -142,6 +143,7 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
         crate::dialogs::cancel(app);
         app.tool = None;
         app.menu.props = None;
+        crate::sketch_attachment_ui::clear(app);
         app.session = session;
         app.session.invalidate_view(rev);
         app.cam = Camera::default();
