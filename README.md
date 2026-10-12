@@ -27,14 +27,12 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Name and compatibility
 
-SolidCraft was previously called SolveCraft. The product display name and repository are
-changing; existing identifiers remain compatible: `.solvecraft` designs, `solvecraft-cli`,
-Cargo package names, settings/recovery locations and package IDs keep their existing names.
-Published 0.2.0 and 0.2.1 packages and demo recordings retain their original SolveCraft branding
-and filenames.
-
-On macOS, the DMG contains `SolidCraft.app`. To replace an older `SolveCraft.app`
-without installing a second copy, follow the [macOS upgrade instructions](https://bherbruck.github.io/solidcraft/guide/getting-started.html#macos).
+SolidCraft was renamed from an earlier working name. Since 0.5.0 everything uses the new
+name: the `solidcraft` and `solidcraft-cli` programs, `.solidcraft` designs, `SOLIDCRAFT_*`
+environment variables, settings folders and the `solidcraft` MCP server. Upgrading keeps
+working: designs, settings, recovery files, environment variables and CLI/MCP setups from
+earlier builds carry over. Every compatibility shim is listed in
+[docs/compatibility.md](docs/compatibility.md).
 
 Use the SolidCraft documentation and web-app URLs above. GitHub redirects links to the
 renamed repository; old-name Pages and Flatpak URLs are not maintained as permanent aliases.
@@ -77,7 +75,7 @@ renamed repository; old-name Pages and Flatpak URLs are not maintained as perman
   retained shallow prismatic pockets, exact line/arc/circle DXF outlines and bend tables;
   plastic enclosure features and rules. Pocket depth and side survive unfold/refold and appear
   separately from through-hole outlines in the flat preview and DXF.
-- **Files**: designs as JSON (`.solvecraft`), export to STEP (AP242 with body names, colours and
+- **Files**: designs as JSON (`.solidcraft`), export to STEP (AP242 with body names, colours and
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;
   3MF, STL and OBJ import as mesh bodies (they render, measure, move and export; solid features
@@ -92,9 +90,9 @@ renamed repository; old-name Pages and Flatpak URLs are not maintained as perman
   control channel so agents and tests can drive it.
   Feature errors and Help can open an editable **Create Issue** draft with relevant context
   and an optional reviewed screenshot; opening GitHub does not submit the report.
-- **Headless CLI** `solvecraft-cli`: run command scripts, measure (volume, area, centre of mass,
+- **Headless CLI** `solidcraft-cli`: run command scripts, measure (volume, area, centre of mass,
   face/edge/vertex counts), export, render PNG snapshots and replay reference recipes.
-- **MCP server** `solvecraft-cli mcp`: AI agents model, measure and look at parts headless or
+- **MCP server** `solidcraft-cli mcp`: AI agents model, measure and look at parts headless or
   in the running app (see below).
 
 ## Build and run
@@ -130,7 +128,7 @@ sandbox does not expose hidraw devices, so the 3D mouse only works with native b
 Devices that send all six axes in HID report 1 (some homemade ones do) are recognised from their
 report descriptor, so they work as well.
 
-In the browser: `cd apps/solvecraft-web && trunk build --release --public-url ./` (WebGPU, or
+In the browser: `cd apps/solidcraft-web && trunk build --release --public-url ./` (WebGPU, or
 WebGL2 with `?webgl`; `?sample` opens the sample part).
 
 ## Scripts
@@ -148,12 +146,12 @@ A script is a JSON list of commands, the same ones the UI runs:
 
 ## AI agents (MCP)
 
-`solvecraft-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on
+`solidcraft-cli mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on
 stdio. Headless it runs its own design session; with `--connect 127.0.0.1:PORT` it drives the app
-started with `solvecraft --control PORT`, so you can watch the agent model. Tools:
+started with `solidcraft --control PORT`, so you can watch the agent model. Tools:
 `list_commands`, `execute`, `batch`, `inspect_design`, `measure`, `body_topology`,
 `set_parameter`, `screenshot` (returns the image), `export`, `undo`, `redo`, `new_design`, `open`,
-`save`. Claude Code: `claude mcp add solvecraft -- solvecraft-cli mcp`. Details, client
+`save`. Claude Code: `claude mcp add solidcraft -- solidcraft-cli mcp`. Details, client
 configuration and an example session: [docs/mcp.md](docs/mcp.md).
 
 ## Architecture
@@ -167,7 +165,7 @@ configuration and an example session: [docs/mcp.md](docs/mcp.md).
 | L3 | `io` | design files, STL/OBJ/STEP/3MF export, STEP and 3MF/STL import features |
 | L4 | `engine` | the session and the command registry (everything is a command) |
 | L5 | `ui-egui`, `mcp` | the swappable desktop front end; the MCP server (headless or bridged to the app) |
-| apps | `solvecraft`, `solvecraft-cli` | desktop app, headless CLI |
+| apps | `solidcraft`, `solidcraft-cli` | desktop app, headless CLI |
 <!-- ANCHOR_END: architecture -->
 
 ## Contributing

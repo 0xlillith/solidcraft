@@ -12,7 +12,7 @@ use std::cell::Cell;
 
 use egui::{Color32, RichText, Stroke, vec2};
 use serde_json::{Value, json};
-use solvecraft_engine::Sel;
+use solidcraft_engine::Sel;
 
 use crate::SolveApp;
 use crate::theme::Tokens;
@@ -88,7 +88,7 @@ pub fn toggle_construction(app: &mut SolveApp) {
 /// Curves a drawing command just made take the drawing line type.
 pub fn apply_mode(app: &mut SolveApp, id: &str, result: &Value) {
     let m = mode(app);
-    if m == 0 || !solvecraft_engine::find_command(id).is_some_and(|c| c.tab == "SKETCH" && c.panel == "CREATE") {
+    if m == 0 || !solidcraft_engine::find_command(id).is_some_and(|c| c.tab == "SKETCH" && c.panel == "CREATE") {
         return;
     }
     let curves: Vec<String> = result["curves"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_string)).collect();
@@ -104,7 +104,7 @@ pub fn apply_mode(app: &mut SolveApp, id: &str, result: &Value) {
                 ss.sketch
                     .curve_index(c)
                     .and_then(|i| ss.sketch.curves.get(i))
-                    .is_some_and(|c| matches!(c.kind, solvecraft_engine::sketch::CurveKind::Line { .. }))
+                    .is_some_and(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Line { .. }))
             })
             .cloned()
             .collect()
@@ -144,7 +144,7 @@ pub fn set_linetype(app: &mut SolveApp, kind: u8) {
                 ss.sketch
                     .curve_index(id)
                     .and_then(|i| ss.sketch.curves.get(i))
-                    .is_some_and(|c| matches!(c.kind, solvecraft_engine::sketch::CurveKind::Line { .. }))
+                    .is_some_and(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Line { .. }))
             })
             .cloned()
             .collect()

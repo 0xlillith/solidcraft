@@ -6,16 +6,14 @@ GitHub Release. Publishing that verified draft is a separate operation. Pushing 
 pushing a tag does not start the release workflow. There is no automatic commit-message-based
 version bump and no patch release for every merge.
 
-## Compatibility names and deployment
+## Names and deployment
 
-SolidCraft is the product display name. Keep existing release asset filenames, including
-`SolveCraft-{version}-windows-x64.exe` and `solvecraft-cli` archives, together
-with installed package IDs and settings paths. The macOS DMG now contains `SolidCraft.app`
-with a `SolidCraft` bundle executable and icon; its bundle ID remains
-`ai.storyteller.solvecraft`. Include the one-time macOS upgrade instructions from
-`.github/release-notes.md` so users replace an existing `SolveCraft.app` rather than
-installing a second copy. Do not rewrite published 0.2.0 or 0.2.1 assets,
-checksums, tags or historical release notes.
+Every release asset, binary, installer product name and package uses the SolidCraft name
+(`solidcraft-<version>-linux-<arch>.AppImage`, `SolidCraft-<version>-windows-x64.exe`,
+`solidcraft-cli` archives, …). The old name survives only in the shims listed in
+[compatibility.md](compatibility.md) (the Linux app ID, the legacy `.zsync` and `.flatpakrepo`
+copies, the deprecated old-name CLI alias); keep them until that document says they can go. Do not
+rewrite published assets, checksums, tags or historical release notes of earlier versions.
 
 Project Pages publishes the documentation, browser app and published-release Flatpak
 repository under `/solidcraft/`. Do not add a separate owner-site publisher or permanent
