@@ -17,16 +17,18 @@ fn bridge_line_snaps_to_points_on_two_visible_sketch_planes() {
     h.call("ui.view", json!({"view":"home"}));
     h.call("ui.view", json!({"view":"fit"}));
     h.frames(3);
+    h.app.start("sketch.line");
+    h.frames(3);
+    // Idle selection offers other sketches' points for Project preselection; a sketch tool's
+    // ordinary pick stays local, and only the 3D bridge snap (`pick_3d`) reaches across.
     let [x, y] = h.at(&json!({"world":[10,20,10]})).unwrap();
     let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
     assert!(
         crate::viewport::pick(&h.app, &proj, egui::pos2(x as f32, y as f32))
             .iter()
             .all(|hit| { !matches!(hit, crate::viewport::Hit::SketchPoint { sketch, .. } if *sketch != bridge) }),
-        "ordinary selection must keep its local sketch-point scope"
+        "a sketch tool's ordinary pick must keep its local sketch-point scope"
     );
-    h.app.start("sketch.line");
-    h.frames(3);
     for p in [[10, 20, 10], [30, 35, 40]] {
         let [x, y] = h.at(&json!({"world":p})).unwrap();
         let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
