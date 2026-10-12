@@ -108,6 +108,14 @@ midpoint, symmetry, fix, curvature (G2) and polygon. **Sketch Dimension** (D) ad
 aligned, horizontal, vertical, radius, diameter and angle dimensions. Each is a parameter
 (`d1`, `d2`, …), so it can hold an expression.
 
+Between two points, or on a line, that don't line up with an axis, where you place the
+dimension picks what it measures: across from them, the distance between them; above or below
+them, the horizontal distance; beside them, the vertical distance.
+
+A dimension the sketch can't take, because the geometry is already fixed by other constraints
+and dimensions, is added as a driven (reference) dimension instead: it is shown in
+parentheses, measures the sketch, and has no value to edit.
+
 For **Coincident**, pick two points, a point and a curve (in either order), or two
 distinct straight lines. Two lines join their closest pair of endpoints; the first
 picked line stays in place when the existing constraints allow it. Pick endpoints
