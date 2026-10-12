@@ -26,7 +26,7 @@
 - [Test harnesses](dev/testing.md)
 - [Control protocol](dev/control-protocol.md)
 - [Reference tests](dev/oracle.md)
-- [Command parity](dev/parity.md)
+- [Features](dev/features.md)
 - [STEP import](dev/step-import.md)
 
 # Reference

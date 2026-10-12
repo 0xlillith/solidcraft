@@ -5,9 +5,9 @@
 
 mod assets;
 mod book;
+mod features;
 mod layers;
 mod licences;
-mod parity;
 mod test;
 
 use std::path::{Path, PathBuf};
@@ -19,9 +19,7 @@ usage: cargo xtask <command>
 commands:
   layers          enforce the crate dependency layering (plan/architecture.md §3)
   assets          check that every non-code asset file is attributed in ATTRIBUTION.md
-  parity [--refresh]
-                  recompute Fusion command parity in docs/parity.md (--refresh rebuilds
-                  xtask/data/fusion-catalog.tsv from plan/fusion/menu-tree.json)
+  features        list SolidCraft's commands by area in docs/features.md (from the registry)
   oracle [--cli BIN]
                   replay the reference tests (tests/oracle/*/recipe.json), compare with each
                   case's expected.json and write docs/oracle.md (--cli: a solvecraft-cli
@@ -46,7 +44,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("layers") => cmd_layers(),
         Some("assets") => assets::run(&root()),
-        Some("parity") => parity::run(&root(), rest.contains(&"--refresh")),
+        Some("features") => features::run(&root()),
         Some("oracle") => cmd_oracle(rest.iter().position(|a| *a == "--cli").and_then(|i| rest.get(i + 1)).copied()),
         Some("book") => book::run(&root(), !rest.contains(&"--no-build")),
         Some("licences") => licences::run(&root(), rest.contains(&"--check")),

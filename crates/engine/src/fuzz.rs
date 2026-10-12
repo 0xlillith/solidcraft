@@ -184,7 +184,7 @@ fn base(r: &mut Rng) -> Step {
                     ("sketch.line", json!({"points": pts})),
                     ("sketch.arc.three_point", json!({"start": [0, h], "end": [0, 0], "through": [-bulge, h / 2.0]})),
                     ("sketch.finish", json!({})),
-                    ("Extrude", json!({"distance": d})),
+                    ("solid.extrude", json!({"distance": d})),
                 ],
             )
         }
@@ -198,7 +198,7 @@ fn base(r: &mut Rng) -> Step {
                     ("sketch.create", json!({"plane": "XZ"})),
                     ("sketch.rectangle.two_point", json!({"p0": [r0, 0], "p1": [r1, h]})),
                     ("sketch.finish", json!({})),
-                    ("Revolve", json!({"axis": "Z", "angle": angle})),
+                    ("solid.revolve", json!({"axis": "Z", "angle": angle})),
                 ],
             )
         }
