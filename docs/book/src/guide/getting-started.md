@@ -104,6 +104,11 @@ A script is a list of commands:
 
 ![The bracket example, rendered by solidcraft-cli snapshot](../generated/bracket.png)
 
+A command that fails stops the script. A feature can also fail later, when a parameter change
+rebuilds it; `run` then exits with status 1, lists the failing features and writes none of
+its `--out` and `--save` files, because the bodies lack what those features should have made.
+`--allow-errors` writes them anyway.
+
 Units are millimetres and degrees unless an expression says otherwise (`"1 in"`, `"30 deg"`),
 and Z is up.
 
