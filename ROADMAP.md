@@ -70,6 +70,8 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Sketch annotations, live drawing lengths and Measure use document units. Inches show
   three decimals and retain a meaningful fourth digit. Bare length dimension entry captures
   the current design unit; changing units leaves existing geometry and expressions intact.
+  Component/canvas distance controls, sketch cursor coordinates, flat-pattern dimensions
+  and pocket depths, interference volumes and parts-library lengths also use design units.
 - Contextual error reporting: a **Create Issue** action beside feature errors opens a
   reviewable GitHub issue draft with the error, operation settings, build diagnostics and
   useful reproduction context. The draft is editable, with optional capture of the actual

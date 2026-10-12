@@ -362,6 +362,18 @@ pub fn length_number(mm: f64, units: &str, decimals: u8) -> String {
     format!("{:.*}", length_precision(value, units, decimals), value)
 }
 
+/// Edit a millimetre value through a control expressed in the current design units.
+/// Keep the stored value untouched unless the user actually changes the field.
+pub fn length_drag<'a>(value: &'a mut f64, units: &str, decimals: u8) -> egui::DragValue<'a> {
+    let (scale, unit) = unit_scale(units);
+    egui::DragValue::new(value).speed(0.5).suffix(format!(" {unit}")).custom_formatter(move |mm, _| length_number(mm, unit, decimals)).custom_parser(
+        move |text| {
+            let value = text.trim().parse::<f64>().ok()? / scale;
+            value.is_finite().then_some(value)
+        },
+    )
+}
+
 /// A length in millimetres in `units`, with `decimals` (for display).
 pub fn format_length(mm: f64, units: &str, decimals: u8) -> String {
     let (_, u) = unit_scale(units);

@@ -136,4 +136,7 @@ lengths and Measure follow the current design units without resizing geometry.
 Inches display at least three decimal places and retain a meaningful fourth digit;
 a higher display precision can be selected in Preferences. Bare length values typed
 in the dimension tool use the current design units. Explicit units such as `25.4 mm`
-remain valid in an inch design. Angular dimensions keep their angular units.
+remain valid in an inch design. Angular dimensions keep their angular units. Deliberately typed four-place inch literals
+retain trailing zeros. Component/canvas distance controls and inspection, parts-library
+and flat-pattern measurements follow design units too; parameter expressions and metric
+standard names retain their explicit authored units.

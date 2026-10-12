@@ -292,6 +292,15 @@ pub fn drag_end() {
 /// angles), "fx: value" when an expression drives it, in parentheses when driven.
 pub fn label(k: &ConstraintKind, expr: Option<&str>, driven: bool, units: &str, decimals: u8) -> String {
     let v = k.value().unwrap_or(0.0);
+    // Retain deliberately authored trailing zeros in a four-place inch literal too.
+    let authored_four = units == "in"
+        && expr.is_some_and(|e| {
+            e.trim().strip_suffix("in").map(str::trim).is_some_and(|number| {
+                number.parse::<f64>().is_ok()
+                    && number.split_once('.').is_some_and(|(_, fraction)| fraction.len() >= 4 && fraction.bytes().all(|b| b.is_ascii_digit()))
+            })
+        });
+    let decimals = if authored_four { decimals.max(4) } else { decimals };
     let num = if k.is_angle() { format!("{:.1}°", v.to_degrees()) } else { crate::prefs::length_number(v, units, decimals) };
     let num = match k {
         ConstraintKind::Radius { .. } => format!("R{num}"),
@@ -635,6 +644,7 @@ mod tests {
         let length = ConstraintKind::Length { l: 0, value: 25.4 };
         assert_eq!(label(&length, Some("25.4 mm"), false, "in", 2), "1.000");
         assert_eq!(label(&length, Some("1 in"), false, "in", 2), "1.000");
+        assert_eq!(label(&length, Some("1.0000 in"), false, "in", 2), "1.0000");
         let radius = ConstraintKind::Radius { c: 0, value: 1.2345 * 25.4 };
         assert_eq!(label(&radius, Some("1.2345 in"), false, "in", 2), "R1.2345");
         assert_eq!(label(&radius, Some("width / 2"), true, "in", 2), "(fx: R1.2345)");
