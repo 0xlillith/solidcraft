@@ -2750,3 +2750,18 @@ fn a_profile_added_later_is_named_after_body_name() {
     let names: Vec<String> = s.model.state().bodies.iter().map(|b| b.name.clone()).collect();
     assert_eq!(names, ["Ribs", "Ribs (2)", "Ribs (3)", "Ribs (4)"]);
 }
+
+/// The reply names the bodies the feature created, apart from the ones already there (#374).
+#[test]
+#[ignore = "fails until #374 is fixed"]
+fn extrude_reply_lists_the_bodies_it_created() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [0, 50, 0], "operation": "new_body", "body_name": "Base"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "R"}));
+    for x in [0, 10, 20] {
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [x, 0], "p1": [x + 5, 30]}));
+    }
+    run(&mut s, "sketch.finish", json!({}));
+    let r = run(&mut s, "solid.extrude", json!({"sketch": "R", "distance": "10", "operation": "new_body", "body_name": "Ribs"}));
+    assert_eq!(r["created_bodies"], json!(["Ribs", "Ribs (2)", "Ribs (3)"]), "{r}");
+}
