@@ -4,6 +4,49 @@ use serde_json::json;
 use solvecraft_engine::geom::Vec3;
 
 #[test]
+fn bridge_line_snaps_to_points_on_two_visible_sketch_planes() {
+    let mut h = crate::scenario::Harness::new();
+    for (name, offset, point) in [("Lower", 10, [10, 20]), ("Upper", 40, [30, 35])] {
+        h.app.run("sketch.create", json!({"plane":{"origin":[0,0,offset],"x_dir":[1,0,0],"y_dir":[0,1,0]},"name":name})).unwrap();
+        h.app.run("sketch.point", json!({"point":point})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+    }
+    let bridge = h.app.run("sketch.create", json!({"plane":"XY","name":"Bridge"})).unwrap()["sketch"].as_u64().unwrap();
+    h.app.run("sketch.options", json!({"sketch_3d":true})).unwrap();
+    h.app.ui.show_origin = false;
+    h.call("ui.view", json!({"view":"home"}));
+    h.call("ui.view", json!({"view":"fit"}));
+    h.frames(3);
+    let [x, y] = h.at(&json!({"world":[10,20,10]})).unwrap();
+    let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
+    assert!(
+        crate::viewport::pick(&h.app, &proj, egui::pos2(x as f32, y as f32))
+            .iter()
+            .all(|hit| { !matches!(hit, crate::viewport::Hit::SketchPoint { sketch, .. } if *sketch != bridge) }),
+        "ordinary selection must keep its local sketch-point scope"
+    );
+    h.app.start("sketch.line");
+    h.frames(3);
+    for p in [[10, 20, 10], [30, 35, 40]] {
+        let [x, y] = h.at(&json!({"world":p})).unwrap();
+        let proj = crate::viewport::projection(&h.app, h.app.viewport.rect.unwrap());
+        let picked = crate::sketch3d::point_at(&h.app, &proj, egui::pos2(x as f32, y as f32)).unwrap().0;
+        assert!(picked.dist(Vec3::new(p[0] as f64, p[1] as f64, p[2] as f64)) < 1e-6, "{picked:?}");
+        h.step(&json!({"click":{"world":p}})).unwrap();
+    }
+    h.step(&json!({"key":"Escape"})).unwrap();
+    h.step(&json!({"key":"Escape"})).unwrap();
+    let state = h.app.session.world_state();
+    let wire = state.sketch(bridge).unwrap().sketch.wires.first().unwrap();
+    assert!(wire.fit[0].dist(Vec3::new(10.0, 20.0, 10.0)) < 1e-6);
+    assert!(wire.fit[1].dist(Vec3::new(30.0, 35.0, 40.0)) < 1e-6);
+    h.app.run("edit.undo", json!({})).unwrap();
+    assert!(h.app.session.world_state().sketch(bridge).unwrap().sketch.wires.is_empty());
+    h.app.run("edit.redo", json!({})).unwrap();
+    assert_eq!(h.app.session.world_state().sketch(bridge).unwrap().sketch.wires[0].fit, wire.fit);
+}
+
+#[test]
 fn second_occurrence_drawn_wire_fit_picks_and_world_triad_drag_stay_aligned() {
     let mut h = crate::scenario::Harness::new();
     let component = h.app.run("component.create", json!({"name":"Part"})).unwrap()["component"].as_u64().unwrap();

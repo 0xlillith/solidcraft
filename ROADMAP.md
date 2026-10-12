@@ -289,6 +289,12 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   continuous collision detection; local thin walls and small details remain limitations.
   See [contact-set limits and recovery](docs/contact-sets.md).
 
+## 3D sketch bridges
+
+3D sketch drawing snaps to points on other visible sketch planes without flattening them onto
+the active plane. Bridge endpoints capture their source positions; associative endpoint links,
+construction-plane selection of 3D wires and loft guide rails remain separate work.
+
 ## Document-opening performance
 
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
