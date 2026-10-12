@@ -5,10 +5,12 @@ A sketch lies on a plane: an origin plane, a construction plane or a planar face
 returns to the model.
 
 In scripts, `XY`, `XZ`, `YZ` and their `Top`, `Front`, `Right` aliases name origin planes.
-If a construction plane has the same name (case-insensitive), a string argument is ambiguous
-and is rejected. Pass the construction feature's numeric ID to select it, or an explicit
-`{origin: [x,y,z], normal: [x,y,z]}` plane to select a fixed world plane. Existing saved
-references retain their meaning; opening a design does not reinterpret old sketches.
+These names are reserved: a construction plane cannot be created with or renamed to one
+(case-insensitive). If an older design already has a construction plane with such a name, a
+string argument naming it is ambiguous and is rejected; use the other alias (`XY` for `Top`)
+for the origin plane, the construction feature's numeric ID to select it, or an explicit
+`{origin: [x,y,z], normal: [x,y,z]}` plane. Existing saved references retain their meaning;
+opening a design does not reinterpret old sketches.
 
 Curves adapt to the current zoom and display scale. Picking and highlighting use the same
 visible boundary, including small circles at Fit and sketches in rotated components.

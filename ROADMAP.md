@@ -63,8 +63,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Dimensioning and error reporting
 
-- Plane arguments reject names shared by an origin-plane alias and a construction plane.
-  Use the construction feature's numeric ID or an explicit plane to disambiguate; existing
+- Construction planes cannot take an origin-plane name (XY, XZ, YZ, Top, Front, Right). Plane
+  arguments reject such a name when an older design's construction plane already has it. Use
+  the other alias, the construction feature's numeric ID or an explicit plane; existing
   stored references keep their saved meaning. Section Analysis uses the same check.
 - Single-line and rectangle-side dimensioning supports selecting a line or its two endpoints.
   Type a value and press Enter to commit one undo step; rejected values remain editable and

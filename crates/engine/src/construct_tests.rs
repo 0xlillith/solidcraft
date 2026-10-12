@@ -280,14 +280,24 @@ fn ambiguous_plane_aliases_refuse_without_document_or_history_changes() {
         run(&mut s, "parameters.add", json!({"name":"height","expression":"19.05 mm"}));
         run(&mut s, "sketch.create", json!({"plane":alias}));
         run(&mut s, "sketch.finish", json!({}));
-        let made = run(&mut s, "construct.plane.offset", json!({"base":{"origin":[0,0,0],"normal":[0,0,1]},"offset":"height","name":alias}));
+        let made = run(&mut s, "construct.plane.offset", json!({"base":{"origin":[0,0,0],"normal":[0,0,1]},"offset":"height","name":"Lid"}));
         let id = made["feature"].as_u64().unwrap();
+        legacy_plane_name(&mut s, id, alias);
         let before = s.doc.to_json();
         let history = s.undo.len();
         for command in ["sketch.create", "inspect.section"] {
             let error = s.execute(command, &json!({"plane":format!(" {} ",alias.to_lowercase())})).unwrap_err();
             assert!(error.to_string().contains("ambiguous"), "{error}");
             assert!(error.to_string().contains(&format!("feature id {id}")), "{error}");
+            let other = match alias {
+                "Top" => "XY",
+                "XY" => "Top",
+                "Front" => "XZ",
+                "XZ" => "Front",
+                "Right" => "YZ",
+                _ => "Right",
+            };
+            assert!(error.to_string().contains(&format!("use `{other}` for the origin plane")), "{error}");
             assert_eq!(s.doc.to_json(), before);
             assert_eq!(s.undo.len(), history);
             assert!(s.section.is_none());
@@ -313,7 +323,8 @@ fn disambiguated_top_plane_pocket_survives_undo_and_cold_reopen() {
     run(&mut s, "sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[100,200]}));
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "solid.extrude", json!({"distance":19.05,"name":"Plate"}));
-    let top = run(&mut s, "construct.plane.offset", json!({"base":"XY","offset":19.05,"name":"Top"}));
+    let top = run(&mut s, "construct.plane.offset", json!({"base":"XY","offset":19.05,"name":"Lid"}));
+    legacy_plane_name(&mut s, top["feature"].as_u64().unwrap(), "Top");
     assert!(s.execute("sketch.create", &json!({"plane":"Top"})).unwrap_err().to_string().contains("ambiguous"));
     run(&mut s, "sketch.create", json!({"plane":top["feature"]}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0":[3,3],"p1":[97,30]}));
@@ -331,4 +342,46 @@ fn disambiguated_top_plane_pocket_survives_undo_and_cold_reopen() {
     let mut reopened = Session::new(solvecraft_doc::Document::from_json(&saved).unwrap());
     let measured = run(&mut reopened, "inspect.measure", json!({}));
     assert!((measured["total"]["volume_mm3"].as_f64().unwrap() - expected).abs() < 1e-6, "{measured}");
+}
+
+/// A construction plane named like an origin plane, as an older saved design can hold.
+fn legacy_plane_name(s: &mut Session, id: u64, name: &str) {
+    s.doc_mut().feature_mut(id).unwrap().name = name.to_string();
+}
+
+#[test]
+fn construction_planes_cannot_take_origin_plane_names() {
+    let mut s = Session::default();
+    let made = run(&mut s, "construct.plane.offset", json!({"base":"XY","offset":5,"name":"Lid"}));
+    let id = made["feature"].as_u64().unwrap();
+    for alias in ["XY", "XZ", "YZ", "Top", "Front", "Right", " top ", "xz"] {
+        let before = s.doc.to_json();
+        let history = s.undo.len();
+        let created = s.execute("construct.plane.offset", &json!({"base":"XY","offset":10,"name":alias})).unwrap_err();
+        assert!(created.to_string().contains("reserved for an origin plane"), "{created}");
+        let renamed = s.execute("timeline.rename", &json!({"feature":id,"name":alias})).unwrap_err();
+        assert!(renamed.to_string().contains("reserved for an origin plane"), "{renamed}");
+        assert_eq!(s.doc.to_json(), before);
+        assert_eq!(s.undo.len(), history);
+    }
+    // Other features may still use the names; only a plane parameter could confuse them.
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "timeline.rename", json!({"feature":"Sketch1","name":"Top"}));
+    run(&mut s, "timeline.rename", json!({"feature":id,"name":"Topside"}));
+}
+
+#[test]
+fn ambiguity_error_names_the_other_origin_alias() {
+    for (name, other) in [("Top", "XY"), ("XY", "Top"), ("Front", "XZ"), ("XZ", "Front"), ("Right", "YZ"), ("YZ", "Right")] {
+        let mut s = Session::default();
+        let made = run(&mut s, "construct.plane.offset", json!({"base":"XY","offset":5,"name":"Lid"}));
+        legacy_plane_name(&mut s, made["feature"].as_u64().unwrap(), name);
+        let error = s.execute("sketch.create", &json!({"plane":name})).unwrap_err().to_string();
+        assert!(error.contains(&format!("use `{other}` for the origin plane")), "{error}");
+        // The suggested alias is unambiguous and reaches the origin plane.
+        run(&mut s, "sketch.create", json!({"plane":other}));
+        let inspected = run(&mut s, "sketch.inspect", json!({}));
+        assert_eq!(inspected["plane"]["origin"], json!([0.0, 0.0, 0.0]));
+    }
 }
