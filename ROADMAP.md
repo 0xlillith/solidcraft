@@ -304,6 +304,12 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Kernel
 
+- Successful Boolean retries report their strategy and numerical adjustments as
+  feature warnings and structured inspection data. Diagnostics survive cached
+  evaluation, undo/redo and cold reopening; the robustness runner counts retry
+  events by strategy and reports any bounded-log truncation. Existing geometry
+  acceptance checks remain in force.
+
 - Shell of a stepped, joined planar body no longer creates horizontal subdivisions across
   continuous walls. Fresh axis-aligned Cut walls are stitched using their exact construction
   support and shared topology, preserving real steps and intentional boundaries. The local
