@@ -66,6 +66,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Repeating the initial point of a planar multi-point sketch drawing tool is neutral: the tool
   waits for a distinct point without a degenerate-shape error or history entry. Typed input
   and programmatic commands retain their validation.
+- Circular-pattern and angled-plane axes reject explicitly supplied malformed or expression
+  origins instead of silently rotating about zero. Numeric origins remain in millimetres;
+  associative axis expressions and construction-axis references remain unsupported.
 - Single-line and rectangle-side dimensioning supports selecting a line or its two endpoints.
   Type a value and press Enter to commit one undo step; rejected values remain editable and
   cancellation leaves the sketch unchanged. Fit keeps geometry clear of the Sketch Palette
