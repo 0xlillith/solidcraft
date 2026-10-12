@@ -66,7 +66,8 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 - Sketch text can be edited from a selected outline's context menu or the Edit Text command.
   Content, baseline X/Y, height and rotation update the original text source in one undo step;
   cancelling or rejecting an invalid value preserves the sketch. Position and height fields
-  explicitly use millimetres; generated outlines remain associated with their text source.
+  use the document units captured when editing starts; generated outlines remain associated
+  with their text source, and untouched inputs preserve their saved internal values.
 - Single-line and rectangle-side dimensioning supports selecting a line or its two endpoints.
   Type a value and press Enter to commit one undo step; rejected values remain editable and
   cancellation leaves the sketch unchanged. Fit keeps geometry clear of the Sketch Palette

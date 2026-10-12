@@ -14,6 +14,10 @@ pub(crate) struct Editor {
     link: String,
     text: String,
     values: [String; 4],
+    initial: [String; 4],
+    original: [f64; 4],
+    scale: f64,
+    unit: &'static str,
     focus: bool,
     error: Option<String>,
 }
@@ -45,13 +49,19 @@ pub(crate) fn open(app: &mut SolveApp, entity: &str) {
         return;
     };
     let LinkSource::Text { text, at, height, angle } = &source.source else { return };
+    let (scale, unit) = crate::prefs::unit_scale(&app.session.doc.units);
+    let values = [(at.x * scale).to_string(), (at.y * scale).to_string(), (height * scale).to_string(), angle.to_degrees().to_string()];
     app.text_editor = Some(Editor {
         sketch,
         tab: app.docs.active,
         revision: app.session.revision,
         link: source.id.clone(),
         text: text.clone(),
-        values: [at.x.to_string(), at.y.to_string(), height.to_string(), angle.to_degrees().to_string()],
+        initial: values.clone(),
+        values,
+        original: [at.x, at.y, *height, *angle],
+        scale,
+        unit,
         focus: true,
         error: None,
     });
@@ -73,9 +83,13 @@ pub(crate) fn show(app: &mut SolveApp, ctx: &egui::Context) {
             response.request_focus();
             editor.focus = false;
         }
-        for (index, label) in ["X (mm)", "Y (mm)", "Height (mm)", "Angle (deg)"].iter().enumerate() {
+        for (index, label) in
+            [format!("X ({})", editor.unit), format!("Y ({})", editor.unit), format!("Height ({})", editor.unit), "Angle (deg)".into()]
+                .iter()
+                .enumerate()
+        {
             ui.horizontal(|ui| {
-                ui.label(*label);
+                ui.label(label);
                 if let Some(value) = editor.values.get_mut(index) {
                     let response = ui.add(egui::TextEdit::singleline(value).id_salt(("sketch_text_value", index)).desired_width(120.0));
                     crate::scenario::publish_handle(&format!("text:{index}"), response.rect.center());
@@ -94,9 +108,22 @@ pub(crate) fn show(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     if apply {
-        let values = editor.values.each_ref().map(|value| value.parse::<f64>().ok().filter(|number| number.is_finite()));
+        let values: [Option<f64>; 4] = std::array::from_fn(|index| {
+            let value = editor.values.get(index)?;
+            if Some(value) == editor.initial.get(index) {
+                return editor.original.get(index).copied();
+            }
+            let parsed = value.trim().parse::<f64>().ok()?;
+            let internal = if index == 3 { parsed.to_radians() } else { parsed / editor.scale };
+            internal.is_finite().then_some(internal)
+        });
         if let [Some(x), Some(y), Some(height), Some(angle)] = values {
-            match app.run("sketch.edit_text", json!({"link":editor.link,"text":editor.text,"at":[x,y],"height":height,"angle":angle})) {
+            let mut params = json!({"link":editor.link,"text":editor.text,"at":[x,y],"height":height});
+            // Omitting an unchanged angle preserves its exact saved radians in the engine.
+            if editor.values.get(3) != editor.initial.get(3) {
+                params["angle"] = json!(angle.to_degrees());
+            }
+            match app.run("sketch.edit_text", params) {
                 Ok(_) => {
                     let _ = app.session.execute("select.clear", &json!({}));
                     return;
@@ -104,7 +131,7 @@ pub(crate) fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 Err(error) => editor.error = Some(error),
             }
         } else {
-            editor.error = Some("Enter finite numbers; positions and height are in millimetres.".into());
+            editor.error = Some(format!("Enter finite numbers; positions and height are in {}.", editor.unit));
         }
     }
     app.text_editor = Some(editor);
@@ -169,6 +196,38 @@ mod tests {
         assert_eq!(h.app.session.doc.to_json(), before);
         h.app.run("edit.redo", json!({})).unwrap();
         assert_eq!(h.app.session.doc.to_json(), changed);
+    }
+
+    #[test]
+    fn text_editor_converts_document_units_and_preserves_untouched_source_values() {
+        let (mut h, link, _) = setup();
+        h.app.run("document.units", json!({"units":"in"})).unwrap();
+        h.app.run("sketch.edit_text", json!({"link":link,"at":[3.123456789,7.987654321],"height":9.123456789,"angle":17.123456789})).unwrap();
+        let sid = h.app.session.active_sketch.unwrap();
+        let original = h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source.clone();
+        h.app.start("sketch.edit_text");
+        h.frames(3);
+        assert_eq!(h.app.text_editor.as_ref().unwrap().unit, "in");
+        replace(&mut h, "text:content", "O");
+        h.step(&json!({"widget":"Apply text"})).unwrap();
+        let LinkSource::Text { at, height, angle, .. } = original else { panic!("text source") };
+        assert_eq!(h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source, LinkSource::Text { text: "O".into(), at, height, angle });
+        h.app.session.selection = vec![Sel::SketchCurve { id: h.app.session.doc.sketch(sid).unwrap().curves[0].id.clone() }];
+        h.app.start("sketch.edit_text");
+        h.frames(3);
+        let undo = h.app.session.undo.len();
+        replace(&mut h, "text:0", "1.2345");
+        replace(&mut h, "text:2", "0.25");
+        h.step(&json!({"widget":"Apply text"})).unwrap();
+        let LinkSource::Text { at: updated, height: size, angle: rotation, .. } = h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source
+        else {
+            panic!("text source")
+        };
+        assert!((updated.x - 31.3563).abs() < 1e-12);
+        assert_eq!(updated.y, at.y);
+        assert!((size - 6.35).abs() < 1e-12);
+        assert_eq!(rotation, angle);
+        assert_eq!(h.app.session.undo.len(), undo + 1);
     }
 
     #[test]
