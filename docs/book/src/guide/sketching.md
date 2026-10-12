@@ -21,6 +21,11 @@ fillet, chamfer, offset (O), mirror, patterns, move/copy and scale.
 
 **Project** (P) and **Intersect** bring model edges into the sketch as linked geometry that
 follows later changes. Sketching on a face projects its edges automatically.
+For Project, select visible source curves or points from another sketch, model edges,
+faces, vertices or bodies, or axes and planes, then press P. The entire supported selection
+is projected in one undo step. A rejected projection keeps the selection for correction;
+an empty or mixed selection starts the ordinary picking tool. External sketch selections
+retain their source sketch, even when the active sketch uses the same point or curve names.
 
 Run from a script or the control channel, every command that adds sketch geometry returns the
 ids of what it added (`created: {points, curves, constraints, dimensions}`). Ids are stable and

@@ -388,6 +388,30 @@ pub(crate) fn constraint_preselection(command: &str, selection: &[solvecraft_eng
     }
 }
 
+pub(crate) fn projection_preselection(selection: &[solvecraft_engine::Sel]) -> Option<Vec<Value>> {
+    use solvecraft_engine::Sel;
+    // The projection command processes at most 1000 references; never consume a subset.
+    if selection.is_empty() || selection.len() > 1000 {
+        return None;
+    }
+    selection
+        .iter()
+        .map(|item| {
+            Some(match item {
+                Sel::Body { name } => json!({"body":name}),
+                Sel::ExternalSketchCurve { sketch, id } => json!({"sketch":sketch,"curve":id}),
+                Sel::ExternalSketchPoint { sketch, id } => json!({"sketch":sketch,"point":id}),
+                Sel::Vertex { body, point } => json!({"body":body,"vertex":[point.x,point.y,point.z]}),
+                Sel::Edge { body, point, .. } => json!({"body":body,"edge":[point.x,point.y,point.z]}),
+                Sel::Face { body, point, .. } => json!({"body":body,"face":[point.x,point.y,point.z]}),
+                Sel::Axis { name } => json!({"axis":name}),
+                Sel::Plane { name } => json!({"plane":name}),
+                _ => return None,
+            })
+        })
+        .collect()
+}
+
 fn run_pick(app: &mut SolveApp, t: &Tool) {
     let k = &t.picks;
     let params = match t.cmd {
