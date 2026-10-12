@@ -2901,52 +2901,62 @@ mod surface;
 pub fn object_height(st: &ModelState, plane: &Plane, centre: Vec3, p: Vec3) -> f64 {
     let n = plane.normal();
     let h = |q: Vec3| (q - plane.origin).dot(n);
-    for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
-        let tol = (b.body.size() * 1e-3).max(1e-3);
-        let Ok(faces) = b.body.faces(tol) else { continue };
-        let m = b.mesh();
-        let on: Vec<usize> = faces.iter().filter(|f| crate::appearance::face_index_at(b, p) == Some(f.index)).map(|f| f.index).collect();
-        let Some(&fi) = on.first() else { continue };
-        if let Some(f) = faces.iter().find(|f| f.index == fi)
-            && f.plane_normal.is_some_and(|fnrm| fnrm.cross(n).len() < 1e-6)
+    let Some((bi, fi)) = face_at(st, p) else { return h(p) };
+    let Some(b) = st.bodies.get(bi) else { return h(p) };
+    let tol = (b.body.size() * 1e-3).max(1e-3);
+    let Ok(faces) = b.body.faces(tol) else { return h(p) };
+    if let Some(f) = faces.iter().find(|f| f.index == fi)
+        && f.plane_normal.is_some_and(|fnrm| fnrm.cross(n).len() < 1e-6)
+    {
+        return h(f.centroid);
+    }
+    // A curved or slanted face: where the profile's middle meets it.
+    let m = b.mesh();
+    for dir in [n, n * -1.0] {
+        if let Some((t, tri)) = m.raycast(centre, dir)
+            && m.tri_face.get(tri).is_some_and(|x| *x as usize == fi)
         {
-            return h(f.centroid);
+            return h(centre + dir * t);
         }
-        // A curved or slanted face: where the profile's middle meets it.
-        for dir in [n, n * -1.0] {
-            if let Some((t, tri)) = m.raycast(centre, dir)
-                && m.tri_face.get(tri).is_some_and(|x| *x as usize == fi)
-            {
-                return h(centre + dir * t);
-            }
-        }
-        return h(p);
     }
     h(p)
+}
+
+/// The face a To Object pick is on: the nearest face over every solid body, `(body index,
+/// face index)`, within that body's pick tolerance. Not the first body with any face within
+/// its tolerance: that is 5 % of the body's size, so a large body beside a small target (a
+/// plate under a post, a frame around a pin) would otherwise take a pick made on the target.
+fn face_at(st: &ModelState, p: Vec3) -> Option<(usize, usize)> {
+    st.bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| !b.body.is_mesh())
+        .filter_map(|(bi, b)| {
+            let (d, fi) = crate::appearance::nearest_face(b, p)?;
+            (d <= crate::appearance::pick_tolerance(b)).then_some((d, bi, fi))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, bi, fi)| (bi, fi))
 }
 
 /// The body at `p` when the face there is not a plane square to `n` (To Object must then
 /// follow the face's shape).
 fn curved_target(st: &ModelState, n: Vec3, p: Vec3) -> Option<usize> {
-    for (bi, b) in st.bodies.iter().enumerate().filter(|(_, b)| !b.body.is_mesh()) {
-        let Some(fi) = crate::appearance::face_index_at(b, p) else { continue };
-        let tol = (b.body.size() * 1e-3).max(1e-3);
-        let planar =
-            b.body.faces(tol).ok()?.into_iter().find(|f| f.index == fi).and_then(|f| f.plane_normal).is_some_and(|fnrm| fnrm.cross(n).len() < 1e-6);
-        return (!planar).then_some(bi);
-    }
-    None
+    let (bi, fi) = face_at(st, p)?;
+    let b = st.bodies.get(bi)?;
+    let tol = (b.body.size() * 1e-3).max(1e-3);
+    let planar =
+        b.body.faces(tol).ok()?.into_iter().find(|f| f.index == fi).and_then(|f| f.plane_normal).is_some_and(|fnrm| fnrm.cross(n).len() < 1e-6);
+    (!planar).then_some(bi)
 }
 
 /// The body at `p` when the face there is not planar.
 fn curved_target_any(st: &ModelState, p: Vec3) -> Option<usize> {
-    for (bi, b) in st.bodies.iter().enumerate().filter(|(_, b)| !b.body.is_mesh()) {
-        let Some(fi) = crate::appearance::face_index_at(b, p) else { continue };
-        let tol = (b.body.size() * 1e-3).max(1e-3);
-        let planar = b.body.faces(tol).ok()?.into_iter().find(|f| f.index == fi).is_some_and(|f| f.plane_normal.is_some());
-        return (!planar).then_some(bi);
-    }
-    None
+    let (bi, fi) = face_at(st, p)?;
+    let b = st.bodies.get(bi)?;
+    let tol = (b.body.size() * 1e-3).max(1e-3);
+    let planar = b.body.faces(tol).ok()?.into_iter().find(|f| f.index == fi).is_some_and(|f| f.plane_normal.is_some());
+    (!planar).then_some(bi)
 }
 
 /// Tools run through `target`, cut back to its surface: each tool less the body, keeping the
