@@ -289,6 +289,15 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   continuous collision detection; local thin walls and small details remain limitations.
   See [contact-set limits and recovery](docs/contact-sets.md).
 
+## Document-opening performance
+
+- Cold rebuild profiling separates parsing, geometry, placement, display meshing and
+  thumbnails. Straight-line closest-point projection and exact curved-surface evaluation
+  reuse reduce repeated work without relaxing geometry checks. Three alternating optimized
+  benchmark runs reduce median rebuild time by 26% on the public sensor enclosure and 22%
+  on a local case assembly; shape measurements and topology match the original build.
+  See [performance measurements](docs/perf.md). Further cold Boolean and import costs remain.
+
 ## Kernel
 
 truck (Apache-2.0) behind our own `kernel` crate, with our own blend operation and boolean

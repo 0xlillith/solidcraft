@@ -651,3 +651,5 @@ mod split_face_tests;
 mod tests;
 #[cfg(test)]
 mod thread_tests;
+#[cfg(test)]
+mod world_placement_cache_tests;
