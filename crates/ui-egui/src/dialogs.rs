@@ -1326,7 +1326,17 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 d.collapsed = !d.collapsed;
             }
             ui.label(RichText::new(heading.as_str()).strong().size(12.5));
-            crate::frame::right_aligned(ui, total, 8.0, |ui| ui.label(RichText::new("»").color(t.text_dim)));
+            let chevron_width = ui.spacing().interact_size.x;
+            crate::frame::right_aligned(ui, total, chevron_width, |ui| {
+                let chevron = if d.collapsed { "«" } else { "»" };
+                if ui
+                    .add(egui::Button::new(RichText::new(chevron).color(t.text_dim)).frame(false).min_size(vec2(chevron_width, 0.0)))
+                    .on_hover_text(if d.collapsed { "Expand" } else { "Collapse" })
+                    .clicked()
+                {
+                    d.collapsed = !d.collapsed;
+                }
+            });
         });
         if d.collapsed {
             return;

@@ -72,6 +72,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   the current design unit; changing units leaves existing geometry and expressions intact.
   Component/canvas distance controls, sketch cursor coordinates, flat-pattern dimensions
   and pocket depths, interference volumes and parts-library lengths also use design units.
+- Curvature and Polygon constraints accept complete preselected operands. Fix/Unfix
+  consumes complete point/curve selections consistently; mixed or ambiguous selections
+  retain the picking workflow. Rejected constraints preserve selection and undo history.
 - Contextual error reporting: a **Create Issue** action beside feature errors opens a
   reviewable GitHub issue draft with the error, operation settings, build diagnostics and
   useful reproduction context. The draft is editable, with optional capture of the actual
@@ -294,6 +297,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   continuous collision detection; local thin walls and small details remain limitations.
   See [contact-set limits and recovery](docs/contact-sets.md).
 
+Feature dialog header chevrons collapse and restore the form without discarding selections
+or edited values, including the Appearance panel.
+
 ## Document-opening performance
 
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
@@ -309,6 +315,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Kernel
 
+- Boolean intersection-curve construction refuses point-only, collapsed and non-finite
+  polylines without panicking. Direct constructor regressions retain valid open endpoints
+  and closed spherical intersections; the original interactive trigger remains unidentified.
 - Shell of a stepped, joined planar body no longer creates horizontal subdivisions across
   continuous walls. Fresh axis-aligned Cut walls are stitched using their exact construction
   support and shared topology, preserving real steps and intentional boundaries. The local
