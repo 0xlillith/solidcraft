@@ -4,7 +4,7 @@
 
 Sketch, constrain, and build solids with a parametric feature timeline. Change a dimension
 and watch your model rebuild. Run it on your desktop, in your browser, or let AI agents
-model through the built-in MCP server. Part of the storytold "craft" family.
+model through the built-in MCP server.
 
 ![SolidCraft: draw a rounded electronics enclosure, sketch its USB port directly on a face, add four mounting bosses and resize it through Parameters](docs/screenshots/enclosure-demo-0.2.1.gif)
 
@@ -77,7 +77,8 @@ renamed repository; old-name Pages and Flatpak URLs are not maintained as perman
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;
   3MF, STL and OBJ import as mesh bodies (they render, measure, move and export; solid features
-  need B-rep bodies);
+  need B-rep bodies). Convert Mesh reconstructs supported closed constant-section parts
+  as parametric solids with planar and circular cylindrical faces;
   STEP import (AP203/AP214/AP242 solids, assemblies, units, names, colours) and IGES import
   (manifold solid B-reps, or trimmed and bounded surfaces sewn into solids) as a base feature
   that later features build on — open a `.step`/`.stp`/`.igs`/`.iges` file, insert one into a
