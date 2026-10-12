@@ -23,6 +23,17 @@ fn rel(a: f64, b: f64) -> f64 {
 }
 
 #[test]
+fn round_as_tall_as_a_disc_uses_up_its_wall() {
+    // #190: a disc 13 in radius and 2 high, its top edge rounded by 2.
+    let mut s = Session::default();
+    run(&mut s, "solid.cylinder", json!({"radius": 13, "height": 2}));
+    run(&mut s, "solid.fillet", json!({"edges": [[0, 13, 2], [0, -13, 2]], "radius": "2 mm"}));
+    let (a, c) = ((1.0 - PI / 4.0) * 4.0, 2.0 * (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI)));
+    let expect = PI * 169.0 * 2.0 - a * 2.0 * PI * (13.0 - c);
+    assert!(rel(volume(&mut s), expect) < 2e-4, "{} vs {expect}", volume(&mut s));
+}
+
+#[test]
 fn fillet_as_wide_as_a_face_rounds_it_off() {
     // #199: 14 x 6 x 10 box, the four vertical edges at r = 3 (half the 6 mm end faces).
     let mut s = Session::default();
@@ -196,6 +207,42 @@ fn fillet_the_edges_between_two_overlapping_cylinders() {
     run(&mut s, "timeline.redefine", json!({"feature": "Round", "command": "solid.fillet", "params": {"edges": [[q[0], q[1], 5]], "radius": 13}}));
     let (v, expect) = (volume(&mut s), (profile + round_gap(c1, r1, c2, r2, q, 13.0)) * 10.0);
     assert!(rel(v, expect) < 2e-4, "{v} vs {expect}");
+}
+
+/// The top outline of two overlapping cylinders whose concave edges were rounded: the walls of
+/// the rounds meet the cylinders along the rolling-ball contact lines, straight but not lines.
+#[test]
+fn fillet_and_chamfer_the_top_loop_of_rounded_overlapping_cylinders() {
+    use std::f64::consts::{PI, TAU};
+    let (big, round, h) = (25.0_f64, 5.0_f64, 10.0);
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": big}));
+    run(&mut s, "sketch.circle.center", json!({"center": [-big, 0], "radius": big}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance": h, "profiles": [0, 1, 2]}));
+    // Plan view: ball centres at x = −12.5, |y| = yb; each round's arc turns by th, each big arc by
+    // TAU − 2·a1, and the loop turns by TAU in all.
+    let half = big / 2.0;
+    let yb = ((big + round).powi(2) - half * half).sqrt();
+    run(&mut s, "solid.fillet", json!({"edges": [[-half, half * 3f64.sqrt(), 5], [-half, -half * 3f64.sqrt(), 5]], "radius": round}));
+    let (a1, th) = (yb.atan2(half), 2.0 * (half / (big + round)).asin());
+    let base = volume(&mut s);
+    let top = [[big, 0.0, h], [-2.0 * big, 0.0, h], [-half, yb - round, h], [-half, round - yb, h]];
+    // Removed volume by Pappus: the corner's section swept along the loop at its centroid's offset.
+    let removed = |area: f64, xb: f64| area * (2.0 * (TAU - 2.0 * a1) * (big - xb) + 2.0 * th * (round + xb));
+    run(&mut s, "solid.fillet", json!({"edges": top, "radius": 2}));
+    let r: f64 = 2.0;
+    let expect = base - removed(r * r * (1.0 - PI / 4.0), (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI)) * r);
+    let v = volume(&mut s);
+    assert!((v - expect).abs() < 1.5, "{v} vs {expect}");
+    let m = run(&mut s, "inspect.measure", json!({}));
+    assert_eq!(m["bodies"][0]["kernel"]["faces"].as_u64(), Some(10), "{m}");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "solid.chamfer", json!({"edges": top, "distance": 2}));
+    let expect = base - removed(2.0, 2.0 / 3.0);
+    let v = volume(&mut s);
+    assert!((v - expect).abs() < 1.5, "{v} vs {expect}");
 }
 
 /// Sketch a 40 x 30 rectangle with dimensions, extrude 20, fillet a vertical edge, cut a hole.
@@ -1630,8 +1677,10 @@ fn cached_evaluation_matches_from_scratch() {
         let before = hits(&s);
         run(&mut s, id, p.clone());
         same(&s, &format!("step {step}: {id} {p}"));
-        if step == 1 {
-            assert!(hits(&s) > before, "setting the width back reuses the earlier results");
+        // Setting the width back solves the sketch again from its current state; the
+        // features after it see the same geometry and reuse their results. So does undo.
+        if step == 1 || step == 3 {
+            assert!(hits(&s) > before, "step {step} reuses the earlier results");
         }
     }
 }
@@ -2498,6 +2547,48 @@ fn special_files_are_refused_by_every_file_command() {
         assert!(r.as_ref().is_err_and(|e| e.to_string().contains("not a regular file")), "{cmd}: {r:?}");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A cut targeted at one body leaves a non-target body alone, even one the tool covers completely (#260).
+#[test]
+fn targeted_cut_keeps_a_covered_body_that_is_not_a_target() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "operation": "new_body", "body_name": "Frame"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "operation": "new_body", "body_name": "Other"}));
+    // Exactly Other's extent; it does not touch Frame.
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "operation": "cut", "targets": ["Frame"]}));
+    let names: Vec<String> = s.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+    assert_eq!(names, ["Frame", "Other"]);
+    assert!(rel(volume(&mut s), 2000.0) < 1e-6);
+}
+
+/// A frame's opening cut over a separate mesh body that sits in it: the mesh survives (#260).
+#[test]
+fn targeted_cut_keeps_an_overlapping_body_that_is_not_a_target() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 50, "width": 50, "height": 5, "operation": "new_body", "body_name": "Frame"}));
+    run(&mut s, "solid.box", json!({"length": 30, "width": 30, "height": 1, "corner": [10, 10, 2], "operation": "new_body", "body_name": "Mesh"}));
+    run(&mut s, "solid.box", json!({"length": 30, "width": 30, "height": 5, "corner": [10, 10, 0], "operation": "cut", "targets": ["Frame"]}));
+    let names: Vec<String> = s.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+    assert_eq!(names, ["Frame", "Mesh"]);
+    assert!(rel(volume(&mut s), 50.0 * 50.0 * 5.0 - 30.0 * 30.0 * 5.0 + 900.0) < 1e-6);
+}
+
+/// A join with explicit `targets` merges into those bodies only; a touched non-target stays (#259).
+#[test]
+fn join_with_targets_leaves_other_touched_bodies_alone() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "operation": "new_body", "body_name": "A"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [10, 0, 0], "operation": "new_body", "body_name": "B"}));
+    // Straddles the face between A and B; only A is a target.
+    run(&mut s, "solid.box", json!({"length": 4, "width": 4, "height": 4, "corner": [8, 3, 3], "operation": "join", "targets": ["A"]}));
+    let names: Vec<String> = s.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+    assert_eq!(names, ["A", "B"], "B is not a target and must stay a body");
+    let b = run(&mut s, "inspect.measure", json!({"bodies": ["B"]}))["total"]["volume_mm3"].as_f64().unwrap();
+    assert!(rel(b, 1000.0) < 1e-6, "B is unchanged: {b}");
+    // A gains the half of the tool outside it.
+    let a = run(&mut s, "inspect.measure", json!({"bodies": ["A"]}))["total"]["volume_mm3"].as_f64().unwrap();
+    assert!(rel(a, 1032.0) < 1e-6, "A: {a}");
 }
 
 /// Deleting a sketch takes its extrude with it; a later combine that names the extrude's body must

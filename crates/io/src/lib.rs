@@ -1,5 +1,6 @@
-//! File formats. Designs are saved as JSON (`.solvecraft`): the parametric document only, the
-//! model is recomputed on load. Bodies export as STL (binary or ASCII), OBJ, STEP and 3MF; STEP
+//! File formats. Designs use JSON or versioned containers (`.solvecraft`); the authoritative
+//! document rebuilds on load and optional display caches remain provisional. Bodies export
+//! as STL (binary or ASCII), OBJ, STEP and 3MF; STEP
 //! files import as a base feature (see [`step_import_feature`]), 3MF and STL files as mesh bodies
 //! (see [`mesh_import_feature`]).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -8,7 +9,10 @@
 mod design;
 mod design_metadata;
 mod dxf;
-pub use design::{DesignCompression, is_design_container, write_design_container, write_design_container_with_compression};
+pub use design::{
+    DesignCompression, DesignPreview, is_design_container, read_design_preview, write_design_container, write_design_container_with_compression,
+    write_design_container_with_preview,
+};
 pub mod safe_write;
 mod sketch2d;
 mod svg;

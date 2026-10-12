@@ -13,6 +13,14 @@ const VERSION: &str = "solvecraft-container/1";
 const MAX_ENTRIES: usize = 10_000;
 const MAX_EXPANDED: usize = 512 << 20;
 const MESH_MAGIC: &[u8; 8] = b"SCMESH01";
+const MAX_PREVIEW_BYTES: usize = 8 << 20;
+const MAX_PREVIEW_TRIANGLES: usize = 100_000;
+
+/// Untrusted, display-only evaluated meshes. Never used for editing, picking or measurement.
+#[derive(Default)]
+pub struct DesignPreview {
+    pub meshes: Vec<MeshData>,
+}
 
 /// Fast favors interactive file operations; Compact trades CPU time for space.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,6 +89,11 @@ pub fn write_design_container(doc: &Document) -> Result<Vec<u8>> {
 
 /// Write a container with an explicit payload compression policy.
 pub fn write_design_container_with_compression(doc: &Document, compression: DesignCompression) -> Result<Vec<u8>> {
+    write_design_container_with_preview(doc, compression, None)
+}
+
+/// Optional display cache failure never prevents saving the authoritative design.
+pub fn write_design_container_with_preview(doc: &Document, compression: DesignCompression, preview: Option<&DesignPreview>) -> Result<Vec<u8>> {
     let mut writer = PackageWriter { zip: zip::ZipWriter::new(Cursor::new(Vec::new())), names: BTreeSet::new(), expanded: 0, resolved: 0 };
     let mut features = Vec::with_capacity(doc.features.len());
     for feature in &doc.features {
@@ -125,8 +138,22 @@ pub fn write_design_container_with_compression(doc: &Document, compression: Desi
         canvases.push(value);
     }
     let metadata = replace(doc, fields([("features", Value::Array(features)), ("canvases", Value::Array(canvases))])).map_err(invalid)?;
-    writer.part("document.json", &serde_json::to_vec(&metadata).map_err(invalid)?, true)?;
+    let metadata = serde_json::to_vec(&metadata).map_err(invalid)?;
+    writer.part("document.json", &metadata, true)?;
     writer.part("container.json", &serde_json::to_vec(&json!({"format": VERSION})).map_err(invalid)?, false)?;
+    if let Some((manifest, data)) = preview.and_then(|p| encode_preview(p, &metadata).ok())
+        && writer.names.len().saturating_add(2) <= MAX_ENTRIES
+        && writer
+            .expanded
+            .saturating_add(manifest.len())
+            .saturating_add(data.len())
+            .saturating_add(writer.names.len().saturating_mul(256))
+            .saturating_add(65_536)
+            <= MAX_DESIGN_BYTES
+    {
+        writer.part("cache/preview.json", &manifest, false)?;
+        writer.part("cache/preview.bin", &data, false)?;
+    }
     let bytes = writer.zip.finish().map_err(invalid)?.into_inner();
     if bytes.len() > MAX_DESIGN_BYTES {
         return Err(invalid("compressed file too large"));
@@ -241,14 +268,17 @@ impl<'a> PackageReader<'a> {
         Ok(Self { zip, blobs: BTreeMap::new(), hydrated: 0 })
     }
     fn part(&mut self, name: &str) -> Result<Vec<u8>> {
+        self.limited_part(name, MAX_DESIGN_BYTES)
+    }
+    fn limited_part(&mut self, name: &str, limit: usize) -> Result<Vec<u8>> {
         let part = self.zip.by_name(name).map_err(|e| invalid(format!("required part `{name}`: {e}")))?;
         let expected = part.size();
-        if expected > MAX_DESIGN_BYTES as u64 {
+        if expected > limit as u64 {
             return Err(invalid("part too large"));
         }
         let mut bytes = Vec::with_capacity(expected as usize);
-        part.take(MAX_DESIGN_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(invalid)?;
-        if bytes.len() > MAX_DESIGN_BYTES || bytes.len() as u64 != expected {
+        part.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(invalid)?;
+        if bytes.len() > limit || bytes.len() as u64 != expected {
             return Err(invalid("part too large or length mismatch"));
         }
         Ok(bytes)
@@ -274,6 +304,96 @@ impl<'a> PackageReader<'a> {
             self.hydrated.checked_add(bytes.len()).filter(|&n| n <= MAX_EXPANDED).ok_or_else(|| invalid("resolved payloads too large"))?;
         Ok(bytes)
     }
+}
+
+fn encode_preview(preview: &DesignPreview, document: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    if preview.meshes.is_empty() || preview.meshes.len() > 1024 {
+        return Err(invalid("preview body count"));
+    }
+    let mut data = Vec::new();
+    let mut entries = Vec::new();
+    let mut triangles = 0usize;
+    for mesh in &preview.meshes {
+        triangles = triangles.saturating_add(mesh.triangles.len() / 3);
+        let size = mesh.positions.len().saturating_mul(8).saturating_add(mesh.triangles.len().saturating_mul(4)).saturating_add(24);
+        if data.len().saturating_add(size) > MAX_PREVIEW_BYTES || triangles > MAX_PREVIEW_TRIANGLES || mesh.name.len() > 1024 {
+            return Err(invalid("preview budget"));
+        }
+        let bytes = encode_mesh(mesh)?;
+        entries.push(json!({"name":mesh.name,"color":mesh.color,"offset":data.len(),"length":bytes.len()}));
+        data.extend_from_slice(&bytes);
+    }
+    let manifest = serde_json::to_vec(&json!({
+        "format":"solvecraft-preview/1", "build":env!("SOLVECRAFT_DISPLAY_BUILD"),
+        "document":digest(document), "payload":digest(&data), "meshes":entries
+    }))
+    .map_err(invalid)?;
+    if manifest.len() > 65_536 {
+        return Err(invalid("preview manifest budget"));
+    }
+    Ok((manifest, data))
+}
+
+/// Read only an optional provisional display cache; any corruption/incompatibility is a miss.
+/// The normal design reader must still validate and rebuild before enabling the design.
+pub fn read_design_preview(bytes: &[u8]) -> Option<DesignPreview> {
+    if bytes.len() > MAX_DESIGN_BYTES || !is_design_container(bytes) {
+        return None;
+    }
+    read_preview(bytes).ok()
+}
+
+fn read_preview(bytes: &[u8]) -> Result<DesignPreview> {
+    let mut reader = PackageReader::new(bytes)?;
+    let container: Value = serde_json::from_slice(&reader.limited_part("container.json", 4096)?).map_err(invalid)?;
+    if container.get("format").and_then(Value::as_str) != Some(VERSION) {
+        return Err(invalid("unsupported container version"));
+    }
+    let manifest: Value = serde_json::from_slice(&reader.limited_part("cache/preview.json", 65_536)?).map_err(invalid)?;
+    if manifest.get("format").and_then(Value::as_str) != Some("solvecraft-preview/1")
+        || manifest.get("build").and_then(Value::as_str) != Some(env!("SOLVECRAFT_DISPLAY_BUILD"))
+    {
+        return Err(invalid("incompatible preview"));
+    }
+    if manifest.get("document").and_then(Value::as_str) != Some(digest(&reader.part("document.json")?).as_str()) {
+        return Err(invalid("stale preview"));
+    }
+    let data = reader.limited_part("cache/preview.bin", MAX_PREVIEW_BYTES)?;
+    if manifest.get("payload").and_then(Value::as_str) != Some(digest(&data).as_str()) {
+        return Err(invalid("damaged preview"));
+    }
+    let entries =
+        manifest.get("meshes").and_then(Value::as_array).filter(|m| !m.is_empty() && m.len() <= 1024).ok_or_else(|| invalid("preview bodies"))?;
+    let mut preview = DesignPreview::default();
+    let mut end = 0usize;
+    let mut triangles = 0usize;
+    for entry in entries {
+        let offset = entry.get("offset").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| invalid("preview offset"))?;
+        let length = entry.get("length").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok()).ok_or_else(|| invalid("preview length"))?;
+        if offset != end {
+            return Err(invalid("overlapping preview bodies"));
+        }
+        end = end.checked_add(length).ok_or_else(|| invalid("preview overflow"))?;
+        let mut mesh = MeshData { name: String::new(), positions: Vec::new(), triangles: Vec::new(), color: None };
+        decode_mesh(data.get(offset..end).ok_or_else(|| invalid("truncated preview"))?, &mut mesh)?;
+        triangles = triangles.saturating_add(mesh.triangles.len() / 3);
+        if triangles > MAX_PREVIEW_TRIANGLES {
+            return Err(invalid("preview triangles"));
+        }
+        mesh.name = entry.get("name").and_then(Value::as_str).filter(|n| n.len() <= 1024).ok_or_else(|| invalid("preview name"))?.into();
+        if !entry.get("color").is_none_or(Value::is_null) {
+            let color: [f32; 3] = serde_json::from_value(entry.get("color").cloned().unwrap_or(Value::Null)).map_err(invalid)?;
+            if color.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
+                return Err(invalid("preview color"));
+            }
+            mesh.color = Some(color);
+        }
+        preview.meshes.push(mesh);
+    }
+    if end != data.len() {
+        return Err(invalid("trailing preview data"));
+    }
+    Ok(preview)
 }
 
 pub(super) fn read(bytes: &[u8]) -> Result<Document> {
@@ -388,6 +508,59 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn optional_preview_is_bounded_keyed_and_never_authoritative() {
+        let doc = Document::from_json(&document().to_json()).unwrap();
+        let preview = DesignPreview { meshes: vec![mesh()] };
+        let bytes = write_design_container_with_preview(&doc, DesignCompression::Fast, Some(&preview)).unwrap();
+        let loaded = read_design_preview(&bytes).unwrap();
+        assert_eq!(loaded.meshes, preview.meshes);
+        assert_eq!(crate::read_design(&bytes).unwrap(), doc);
+        let original = parts(&bytes);
+        for field in ["format", "build", "document", "payload"] {
+            let mut entries = original.clone();
+            let mut manifest: Value = serde_json::from_slice(&entries["cache/preview.json"]).unwrap();
+            manifest[field] = json!("obsolete");
+            entries.insert("cache/preview.json".into(), serde_json::to_vec(&manifest).unwrap());
+            let changed = package(&entries);
+            assert!(read_design_preview(&changed).is_none(), "{field}");
+            assert_eq!(crate::read_design(&changed).unwrap(), doc);
+        }
+        let mut entries = original.clone();
+        let mut metadata: Value = serde_json::from_slice(&entries["document.json"]).unwrap();
+        metadata["name"] = json!("Changed document");
+        entries.insert("document.json".into(), serde_json::to_vec(&metadata).unwrap());
+        assert!(read_design_preview(&package(&entries)).is_none());
+        for damaged in [vec![], vec![0; 128], vec![0; MAX_PREVIEW_BYTES + 1]] {
+            let mut entries = original.clone();
+            entries.insert("cache/preview.bin".into(), damaged);
+            let changed = package(&entries);
+            assert!(read_design_preview(&changed).is_none());
+            assert_eq!(crate::read_design(&changed).unwrap(), doc);
+        }
+        // Even a matching checksum does not excuse invalid indices or overlapping slices.
+        for overlap in [false, true] {
+            let mut entries = original.clone();
+            let mut manifest: Value = serde_json::from_slice(&entries["cache/preview.json"]).unwrap();
+            if overlap {
+                manifest["meshes"][0]["offset"] = json!(1);
+            } else {
+                let data = entries.get_mut("cache/preview.bin").unwrap();
+                let end = data.len();
+                data[end - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
+                manifest["payload"] = json!(digest(data));
+            }
+            entries.insert("cache/preview.json".into(), serde_json::to_vec(&manifest).unwrap());
+            assert!(read_design_preview(&package(&entries)).is_none());
+        }
+        let mut too_large = mesh();
+        too_large.triangles = vec![0; (MAX_PREVIEW_TRIANGLES + 1) * 3];
+        let bytes = write_design_container_with_preview(&doc, DesignCompression::Fast, Some(&DesignPreview { meshes: vec![too_large] })).unwrap();
+        assert!(read_design_preview(&bytes).is_none());
+        assert_eq!(crate::read_design(&bytes).unwrap(), doc);
+        assert!(read_design_preview(&crate::write_design(&doc)).is_none());
     }
 
     #[test]

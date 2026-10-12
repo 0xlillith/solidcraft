@@ -45,7 +45,9 @@ Containers favor fast reading and saving by default. Scripts can request
 
 Containers deduplicate identical STEP, mesh and image payloads. Mesh coordinates retain
 their original double precision; this is not a conversion to STL. Geometry still rebuilds
-from the timeline when opening; these files do not yet contain evaluated geometry caches.
+from the timeline when opening. When a saved display preview is available, desktop Open
+shows it while checking geometry; editing starts after the complete rebuild. Cancelling
+keeps the current design. Previews cannot be edited or measured.
 The repository's `docs/design-container.md` describes limits and encoding details.
 
 Current designs use format 14, including persistent names from exact face history,

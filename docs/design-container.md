@@ -55,6 +55,33 @@ Saving retains the existing temporary-file/flush/rename protocol and `.bak` back
 Recovery reads both older JSON and new containers. Browser OPFS, downloads and recovery
 use the same container reader/writer; JSON export and Save As remain available.
 
-`cache/` entries are currently ignored. No evaluated B-rep is deserialized or adopted,
-and the authoritative document always rebuilds. Evaluated cache validation, provisional
-display and background rebuilds remain phase two of issue #303.
+## Provisional saved display
+
+Engine saves can include `cache/preview.json` and `cache/preview.bin` when the evaluated
+world display meshes are already warm. Saving never triangulates a cold body for this
+cache. Pending occurrence moves, active sketch edits, feature errors and oversized
+previews omit it. The cache is bounded to 8 MiB, 1,024 bodies and 100,000 triangles;
+its manifest is at most 64 KiB. Body names/colours and contiguous binary mesh slices
+use the same lossless encoding as imported meshes. Extra cache size is optional;
+it is omitted if it would put the container near the file-size cap.
+
+The manifest includes SHA-256 of the exact document metadata (whose blob references
+contain content hashes), the preview payload and a build fingerprint. The latter
+hashes the geometry, document, engine, rendering, IO and vendored kernel source plus
+dependency lockfile and workspace configuration. Changes invalidate the display cache.
+Missing, obsolete, oversized or malformed preview data is a cache miss, not a failed
+design open. All archive-wide safety budgets still apply.
+
+Desktop Open can render these meshes on its existing file worker and show a clearly
+labelled saved picture in the opening dialog before timeline reconstruction finishes.
+It uses only the normal command's file snapshot, without a second file read. The picture
+is approximate shading without face paint or picking. A conservative 16-million-pixel
+raster budget rejects excessive overdraw before rendering, including repeated large
+triangles in a small hostile cache. The picture is never adopted as editable
+geometry, used for measurements, or used to seed evaluated model state. The original
+design remains intact until the complete rebuilt session is ready. Cancellation or
+any change of active document/revision discards both preview and completion.
+
+Normal design reading, CLI and browser opening still rebuild authoritatively; no
+evaluated B-rep is deserialized or adopted. Portable evaluated B-rep/state restoration
+and interactive cached viewport navigation remain further work in #303.

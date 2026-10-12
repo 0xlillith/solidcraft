@@ -133,6 +133,11 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let bytes = solvecraft_io::vfs::read(path, solvecraft_io::MAX_DESIGN_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let doc = solvecraft_io::read_design(&bytes)?;
+    if let Some(notify) = s.open_preview.take()
+        && let Some(preview) = solvecraft_io::read_design_preview(&bytes)
+    {
+        notify(preview);
+    }
     *s = Session::new(doc);
     s.path = Some(path.to_string());
     let errors = s.model.results.iter().filter(|r| r.error.is_some()).count();
@@ -146,7 +151,7 @@ fn write(s: &mut Session, path: &str, format: &str, compression: &str) -> Result
         _ => return Err(bad("file.save", "compression must be fast or compact")),
     };
     let bytes = match format {
-        "container" => solvecraft_io::write_design_container_with_compression(&s.doc, compression)?,
+        "container" => solvecraft_io::write_design_container_with_preview(&s.doc, compression, saved_preview(s).as_ref())?,
         "json" => solvecraft_io::write_design(&s.doc),
         _ => return Err(bad("file.save", "format must be container or json")),
     };
@@ -155,6 +160,36 @@ fn write(s: &mut Session, path: &str, format: &str, compression: &str) -> Result
     s.path = Some(path.to_string());
     s.mark_saved();
     Ok(json!({"path": path, "bytes": bytes.len()}))
+}
+
+/// Cache only warm display geometry. A save never waits for an unevaluated mesh.
+fn saved_preview(s: &Session) -> Option<solvecraft_io::DesignPreview> {
+    if s.active_sketch.is_some() || !s.pending_moves.is_empty() || s.model.results.iter().any(|r| r.error.is_some()) {
+        return None;
+    }
+    let world = s.cached_world_state()?;
+    if world.bodies.is_empty() || world.bodies.len() > 1024 {
+        return None;
+    }
+    let mut preview = solvecraft_io::DesignPreview::default();
+    let mut bytes = 0usize;
+    let mut triangles = 0usize;
+    for body in &world.bodies {
+        let mesh = body.cached_mesh()?;
+        bytes =
+            bytes.saturating_add(mesh.positions.len().saturating_mul(24)).saturating_add(mesh.triangles.len().saturating_mul(12)).saturating_add(24);
+        triangles = triangles.saturating_add(mesh.triangles.len());
+        if bytes > 8 << 20 || triangles > 100_000 {
+            return None;
+        }
+        preview.meshes.push(solvecraft_doc::MeshData {
+            name: body.name.clone(),
+            positions: mesh.positions.iter().flat_map(|p| [p.x, p.y, p.z]).collect(),
+            triangles: mesh.triangles.iter().flatten().copied().collect(),
+            color: s.doc.body_color(body),
+        });
+    }
+    Some(preview)
 }
 
 fn save(s: &mut Session, p: &Value) -> Result<Value> {
@@ -248,6 +283,123 @@ fn recovery_discard(_s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual warmed engine save and provisional-open benchmark"]
+    fn benchmark_warm_design_save_with_preview() {
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
+        // The mesh storage fixture intentionally does not evaluate geometry. Use
+        // original valid STEP boxes for the engine/display-cache measurement.
+        let input = target.join("issue303-step.json");
+        let doc = solvecraft_io::read_design(&std::fs::read(input).unwrap()).unwrap();
+        let mut session = Session::new(doc);
+        for body in &session.world_state().bodies {
+            body.mesh();
+        }
+        let mut samples = [Vec::new(), Vec::new()];
+        for round in 0..9 {
+            for index in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
+                let path = target.join(if index == 0 { "issue303-warm.json" } else { "issue303-warm.solvecraft" });
+                let began = std::time::Instant::now();
+                session.execute("file.save", &json!({"path":path})).unwrap();
+                samples[index].push(began.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        for s in &mut samples {
+            s.sort_by(f64::total_cmp);
+        }
+        let bytes = std::fs::read(target.join("issue303-warm.solvecraft")).unwrap();
+        assert!(solvecraft_io::read_design_preview(&bytes).is_some());
+        assert_eq!(solvecraft_io::read_design(&bytes).unwrap(), *session.doc);
+        let mut reads = Vec::new();
+        for _ in 0..9 {
+            let began = std::time::Instant::now();
+            assert!(solvecraft_io::read_design_preview(&bytes).is_some());
+            reads.push(began.elapsed().as_secs_f64() * 1000.0);
+        }
+        reads.sort_by(f64::total_cmp);
+        eprintln!(
+            "warmed engine median atomic save ms json={:.3} container_with_preview={:.3}; preview_decode_ms={:.3}; container_bytes={}",
+            samples[0][4],
+            samples[1][4],
+            reads[4],
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn save_uses_only_warm_meshes_and_open_preview_does_not_replace_evaluation() {
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length":10,"width":20,"height":30})).unwrap();
+        assert!(saved_preview(&s).is_none(), "save must not triangulate a cold body");
+        let state = s.world_state();
+        for body in &state.bodies {
+            body.mesh();
+        }
+        let mut preview = saved_preview(&s).unwrap();
+        // A checksum-valid but forged cached shape must not become editable geometry.
+        for mesh in &mut preview.meshes {
+            for coordinate in &mut mesh.positions {
+                *coordinate *= 10.0;
+            }
+        }
+        let bytes = solvecraft_io::write_design_container_with_preview(&s.doc, solvecraft_io::DesignCompression::Fast, Some(&preview)).unwrap();
+        let path = std::env::temp_dir().join(format!("solvecraft-preview-{}.solvecraft", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_seen = seen.clone();
+        let mut reopened = Session {
+            open_preview: Some(Box::new(move |preview| {
+                callback_seen.fetch_add(preview.meshes.len(), std::sync::atomic::Ordering::Relaxed);
+            })),
+            ..Session::default()
+        };
+        reopened.execute("doc.open", &json!({"path":path})).unwrap();
+        assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(reopened.open_preview.is_none());
+        let measured = reopened.execute("inspect.measure", &json!({})).unwrap();
+        assert!((measured["bodies"][0]["volume_mm3"].as_f64().unwrap() - 6000.0).abs() < 1e-6);
+        assert_eq!(*reopened.doc, *s.doc);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn preview_saves_do_not_build_cold_placements_or_persist_transient_edits() {
+        let mut s = Session::default();
+        let created = s.execute("component.create", &json!({"name":"PreviewPart"})).unwrap();
+        let occurrence = created["occurrence"].as_u64().unwrap();
+        s.execute("solid.box", &json!({"length":2,"width":3,"height":4,"body_name":"Block","operation":"new"})).unwrap();
+        for body in &s.model.state().bodies {
+            body.mesh();
+        }
+        *s.world_cache.lock().unwrap() = None;
+        assert!(saved_preview(&s).is_none());
+        assert!(s.world_cache.lock().unwrap().is_none(), "saving must not prepare cold placements");
+        for body in &s.world_state().bodies {
+            body.mesh();
+        }
+        assert!(saved_preview(&s).is_some());
+        s.execute("occurrence.move", &json!({"occurrence":occurrence,"translate":[10,0,0],"capture":false})).unwrap();
+        for body in &s.world_state().bodies {
+            body.mesh();
+        }
+        assert!(!s.pending_moves.is_empty());
+        assert!(saved_preview(&s).is_none(), "uncaptured positions are not in the saved document");
+        s.execute("component.capture_position", &json!({})).unwrap();
+        for body in &s.world_state().bodies {
+            body.mesh();
+        }
+        let preview = saved_preview(&s).unwrap();
+        let min_x = preview.meshes.iter().flat_map(|mesh| mesh.positions.as_chunks::<3>().0.iter().map(|p| p[0])).fold(f64::INFINITY, f64::min);
+        assert!((min_x - 10.0).abs() < 1e-9);
+        let mut editing = s.scratch();
+        editing.execute("sketch.create", &json!({"plane":"XY"})).unwrap();
+        for body in &editing.world_state().bodies {
+            body.mesh();
+        }
+        assert!(editing.active_sketch.is_some());
+        assert!(saved_preview(&editing).is_none());
+    }
 
     #[test]
     fn design_save_formats_reopen_and_preserve_atomic_backups() {
