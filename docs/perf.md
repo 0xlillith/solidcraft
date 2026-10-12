@@ -38,6 +38,23 @@ times to stderr without logging the source path. Thumbnails were about 0.1 secon
 the slow assembly's open and were not the main bottleneck. Further cold Boolean and
 import costs remain; these changes do not make all documents open instantly.
 
+### Prepared assembly geometry and selection
+
+Prepared world geometry is now keyed by the document, evaluated model and exact placement
+context instead of the session revision. Selecting a face or edge, changing visibility,
+or moving the view no longer discards already prepared assembly bodies and meshes.
+Geometry edits, pending occurrence moves, authoring context changes, undo/redo and timeline
+rollback still invalidate the cache. Scratch sessions share prepared geometry while their
+inputs match, and adopting a computed session retains its warm cache.
+
+On the private 2,990-body Pi assembly, a matched Linux desktop control probe reduced an
+edge-selection round trip from 9.24 s to 0.57 s. Initial opening stayed essentially unchanged
+(33.54 s to 33.32 s); this fixes a separate selection stall, not cold geometry evaluation.
+Three fresh Windows desktop runs with the corrected cache measured a median 15.87 s to
+ready: 13.04 s geometry, 2.20 s placement, 0.53 s meshing and 0.07 s thumbnails. These used
+the optimized `ci` profile and actual Vulkan rendering, with isolated settings and caches.
+Linux and Windows timings are separate measurements and must not be compared as a speedup.
+
 `solvecraft-cli bench-open design.solvecraft` reports JSON lines for file reading,
 JSON decoding and migrations (including input-name repair), timeline evaluation, individual
 features, and world placement/display meshing. `--parse-only` stops before geometry evaluation.

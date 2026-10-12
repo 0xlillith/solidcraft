@@ -297,6 +297,10 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   benchmark runs reduce median rebuild time by 26% on the public sensor enclosure and 22%
   on a local case assembly; shape measurements and topology match the original build.
   See [performance measurements](docs/perf.md). Further cold Boolean and import costs remain.
+- Prepared assembly geometry survives selection and view changes while real geometry and
+  placement changes invalidate it. A Pi assembly edge-selection probe drops from 9.24 s to
+  0.57 s; initial opening is unchanged. Actual Windows desktop profiling measures 15.87 s
+  median opening, with 82% spent rebuilding geometry; halving full opening remains open.
 
 ## Kernel
 
