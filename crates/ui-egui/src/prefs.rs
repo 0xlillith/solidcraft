@@ -35,6 +35,8 @@ pub struct Prefs {
     pub default_units: String,
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
     pub nav: String,
+    /// Visual orientation widget, independent of mouse mappings.
+    pub navigator_style: crate::navigator::Style,
     /// Show the radial ring and enable hold/flick gestures for viewport context menus.
     pub radial_context_menu: bool,
     /// The wheel zooms out when turned forward.
@@ -74,6 +76,7 @@ impl Default for Prefs {
         Prefs {
             default_units: "mm".into(),
             nav: "fusion".into(),
+            navigator_style: Default::default(),
             radial_context_menu: false,
             zoom_reverse: false,
             orbit_cursor: false,
@@ -184,6 +187,7 @@ fn defaults(app: &mut SolveApp, page: usize) {
         }
         1 => {
             p.nav = d.nav;
+            p.navigator_style = d.navigator_style;
             p.radial_context_menu = d.radial_context_menu;
             p.zoom_reverse = d.zoom_reverse;
             p.zoom_to_cursor = d.zoom_to_cursor;
@@ -574,6 +578,14 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             ui.label("Context menu");
             ui.checkbox(&mut app.preferences.radial_context_menu, "Radial context menu");
             ui.end_row();
+            ui.label("View navigator");
+            egui::ComboBox::from_id_salt("pref_navigator_style").selected_text(app.preferences.navigator_style.label()).show_ui(ui, |ui| {
+                for style in crate::navigator::Style::ALL {
+                    ui.selectable_value(&mut app.preferences.navigator_style, style, style.label());
+                }
+            });
+            ui.end_row();
+            note(ui, "Original SolidCraft widgets inspired by familiar conventions; mouse mappings are independent.");
             ui.label("Reverse zoom direction");
             ui.checkbox(&mut app.preferences.zoom_reverse, "");
             ui.end_row();

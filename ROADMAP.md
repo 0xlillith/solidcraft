@@ -116,6 +116,11 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## View navigation
 
+- Preferences offer persistent orientation widget styles independently of mouse mappings:
+  the current axes, a classic cube, and original Fusion-, Inventor-, Blender-, SOLIDWORKS-
+  and NX-inspired variants. Cubes expose face, edge and corner targets for all 26 standard
+  views, with both Z-up and Y-up. Dragging and Shift snapping remain available in every style.
+
 - Compact clickable signed X/Y/Z axis tips, smooth drag-to-orbit, and Shift-orbit snapping
   to 26 standard and diagonal views. Pointer motion accumulates independently of a lightly
   damped spring, with a boundary margin to prevent flicker. Z-up/Y-up and the nearest square

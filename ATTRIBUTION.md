@@ -11,7 +11,7 @@ third-party material under an open licence. Screenshots of Autodesk software are
 Generated-in-code assets are original and have no file to list:
 - the UI icon set (`crates/ui-egui/src/icons.rs`);
 - the axis view, navigation bar and timeline glyphs (`crates/ui-egui/src/viewport.rs`,
-  `crates/ui-egui/src/timeline.rs`).
+  `crates/ui-egui/src/navigator.rs`, `crates/ui-egui/src/timeline.rs`).
 
 ## Files
 
@@ -44,6 +44,11 @@ Generated-in-code assets are original and have no file to list:
 | .github/workflows/release.yml, .github/workflows/packaging-lint.yml and packaging/ (release pipeline: Linux AppImage/deb/rpm/Flatpak/tar.gz, FreeBSD, macOS dmg, Windows MSI/portable zip, web zip; AppRun, nfpm, Flatpak, WiX and Info.plist templates) | PhotoCraft (https://github.com/storytold/photocraft) `.github/workflows/{release,packaging-lint}.yml`, `packaging/` | Apache-2.0 |
 
 ## Recovered contributions
+
+The projected labels in `crates/ui-egui/src/navigator.rs` adapt SolidCraft's historical
+view-cube label rendering (commit `d57e90a`, subsequently used in `95ae096`), under
+MIT OR Apache-2.0. The new widget geometry and visual variants are original code;
+product names describe visual conventions, without external artwork or source code.
 
 | SolveCraft file | Original contribution | Licence |
 |---|---|---|

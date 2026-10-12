@@ -20,7 +20,12 @@
   The axis view shows the world's X/Y/Z directions in SolidCraft's colors. Click a signed
   axis tip to look along that axis; click the aligned tip again to look from the opposite side.
   Drag the axis view to orbit around the view centre, with Shift for snapping. Top and bottom
-  keep the nearest quarter-turn heading. The house and navigation bar's Home button go home.
+  keep the nearest quarter-turn heading. Preferences > Navigation > View navigator selects
+  the current SolidCraft axes, a classic cube, or original Fusion-, Inventor-, Blender-,
+  SOLIDWORKS- and NX-inspired variants. This visual setting is saved independently of the
+  mouse preset. On cubes, click a face for a principal view, an edge for a 45-degree view,
+  or a corner for an isometric view; drag to orbit and hold Shift to snap.
+  The house and navigation bar's Home button go home.
   Right-click for the marking menu: eight commands around the cursor, plus a
   menu for whatever is under it.
   Shaded views omit certified smooth joins between spline spans on extruded

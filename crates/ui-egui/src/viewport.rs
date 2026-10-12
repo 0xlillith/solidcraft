@@ -2485,32 +2485,77 @@ fn axis_view(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     let t = Tokens::get();
     let c = axis_center(app, rect);
     let orbiting = axis_view_orbit(app, ui, rect);
-    let tips = axis_tips(&app.cam, c);
+    let style = app.preferences.navigator_style;
+    let cube_tiles = if style.is_cube() { crate::navigator::tiles(app.cam, c, style) } else { Vec::new() };
+    let tips = if style.is_cube() {
+        cube_tiles.iter().map(|tile| (tile.label, tile.direction, tile.centre, tile.face.dot(app.cam.back()))).collect()
+    } else {
+        axis_tips(&app.cam, c)
+    };
     let hover = ui.input(|i| i.pointer.hover_pos()).filter(|_| ui.rect_contains_pointer(rect));
-    let hovered = if orbiting { None } else { hover.and_then(|p| axis_hit(&tips, p)) };
+    let hovered = if orbiting {
+        None
+    } else {
+        hover.and_then(|p| if style.is_cube() { cube_tiles.iter().position(|tile| tile.contains(p)) } else { axis_hit(&tips, p) })
+    };
     let painter = ui.painter_at(rect);
     if orbiting || hover.is_some_and(|p| axis_rect(app, rect).contains(p)) {
         painter.circle_filled(c, 55.0, t.overlay);
     }
+    if style.is_cube() {
+        crate::navigator::paint_cube(&painter, app.cam, c, style, &cube_tiles, hovered);
+        for tile in &cube_tiles {
+            let d = app.cam.to_frame(tile.direction);
+            let d = Vec3::new(if d.x == 0.0 { 0.0 } else { d.x }, if d.y == 0.0 { 0.0 } else { d.y }, if d.z == 0.0 { 0.0 } else { d.z });
+            crate::scenario::publish_handle(&format!("view_cube:{:.0},{:.0},{:.0}", d.x, d.y, d.z), tile.centre);
+        }
+    }
     for (i, (name, d, at, depth)) in tips.iter().enumerate() {
+        if style.is_cube() {
+            continue;
+        }
         let col = if d.x != 0.0 {
-            colors::AXIS_X
+            t.axis_x
         } else if d.y != 0.0 {
-            colors::AXIS_Y
+            t.axis_y
         } else {
-            colors::AXIS_Z
+            t.axis_z
         };
-        let col = Color32::from_rgb(col.0, col.1, col.2);
         let positive = !name.starts_with('-');
         let ink = if *depth < -0.01 { col.gamma_multiply(0.55) } else { col };
         painter.line_segment([c, *at], Stroke::new(if positive { 2.0 } else { 1.0 }, ink));
-        painter.circle_filled(*at, AXIS_RADIUS, if hovered == Some(i) { t.accent_soft } else { t.overlay });
-        painter.circle_stroke(
-            *at,
-            AXIS_RADIUS,
-            Stroke::new(if hovered == Some(i) { 2.0 } else { 1.0 }, if hovered == Some(i) { t.accent } else { ink }),
+        let filled = style == crate::navigator::Style::Blender && positive;
+        if style == crate::navigator::Style::Solidworks && (*at - c).length_sq() > 1.0 {
+            let along = (c - *at).normalized();
+            painter.line_segment([*at, *at + along.rot90() * 4.0 + along * 7.0], Stroke::new(2.0, ink));
+            painter.line_segment([*at, *at - along.rot90() * 4.0 + along * 7.0], Stroke::new(2.0, ink));
+        }
+        if style != crate::navigator::Style::Solidworks || hovered == Some(i) {
+            painter.circle_filled(
+                *at,
+                AXIS_RADIUS,
+                if hovered == Some(i) {
+                    t.accent_soft
+                } else if filled {
+                    ink
+                } else {
+                    t.overlay
+                },
+            );
+            painter.circle_stroke(
+                *at,
+                AXIS_RADIUS,
+                Stroke::new(if hovered == Some(i) { 2.0 } else { 1.0 }, if hovered == Some(i) { t.accent } else { ink }),
+            );
+        }
+        let text_at = if style == crate::navigator::Style::Solidworks { *at + vec2(0.0, -10.0) } else { *at };
+        painter.text(
+            text_at,
+            Align2::CENTER_CENTER,
+            name.to_uppercase(),
+            FontId::proportional(11.0),
+            if filled { if d.z != 0.0 { t.app_bar_text } else { t.panel } } else { ink },
         );
-        painter.text(*at, Align2::CENTER_CENTER, name.to_uppercase(), FontId::proportional(11.0), ink);
         crate::scenario::publish_handle(&format!("axis_view:{name}"), *at);
     }
     crate::scenario::publish_count("axis_view_highlights", f64::from(u8::from(hovered.is_some())));
@@ -2518,14 +2563,21 @@ fn axis_view(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         && let Some((name, d, _, _)) = tips.get(i)
     {
         crate::scenario::publish_handle(&format!("axis_view_hover:{name}"), hover.unwrap_or(c));
-        ui.interact(Rect::from_center_size(hover.unwrap_or(c), vec2(2.0, 2.0)), ui.id().with("axis_view_tip"), Sense::hover())
-            .on_hover_text(format!("View from {}. Click again to reverse. Drag to orbit; hold Shift to snap.", name.to_uppercase()));
+        ui.interact(Rect::from_center_size(hover.unwrap_or(c), vec2(2.0, 2.0)), ui.id().with("axis_view_tip"), Sense::hover()).on_hover_text(
+            if style.is_cube() {
+                let d = app.cam.to_frame(*d);
+                format!("View direction ({:.0}, {:.0}, {:.0}). Drag to orbit; hold Shift to snap.", d.x, d.y, d.z)
+            } else {
+                format!("View from {}. Click again to reverse. Drag to orbit; hold Shift to snap.", name.to_uppercase())
+            },
+        );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         if ui.input(|i| i.pointer.primary_clicked()) {
-            let frame = app.cam.to_frame(*d);
-            let dir = if app.cam.back().dot(*d) > 0.9999 { -*d } else { *d };
+            let d = d.normalized().unwrap_or(Vec3::Z);
+            let frame = app.cam.to_frame(d);
+            let dir = if !style.is_cube() && app.cam.back().dot(d) > 0.9999 { -d } else { d };
             let mut to = app.cam.looking_from(dir);
-            if frame.z.abs() > 0.5 {
+            if frame.x.abs() < 1e-6 && frame.y.abs() < 1e-6 {
                 to.yaw = nearest_quarter_turn(app.cam.yaw);
             }
             if app.preferences.look_at_anim {

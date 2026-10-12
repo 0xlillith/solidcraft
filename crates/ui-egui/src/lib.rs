@@ -65,6 +65,7 @@ mod expression_complete;
 #[cfg(test)]
 mod extrude_edit_tests;
 mod file_load;
+pub mod navigator;
 pub mod palette;
 pub mod params_dialog;
 pub mod prefs;
