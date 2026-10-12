@@ -321,6 +321,12 @@ the active plane. Bridge endpoints capture their source positions; associative e
 construction-plane selection of 3D wires and loft guide rails remain separate work.
 Feature dialog header chevrons collapse and restore the form without discarding selections
 or edited values, including the Appearance panel.
+## Construction on 3D paths
+
+Plane Along Path has a viewport path selector, fractional position, live preview and timeline
+editing. Construction planes and points resolve drawn 3D wires without applying their sketch
+plane a second time. Curved paths use sampled segments; multi-curve chains, absolute distance
+and reference-object placement remain separate work, as do loft rails and centerlines.
 
 ## Document-opening performance
 
