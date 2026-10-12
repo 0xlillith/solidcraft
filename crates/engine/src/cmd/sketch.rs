@@ -1601,7 +1601,7 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let (unit, default_expr) =
             if is_angle { ("deg", format!("{} deg", round6(cur.to_degrees()))) } else { ("mm", format!("{} mm", round6(cur))) };
-        let e = value.clone().unwrap_or(default_expr);
+        let e = value.as_ref().map(|e| doc.with_design_unit(e, if is_angle { Kind::Angle } else { Kind::Length })).unwrap_or(default_expr);
         let pname = doc.new_model_param(&e, unit);
         // The value must evaluate.
         let (vals, errs) = doc.param_values();

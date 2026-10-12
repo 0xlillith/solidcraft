@@ -347,10 +347,25 @@ pub fn unit_scale(units: &str) -> (f64, &'static str) {
     }
 }
 
+/// Inch labels retain a meaningful fourth digit without promoting floating-point noise.
+pub fn length_precision(value: f64, units: &str, decimals: u8) -> usize {
+    let base = usize::from(decimals.min(8));
+    if units != "in" {
+        return base;
+    }
+    let needs_four = ((value * 10_000.0).round() - (value * 1000.0).round() * 10.0).abs() >= 0.5;
+    base.max(if needs_four { 4 } else { 3 })
+}
+
+pub fn length_number(mm: f64, units: &str, decimals: u8) -> String {
+    let value = mm * unit_scale(units).0;
+    format!("{:.*}", length_precision(value, units, decimals), value)
+}
+
 /// A length in millimetres in `units`, with `decimals` (for display).
 pub fn format_length(mm: f64, units: &str, decimals: u8) -> String {
-    let (k, u) = unit_scale(units);
-    format!("{:.*} {u}", usize::from(decimals.min(8)), mm * k)
+    let (_, u) = unit_scale(units);
+    format!("{} {u}", length_number(mm, units, decimals))
 }
 
 /// A length, area (`power` 2) or volume (3) given in millimetres, shown in the design's units
@@ -362,13 +377,13 @@ pub fn show_mm(app: &SolveApp, v: f64, power: i32) -> String {
         3 => "³",
         _ => "",
     };
-    format!("{:.*} {u}{sup}", usize::from(app.preferences.length_decimals.min(8)), v * k.powi(power))
+    let value = v * k.powi(power);
+    format!("{:.*} {u}{sup}", length_precision(value, &app.session.doc.units, app.preferences.length_decimals), value)
 }
 
 /// Numbers in millimetres, in the design's units without the unit name.
 pub fn show_mm_bare(app: &SolveApp, v: f64) -> String {
-    let (k, _) = unit_scale(&app.session.doc.units);
-    format!("{:.*}", usize::from(app.preferences.length_decimals.min(8)), v * k)
+    length_number(v, &app.session.doc.units, app.preferences.length_decimals)
 }
 
 /// Write the anti-aliasing setting where the host reads it at start (the window's samples can't

@@ -747,7 +747,7 @@ fn doc_settings(app: &mut SolveApp, ui: &mut egui::Ui, depth: usize) {
     }
     let prec = format!(
         "Precision: {} {}, {}°",
-        format_args!("{:.*}", usize::from(app.preferences.length_decimals), 0.0),
+        crate::prefs::show_mm_bare(app, 0.0),
         crate::prefs::unit_scale(&app.session.doc.units).1,
         format_args!("{:.*}", usize::from(app.preferences.angle_decimals), 0.0)
     );
@@ -1709,7 +1709,11 @@ pub fn dims_overlay(app: &SolveApp, ctx: &egui::Context) {
             }
             let expr = c.param.as_ref().and_then(|p| app.session.doc.param(p)).map(|p| p.expr.as_str());
             let col = if c.driven { tk.dimension_driven } else { tk.dimension };
-            let galley = painter.layout_no_wrap(crate::dim_view::label(&c.kind, expr, c.driven), FontId::proportional(11.5), col);
+            let galley = painter.layout_no_wrap(
+                crate::dim_view::label(&c.kind, expr, c.driven, &app.session.doc.units, app.preferences.length_decimals),
+                FontId::proportional(11.5),
+                col,
+            );
             let size = galley.size() + vec2(6.0, 2.0);
             let half = Vec2::new(f64::from(size.x) * 0.5 * px, f64::from(size.y) * 0.5 * px);
             let lay = dim_layout(&frame, c.text.or_else(|| default_text(&frame, middle, px)), px, half);
