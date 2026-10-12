@@ -1767,6 +1767,7 @@ fn feature_tools_with_constructor(
             }
             if *operation == Operation::NewBody && extent.taper.is_none() {
                 let cap_bindings = crate::config::extrude_cap_bindings(&ss, &tools, 10_000_000);
+                let source_curves = cap_bindings.as_ref().map(|_| crate::config::ExactSketchCurves::new(&ss));
                 tools = tools
                     .into_iter()
                     .enumerate()
@@ -1777,7 +1778,7 @@ fn feature_tools_with_constructor(
                             .flatten()
                             .map(|source| match source {
                                 Some(kernel::FaceSource::ExtrudeSide { segment, .. }) if cap_bindings.is_some() => {
-                                    crate::config::exact_sketch_curve(&ss, segment)
+                                    source_curves.as_ref().and_then(|curves| curves.find(segment))
                                 }
                                 _ => None,
                             })
