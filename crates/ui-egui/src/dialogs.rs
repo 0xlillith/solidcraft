@@ -1200,12 +1200,12 @@ fn update_measure(app: &SolveApp, d: &mut Dialog) {
     }
 }
 
-fn fmt_mm(v: &Value) -> String {
-    v.as_f64().map(|x| format!("{x:.3} mm")).unwrap_or_default()
+fn fmt_mm(app: &SolveApp, v: &Value) -> String {
+    v.as_f64().map(|x| crate::prefs::show_mm(app, x, 1)).unwrap_or_default()
 }
 
 /// The measurement in the dialog.
-fn measure_rows(ui: &mut egui::Ui, r: Option<&Value>) {
+fn measure_rows(app: &SolveApp, ui: &mut egui::Ui, r: Option<&Value>) {
     let t = Tokens::get();
     let Some(r) = r else {
         ui.label("");
@@ -1221,11 +1221,11 @@ fn measure_rows(ui: &mut egui::Ui, r: Option<&Value>) {
     }
     for (i, it) in r["items"].as_array().into_iter().flatten().enumerate() {
         let what = match it["type"].as_str() {
-            Some("edge") => format!("Length  {}", fmt_mm(&it["length_mm"])),
-            Some("face") => format!("Area  {:.3} mm²", it["area_mm2"].as_f64().unwrap_or(0.0)),
+            Some("edge") => format!("Length  {}", fmt_mm(app, &it["length_mm"])),
+            Some("face") => format!("Area  {}", crate::prefs::show_mm(app, it["area_mm2"].as_f64().unwrap_or(0.0), 2)),
             Some("vertex") => {
                 let p = &it["position"];
-                format!("At  {:.3}, {:.3}, {:.3}", p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0), p[2].as_f64().unwrap_or(0.0))
+                format!("At  {}, {}, {}", fmt_mm(app, &p[0]), fmt_mm(app, &p[1]), fmt_mm(app, &p[2]))
             }
             _ => String::new(),
         };
@@ -1235,12 +1235,12 @@ fn measure_rows(ui: &mut egui::Ui, r: Option<&Value>) {
     }
     if r.get("distance_mm").is_some() {
         ui.label(RichText::new("Distance").strong());
-        ui.label(RichText::new(fmt_mm(&r["distance_mm"])).strong());
+        ui.label(RichText::new(fmt_mm(app, &r["distance_mm"])).strong());
         ui.end_row();
         let d = &r["delta"];
         for (k, l) in ["ΔX", "ΔY", "ΔZ"].iter().enumerate() {
             ui.label(*l);
-            ui.label(format!("{:.3} mm", d[k].as_f64().unwrap_or(0.0).abs()));
+            ui.label(crate::prefs::show_mm(app, d[k].as_f64().unwrap_or(0.0).abs(), 1));
             ui.end_row();
         }
     }
@@ -1638,7 +1638,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         d.extra.insert("combine".into(), json!(op == 1));
                         ui.end_row();
                     }
-                    Kind::Measure { result, .. } => measure_rows(ui, result.as_ref()),
+                    Kind::Measure { result, .. } => measure_rows(app, ui, result.as_ref()),
                     Kind::OffsetPlane { offset } => {
                         row_label(ui, "Distance");
                         enter |= field(ui, offset);

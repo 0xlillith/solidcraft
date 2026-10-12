@@ -73,6 +73,11 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   Type a value and press Enter to commit one undo step; rejected values remain editable and
   cancellation leaves the sketch unchanged. Fit keeps geometry clear of the Sketch Palette
   and navigation controls, including enlarged displays and nested pending placements.
+- Sketch annotations, live drawing lengths and Measure use document units. Inches show
+  three decimals and retain a meaningful fourth digit. Bare length dimension entry captures
+  the current design unit; changing units leaves existing geometry and expressions intact.
+  Component/canvas distance controls, sketch cursor coordinates, flat-pattern dimensions
+  and pocket depths, interference volumes and parts-library lengths also use design units.
 - Curvature and Polygon constraints accept complete preselected operands. Fix/Unfix
   consumes complete point/curve selections consistently; mixed or ambiguous selections
   retain the picking workflow. Rejected constraints preserve selection and undo history.

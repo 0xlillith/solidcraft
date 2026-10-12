@@ -132,3 +132,16 @@ when a parameter moves the geometry. Islands inside the region are its holes. Wh
 more than one (both halves of a circle cut by a line), is bounded by exactly those curves, the
 feature reports an error rather than taking another region. Profiles picked by index or by point
 (`[{"point": [x, y]}]`) are stored the same way when the feature is made.
+
+## Measurement units
+
+Change the current design through **Document Settings > Units** in the browser.
+The units preference applies to new designs. Existing sketch annotations, live drawing
+lengths and Measure follow the current design units without resizing geometry.
+Inches display at least three decimal places and retain a meaningful fourth digit;
+a higher display precision can be selected in Preferences. Bare length values typed
+in the dimension tool use the current design units. Explicit units such as `25.4 mm`
+remain valid in an inch design. Angular dimensions keep their angular units. Deliberately typed four-place inch literals
+retain trailing zeros. Component/canvas distance controls and inspection, parts-library
+and flat-pattern measurements follow design units too; parameter expressions and metric
+standard names retain their explicit authored units.
