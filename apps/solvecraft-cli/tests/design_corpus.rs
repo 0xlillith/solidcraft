@@ -86,6 +86,9 @@ fn old_designs_open_and_evaluate_as_saved() {
         // Saved again, it reads back the same.
         let again = solvecraft_engine::doc::Document::from_json(&s.doc.to_json()).unwrap();
         assert_eq!(again, *s.doc, "{name}: round trip");
+        let package = solvecraft_engine::io::write_design_container(&s.doc).unwrap();
+        let packaged = solvecraft_engine::io::read_design(&package).unwrap();
+        assert_eq!(packaged, *s.doc, "{name}: container round trip after migration");
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

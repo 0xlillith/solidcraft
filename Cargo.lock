@@ -3358,6 +3358,9 @@ name = "solvecraft-io"
 version = "0.3.2"
 dependencies = [
  "quick-xml 0.38.4",
+ "serde",
+ "serde_json",
+ "sha2",
  "solvecraft-doc",
  "solvecraft-geom",
  "solvecraft-kernel",

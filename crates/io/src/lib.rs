@@ -5,7 +5,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod design;
+mod design_metadata;
 mod dxf;
+pub use design::{DesignCompression, is_design_container, write_design_container, write_design_container_with_compression};
 pub mod safe_write;
 mod sketch2d;
 mod svg;
@@ -27,6 +30,14 @@ use solvecraft_geom::{Mesh, Vec3};
 pub const DESIGN_EXT: &str = "solvecraft";
 /// Largest design file we read.
 pub const MAX_DESIGN_BYTES: usize = 256 << 20;
+
+/// Supported design names; the reader detects JSON/container from the bytes.
+pub fn is_design_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| [DESIGN_EXT, "solidcraft", "json"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
@@ -347,6 +358,9 @@ pub fn read_design(bytes: &[u8]) -> Result<Document> {
     if bytes.len() > MAX_DESIGN_BYTES {
         return Err(IoError::Invalid("design file too large".into()));
     }
+    if is_design_container(bytes) {
+        return design::read(bytes);
+    }
     let s = std::str::from_utf8(bytes).map_err(|_| IoError::Invalid("design file is not UTF-8 JSON".into()))?;
     Ok(Document::from_json(s)?)
 }
@@ -539,6 +553,16 @@ mod tests {
         assert_eq!(f.body_names, ["Body1"]);
         assert_eq!(f.body_names.len(), 1);
         assert!(matches!(&f.kind, FeatureKind::Import { file, .. } if file == "My Part.step"));
+        let mut imported = Document::new("Imported STEP round trip");
+        imported.add_feature(f.kind, None).unwrap();
+        let packaged = read_design(&write_design_container(&imported).unwrap()).unwrap();
+        assert_eq!(packaged, imported);
+        let mut rebuilt = Model::new();
+        rebuilt.evaluate(&packaged);
+        assert!(rebuilt.results.iter().all(|r| r.error.is_none()));
+        let state = rebuilt.state();
+        assert_eq!(state.bodies.len(), 1);
+        assert!((solvecraft_kernel::measure(&state.bodies[0].body).unwrap().volume - 6000.0).abs() < 1e-6);
         assert!(step_import_feature(b"ISO-10303-21;", "x.step").is_err());
         assert!(step_import_feature(&[0xff, 0xfe, 0x00], "x.step").is_err());
         assert!(Format::from_name("a.dwg").is_err());

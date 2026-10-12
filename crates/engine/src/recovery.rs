@@ -170,7 +170,8 @@ impl Autosaver {
             return Ok(false);
         }
         let io = |e: std::io::Error| EngineError::Other(format!("autosave: {e}"));
-        solvecraft_io::write_atomic(&file(&self.dir, &self.id, "solvecraft"), &solvecraft_io::write_design(&s.doc), false).map_err(io)?;
+        let bytes = solvecraft_io::write_design_container(&s.doc)?;
+        solvecraft_io::write_atomic(&file(&self.dir, &self.id, "solvecraft"), &bytes, false).map_err(io)?;
         let entry =
             Entry { id: self.id.clone(), path: s.path.clone(), name: s.doc.name.clone(), saved_at: unix_now(), features: s.doc.features.len() };
         let meta = serde_json::to_vec_pretty(&entry).map_err(|e| EngineError::Other(e.to_string()))?;

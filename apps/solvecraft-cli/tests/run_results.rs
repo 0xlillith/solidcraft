@@ -44,6 +44,22 @@ fn body_count(path: &Path) -> Value {
 }
 
 #[test]
+fn cli_loads_both_design_encodings_by_contents() {
+    let dir = Scratch::new();
+    for extension in ["solvecraft", "json"] {
+        let saved = dir.0.join(format!("box.{extension}"));
+        json_output(cli().arg("run").arg(dir.script()).arg("--save").arg(&saved).output().unwrap());
+        let bytes = std::fs::read(&saved).unwrap();
+        assert_eq!(solvecraft_engine::io::is_design_container(&bytes), extension != "json");
+        let renamed = dir.0.join(format!("{extension}.unusual"));
+        std::fs::write(&renamed, bytes).unwrap();
+        let measured = json_output(cli().arg("eval").arg(&renamed).output().unwrap());
+        assert_eq!(measured["body_count"], 1);
+        assert!((measured["bodies"][0]["volume_mm3"].as_f64().unwrap() - 24.0).abs() < 1e-6);
+    }
+}
+
+#[test]
 fn results_still_save_and_export_the_script_once() {
     let dir = Scratch::new();
     let saved = dir.0.join("box.solvecraft");

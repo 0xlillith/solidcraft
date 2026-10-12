@@ -79,7 +79,7 @@ mod web {
             }
             let incoming: Vec<_> = self.files.incoming.borrow_mut().drain(..).collect();
             for (name, bytes, intent) in incoming {
-                let design = name.ends_with(&format!(".{}", solvecraft_engine::io::DESIGN_EXT));
+                let design = solvecraft_engine::io::is_design_path(&name);
                 let path = if design && intent == Intent::Open {
                     // A design from the computer is kept in the browser (a copy), so Save works.
                     let path = files::free_name(&name);
@@ -133,7 +133,7 @@ mod web {
             entries.sort_by(|a, b| b.modified.total_cmp(&a.modified));
             let recent = &mut self.app.home.recent;
             recent.retain(|p| vfs::exists(p));
-            for e in entries.iter().filter(|e| e.name.ends_with(&format!(".{}", solvecraft_engine::io::DESIGN_EXT))) {
+            for e in entries.iter().filter(|e| solvecraft_engine::io::is_design_path(&e.name)) {
                 let p = format!("{}{}", files::OPFS, e.name);
                 if !recent.contains(&p) {
                     recent.push(p);
@@ -206,7 +206,7 @@ mod web {
                                     if ui.small_button("Open").clicked() {
                                         act = Some(("open", e.name.clone()));
                                     }
-                                    let design = e.name.ends_with(&format!(".{}", solvecraft_engine::io::DESIGN_EXT));
+                                    let design = solvecraft_engine::io::is_design_path(&e.name);
                                     if !design && ui.small_button("Insert").on_hover_text("Into the open design (STEP, 3MF, STL)").clicked() {
                                         act = Some(("insert", e.name.clone()));
                                     }
@@ -251,8 +251,10 @@ mod web {
                 },
                 "download_open" => {
                     let d = &self.app.session.doc;
-                    let bytes = solvecraft_engine::io::write_design(d);
-                    if let Err(e) = files::download(&format!("{}.{}", d.name, solvecraft_engine::io::DESIGN_EXT), &bytes) {
+                    let result = solvecraft_engine::io::write_design_container(d)
+                        .map_err(|e| e.to_string())
+                        .and_then(|bytes| files::download(&format!("{}.{}", d.name, solvecraft_engine::io::DESIGN_EXT), &bytes));
+                    if let Err(e) = result {
                         self.app.set_status(e, true);
                     }
                 }

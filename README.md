@@ -74,7 +74,8 @@ renamed repository; old-name Pages and Flatpak URLs are not maintained as perman
   retained shallow prismatic pockets, exact line/arc/circle DXF outlines and bend tables;
   plastic enclosure features and rules. Pocket depth and side survive unfold/refold and appear
   separately from through-hole outlines in the flat preview and DXF.
-- **Files**: designs as JSON (`.solvecraft`), export to STEP (AP242 with body names, colours and
+- **Files**: design containers (`.solvecraft`) with lossless binary mesh payloads;
+  plain JSON remains supported for opening, Save As and export. Export to STEP (AP242 with body names, colours and
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;
   3MF, STL and OBJ import as mesh bodies (they render, measure, move and export; solid features

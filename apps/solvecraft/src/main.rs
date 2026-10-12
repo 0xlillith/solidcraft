@@ -65,9 +65,9 @@ fn services() -> Services {
             rfd::FileDialog::new()
                 .add_filter(
                     "Designs, STEP, IGES and meshes",
-                    &["solvecraft", "step", "stp", "STEP", "STP", "igs", "iges", "IGS", "IGES", "3mf", "3MF", "stl", "STL"],
+                    &["solvecraft", "json", "step", "stp", "STEP", "STP", "igs", "iges", "IGS", "IGES", "3mf", "3MF", "stl", "STL"],
                 )
-                .add_filter("SolidCraft design", &["solvecraft"])
+                .add_filter("SolidCraft design (container or JSON)", &["solvecraft", "json"])
                 .add_filter("STEP", &["step", "stp", "STEP", "STP"])
                 .add_filter("IGES", &["igs", "iges", "IGS", "IGES"])
                 .add_filter("Mesh (3MF, STL)", &["3mf", "3MF", "stl", "STL"])
@@ -77,7 +77,17 @@ fn services() -> Services {
                 .map(|p| p.to_string_lossy().to_string())
         })),
         pick_save: Some(Box::new(|name: &str, exts: &[&str]| {
-            rfd::FileDialog::new().set_file_name(name).add_filter("File", exts).save_file().map(|p| p.to_string_lossy().to_string())
+            let dialog = rfd::FileDialog::new().set_file_name(name);
+            let dialog = if exts == ["solvecraft", "json"] {
+                if name.ends_with(".json") {
+                    dialog.add_filter("Plain JSON design", &["json"]).add_filter("SolidCraft container", &["solvecraft"])
+                } else {
+                    dialog.add_filter("SolidCraft container", &["solvecraft"]).add_filter("Plain JSON design", &["json"])
+                }
+            } else {
+                dialog.add_filter("File", exts)
+            };
+            dialog.save_file().map(|p| p.to_string_lossy().to_string())
         })),
         graphics_path: graphics_path().map(|p| p.to_string_lossy().to_string()),
         show_in_folder: Some(Box::new(|path| {

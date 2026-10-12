@@ -23,8 +23,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "INSERT")
         .icon("import")
         .params("path: .3mf or .stl file (its meshes join the design as mesh bodies); name?"),
-    CommandSpec::new("file.save", "Save", save).icon("save").key("Ctrl+S").noundo().params("path? (default: current file)"),
-    CommandSpec::new("file.save_as", "Save As", save_as).icon("save").noundo().params("path"),
+    CommandSpec::new("file.save", "Save", save)
+        .icon("save")
+        .key("Ctrl+S")
+        .noundo()
+        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast)"),
+    CommandSpec::new("file.save_as", "Save As", save_as)
+        .icon("save")
+        .noundo()
+        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast)"),
     CommandSpec::new("doc.recovery_list", "Recoverable Designs", recovery_list)
         .noundo()
         .params("dir? (default: the recovery folder) → designs autosaved by apps that crashed or closed with unsaved changes"),
@@ -35,7 +42,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("file.export", "Export", export)
         .icon("export")
         .noundo()
-        .params("path; format?: stl|stla|obj|step|3mf (default from extension); bodies?: [names]"),
+        .params("path; format?: stl|stla|obj|step|3mf|json (default from extension); bodies?: [names] (JSON exports the complete design)"),
     CommandSpec::new("file.save_mesh", "Save As Mesh", save_stl).icon("export").noundo().params("path; bodies?: [names]; ascii?: bool"),
 ];
 
@@ -132,8 +139,17 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "features": s.doc.features.len(), "errors": errors}))
 }
 
-fn write(s: &mut Session, path: &str) -> Result<Value> {
-    let bytes = solvecraft_io::write_design(&s.doc);
+fn write(s: &mut Session, path: &str, format: &str, compression: &str) -> Result<Value> {
+    let compression = match compression {
+        "fast" => solvecraft_io::DesignCompression::Fast,
+        "compact" => solvecraft_io::DesignCompression::Compact,
+        _ => return Err(bad("file.save", "compression must be fast or compact")),
+    };
+    let bytes = match format {
+        "container" => solvecraft_io::write_design_container_with_compression(&s.doc, compression)?,
+        "json" => solvecraft_io::write_design(&s.doc),
+        _ => return Err(bad("file.save", "format must be container or json")),
+    };
     // Atomic, keeping the version being replaced as `<file>.bak`.
     solvecraft_io::write_atomic(std::path::Path::new(path), &bytes, true).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     s.path = Some(path.to_string());
@@ -146,18 +162,27 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         Some(x) if !x.trim().is_empty() => x.to_string(),
         _ => s.path.clone().ok_or_else(|| bad("file.save", "the design has no file yet: give a `path`"))?,
     };
-    write(s, &path)
+    write(s, &path, str_(p, "format").unwrap_or(default_design_format(&path)), str_(p, "compression").unwrap_or("fast"))
+}
+
+fn default_design_format(path: &str) -> &'static str {
+    if std::path::Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("json")) { "json" } else { "container" }
 }
 
 fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_arg(p, "file.save_as")?.to_string();
-    write(s, &path)
+    write(s, &path, str_(p, "format").unwrap_or(default_design_format(&path)), str_(p, "compression").unwrap_or("fast"))
 }
 
 fn export_to(s: &Session, path: &str, format: Format, bodies: &[String]) -> Result<Value> {
     let name = std::path::Path::new(path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| s.doc.name.clone());
     // A design with components exports as a STEP assembly; otherwise bodies as placed.
-    let bytes = if format == Format::Step && bodies.is_empty() && !s.doc.occurrences.is_empty() {
+    let bytes = if format == Format::Design {
+        if !bodies.is_empty() {
+            return Err(bad("file.export", "design JSON exports the complete document; omit bodies"));
+        }
+        solvecraft_io::write_design(&s.doc)
+    } else if format == Format::Step && bodies.is_empty() && !s.doc.occurrences.is_empty() {
         solvecraft_io::step_assembly(&s.doc, &s.doc.painted(&s.model.state()), &name)?
     } else {
         // Bodies carry the colour they are shown in (appearance, material or imported).
@@ -218,4 +243,44 @@ fn recovery_discard(_s: &mut Session, p: &Value) -> Result<Value> {
         crate::recovery::remove(&dir, id);
     }
     Ok(json!({"discarded": ids}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn design_save_formats_reopen_and_preserve_atomic_backups() {
+        let dir = std::env::temp_dir().join(format!("solvecraft-container-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let packaged = dir.join("design.solvecraft");
+        let plain = dir.join("design.json");
+        let export = dir.join("export.json");
+        let mut session = Session::default();
+        session.execute("solid.box", &json!({"length":10,"width":20,"height":30})).unwrap();
+        session.execute("file.save_as", &json!({"path":packaged})).unwrap();
+        let original = std::fs::read(&packaged).unwrap();
+        assert!(solvecraft_io::is_design_container(&original));
+        session.execute("file.save_as", &json!({"path":plain})).unwrap();
+        assert!(std::fs::read_to_string(&plain).unwrap().contains("solvecraft/"));
+        let path = session.path.clone();
+        session.execute("file.export", &json!({"path":export,"format":"json"})).unwrap();
+        assert_eq!(session.path, path);
+        for file in [&packaged, &plain, &export] {
+            let mut reopened = Session::default();
+            reopened.execute("doc.open", &json!({"path":file})).unwrap();
+            assert_eq!(reopened.doc, session.doc);
+            let measure = reopened.execute("inspect.measure", &json!({})).unwrap();
+            assert_eq!(measure["body_count"], 1);
+            assert!((measure["bodies"][0]["volume_mm3"].as_f64().unwrap() - 6000.0).abs() < 1e-6);
+        }
+        session.execute("file.save", &json!({"path":packaged})).unwrap();
+        assert_eq!(std::fs::read(solvecraft_io::backup_path(&packaged)).unwrap(), original);
+        let before = std::fs::read(&packaged).unwrap();
+        assert!(session.execute("file.save", &json!({"path":packaged,"format":"invalid"})).is_err());
+        assert_eq!(std::fs::read(&packaged).unwrap(), before);
+        session.execute("file.save", &json!({"path":packaged,"format":"json"})).unwrap();
+        assert!(std::fs::read_to_string(&packaged).unwrap().contains("solvecraft/"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
