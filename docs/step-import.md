@@ -15,12 +15,6 @@ colours remain the fallback under explicit design appearances and materials; fac
 colours follow persistent face names. A removed face has no colour assignment to
 display on the resulting body.
 
-The RGB import regression in the engine checks a STEP file with separate red,
-green and blue bodies: fillet and move the red body, cut the blue body, join an
-extension to the green body, undo/redo,
-save and reopen the design, then export and reopen STEP. It checks all three body
-colours and the red body's separately coloured top face at each stage.
-
 ## IGES
 
 IGES 5.3 files (`.igs`/`.iges`) open, insert and drop the same way: `crates/kernel/src/iges_in.rs` (written from the published specification) restates the file as STEP and the STEP reader reads it, so the feature holds STEP text. Read: manifold solid B-reps (186) with their shells, faces, loops, edge and vertex lists; trimmed (144) and bounded (143) surfaces, and bare B-spline patches, sewn into a solid by their shared edges (an open body when they do not close); lines, circular arcs, ellipses, composite curves, rational B-spline curves; planes (108, 190), cylinders, cones, spheres, tori, rational B-spline surfaces, surfaces of revolution and tabulated cylinders; transformation matrices; units; colours (314 and the predefined numbers); body names (name properties, else labels). Not read yet: ruled and offset surfaces, curves on surfaces given only in parameter space. Export (`file.export` to `.igs`) writes each body as a manifold solid B-rep on the same surfaces a STEP export uses, with its name and colour.
