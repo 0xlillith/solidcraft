@@ -88,13 +88,16 @@ The [README](README.md#architecture) has the layer table. The short version:
 
 ## Rules that aren't negotiable
 
-1. **Clean-room.** We observe Fusion as a black box: its UI, how parts it builds measure, and
-   what it does with a given input. We never copy Autodesk code, icons, artwork, help text,
-   tooltips, templates or materials, and we never commit files Fusion produced. Command ids are
-   our own (`solid.fillet`, not Fusion's internal names).
+1. **Independent.** SolidCraft is independent. Behaviour is designed from public
+   documentation, general CAD conventions and user feedback. Reference tests use analytic values
+   and open-source tools. We don't drive, script, automate or extract data from commercial CAD
+   products, and we never copy another product's code, icons, artwork, help text, tooltips,
+   templates or materials. Command ids are our own (`solid.fillet`).
 2. **No GPL/LGPL/AGPL code, not even reading it.** That rules out OpenCASCADE, FreeCAD
    (including planegcs), SolveSpace, CadQuery/OCP, LibreCAD and QCAD. SolidCraft is
-   MIT OR Apache-2.0, and its solver and blends are written from the maths. Permissive
+   MIT OR Apache-2.0, and its solver and blends are written from the maths. (Running an
+   open-source application to get reference values for a test is fine; reading its source is
+   not.) Permissive
    dependencies are fine. Note which one you're adding and why in the PR, and run
    `cargo xtask licences` so THIRD-PARTY-LICENSES.txt lists it (CI checks that it is current).
 3. **Every asset is original or openly licensed and has a row in
