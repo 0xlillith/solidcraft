@@ -309,7 +309,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 - Sheet-metal material: inherited holes, crossing edge notches, overlapping cuts and retained
   islands share the same boundaries in flat preview, DXF and unfolded solids. Detached material
   pieces survive unfold/refold as one logical sheet group, including split flanged sheets.
-  Circular cuts crossing bends remain unsupported; free-form bases use bounded sampling.
+  Cut-outs made in the flat pattern cross bends at any angle or curved: their edges fold to
+  helices and curves on the bend, their walls square to the sheet. Free-form bases use bounded
+  sampling.
   Parallel prismatic partial-depth cuts retain pocket side and depth through transfer and
   unfold/refold, with separate pocket contours in preview and DXF. Planar Intersect preserves
   exact holes and retained islands, including the union of multiple selected profiles, and

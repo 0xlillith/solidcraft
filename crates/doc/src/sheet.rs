@@ -351,10 +351,17 @@ fn is_zero_pair(v: &(f64, f64)) -> bool {
 }
 
 fn rev_edge(e: EdgeSpec) -> EdgeSpec {
-    match e {
-        EdgeSpec::Line { a, b } => EdgeSpec::Line { a: b, b: a },
-        EdgeSpec::Arc { a, b, mid } => EdgeSpec::Arc { a: b, b: a, mid },
-    }
+    e.reversed()
+}
+
+/// Largest distance between a folded bend edge and the cubic chain standing in for it.
+const BEND_CHAIN_TOL: f64 = 1e-7;
+/// Most halvings of a bend edge's parameter while fitting its chain.
+const BEND_CHAIN_DEPTH: usize = 10;
+
+fn cubic_at(p0: Vec3, c1: Vec3, c2: Vec3, p1: Vec3, t: f64) -> Vec3 {
+    let u = 1.0 - t;
+    p0 * (u * u * u) + c1 * (3.0 * u * u * t) + c2 * (3.0 * u * t * t) + p1 * (t * t * t)
 }
 
 fn dedup(p: &[Vec2]) -> Vec<Vec2> {
@@ -368,6 +375,32 @@ fn dedup(p: &[Vec2]) -> Vec<Vec2> {
         v.pop();
     }
     v
+}
+
+/// How a flat edge of a bend zone folds: along the bend to a line, across it to an arc, or
+/// any other way (slanted lines and curves) to a curve on the bend's cylinder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ZoneEdge {
+    Along,
+    Across,
+    Curved,
+}
+
+/// How far (mm) a flat edge's ends may stray from a line along or across its bend and still
+/// fold as that line or arc: scripts round coordinates, so the test is in millimetres, not
+/// relative to the edge's length.
+const ZONE_SQUARE_TOL: f64 = 1e-6;
+
+fn zone_edge_kind(f: &SheetFlange, e: &Seg2) -> ZoneEdge {
+    let Seg2::Line { a, b } = *e else { return ZoneEdge::Curved };
+    let dlt = b - a;
+    if dlt.dot(f.n).abs() <= ZONE_SQUARE_TOL {
+        ZoneEdge::Along
+    } else if dlt.dot(f.d).abs() <= ZONE_SQUARE_TOL {
+        ZoneEdge::Across
+    } else {
+        ZoneEdge::Curved
+    }
 }
 
 /// A bend for the bend table.
@@ -583,6 +616,75 @@ impl SheetBody {
         }
     }
 
+    /// A flat point of flange `f`'s bend zone folded onto the bend at height `z` (not clamped
+    /// to the zone), with its rates of change along the zone's flat `n` and `d` directions.
+    fn zone_point(&self, f: &SheetFlange, q: Vec2, z: f64) -> (Vec3, Vec3, Vec3) {
+        let s = (q - f.p).dot(f.n);
+        let u = (q - f.p).dot(f.d);
+        let neutral = (f.radius + self.k * self.t).max(1e-12);
+        let phi = s / neutral;
+        let (axis_o, k, turn) = self.bend_axis(f);
+        let sigma = if turn < 0.0 { -1.0 } else { 1.0 };
+        // From the axis to the bend's start line at height z, and that turned a right angle.
+        let ez = Vec3::Z * (z - axis_o.z);
+        let ek = k.cross(ez) * sigma;
+        let (sn, cs) = phi.sin_cos();
+        let w = self.world(f.parent);
+        let local = axis_o + v3(f.d) * u + ez * cs + ek * sn;
+        let ds = (ez * -sn + ek * cs) * (1.0 / neutral);
+        (apply_point(&w, local), apply_vector(&w, ds), apply_vector(&w, v3(f.d)))
+    }
+
+    /// A flat edge of flange `f`'s bend zone, folded at height `z`, at parameter `t`: the point
+    /// and its derivative.
+    fn zone_edge_at(&self, f: &SheetFlange, e: &Seg2, z: f64, t: f64) -> (Vec3, Vec3) {
+        let (p, ds, du) = self.zone_point(f, e.point_at(t), z);
+        let dq = e.derivative(t);
+        (p, ds * dq.dot(f.n) + du * dq.dot(f.d))
+    }
+
+    /// Where to break a bend zone's flat edge so cubic Hermite pieces follow the folded edge
+    /// to within [`BEND_CHAIN_TOL`] on both faces. The breaks depend on the flat edge only, so
+    /// the top face, bottom face and wall of a cut-out share one chain per height.
+    fn zone_breaks(&self, f: &SheetFlange, e: &Seg2) -> Vec<f64> {
+        let mut out = vec![0.0];
+        let mut todo = vec![(0.0, 1.0, 0usize)];
+        while let Some((t0, t1, depth)) = todo.pop() {
+            let fits = depth >= BEND_CHAIN_DEPTH
+                || [0.0, self.t].iter().all(|&z| {
+                    let h = t1 - t0;
+                    let ((p0, d0), (p1, d1)) = (self.zone_edge_at(f, e, z, t0), self.zone_edge_at(f, e, z, t1));
+                    let (c1, c2) = (p0 + d0 * (h / 3.0), p1 - d1 * (h / 3.0));
+                    [0.25, 0.5, 0.75].iter().all(|&x| cubic_at(p0, c1, c2, p1, x).dist(self.zone_edge_at(f, e, z, t0 + h * x).0) <= BEND_CHAIN_TOL)
+                });
+            if fits {
+                out.push(t1);
+            } else {
+                let m = (t0 + t1) / 2.0;
+                // Depth first, right half last on the stack: breaks come out in order.
+                todo.push((m, t1, depth + 1));
+                todo.push((t0, m, depth + 1));
+            }
+        }
+        out
+    }
+
+    /// A bend zone's flat edge folded at height `z`: a chain of cubic Hermite pieces.
+    fn zone_chain(&self, f: &SheetFlange, e: &Seg2, z: f64) -> EdgeSpec {
+        let breaks = self.zone_breaks(f, e);
+        let mut ctrl = Vec::with_capacity(breaks.len() * 3);
+        for w in breaks.windows(2) {
+            let (t0, t1) = (w[0], w[1]);
+            let h = t1 - t0;
+            let ((p0, d0), (p1, d1)) = (self.zone_edge_at(f, e, z, t0), self.zone_edge_at(f, e, z, t1));
+            if ctrl.is_empty() {
+                ctrl.push(p0);
+            }
+            ctrl.extend([p0 + d0 * (h / 3.0), p1 - d1 * (h / 3.0), p1]);
+        }
+        EdgeSpec::Chain { ctrl: ctrl.into() }
+    }
+
     /// A flat edge of a piece as a 3D edge at height `z`.
     fn edge3(&self, piece: Piece, e: &Seg2, z: f64) -> Result<EdgeSpec> {
         let (a, b) = (e.start(), e.end());
@@ -590,18 +692,16 @@ impl SheetBody {
         match (piece, e) {
             (Piece::Panel(_), Seg2::Line { .. }) => Ok(EdgeSpec::Line { a: pa, b: pb }),
             (Piece::Panel(_), Seg2::Arc { .. }) => Ok(EdgeSpec::Arc { a: pa, b: pb, mid: self.map3(piece, e.point_at(0.5), z) }),
-            (Piece::Zone(i), Seg2::Line { .. }) => {
+            (Piece::Zone(i), _) => {
                 let f = self.flanges.get(i).ok_or_else(|| DocError::Invalid("bend".into()))?;
-                let dlt = b - a;
-                if dlt.dot(f.n).abs() < 1e-9 * dlt.len().max(1.0) {
-                    Ok(EdgeSpec::Line { a: pa, b: pb })
-                } else if dlt.dot(f.d).abs() < 1e-9 * dlt.len().max(1.0) {
-                    Ok(EdgeSpec::Arc { a: pa, b: pb, mid: self.map3(piece, (a + b) * 0.5, z) })
-                } else {
-                    Err(DocError::Invalid("not supported yet: cut-out edges running across a bend at an angle".into()))
+                match zone_edge_kind(f, e) {
+                    ZoneEdge::Along => Ok(EdgeSpec::Line { a: pa, b: pb }),
+                    ZoneEdge::Across => Ok(EdgeSpec::Arc { a: pa, b: pb, mid: self.map3(piece, (a + b) * 0.5, z) }),
+                    // Slanted lines fold to helices, curves to curves on the bend's cylinder:
+                    // neither has a line, arc or conic form.
+                    ZoneEdge::Curved => Ok(self.zone_chain(f, e, z)),
                 }
             }
-            (Piece::Zone(_), _) => Err(DocError::Invalid("not supported yet: curved cut-outs across a bend".into())),
             (_, _) => Err(DocError::Invalid("not supported yet: spline or conic cut-outs in sheet metal".into())),
         }
     }
@@ -749,10 +849,21 @@ impl SheetBody {
                     Piece::Panel(_) => SurfSpec::Plane,
                     Piece::Zone(i) => {
                         let f = self.flanges.get(i).ok_or_else(|| DocError::Invalid("bend".into()))?;
-                        let ss: Vec<f64> = c.outer.iter().map(|e| (e.start() - f.p).dot(f.n)).collect();
-                        let (s0, s1) = (ss.iter().cloned().fold(f64::MAX, f64::min), ss.iter().cloned().fold(f64::MIN, f64::max));
-                        let us: Vec<f64> = c.outer.iter().map(|e| (e.start() - f.p).dot(f.d)).collect();
-                        let (u0, u1) = (us.iter().cloned().fold(f64::MAX, f64::min), us.iter().cloned().fold(f64::MIN, f64::max));
+                        // The surface must hold the whole boundary: curved cut-out edges may
+                        // bulge past the cell's corners, so they are sampled (and the surface
+                        // padded a little, never past the zone's own width).
+                        let curved = c.outer.iter().any(|e| zone_edge_kind(f, e) == ZoneEdge::Curved);
+                        let pts: Vec<Vec2> =
+                            if curved { c.outer.iter().flat_map(|e| e.polyline(1e-4)).collect() } else { c.outer.iter().map(Seg2::start).collect() };
+                        let ss: Vec<f64> = pts.iter().map(|q| (*q - f.p).dot(f.n)).collect();
+                        let (mut s0, mut s1) = (ss.iter().cloned().fold(f64::MAX, f64::min), ss.iter().cloned().fold(f64::MIN, f64::max));
+                        let us: Vec<f64> = pts.iter().map(|q| (*q - f.p).dot(f.d)).collect();
+                        let (mut u0, mut u1) = (us.iter().cloned().fold(f64::MAX, f64::min), us.iter().cloned().fold(f64::MIN, f64::max));
+                        if curved {
+                            let pad = 1e-3;
+                            (s0, s1) = ((s0 - pad).max(0.0), (s1 + pad).min(self.allowance(f)));
+                            (u0, u1) = (u0 - pad, u1 + pad);
+                        }
                         let neutral = (f.radius + self.k * self.t).max(1e-12);
                         let (axis_o, k, turn) = self.bend_axis(f);
                         let wp = self.world(f.parent);
@@ -777,7 +888,7 @@ impl SheetBody {
                 }
                 let (a, b) = (e.start(), e.end());
                 let bottom = self.edge3(c.piece, e, z0)?;
-                let top = rev_edge(self.edge3(c.piece, e, z1)?);
+                let top_ab = self.edge3(c.piece, e, z1)?;
                 let up_b = EdgeSpec::Line { a: self.map3(c.piece, b, z0), b: self.map3(c.piece, b, z1) };
                 let down_a = EdgeSpec::Line { a: self.map3(c.piece, a, z1), b: self.map3(c.piece, a, z0) };
                 let surface = match (c.piece, e) {
@@ -785,8 +896,12 @@ impl SheetBody {
                         let (pa, pb, pm) = (self.map3(c.piece, a, z0), self.map3(c.piece, b, z0), self.map3(c.piece, e.point_at(0.5), z0));
                         SurfSpec::Extruded { a: pa, b: pb, mid: pm, dir: self.map3(c.piece, a, z1) - pa }
                     }
+                    // A cut-out wall across a bend at an angle: square to the sheet, so its
+                    // straight lines run radially from the bottom face's edge to the top's.
+                    (Piece::Zone(_), _) if matches!(bottom, EdgeSpec::Chain { .. }) => SurfSpec::Ruled { a: bottom.clone(), b: top_ab.clone() },
                     _ => SurfSpec::Plane,
                 };
+                let top = rev_edge(top_ab);
                 let mid = e.point_at(0.5);
                 let tdir = e.point_at(0.51) - e.point_at(0.49);
                 let right = Vec2::new(tdir.y, -tdir.x);
@@ -2483,6 +2598,89 @@ mod tests {
             sheet.flat = true;
             assert!((vol(&sheet.solid().unwrap()) - exact * 2.0).abs() < 1e-3);
         }
+    }
+
+    /// A 100 × 80 plate with a 20 mm flange on its y = 0 edge: 2 mm sheet, inner radius 1,
+    /// K 0.5. The neutral radius is the mid radius, so the folded sheet holds exactly its flat
+    /// area times the thickness.
+    fn flanged(angle: f64) -> SheetBody {
+        let rule = RuleValues {
+            thickness: 2.0,
+            k_factor: 0.5,
+            bend_radius: 1.0,
+            relief_width: 2.0,
+            relief_depth: 1.0,
+            corner_relief: 8.0,
+            hem_gap: 0.01,
+            gap: 2.0,
+        };
+        let r = rect(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(100.0, 80.0), Vec2::new(0.0, 80.0));
+        let mut s = base_flange("Body1", "AL2", &rule, Plane::XY, r);
+        s.add_flanges(&[Vec3::new(50.0, 0.0, 2.0)], 20.0, angle, 1.0, "inside", false).unwrap();
+        s
+    }
+
+    #[test]
+    fn slanted_and_round_cut_outs_across_a_bend_fold() {
+        let area = |s: &SheetBody| s.flat_regions().unwrap().iter().map(Region2::area).sum::<f64>();
+        for angle in [90f64, 72.0, 108.0] {
+            let plain = flanged(angle.to_radians());
+            let (a0, v0) = (area(&plain), vol(&plain.solid().unwrap()));
+            // A 10 × 20 slot turned 30° about (50, 0) and a Ø8 circle at (30, 0.5): both reach
+            // from the base over the whole bend zone into the flange.
+            let (c, a) = (Vec2::new(50.0, 0.0), 30f64.to_radians());
+            let (ux, uy) = (Vec2::from_angle(a) * 5.0, Vec2::from_angle(a + std::f64::consts::FRAC_PI_2) * 10.0);
+            let slot = Region2 { outer: Loop2::polygon(&[c - ux - uy, c + ux - uy, c + ux + uy, c - ux + uy]).ccw(), holes: vec![] };
+            let circle = Region2 { outer: Loop2::circle(Vec2::new(30.0, 0.5), 4.0), holes: vec![] };
+            for (cut, removed) in [(slot, 200.0), (circle, std::f64::consts::PI * 16.0)] {
+                let mut s = plain.clone();
+                s.holes.push(cut);
+                assert!((a0 - area(&s) - removed).abs() < 1e-6, "{angle}°: flat area {}", a0 - area(&s));
+                let body = s.solid().unwrap();
+                assert!(body.validity().is_empty(), "{angle}°: {:?}", body.validity());
+                // The folded sheet loses the cut-out's flat area times the thickness.
+                assert!((v0 - vol(&body) - removed * 2.0).abs() < 0.05, "{angle}°: {} vs {}", v0 - vol(&body), removed * 2.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_slanted_flat_edge_folds_to_its_exact_helix() {
+        // A 72° flange, inside: the bend's axis runs along x through y = setback, z = T + R,
+        // and a point at height z in the sheet stays T + R − z away from it.
+        let angle = 72f64.to_radians();
+        let s = flanged(angle);
+        let f = s.flanges[0].clone();
+        let setback = 3.0 * (angle / 2.0).tan();
+        // The unclamped zone map agrees with the fold inside the zone.
+        for (sv, u, z) in [(0.3, 10.0, 0.0), (1.2, 40.0, 1.0), (2.4, 90.0, 2.0)] {
+            let q = f.p + f.n * sv + f.d * u;
+            assert!(s.zone_point(&f, q, z).0.dist(s.map3(Piece::Zone(0), q, z)) < 1e-12);
+        }
+        // A flat line across the whole zone, 15 mm along the bend: the bend angle and the
+        // distance along the axis both grow evenly along it.
+        let e = Seg2::Line { a: f.p + f.d * 20.0, b: f.p + f.n * s.allowance(&f) + f.d * 35.0 };
+        let breaks = s.zone_breaks(&f, &e);
+        for z in [0.0, 2.0] {
+            let helix = |t: f64| {
+                let (phi, rho) = (angle * t, 3.0 - z);
+                Vec3::new(e.point_at(t).x, setback - rho * phi.sin(), 3.0 - rho * phi.cos())
+            };
+            let EdgeSpec::Chain { ctrl } = s.zone_chain(&f, &e, z) else { panic!("a slanted edge folds to a chain") };
+            assert_eq!(ctrl.len(), 3 * (breaks.len() - 1) + 1);
+            for (k, w) in breaks.windows(2).enumerate() {
+                for x in [0.0, 0.1, 0.37, 0.5, 0.81, 1.0] {
+                    let p = cubic_at(ctrl[3 * k], ctrl[3 * k + 1], ctrl[3 * k + 2], ctrl[3 * k + 3], x);
+                    let exact = helix(w[0] + (w[1] - w[0]) * x);
+                    assert!(p.dist(exact) < BEND_CHAIN_TOL, "height {z}, piece {k}: {}", p.dist(exact));
+                }
+            }
+        }
+        // Lines along the bend and square to it keep their exact line and arc.
+        let along = Seg2::Line { a: f.p + f.n * 1.0 + f.d * 20.0, b: f.p + f.n * 1.0 + f.d * 35.0 };
+        let across = Seg2::Line { a: f.p + f.d * 20.0, b: f.p + f.n * s.allowance(&f) + f.d * 20.0 };
+        assert!(matches!(s.edge3(Piece::Zone(0), &along, 2.0), Ok(EdgeSpec::Line { .. })));
+        assert!(matches!(s.edge3(Piece::Zone(0), &across, 2.0), Ok(EdgeSpec::Arc { .. })));
     }
 
     /// 2 mm aluminium, R 1, K 0.5 (folding keeps the volume), flanges 0.5 mm apart at corners.

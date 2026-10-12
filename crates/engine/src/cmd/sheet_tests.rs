@@ -644,7 +644,8 @@ fn fold_through_cut_outs() {
     assert!(v < vp - 900.0 && v > vp - 1100.0, "{v} {vp}");
     run(&mut s, "sheet.unfold", json!({}));
     assert!((volume(&mut s) - (15000.0 - 1000.0)).abs() < 1e-3, "{}", volume(&mut s));
-    // A round hole across the bend is not supported yet, and says so.
+    // A round hole across the bend folds too: its edge runs over the bend as a curve on the
+    // bend's cylinder, and unfolds to the same round hole.
     let mut c = Session::default();
     base(&mut c, 100.0, 60.0);
     run(&mut c, "sketch.create", json!({"plane": "XY", "name": "Hole"}));
@@ -652,8 +653,14 @@ fn fold_through_cut_outs() {
     run(&mut c, "sketch.finish", json!({}));
     run(&mut c, "solid.extrude", json!({"sketch": "Hole", "through_all": true, "operation": "cut", "direction": "symmetric"}));
     fold_line(&mut c);
-    let e = c.execute("sheet.fold", &json!({"sketch": "FoldLine", "curve": "fl"})).map(|_| ()).unwrap_err().to_string();
-    assert!(e.contains("not supported yet"), "{e}");
+    run(&mut c, "sheet.fold", json!({"sketch": "FoldLine", "curve": "fl"}));
+    let f = flat(&mut c);
+    assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(1), "{f}");
+    let folded = volume(&mut c);
+    assert!(folded < 15000.0 - 150.0, "{folded}");
+    run(&mut c, "sheet.unfold", json!({}));
+    let want = 15000.0 - std::f64::consts::PI * 25.0 * 2.5;
+    assert!((volume(&mut c) - want).abs() < 0.05, "{} vs {want}", volume(&mut c));
 }
 
 #[test]
@@ -1715,6 +1722,41 @@ fn hole_beside_two_adjacent_edge_flanges_cuts_and_bends_stay_guarded() {
     let mut bend = Session::default();
     build(&mut bend);
     let error = hole(&mut bend, "Bend", [78.5, 20.0]).unwrap_err().to_string();
+    assert!(error.contains("bend"), "{error}");
+}
+
+/// The guard of #296 sews every bend on its own. A bend that carries a folded round cut-out
+/// (curved edges on both of its cylinders, a ruled wall between them) sews like any other: a hole
+/// beside it cuts, and a hole in the bend is still refused.
+#[test]
+fn hole_beside_a_bend_with_a_round_cut_out_cuts_and_the_bend_stays_guarded() {
+    let build = |s: &mut Session| {
+        base(s, 80.0, 40.0);
+        run(s, "sheet.flange", json!({"edges":[[40.0, 0.0, 2.5]],"height":30,"angle":90}));
+        run(s, "sheet.unfold", json!({}));
+        run(s, "sketch.create", json!({"plane":"XY","name":"Across"}));
+        run(s, "sketch.circle.center", json!({"center":[60.0, 0.0],"radius":4}));
+        run(s, "sketch.finish", json!({}));
+        run(s, "solid.extrude", json!({"sketch":"Across","through_all":true,"operation":"cut","direction":"symmetric"}));
+        run(s, "sheet.refold", json!({}));
+    };
+    let hole = |s: &mut Session, name: &str, centre: [f64; 2]| {
+        run(s, "sketch.create", json!({"plane":"XY","name":name}));
+        run(s, "sketch.circle.center", json!({"center":centre,"radius":3}));
+        run(s, "sketch.finish", json!({}));
+        s.execute("solid.extrude", &json!({"sketch":name,"through_all":true,"operation":"cut"}))
+    };
+    let mut s = Session::default();
+    build(&mut s);
+    let before = volume(&mut s);
+    if let Err(e) = hole(&mut s, "Hole", [25.0, 20.0]) {
+        panic!("hole beside a bend with a round cut-out: {e}");
+    }
+    let after = volume(&mut s);
+    assert!((before - after - 9.0 * PI * 2.5).abs() < 0.05, "{before} -> {after}");
+    let mut bend = Session::default();
+    build(&mut bend);
+    let error = hole(&mut bend, "Bend", [25.0, 1.5]).unwrap_err().to_string();
     assert!(error.contains("bend"), "{error}");
 }
 
