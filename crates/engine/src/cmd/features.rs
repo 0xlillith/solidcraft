@@ -854,7 +854,12 @@ fn axis_line(p: &Value, cmd: &str) -> Result<(Vec3, Vec3)> {
             _ => Err(bad(cmd, "axis must be X, Y, Z or {origin, dir}")),
         },
         Some(o @ Value::Object(_)) => {
-            let origin = o.get("origin").and_then(vec3).unwrap_or(Vec3::ZERO);
+            let origin = match o.get("origin") {
+                None => Vec3::ZERO,
+                Some(v) => vec3(v).ok_or_else(|| {
+                    bad(cmd, "axis.origin must contain three finite numeric coordinates in millimetres; expressions are not supported")
+                })?,
+            };
             let dir = o.get("dir").and_then(vec3).and_then(|d| d.normalized()).ok_or_else(|| bad(cmd, "axis needs a non-zero `dir`"))?;
             Ok((origin, dir))
         }
