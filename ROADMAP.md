@@ -68,10 +68,16 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   cancelling or rejecting an invalid value preserves the sketch. Position and height fields
   use the document units captured when editing starts; generated outlines remain associated
   with their text source, and untouched inputs preserve their saved internal values.
+- Repeating the initial point of a planar multi-point sketch drawing tool is neutral: the tool
+  waits for a distinct point without a degenerate-shape error or history entry. Typed input
+  and programmatic commands retain their validation.
 - Single-line and rectangle-side dimensioning supports selecting a line or its two endpoints.
   Type a value and press Enter to commit one undo step; rejected values remain editable and
   cancellation leaves the sketch unchanged. Fit keeps geometry clear of the Sketch Palette
   and navigation controls, including enlarged displays and nested pending placements.
+- Curvature and Polygon constraints accept complete preselected operands. Fix/Unfix
+  consumes complete point/curve selections consistently; mixed or ambiguous selections
+  retain the picking workflow. Rejected constraints preserve selection and undo history.
 - Contextual error reporting: a **Create Issue** action beside feature errors opens a
   reviewable GitHub issue draft with the error, operation settings, build diagnostics and
   useful reproduction context. The draft is editable, with optional capture of the actual
@@ -294,6 +300,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   continuous collision detection; local thin walls and small details remain limitations.
   See [contact-set limits and recovery](docs/contact-sets.md).
 
+Feature dialog header chevrons collapse and restore the form without discarding selections
+or edited values, including the Appearance panel.
+
 ## Document-opening performance
 
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
@@ -309,6 +318,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Kernel
 
+- Boolean intersection-curve construction refuses point-only, collapsed and non-finite
+  polylines without panicking. Direct constructor regressions retain valid open endpoints
+  and closed spherical intersections; the original interactive trigger remains unidentified.
 - Shell of a stepped, joined planar body no longer creates horizontal subdivisions across
   continuous walls. Fresh axis-aligned Cut walls are stitched using their exact construction
   support and shared topology, preserving real steps and intentional boundaries. The local
