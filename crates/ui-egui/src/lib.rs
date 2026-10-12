@@ -95,6 +95,7 @@ mod sketch_display_ui_tests;
 #[cfg(test)]
 mod sketch_edit_tests;
 pub mod sketch_palette;
+pub(crate) mod sketch_text;
 pub mod sketch_tools;
 pub mod stand_up;
 pub mod theme;
@@ -218,6 +219,7 @@ pub struct SolveApp {
     pub help: help::HelpState,
     /// An editable local issue draft and optional captured app frame.
     pub issue_report: issue_report::ReportState,
+    pub(crate) text_editor: Option<sketch_text::Editor>,
     /// Toolbar buttons the user pinned, removed or reordered.
     pub toolbar_custom: toolbar_custom::ToolbarCustom,
     /// Preferences kept between runs, and their window.
@@ -286,6 +288,7 @@ impl SolveApp {
             keymap: keymap::Keymap::default(),
             help: help::HelpState::default(),
             issue_report: issue_report::ReportState::default(),
+            text_editor: None,
             toolbar_custom: toolbar_custom::ToolbarCustom::default(),
             preferences: prefs::Prefs::default(),
             prefs_window: prefs::PrefsWindow::default(),
@@ -445,6 +448,7 @@ impl SolveApp {
             Ok(_) => {
                 self.session.echo(format!("{} done", command_label(id)));
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
+                    self.text_editor = None;
                     dim_view::cancel();
                     self.menu.props = None;
                     sketch_attachment_ui::clear(self);
@@ -483,6 +487,7 @@ impl SolveApp {
     /// Start a command the way a toolbar click does: interactive tools and dialogs for commands
     /// that have them, otherwise run it with defaults.
     pub fn start(&mut self, id: &str) {
+        self.text_editor = None;
         // A component moved without Capture Position: ask first (Capture, Revert or Cancel).
         if browser::needs_capture(self, id) && !(id == "sketch.dimension" && self.session.active_sketch.is_some()) {
             self.tree.capture_prompt = Some(id.to_string());
@@ -670,6 +675,7 @@ impl SolveApp {
     /// Finish the active sketch: stop editing, restore the history marker Edit Sketch moved and
     /// return to the view from before the sketch.
     pub fn finish_sketch(&mut self) {
+        self.text_editor = None;
         dim_view::cancel();
         self.tool = None;
         let _ = self.run("sketch.finish", json!({}));
@@ -993,6 +999,7 @@ impl SolveApp {
             viewport::show(self, ui);
         });
         dialogs::show(self, ui.ctx());
+        sketch_text::show(self, ui.ctx());
         issue_report::CadInput::block(self, ui, report_input);
         sketch_palette::show(self, ui.ctx());
         self.resolve_fit(ui.ctx());
