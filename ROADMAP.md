@@ -330,6 +330,11 @@ and reference-object placement remain separate work, as do loft rails and center
 
 ## Document-opening performance
 
+- Desktop STEP import prepares consecutive independent solids in bounded batches with up
+  to eight workers, retaining serial traversal, result order and persistent source identities.
+  The web path remains serial. Original multi-solid fixtures show 64–81% lower complete
+  import times; single-solid assembly parts are not scheduled across nodes. See
+  [measurements and limits](docs/perf.md#parallel-step-body-preparation-2026-10-12).
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
   thumbnails. Straight-line closest-point projection and exact curved-surface evaluation
   reuse reduce repeated work without relaxing geometry checks. Three alternating optimized
