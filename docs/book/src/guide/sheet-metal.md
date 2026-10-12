@@ -14,6 +14,16 @@ The SHEET METAL tab builds parts from a sheet of constant thickness under a **sh
 Bends follow the rule's K-factor, so flat lengths match what a press brake will make. Tests
 check flat lengths against hand-computed bend allowances.
 
+Where the edge flanges of one feature meet at a corner of the base, their panels are closed
+toward each other at any bend angle: each end is cut square to the sheet, on a line in the flat
+chosen so that the edges nearest each other (on the inner faces) run parallel, the rule's
+**gap** apart, either side of the plane halfway between the flanges. Flanges at 72° get slanted
+ends in the flat; corners that aren't square close the same way, and at 90° it is the corner
+the rule always gave. A corner that can't be closed (a gap under 0.01 mm, flanges bending
+opposite ways, ends that would overlap in the flat pattern) stays open, and the flange feature
+reports a warning saying where. A flange added by a later feature leaves the corner as it was:
+the earlier flange keeps its length and the new one ends at its bend.
+
 For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
 `format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
 radii, allowances and flat centre-line coordinates. Lengths use millimetres and angles use

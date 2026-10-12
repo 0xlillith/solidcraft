@@ -34,7 +34,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("convert_sheet")
         .params("body; face: [x,y,z] on its large flat face (a plate of even thickness); rule?"),
     CommandSpec::new("sheet.manage_rules", "Sheet Metal Rules", rules).at("SHEET METAL", "MODIFY").icon("sheet_rules").params(
-        "name (new or existing); thickness?, k_factor?, bend_radius?, relief_width?, relief_depth?, corner_relief?, hem_gap?, gap? (expressions; `Thickness` is the rule's); active?: bool; delete?: bool",
+        "name (new or existing); thickness?, k_factor?, bend_radius?, relief_width?, relief_depth?, corner_relief?, hem_gap?, gap? (expressions; `Thickness` is the rule's; \
+         gap: between flanges that meet at a corner, whose ends are closed toward each other at any angle); active?: bool; delete?: bool",
     ),
     CommandSpec::new("sheet.rules", "List Sheet Metal Rules", list_rules).noundo().doc_only().params("→ rules with their expressions and values, and the active one"),
     CommandSpec::new("sheet.flat_pattern", "Create Flat Pattern", flat_pattern)

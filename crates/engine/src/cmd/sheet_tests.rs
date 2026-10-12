@@ -1753,3 +1753,71 @@ fn fold_fixed_point_above_the_sheet_is_not_silently_accepted() {
         }
     }
 }
+
+/// A 120 x 90 tray in 2 mm aluminium (R 1, K 0.5): four 38.6 mm flanges at `deg` in one feature.
+fn alu_tray(s: &mut Session, deg: f64, rule: Value) {
+    let mut r = json!({"name": "AL2", "thickness": "2 mm", "k_factor": 0.5, "bend_radius": "1 mm", "gap": "0.5 mm", "active": true});
+    if let (Some(r), Some(extra)) = (r.as_object_mut(), rule.as_object()) {
+        r.extend(extra.clone());
+    }
+    run(s, "sheet.manage_rules", r);
+    base(s, 120.0, 90.0);
+    run(s, "sheet.flange", json!({"edges": [[60, 0, 2], [120, 45, 2], [60, 90, 2], [0, 45, 2]], "height": 38.6, "angle": format!("{deg} deg")}));
+}
+
+#[test]
+fn closed_corners_reach_the_flat_pattern_and_the_dxf() {
+    use std::f64::consts::SQRT_2;
+    // 60° and 105° are angles whose flat pattern was lost to a rounding slip in the planar arrangement.
+    for deg in [60.0f64, 72.0, 90.0, 105.0] {
+        let mut s = Session::default();
+        alu_tray(&mut s, deg, json!({}));
+        assert!(s.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()), "{deg}: {:?}", s.model.results);
+        // The end of the flange on y = 0 at the corner at the origin, by hand (see the doc tests):
+        // x(w) = g/√2 + T·sinθ − w·cosθ at flat y = s0 − BA − (w − s0), for w = s0 and w = 38.6.
+        let th = deg.to_radians();
+        let (s0, ba) = (3.0 * (th / 2.0).tan(), th * 2.0);
+        let x_end = |w: f64| 0.5 / SQRT_2 + 2.0 * th.sin() - w * th.cos();
+        let f = flat(&mut s);
+        let outline: Vec<(f64, f64)> = f["outline"][0]
+            .as_array()
+            .map(|l| l.iter().map(|p| (p[0].as_f64().unwrap_or(f64::NAN), p[1].as_f64().unwrap_or(f64::NAN))).collect())
+            .unwrap_or_default();
+        assert_eq!(f["outline"].as_array().map(Vec::len), Some(1), "{deg}: {f}");
+        for (x, y) in [(x_end(s0), s0 - ba), (x_end(38.6), s0 - ba - (38.6 - s0))] {
+            assert!(outline.iter().any(|p| (p.0 - x).abs() < 1e-6 && (p.1 - y).abs() < 1e-6), "{deg}: ({x}, {y}) not in {outline:?}");
+        }
+        // The folded part holds the flat pattern's material (K = 0.5 keeps the volume).
+        let n = outline.len();
+        let area = (0..n).map(|i| outline[i].0 * outline[(i + 1) % n].1 - outline[(i + 1) % n].0 * outline[i].1).sum::<f64>().abs() / 2.0;
+        let v = volume(&mut s);
+        assert!((v - area * 2.0).abs() < 1e-3 * v, "{deg}: {v} vs {}", area * 2.0);
+        // The DXF: the closed outline in straight lines, four bend lines.
+        let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+        assert_eq!(dxf.matches("0\nLINE\n").count(), n + 4, "{deg}: {n} outline points");
+        // Unfold and refold keep it.
+        run(&mut s, "sheet.unfold", json!({}));
+        run(&mut s, "sheet.refold", json!({}));
+        assert!((volume(&mut s) - v).abs() < 1e-6 * v, "{deg}");
+        // A cut made folded still goes through with the corners closed: a Ø20 hole in the base.
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Hole"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [60, 45], "diameter": 20}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": "Hole", "distance": 10, "operation": "cut", "through_all": true}));
+        let want = PI * 100.0 * 2.0;
+        assert!((v - volume(&mut s) - want).abs() < 1e-3 * want, "{deg}: {v} - {} vs {want}", volume(&mut s));
+        assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), Some(1), "{deg}");
+    }
+}
+
+#[test]
+fn corners_left_open_are_reported_on_the_flange() {
+    let mut s = Session::default();
+    alu_tray(&mut s, 72.0, json!({"gap": "0 mm"}));
+    let w = s.model.results.last().and_then(|r| r.warning.clone()).unwrap_or_default();
+    assert_eq!(w.matches("left open").count(), 4, "{w}");
+    // Open corners still fold, unfold and take cuts.
+    run(&mut s, "sheet.unfold", json!({}));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!(volume(&mut s) > 0.0);
+}

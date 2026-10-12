@@ -273,9 +273,14 @@ pub struct SheetFlange {
     pub radius: f64,
     /// Flat length of the panel past the bend zone.
     pub leg: f64,
-    /// The panel runs on past the bend's ends by these (toward a neighbouring flange).
+    /// The panel runs on past the bend's ends by these (toward a neighbouring flange), measured
+    /// along the bend line; negative values cut the panel back.
     #[serde(default)]
     pub ext: (f64, f64),
+    /// How much further each end runs on per unit of panel height: a closed corner between
+    /// flanges that aren't at 90° ends on a slanted line in the flat.
+    #[serde(default, skip_serializing_if = "is_zero_pair")]
+    pub slope: (f64, f64),
     /// A fold's panel: the part of the sheet past the bend (flat coordinates, counter-clockwise)
     /// instead of a rectangle `leg` long.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,6 +336,10 @@ struct Cell {
     piece: Piece,
     outer: Vec<Seg2>,
     holes: Vec<Vec<Seg2>>,
+}
+
+fn is_zero_pair(v: &(f64, f64)) -> bool {
+    v.0 == 0.0 && v.1 == 0.0
 }
 
 fn rev_edge(e: EdgeSpec) -> EdgeSpec {
@@ -417,6 +426,40 @@ fn clip(poly: &[Vec2], o: Vec2, n: Vec2) -> Vec<Vec2> {
     out
 }
 
+/// The smallest gap closed corners are given: closer than this the flanges' ends would touch.
+const MIN_CORNER_GAP: f64 = 0.01;
+
+/// Two bends on the base meeting at a corner (see [`SheetBody::corners`]): flanges `a` and `b`,
+/// which end of each (false = the end at `p`), and the corner point (flat coordinates).
+#[derive(Clone, Copy, Debug)]
+struct Corner {
+    a: usize,
+    a_end: bool,
+    b: usize,
+    b_end: bool,
+    c: Vec2,
+}
+
+/// The corners of a straight-edged region (counter-clockwise).
+fn corners_of(r: &Region2) -> Vec<Vec2> {
+    dedup(&r.outer.ccw().polyline(1e-3))
+}
+
+/// The area two convex counter-clockwise polygons share.
+fn convex_overlap(a: &[Vec2], b: &[Vec2]) -> f64 {
+    let mut poly = a.to_vec();
+    let m = b.len();
+    for i in 0..m {
+        let (Some(&p), Some(&q)) = (b.get(i), b.get((i + 1) % m)) else { continue };
+        let d = q - p;
+        poly = clip(&poly, p, Vec2::new(-d.y, d.x));
+        if poly.len() < 3 {
+            return 0.0;
+        }
+    }
+    signed_area(&poly).abs()
+}
+
 impl SheetBody {
     /// Bend allowance of a flange.
     pub fn allowance(&self, f: &SheetFlange) -> f64 {
@@ -465,7 +508,7 @@ impl SheetBody {
         let ba = self.allowance(f);
         let a = f.p + f.n * ba - f.d * f.ext.0;
         let b = f.p + f.n * ba + f.d * (f.len + f.ext.1);
-        rect(a, b, b + f.n * f.leg, a + f.n * f.leg)
+        rect(a, b, b + f.n * f.leg + f.d * (f.slope.1 * f.leg), a + f.n * f.leg - f.d * (f.slope.0 * f.leg))
     }
 
     /// Flat region of a flange's bend zone.
@@ -1185,8 +1228,23 @@ impl SheetBody {
     }
 
     /// Edge flanges on several edges at once: every edge is trimmed back first, so flanges on
-    /// adjacent edges stop at each other's bends (the corners stay open).
+    /// adjacent edges stop at each other's bends; the corners between them are then closed with
+    /// the rule's gap (`close_corners`).
     pub fn add_flanges(&mut self, picks: &[Vec3], height: f64, angle: f64, radius: f64, position: &str, flip: bool) -> Result<Vec<usize>> {
+        self.add_flanges_noted(picks, height, angle, radius, position, flip).map(|(made, _)| made)
+    }
+
+    /// [`SheetBody::add_flanges`], also returning notes on corners that could not be closed
+    /// (they are left open, as the bends leave them).
+    pub fn add_flanges_noted(
+        &mut self,
+        picks: &[Vec3],
+        height: f64,
+        angle: f64,
+        radius: f64,
+        position: &str,
+        flip: bool,
+    ) -> Result<(Vec<usize>, Vec<String>)> {
         if !(angle > 1e-6 && angle <= std::f64::consts::PI - 1e-6) {
             return Err(DocError::Invalid("the flange angle must be between 0 and 180°".into()));
         }
@@ -1262,43 +1320,146 @@ impl SheetBody {
                 shape: None,
                 tag: String::new(),
                 ext: (0.0, 0.0),
+                slope: (0.0, 0.0),
             });
             made.push(self.flanges.len() - 1);
         }
-        self.close_corners(&made);
-        Ok(made)
+        let notes = self.close_corners(&made);
+        Ok((made, notes))
     }
 
-    /// Where two new 90° flanges on the base meet at a corner, run their panels on toward each
-    /// other until the gap between their inner corners is the rule's gap.
-    fn close_corners(&mut self, made: &[usize]) {
-        let ends: Vec<(usize, bool, Vec2)> = made
+    /// Corners where two of the new flanges' bends meet on the base: both bend zones end at the
+    /// corner point. Hems and fold panels are left out, and so is a corner with a flange of an
+    /// earlier feature: that one keeps its length and the new flange ends at its bend, as before.
+    fn corners(&self, made: &[usize]) -> Vec<Corner> {
+        let limit = std::f64::consts::PI - 1e-6;
+        let ends: Vec<(usize, bool, Vec2)> = self
+            .flanges
             .iter()
-            .filter_map(|&i| self.flanges.get(i).map(|f| (i, f)))
-            .filter(|(_, f)| f.parent.is_none() && (f.angle.abs() - std::f64::consts::FRAC_PI_2).abs() < 1e-9)
-            .flat_map(|(i, f)| [(i, false, f.p), (i, true, f.p + f.d * f.len)])
+            .enumerate()
+            .filter(|(_, f)| f.parent.is_none() && f.shape.is_none() && f.angle.abs() < limit)
+            .flat_map(|(i, f)| {
+                let (u0, u1) = self.zone_span(f);
+                [(i, false, f.p + f.d * u0), (i, true, f.p + f.d * u1)]
+            })
             .collect();
-        for &(i, at_end, c) in &ends {
-            let Some(f) = self.flanges.get(i).cloned() else { continue };
-            let other = ends.iter().find(|&&(j, _, c2)| j != i && c2.dist(c) < 1e-6).and_then(|&(j, _, _)| self.flanges.get(j).cloned());
-            let Some(g) = other else { continue };
-            if g.n.dot(f.n).abs() > 1e-6 || (g.angle > 0.0) != (f.angle > 0.0) {
-                continue;
-            }
-            // The neighbour's setback: its bend starts that far in from the corner of the outer faces.
-            let setback = (g.radius + self.t) * (g.angle.abs() / 2.0).tan();
-            let ext = setback - (self.t + self.gap / std::f64::consts::SQRT_2);
-            if ext <= 1e-9 {
-                continue;
-            }
-            if let Some(x) = self.flanges.get_mut(i) {
-                if at_end {
-                    x.ext.1 = ext;
-                } else {
-                    x.ext.0 = ext;
+        let mut out = Vec::new();
+        for (k, &(a, a_end, c)) in ends.iter().enumerate() {
+            for &(b, b_end, c2) in ends.iter().skip(k + 1) {
+                if a != b && c.dist(c2) < 1e-6 && made.contains(&a) && made.contains(&b) {
+                    out.push(Corner { a, a_end, b, b_end, c });
                 }
             }
         }
+        out
+    }
+
+    /// Close the corners the new flanges make. Returns a note for every corner left open.
+    fn close_corners(&mut self, made: &[usize]) -> Vec<String> {
+        let corners = self.corners(made);
+        let mut notes = Vec::new();
+        let at = |s: &SheetBody, c: Vec2| {
+            let w = apply_point(&s.frame_mat(), v3(c));
+            format!("({:.3}, {:.3}, {:.3})", w.x, w.y, w.z)
+        };
+        for k in &corners {
+            if let Err(why) = self.close_corner(k) {
+                notes.push(format!("the flanges at {} are left open: {why}", at(self, k.c)));
+            }
+        }
+        notes
+    }
+
+    /// Run two flanges' panels on toward each other (or cut them back) until their ends meet the
+    /// plane halfway between the flanges with the rule's gap between them. The ends stay square
+    /// to the sheet and follow lines in the flat, slanted when the flanges aren't at 90°, so that
+    /// the edges nearest each other (on the inner faces) are `gap` apart along their length. Any
+    /// angles, also unequal ones, at any convex corner of the base.
+    fn close_corner(&mut self, k: &Corner) -> std::result::Result<(), String> {
+        let (Some(fa), Some(fb)) = (self.flanges.get(k.a).cloned(), self.flanges.get(k.b).cloned()) else {
+            return Err("a flange is missing".into());
+        };
+        let ea = if k.a_end { fa.d * -1.0 } else { fa.d };
+        let eb = if k.b_end { fb.d * -1.0 } else { fb.d };
+        // At an inside corner of the base the flanges turn away from each other.
+        if ea.dot(fb.n) > -1e-9 || eb.dot(fa.n) > -1e-9 {
+            return Ok(());
+        }
+        if fa.leg <= 1e-9 || fb.leg <= 1e-9 {
+            // No panel past a bend: the bends meet at the corner, there is nothing to close.
+            return Ok(());
+        }
+        if (fa.angle >= 0.0) != (fb.angle >= 0.0) {
+            return Err("the flanges bend opposite ways".into());
+        }
+        let gap = self.gap;
+        if !(gap >= MIN_CORNER_GAP) {
+            return Err(format!("the flange gap {gap:.4} mm is below {MIN_CORNER_GAP} mm"));
+        }
+        let (wa, wb) = (self.fold(k.a), self.fold(k.b));
+        // The inner faces (toward the bends' axes), with normals pointing from the outer face in.
+        let (z_in, sign) = if fa.angle >= 0.0 { (self.t, 1.0) } else { (0.0, -1.0) };
+        let na = apply_vector(&wa, Vec3::Z) * sign;
+        let nb = apply_vector(&wb, Vec3::Z) * sign;
+        let pa = apply_point(&wa, v3(k.c) + Vec3::Z * z_in);
+        let pb = apply_point(&wb, v3(k.c) + Vec3::Z * z_in);
+        let m = (nb - na).len();
+        if !(m > 1e-6) {
+            return Err("the flanges are parallel".into());
+        }
+        // Signed distance from the plane bisecting the inner faces, positive on flange a's side.
+        let bisector = |p: Vec3| (nb.dot(p - pb) - na.dot(p - pa)) / m;
+        // A flange's end: its panel keeps u ≥ u_end(s) (u from the corner along its bend, s from
+        // the bend's start across it), so that every point of the end face is gap/2 or more from
+        // the bisecting plane. The distance is affine in (u, s, z), so the end is a line in the
+        // flat: returns u_end at the panel's bend edge and how much further the panel runs on per
+        // unit of height.
+        let end = |f: &SheetFlange, w: &Mat, e: Vec2, sign: f64| -> std::result::Result<(f64, f64), String> {
+            let at = |u: f64, s: f64, z: f64| sign * bisector(apply_point(w, v3(k.c + e * u + f.n * s) + Vec3::Z * z));
+            let c0 = at(0.0, 0.0, 0.0);
+            let (cu, cs, cz) = (at(1.0, 0.0, 0.0) - c0, at(0.0, 1.0, 0.0) - c0, at(0.0, 0.0, 1.0) - c0);
+            if !(cu > 1e-6) || ![c0, cs, cz].iter().all(|x| x.is_finite()) {
+                return Err("the flanges don't meet across the corner".into());
+            }
+            let ba = self.allowance(f);
+            // At 90° the end is square to the bend: keep the panel an exact rectangle.
+            let slope = if (cs / cu).abs() < 1e-12 { 0.0 } else { cs / cu };
+            Ok(((gap / 2.0 - c0 - (cz * self.t).min(0.0) - cs * ba) / cu, slope))
+        };
+        let mut new = [fa.clone(), fb.clone()];
+        for (f, (e, at_end, sign)) in new.iter_mut().zip([(ea, k.a_end, 1.0), (eb, k.b_end, -1.0)]) {
+            let w = if sign > 0.0 { &wa } else { &wb };
+            let (u_end, slope) = end(f, w, e, sign)?;
+            let tc = (k.c - f.p).dot(f.d);
+            if at_end {
+                f.ext.1 = tc - u_end - f.len;
+                f.slope.1 = slope;
+            } else {
+                f.ext.0 = -(tc + u_end);
+                f.slope.0 = slope;
+            }
+            let bottom = f.len + f.ext.0 + f.ext.1;
+            let top = bottom + (f.slope.0 + f.slope.1) * f.leg;
+            if !(bottom > 1e-6 && top > 1e-6) {
+                return Err("the gap would cut a panel away".into());
+            }
+        }
+        // The flat pattern must stay one sheet without overlaps.
+        let [new_a, new_b] = new;
+        let (qa, qb) = (corners_of(&self.panel(&new_a)), corners_of(&self.panel(&new_b)));
+        if convex_overlap(&qa, &qb) > 1e-9
+            || convex_overlap(&qa, &corners_of(&self.zone(&fb))) > 1e-9
+            || convex_overlap(&qb, &corners_of(&self.zone(&fa))) > 1e-9
+        {
+            return Err("closed, the flanges would overlap in the flat pattern".into());
+        }
+        if let Some(f) = self.flanges.get_mut(k.a) {
+            *f = new_a;
+        }
+        if let Some(f) = self.flanges.get_mut(k.b) {
+            *f = new_b;
+        }
+        Ok(())
     }
 
     /// A flat hem: a 180° bend with a tiny radius at the panel edge, `length` to its outer face.
@@ -1326,6 +1487,7 @@ impl SheetBody {
             radius: gap,
             leg,
             ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
             shape: None,
             tag: String::new(),
         });
@@ -1414,7 +1576,20 @@ impl SheetBody {
             n = n * -1.0;
         }
         let l = a2.dot(n);
-        let probe = SheetFlange { parent: panel, p: a2, d, len: 1.0, n, angle, radius, leg: 0.0, ext: (0.0, 0.0), shape: None, tag: String::new() };
+        let probe = SheetFlange {
+            parent: panel,
+            p: a2,
+            d,
+            len: 1.0,
+            n,
+            angle,
+            radius,
+            leg: 0.0,
+            ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
+            shape: None,
+            tag: String::new(),
+        };
         let ba = self.allowance(&probe);
         let s0 = match position {
             "centerline" | "center" | "centre" => l - ba / 2.0,
@@ -1484,6 +1659,7 @@ impl SheetBody {
             radius,
             leg,
             ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
             shape: Some(ccw(moving)),
             tag: String::new(),
         });
@@ -1625,6 +1801,7 @@ impl SheetBody {
                 radius,
                 leg,
                 ext: (0.0, 0.0),
+                slope: (0.0, 0.0),
                 shape: Some(ccw(moving)),
                 tag: String::new(),
             });
@@ -1986,6 +2163,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
             radius: r,
             leg: leg.max(0.0),
             ext: (0.0, 0.0),
+            slope: (0.0, 0.0),
             shape: None,
             tag: String::new(),
         };
@@ -2281,6 +2459,219 @@ mod tests {
             assert!((flat_area(&sheet) - exact).abs() < 1e-6, "{} {exact}", flat_area(&sheet));
             sheet.flat = true;
             assert!((vol(&sheet.solid().unwrap()) - exact * 2.0).abs() < 1e-3);
+        }
+    }
+
+    /// 2 mm aluminium, R 1, K 0.5 (folding keeps the volume), flanges 0.5 mm apart at corners.
+    fn alu() -> RuleValues {
+        RuleValues {
+            thickness: 2.0,
+            k_factor: 0.5,
+            bend_radius: 1.0,
+            relief_width: 2.0,
+            relief_depth: 1.0,
+            corner_relief: 8.0,
+            hem_gap: 0.01,
+            gap: 0.5,
+        }
+    }
+
+    /// A 120 x 90 tray: flanges `height` high at `deg` on all four edges (bottom, right, top, left).
+    fn tray(rv: &RuleValues, deg: f64, height: f64) -> (SheetBody, Vec<String>) {
+        let r = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+        let mut s = base_flange("Body1", "AL2", rv, Plane::XY, r);
+        let t = rv.thickness;
+        let picks = [Vec3::new(60.0, 0.0, t), Vec3::new(120.0, 45.0, t), Vec3::new(60.0, 90.0, t), Vec3::new(0.0, 45.0, t)];
+        let (_, notes) = s.add_flanges_noted(&picks, height, deg.to_radians(), rv.bend_radius, "inside", false).unwrap();
+        (s, notes)
+    }
+
+    fn flat_area(s: &SheetBody) -> f64 {
+        s.flat_regions().unwrap().iter().map(Region2::area).sum()
+    }
+
+    /// Distance between two parallel 3D lines through a0→a1 and b0→b1 (None if not parallel).
+    fn parallel_gap(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> Option<f64> {
+        let (u, v) = ((a1 - a0).normalized()?, (b1 - b0).normalized()?);
+        (u.cross(v).len() < 1e-9).then(|| (b0 - a0).cross(u).len())
+    }
+
+    #[test]
+    fn closed_corners_end_on_the_bisector_with_the_gap() {
+        let (t, r, g, h) = (2.0, 1.0, 0.5, 38.6);
+        for deg in [90.0f64, 72.0] {
+            let (s, notes) = tray(&alu(), deg, h);
+            assert!(notes.is_empty(), "{notes:?}");
+            let th = deg.to_radians();
+            let s0 = (r + t) * (th / 2.0).tan();
+            let ba = th * (r + 0.5 * t);
+            let leg = h - s0;
+            // By hand, for the flange on y = 0 and its mirror image on x = 0: a point of the flange w up
+            // its outer face from the virtual sharp (the original edge), h along the outward normal
+            // (−T ≤ h ≤ 0) is (x, −w·cosθ − h·sinθ, w·sinθ − h·cosθ). Keeping x − y ≥ g/√2 on the
+            // inner face (h = −T) gives the end x(w) = g/√2 + T·sinθ − w·cosθ; the panel spans w = s0 … h.
+            let x_end = |w: f64| g / std::f64::consts::SQRT_2 + t * th.sin() - w * th.cos();
+            let (y0, y1) = (s0 - ba, s0 - ba - leg);
+            let want = [(x_end(s0), y0), (120.0 - x_end(s0), y0), (120.0 - x_end(h), y1), (x_end(h), y1)];
+            let got = corners_of(&s.panel(&s.flanges[0]));
+            assert_eq!(got.len(), 4);
+            for (x, y) in want {
+                assert!(got.iter().any(|p| p.dist(Vec2::new(x, y)) < 1e-9), "{deg}°: ({x}, {y}) not in {got:?}");
+            }
+            if deg == 90.0 {
+                // The rule 90° corners always had: the panel runs on s0 − (T + g/√2) past its bend.
+                assert!((s.flanges[0].ext.0 - (s0 - t - g / std::f64::consts::SQRT_2)).abs() < 1e-12);
+                assert_eq!(s.flanges[0].slope, (0.0, 0.0));
+            } else {
+                assert!((s.flanges[0].slope.0 - th.cos()).abs() < 1e-12, "{:?}", s.flanges[0].slope);
+            }
+            // Folded, the inner edges of the two ends (bottom flange 0, left flange 3) run parallel,
+            // `gap` apart.
+            let (fa, fb) = (s.fold(0), s.fold(3));
+            let pa = |x: f64, y: f64| apply_point(&fa, Vec3::new(x, y, t));
+            let pb = |x: f64, y: f64| apply_point(&fb, Vec3::new(x, y, t));
+            let gap = parallel_gap(pa(x_end(s0), y0), pa(x_end(h), y1), pb(y0, x_end(s0)), pb(y1, x_end(h)));
+            assert!(gap.is_some_and(|d| (d - g).abs() < 1e-9), "{deg}°: {gap:?}");
+            // The flat pattern is one piece and the folded part holds the same material (K = 0.5).
+            let regions = s.flat_regions().unwrap();
+            assert_eq!(regions.len(), 1);
+            let b = s.solid().unwrap();
+            assert!(b.validity().is_empty() && b.shell_count() == 1, "{deg}°: {:?}", b.validity());
+            let v = vol(&b);
+            assert!((v - flat_area(&s) * t).abs() < 1e-3 * v, "{deg}°: {v} vs {}", flat_area(&s) * t);
+        }
+    }
+
+    #[test]
+    fn a_flange_of_a_later_feature_leaves_the_corner_as_it_was() {
+        // The convention of reference case 75-sm-bracket-holes: the earlier flange keeps its length
+        // and the later one ends at its bend. Only flanges made together close toward each other.
+        let rv = alu();
+        let base = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+        let mut s = base_flange("Body1", "AL2", &rv, Plane::XY, base);
+        s.add_flanges(&[Vec3::new(60.0, 0.0, 2.0)], 38.6, 72f64.to_radians(), 1.0, "inside", false).unwrap();
+        let (made, notes) = s.add_flanges_noted(&[Vec3::new(120.0, 45.0, 2.0)], 25.0, 72f64.to_radians(), 1.0, "inside", false).unwrap();
+        assert!(notes.is_empty() && s.corners(&made).is_empty(), "{notes:?}");
+        assert!(s.flanges.iter().all(|f| f.ext == (0.0, 0.0) && f.slope == (0.0, 0.0)));
+        assert!((s.flanges[0].len - 120.0).abs() < 1e-9);
+        assert!(s.solid().is_ok() && s.flat_regions().unwrap().len() == 1);
+    }
+
+    #[test]
+    fn corners_that_are_not_square_close_with_the_gap() {
+        // A trapezoid: two acute and two obtuse corners.
+        let pts = [Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(100.0, 90.0), Vec2::new(20.0, 90.0)];
+        let base = Region2 { outer: Loop2::polygon(&pts).ccw(), holes: vec![] };
+        let mut s = base_flange("Body1", "AL2", &alu(), Plane::XY, base);
+        let picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(110.0, 45.0, 2.0), Vec3::new(60.0, 90.0, 2.0), Vec3::new(10.0, 45.0, 2.0)];
+        let (made, notes) = s.add_flanges_noted(&picks, 38.6, 72f64.to_radians(), 1.0, "inside", false).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        let corners = s.corners(&made);
+        assert_eq!(corners.len(), 4);
+        // Each end's inner edge, folded.
+        let edge = |i: usize, at_end: bool| {
+            let f = &s.flanges[i];
+            let ba = s.allowance(f);
+            let (q0, q1) = if at_end {
+                let b = f.p + f.n * ba + f.d * (f.len + f.ext.1);
+                (b, b + f.n * f.leg + f.d * (f.slope.1 * f.leg))
+            } else {
+                let a = f.p + f.n * ba - f.d * f.ext.0;
+                (a, a + f.n * f.leg - f.d * (f.slope.0 * f.leg))
+            };
+            let w = s.fold(i);
+            (apply_point(&w, Vec3::new(q0.x, q0.y, 2.0)), apply_point(&w, Vec3::new(q1.x, q1.y, 2.0)))
+        };
+        for k in &corners {
+            let ((a0, a1), (b0, b1)) = (edge(k.a, k.a_end), edge(k.b, k.b_end));
+            let gap = parallel_gap(a0, a1, b0, b1);
+            assert!(gap.is_some_and(|d| (d - 0.5).abs() < 1e-9), "{k:?}: {gap:?}");
+        }
+        let b = s.solid().unwrap();
+        assert!(b.validity().is_empty() && b.shell_count() == 1, "{:?}", b.validity());
+        assert!((vol(&b) - flat_area(&s) * 2.0).abs() < 1e-3 * vol(&b));
+    }
+
+    #[test]
+    fn corners_that_cannot_close_stay_open_with_a_note() {
+        // A gap of zero would make the ends touch.
+        let mut rv = alu();
+        rv.gap = 0.0;
+        let (s, notes) = tray(&rv, 72.0, 38.6);
+        assert_eq!(notes.len(), 4, "{notes:?}");
+        assert!(notes.iter().all(|n| n.contains("left open") && n.contains("gap")), "{notes:?}");
+        assert!(s.flanges.iter().all(|f| f.ext == (0.0, 0.0) && f.slope == (0.0, 0.0)));
+        assert!(s.solid().is_ok());
+        // Flanges bending opposite ways (the second edge picked on the bottom face).
+        let base = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+        let mut s = base_flange("Body1", "AL2", &alu(), Plane::XY, base);
+        let picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(120.0, 45.0, 0.0)];
+        let (_, notes) = s.add_flanges_noted(&picks, 20.0, 72f64.to_radians(), 1.0, "inside", false).unwrap();
+        assert!(notes.len() == 1 && notes[0].contains("opposite"), "{notes:?}");
+        assert!(s.solid().is_ok());
+    }
+
+    /// Folded, the inner edge of the end of flange `i`'s panel (`at_end`: the end past the far end
+    /// of its bend).
+    fn inner_end_edge(s: &SheetBody, i: usize, at_end: bool) -> (Vec3, Vec3) {
+        let f = &s.flanges[i];
+        let ba = s.allowance(f);
+        let (q0, q1) = if at_end {
+            let b = f.p + f.n * ba + f.d * (f.len + f.ext.1);
+            (b, b + f.n * f.leg + f.d * (f.slope.1 * f.leg))
+        } else {
+            let a = f.p + f.n * ba - f.d * f.ext.0;
+            (a, a + f.n * f.leg - f.d * (f.slope.0 * f.leg))
+        };
+        let (w, z) = (s.fold(i), if f.angle >= 0.0 { s.t } else { 0.0 });
+        (apply_point(&w, Vec3::new(q0.x, q0.y, z)), apply_point(&w, Vec3::new(q1.x, q1.y, z)))
+    }
+
+    /// At each of `corners` the two panel ends' inner edges run parallel, `gap` apart.
+    fn ends_are_gap_apart(s: &SheetBody, corners: &[Corner], gap: f64, what: &str) {
+        for k in corners {
+            let ((a0, a1), (b0, b1)) = (inner_end_edge(s, k.a, k.a_end), inner_end_edge(s, k.b, k.b_end));
+            let got = parallel_gap(a0, a1, b0, b1);
+            assert!(got.is_some_and(|d| (d - gap).abs() < 1e-9), "{what}: {k:?}: {got:?}");
+        }
+    }
+
+    /// The flat pattern is one piece without hairline edges, and the folded part is one valid shell
+    /// holding the same material (K = 0.5 keeps the volume).
+    fn holds_the_flat_material(s: &SheetBody, what: &str) {
+        let regions = s.flat_regions().unwrap_or_else(|e| panic!("{what}: no flat pattern: {e}"));
+        assert_eq!(regions.len(), 1, "{what}");
+        let shortest = regions[0].outer.segs.iter().map(Seg2::length).fold(f64::MAX, f64::min);
+        assert!(regions[0].holes.is_empty() && shortest > 1e-3, "{what}: shortest outline edge {shortest:e}");
+        assert_eq!(s.outline().unwrap_or_else(|e| panic!("{what}: no outline: {e}")).len(), 1, "{what}");
+        let b = s.solid().unwrap_or_else(|e| panic!("{what}: no solid: {e}"));
+        assert!(b.validity().is_empty() && b.shell_count() == 1, "{what}: {:?}", b.validity());
+        let v = vol(&b);
+        assert!((v - flat_area(s) * s.t).abs() < 1e-3 * v, "{what}: {v} vs {}", flat_area(s) * s.t);
+    }
+
+    #[test]
+    fn closed_corners_keep_their_flat_pattern_at_every_angle() {
+        // 45° to 135° in steps of 5° on the tray and on a trapezoid. Which angles lose the flat
+        // pattern to a rounding slip in the planar arrangement is a matter of luck (50°, 60°, 65°,
+        // 75°, 105° and 110° did on the tray), so every one is built.
+        let tray = [Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0)];
+        let tray_picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(120.0, 45.0, 2.0), Vec3::new(60.0, 90.0, 2.0), Vec3::new(0.0, 45.0, 2.0)];
+        let trapezoid = [Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(100.0, 90.0), Vec2::new(20.0, 90.0)];
+        let trapezoid_picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(110.0, 45.0, 2.0), Vec3::new(60.0, 90.0, 2.0), Vec3::new(10.0, 45.0, 2.0)];
+        for (name, pts, picks) in [("tray", tray, tray_picks), ("trapezoid", trapezoid, trapezoid_picks)] {
+            for k in 9..=27 {
+                let deg = k as f64 * 5.0;
+                let what = format!("{name} at {deg}°");
+                let base = Region2 { outer: Loop2::polygon(&pts).ccw(), holes: vec![] };
+                let mut s = base_flange("Body1", "AL2", &alu(), Plane::XY, base);
+                let (made, notes) = s.add_flanges_noted(&picks, 38.6, deg.to_radians(), 1.0, "inside", false).unwrap();
+                assert!(notes.is_empty(), "{what}: {notes:?}");
+                let corners = s.corners(&made);
+                assert_eq!(corners.len(), 4, "{what}");
+                ends_are_gap_apart(&s, &corners, 0.5, &what);
+                holds_the_flat_material(&s, &what);
+            }
         }
     }
 }
