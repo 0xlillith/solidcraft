@@ -978,7 +978,21 @@ pub(super) fn plane_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<s
         None => Err(bad(cmd, format!("no plane `{r}` (a plane is {WANT})"))),
     };
     match v {
-        Some(Value::String(n)) if solvecraft_geom::Plane::named(n.trim()).is_some() => Ok(PlaneRef::Origin { name: n.trim().to_ascii_uppercase() }),
+        Some(Value::String(n)) if solvecraft_geom::Plane::named(n.trim()).is_some() => {
+            if let Some(f) = s.doc.find_feature(n.trim())
+                && matches!(f.kind, FeatureKind::ConstructionPlane { .. })
+            {
+                return Err(bad(
+                    cmd,
+                    format!(
+                        "plane `{}` is ambiguous: an origin-plane alias and a construction plane; use construction plane feature id {} or an explicit {{origin, normal}} plane",
+                        n.trim(),
+                        f.id
+                    ),
+                ));
+            }
+            Ok(PlaneRef::Origin { name: n.trim().to_ascii_uppercase() })
+        }
         Some(Value::String(n)) => construction(n.trim()),
         Some(Value::Number(id)) => match id.as_u64() {
             Some(id) => construction(&id.to_string()),

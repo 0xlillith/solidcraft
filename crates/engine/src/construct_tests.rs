@@ -272,3 +272,63 @@ fn plane_perpendicular_to_a_plane_through_a_line() {
     // A line square to the plane has no single answer.
     assert!(s.execute("construct.plane.perpendicular", &json!({"plane": "XY", "line": {"axis": "Z"}})).is_err());
 }
+
+#[test]
+fn ambiguous_plane_aliases_refuse_without_document_or_history_changes() {
+    for alias in ["Top", "Front", "Right", "XY", "XZ", "YZ"] {
+        let mut s = Session::default();
+        run(&mut s, "parameters.add", json!({"name":"height","expression":"19.05 mm"}));
+        run(&mut s, "sketch.create", json!({"plane":alias}));
+        run(&mut s, "sketch.finish", json!({}));
+        let made = run(&mut s, "construct.plane.offset", json!({"base":{"origin":[0,0,0],"normal":[0,0,1]},"offset":"height","name":alias}));
+        let id = made["feature"].as_u64().unwrap();
+        let before = s.doc.to_json();
+        let history = s.undo.len();
+        for command in ["sketch.create", "inspect.section"] {
+            let error = s.execute(command, &json!({"plane":format!(" {} ",alias.to_lowercase())})).unwrap_err();
+            assert!(error.to_string().contains("ambiguous"), "{error}");
+            assert!(error.to_string().contains(&format!("feature id {id}")), "{error}");
+            assert_eq!(s.doc.to_json(), before);
+            assert_eq!(s.undo.len(), history);
+            assert!(s.section.is_none());
+        }
+        run(&mut s, "sketch.create", json!({"plane":id}));
+        let inspected = run(&mut s, "sketch.inspect", json!({}));
+        assert_eq!(inspected["plane"]["origin"], json!([0.0, 0.0, 19.05]));
+        let cut = run(&mut s, "inspect.section", json!({"plane":id}));
+        assert_eq!(cut["section"]["origin"], json!([0.0, 0.0, 19.05]));
+        run(&mut s, "parameters.change", json!({"name":"height","expression":"25.4 mm"}));
+        let mut reopened = Session::new(solvecraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        let old = run(&mut reopened, "sketch.inspect", json!({"sketch":"Sketch1"}));
+        assert_eq!(old["plane"]["origin"], json!([0.0, 0.0, 0.0]), "saved origin reference is not reinterpreted");
+        let linked = run(&mut reopened, "sketch.inspect", json!({"sketch":"Sketch2"}));
+        assert_eq!(linked["plane"]["origin"], json!([0.0, 0.0, 25.4]), "disambiguated reference follows edits and reopen");
+    }
+}
+
+#[test]
+fn disambiguated_top_plane_pocket_survives_undo_and_cold_reopen() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[100,200]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"distance":19.05,"name":"Plate"}));
+    let top = run(&mut s, "construct.plane.offset", json!({"base":"XY","offset":19.05,"name":"Top"}));
+    assert!(s.execute("sketch.create", &json!({"plane":"Top"})).unwrap_err().to_string().contains("ambiguous"));
+    run(&mut s, "sketch.create", json!({"plane":top["feature"]}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[3,3],"p1":[97,30]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let before = s.doc.to_json();
+    run(&mut s, "solid.extrude", json!({"distance":12.7,"direction":"negative","operation":"cut","name":"Pocket"}));
+    let saved = s.doc.to_json();
+    let expected = 100.0 * 200.0 * 19.05 - 94.0 * 27.0 * 12.7;
+    let measured = run(&mut s, "inspect.measure", json!({}));
+    assert!((measured["total"]["volume_mm3"].as_f64().unwrap() - expected).abs() < 1e-6, "{measured}");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.to_json(), before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.to_json(), saved);
+    let mut reopened = Session::new(solvecraft_doc::Document::from_json(&saved).unwrap());
+    let measured = run(&mut reopened, "inspect.measure", json!({}));
+    assert!((measured["total"]["volume_mm3"].as_f64().unwrap() - expected).abs() < 1e-6, "{measured}");
+}
