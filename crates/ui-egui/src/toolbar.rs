@@ -372,6 +372,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     save_as(app);
                     close = true;
                 }
+                if item(ui, "Save As JSON…", "") {
+                    save_as_with_extension(app, "json");
+                    close = true;
+                }
                 ui.separator();
                 if item_if(ui, "Export STL…", "", shown) {
                     export(app, "stl");
@@ -387,6 +391,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                 }
                 if item_if(ui, "Export OBJ…", "", shown) {
                     export(app, "obj");
+                    close = true;
+                }
+                if item(ui, "Export Design as JSON…", "") {
+                    export(app, "json");
                     close = true;
                 }
                 ui.separator();
@@ -430,8 +438,12 @@ pub fn save(app: &mut SolveApp) {
 }
 
 fn save_as(app: &mut SolveApp) {
-    let name = format!("{}.{}", app.session.doc.name, solidcraft_engine::io::DESIGN_EXT);
-    if let Some(p) = app.services.pick_save.as_ref().and_then(|f| f(&name, &[solidcraft_engine::io::DESIGN_EXT])) {
+    save_as_with_extension(app, solidcraft_engine::io::DESIGN_EXT);
+}
+
+fn save_as_with_extension(app: &mut SolveApp, extension: &str) {
+    let name = format!("{}.{extension}", app.session.doc.name);
+    if let Some(p) = app.services.pick_save.as_ref().and_then(|f| f(&name, &[solidcraft_engine::io::DESIGN_EXT, "json"])) {
         let _ = app.run("file.save_as", json!({"path": p}));
     }
 }
@@ -1044,6 +1056,29 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
 #[cfg(test)]
 mod header_report_tests {
     use super::*;
+
+    #[test]
+    fn file_menu_json_save_and_export_use_commands_and_keep_distinct_paths() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+        let dir = h.dir.clone();
+        h.app.services.pick_save = Some(Box::new(move |name, _extensions| Some(dir.join(name).to_string_lossy().into_owned())));
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"appbar:folder"}})).unwrap();
+        h.step(&json!({"widget":"Save As JSON…"})).unwrap();
+        let saved = h.app.session.path.clone().unwrap();
+        let bytes = std::fs::read(&saved).unwrap();
+        assert!(!solidcraft_engine::io::is_design_container(&bytes));
+        assert_eq!(solidcraft_engine::io::read_design(&bytes).unwrap(), *h.app.session.doc);
+        h.app.session.doc_mut().name = "Exported copy".into();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"appbar:folder"}})).unwrap();
+        h.step(&json!({"widget":"Export Design as JSON…"})).unwrap();
+        assert_eq!(h.app.session.path.as_deref(), Some(saved.as_str()));
+        assert!(h.dir.join("Exported copy.json").is_file());
+        h.app.run("file.save", json!({})).unwrap();
+        assert!(!solidcraft_engine::io::is_design_container(&std::fs::read(saved).unwrap()), "subsequent Save keeps a .json choice");
+    }
 
     #[test]
     fn panels_fit_collapse_then_move_to_more_and_none_is_dropped() {

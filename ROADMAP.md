@@ -347,6 +347,17 @@ and reference-object placement remain separate work, as do loft rails and center
   The web path remains serial. Original multi-solid fixtures show 64–81% lower complete
   import times; single-solid assembly parts are not scheduled across nodes. See
   [measurements and limits](docs/perf.md#parallel-step-body-preparation-2026-10-12).
+- Design containers (#303, phase one) separate and deduplicate STEP, raw images and
+  lossless binary mesh arrays while keeping plain JSON as a supported Save As/export
+  format. Generated-mesh storage measurements reduce serialization and decoding work;
+  evaluated geometry caching and instant cold display remain separate follow-up work.
+  See [container format](docs/design-container.md) and [performance measurements](docs/perf.md).
+- Desktop Open can show an experimental, opt-in bounded saved display preview while rebuilding in the existing
+  file worker. Ordinary saves omit display caches; explicit `preview: true` saves cache
+  only already warm meshes. Document hashes and application versions reject
+  stale previews. Preview geometry cannot be edited or measured, and cancelled or stale
+  completions cannot replace a newer document. Evaluated B-rep restoration remains open.
+
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
   thumbnails. Straight-line closest-point projection and exact curved-surface evaluation
   reuse reduce repeated work without relaxing geometry checks. Three alternating optimized

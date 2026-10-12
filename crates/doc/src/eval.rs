@@ -71,6 +71,11 @@ impl ModelBody {
             })
             .clone()
     }
+
+    /// Already computed display geometry; saving must not trigger cold tessellation.
+    pub fn cached_mesh(&self) -> Option<Arc<Mesh>> {
+        self.mesh.get().cloned()
+    }
 }
 
 /// A solved sketch in the evaluated model.

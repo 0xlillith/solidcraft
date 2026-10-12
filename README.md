@@ -106,7 +106,9 @@ and help is welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
   retained shallow prismatic pockets, exact line/arc/circle DXF outlines and bend tables;
   plastic enclosure features and rules. Pocket depth and side survive unfold/refold and appear
   separately from through-hole outlines in the flat preview and DXF.
-- **Files**: designs as JSON (`.solidcraft`), export to STEP (AP242 with body names, colours and
+- **Files**: design containers (`.solidcraft`) with lossless binary mesh payloads;
+  plain JSON remains supported for opening, Save As and export. Desktop Open can show a saved
+  experimental preview (explicit `preview: true` engine saves) while checking geometry before editing. Export to STEP (AP242 with body names, colours and
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;
   3MF, STL and OBJ import as mesh bodies (they render, measure, move and export; solid features

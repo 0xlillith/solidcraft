@@ -3359,6 +3359,9 @@ name = "solidcraft-io"
 version = "0.5.0"
 dependencies = [
  "quick-xml 0.38.4",
+ "serde",
+ "serde_json",
+ "sha2",
  "solidcraft-doc",
  "solidcraft-geom",
  "solidcraft-kernel",

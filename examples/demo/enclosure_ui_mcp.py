@@ -440,7 +440,7 @@ def main():
         for name, expected in [("width", 100), ("wall", 3 if a.story == "v3" else 2)]:
             if values.get(name) != expected:
                 raise RuntimeError(f"the final {name} parameter is not {expected}: {design}")
-        d.execute("file.save_as", {"path": a.save})
+        d.execute("file.save_as", {"path": a.save, "format": "json"})
         saved = json.load(open(a.save))
         fillets = [f for f in saved["features"] if f.get("type") == "fillet"]
         if len(fillets) != 1 or len(fillets[0].get("edges", [])) != 4:

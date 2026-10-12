@@ -193,6 +193,9 @@ pub struct Session {
     pub active_sketch: Option<u64>,
     pub selection: Vec<Sel>,
     pub path: Option<String>,
+    /// One-shot display-only notification during doc.open, before authoritative evaluation.
+    /// Interactive loaders may show it provisionally; it never becomes model state.
+    pub open_preview: Option<Box<dyn Fn(solidcraft_io::DesignPreview) + Send + Sync>>,
     saved: Arc<Document>,
     /// Messages for the command line / log.
     pub log: Vec<String>,
@@ -307,6 +310,7 @@ impl Session {
             active_sketch: None,
             selection: Vec::new(),
             path: None,
+            open_preview: None,
             log: Vec::new(),
             revision: 1,
             auto_project: true,
@@ -349,6 +353,15 @@ impl Session {
     /// Mutable document (copy-on-write).
     pub fn doc_mut(&mut self) -> &mut Document {
         Arc::make_mut(&mut self.doc)
+    }
+
+    /// Prepared placements only: optional save caches must not compute a cold world.
+    pub(crate) fn cached_world_state(&self) -> Option<Arc<solidcraft_doc::ModelState>> {
+        let state = self.model.state();
+        if self.doc.occurrences.is_empty() {
+            return Some(state);
+        }
+        self.world_cache.lock().ok()?.as_ref().filter(|cache| cache.matches(self, &state)).map(|cache| cache.world.clone())
     }
 
     /// Re-evaluate the model after a document change.
@@ -638,6 +651,7 @@ impl Session {
             active_sketch: self.active_sketch,
             selection: self.selection.clone(),
             path: None,
+            open_preview: None,
             saved: self.saved.clone(),
             log: Vec::new(),
             revision: self.revision,

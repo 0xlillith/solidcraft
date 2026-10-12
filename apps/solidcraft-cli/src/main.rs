@@ -123,7 +123,14 @@ pub fn load(path: &str) -> Result<Session, String> {
         s.execute("doc.open", &json!({"path": path})).map_err(|e| e.to_string())?;
         return Ok(s);
     }
-    let v = read_json(path)?;
+    let bytes = solidcraft_engine::io::vfs::read(path, solidcraft_engine::io::MAX_DESIGN_BYTES).map_err(|e| format!("{path}: {e}"))?;
+    if solidcraft_engine::io::is_design_container(&bytes) {
+        let doc = solidcraft_engine::io::read_design(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let mut session = Session::new(doc);
+        session.path = Some(path.to_owned());
+        return Ok(session);
+    }
+    let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
     if v.get("format").and_then(Value::as_str).is_some_and(|f| solidcraft_engine::doc::format::version_of(f).is_some()) {
         s.execute("doc.open", &json!({"path": path})).map_err(|e| e.to_string())?;
     } else if v.get("features").is_some() && v.get("commands").is_none() {
