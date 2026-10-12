@@ -692,16 +692,21 @@ fn pick_cached(app: &mut SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     {
         return hits.clone();
     }
-    let hits = pick(app, proj, pos);
+    // Hover feedback mirrors what a 3D bridge click will snap to; clicks still go through `pick`.
+    let hits = pick_with_sketch_points(app, proj, pos, crate::sketch3d::drawing(app));
     app.viewport.last_pick = Some((key, hits.clone()));
     hits
 }
 
+/// What is under `pos`. Sketch points come from the active sketch only (from every shown sketch
+/// while a dialog input takes points), so sketch tools never get another sketch's local point
+/// and id. The 3D bridge snap asks for cross-sketch points explicitly with [`pick_3d`].
 pub fn pick(app: &SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
-    pick_with_sketch_points(app, proj, pos, crate::sketch3d::drawing(app))
+    pick_with_sketch_points(app, proj, pos, false)
 }
 
-/// The drawing handler temporarily owns the tool, so its 3D snap scope is explicit.
+/// Like [`pick`], but also returns points of every visible sketch: only for the 3D drawing snap,
+/// which converts them to world space through their own sketch's plane.
 pub fn pick_3d(app: &SolveApp, proj: &Proj, pos: Pos2) -> Vec<Hit> {
     pick_with_sketch_points(app, proj, pos, true)
 }
@@ -1458,7 +1463,9 @@ pub fn sketch_point_at(app: &SolveApp, proj: &Proj, pos: Pos2) -> Option<(Vec2, 
     let st = app.session.world_state();
     let ss = st.sketch(sid)?;
     for h in pick(app, proj, pos) {
-        if let Hit::SketchPoint { id, at, .. } = h {
+        if let Hit::SketchPoint { sketch, id, at } = h
+            && sketch == sid
+        {
             return Some((at, Some(id)));
         }
     }
