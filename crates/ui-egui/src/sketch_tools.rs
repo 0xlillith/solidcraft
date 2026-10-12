@@ -126,9 +126,9 @@ fn marks(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
 /// Edit Canvas opens the canvas panel. False when the command should not go on.
 pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
     if id == "sketch.edit_text"
-        && let Some(entity) = crate::sketch_text::selected_entity(app)
+        && let Some(dialog) = crate::dialogs::Dialog::for_command(app, id)
     {
-        crate::sketch_text::open(app, &entity);
+        app.dialog = Some(dialog);
         return false;
     }
     // Surface analyses toggle: a second click turns the same one off.

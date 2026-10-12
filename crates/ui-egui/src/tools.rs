@@ -212,7 +212,7 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
             }
         }
     }
-    if app.text_editor.is_none() {
+    if !crate::sketch_text::editing(app) {
         app.tool = Some(tool);
     }
 }

@@ -1,25 +1,34 @@
-//! Edit the source of fixed text outlines through the existing engine command.
-use serde_json::json;
+//! Edit Text: the shared feature dialog (OK/Cancel, expression fields) for the source of a
+//! sketch text's outlines; OK runs `sketch.edit_text`.
+use serde_json::{Value, json};
 use solvecraft_engine::{
     Sel,
+    doc::expr::Kind as ValueKind,
     sketch::{LinkKind, LinkSource},
 };
 
 use crate::SolveApp;
+use crate::dialogs::{Dialog, Kind};
+use crate::selection::SelInput;
 
-pub(crate) struct Editor {
+/// Field rows after the text: position, height (lengths) and angle.
+const LABELS: [&str; 4] = ["X", "Y", "Height", "Angle"];
+const KINDS: [ValueKind; 4] = [ValueKind::Length, ValueKind::Length, ValueKind::Length, ValueKind::Angle];
+
+/// The Edit Text dialog's state: the text being edited and its four values as expressions.
+#[derive(Clone, Debug)]
+pub struct Tx {
     sketch: u64,
-    tab: usize,
-    revision: u64,
-    link: String,
-    text: String,
+    pub(crate) link: String,
+    pub(crate) text: String,
+    initial_text: String,
     values: [String; 4],
+    /// The fields as first shown; an untouched field keeps its exact saved value.
     initial: [String; 4],
+    /// The saved source: x, y, height (mm) and angle (rad).
     original: [f64; 4],
-    scale: f64,
-    unit: &'static str,
+    pub(crate) unit: &'static str,
     focus: bool,
-    error: Option<String>,
 }
 
 /// Only a complete selection belonging to one text source can seed the editor.
@@ -40,101 +49,141 @@ pub(crate) fn selected_entity(app: &SolveApp) -> Option<String> {
     selected
 }
 
-pub(crate) fn open(app: &mut SolveApp, entity: &str) {
-    let Some(sketch) = app.session.active_sketch else { return };
-    let Ok(sk) = app.session.doc.sketch(sketch) else { return };
-    let source = sk.curves.iter().find(|curve| curve.id == entity).and_then(|curve| curve.link.as_deref()).and_then(|id| sk.link(id));
-    let Some(source) = source.filter(|source| source.kind == LinkKind::Text) else {
-        app.set_status("Choose an outline belonging to sketch text", true);
-        return;
-    };
-    let LinkSource::Text { text, at, height, angle } = &source.source else { return };
-    let (scale, unit) = crate::prefs::unit_scale(&app.session.doc.units);
-    let values = [(at.x * scale).to_string(), (at.y * scale).to_string(), (height * scale).to_string(), angle.to_degrees().to_string()];
-    app.text_editor = Some(Editor {
-        sketch,
-        tab: app.docs.active,
-        revision: app.session.revision,
-        link: source.id.clone(),
-        text: text.clone(),
-        initial: values.clone(),
-        values,
-        original: [at.x, at.y, *height, *angle],
-        scale,
-        unit,
-        focus: true,
-        error: None,
-    });
-    app.tool = None;
+/// A value shown in a field: rounded so binary noise does not show, with its unit.
+fn shown(value: f64, unit: &str) -> String {
+    let text = format!("{value:.6}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    let text = if text == "-0" { "0" } else { text };
+    format!("{text} {unit}")
 }
 
-pub(crate) fn show(app: &mut SolveApp, ctx: &egui::Context) {
-    let Some(mut editor) = app.text_editor.take() else { return };
-    if app.session.active_sketch != Some(editor.sketch) || app.docs.active != editor.tab || app.session.revision != editor.revision {
-        return;
+/// The saved text source behind `link` in the active sketch.
+fn source(app: &SolveApp, sketch: u64, link: &str) -> Option<(String, [f64; 4])> {
+    if app.session.active_sketch != Some(sketch) {
+        return None;
     }
-    let mut apply = false;
-    let mut cancel = false;
-    crate::frame::window(ctx, "Edit Text", crate::frame::Width::Normal).collapsible(false).resizable(false).show(ctx, |ui| {
-        ui.label("Text");
-        let response = ui.add(egui::TextEdit::multiline(&mut editor.text).id_salt("sketch_text_content").desired_rows(3));
-        crate::scenario::publish_handle("text:content", response.rect.center());
-        if editor.focus {
-            response.request_focus();
-            editor.focus = false;
-        }
-        for (index, label) in
-            [format!("X ({})", editor.unit), format!("Y ({})", editor.unit), format!("Height ({})", editor.unit), "Angle (deg)".into()]
-                .iter()
-                .enumerate()
-        {
-            ui.horizontal(|ui| {
-                ui.label(label);
-                if let Some(value) = editor.values.get_mut(index) {
-                    let response = ui.add(egui::TextEdit::singleline(value).id_salt(("sketch_text_value", index)).desired_width(120.0));
-                    crate::scenario::publish_handle(&format!("text:{index}"), response.rect.center());
-                }
-            });
-        }
-        if let Some(error) = &editor.error {
-            ui.colored_label(crate::theme::Tokens::get().error, error);
-        }
-        ui.horizontal(|ui| {
-            apply = ui.button("Apply text").clicked();
-            cancel = ui.button("Cancel text").clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape));
-        });
-    });
-    if cancel {
-        return;
+    let sk = app.session.doc.sketch(sketch).ok()?;
+    let source = sk.link(link).filter(|source| source.kind == LinkKind::Text)?;
+    let LinkSource::Text { text, at, height, angle } = &source.source else { return None };
+    Some((text.clone(), [at.x, at.y, *height, *angle]))
+}
+
+fn fields(original: &[f64; 4], unit: &'static str, scale: f64) -> [String; 4] {
+    std::array::from_fn(|i| {
+        let value = original.get(i).copied().unwrap_or_default();
+        if i == 3 { shown(value.to_degrees(), "deg") } else { shown(value * scale, unit) }
+    })
+}
+
+/// The dialog's kind for the text that `entity` (an outline curve) belongs to.
+fn kind_for(app: &SolveApp, entity: &str) -> Option<Kind> {
+    let sketch = app.session.active_sketch?;
+    let sk = app.session.doc.sketch(sketch).ok()?;
+    let link = sk.curves.iter().find(|curve| curve.id == entity).and_then(|curve| curve.link.clone())?;
+    let (text, original) = source(app, sketch, &link)?;
+    let (scale, unit) = crate::prefs::unit_scale(&app.session.doc.units);
+    let values = fields(&original, unit, scale);
+    Some(Kind::Text(Tx { sketch, link, initial_text: text.clone(), text, initial: values.clone(), values, original, unit, focus: true }))
+}
+
+/// `Dialog::for_command`: Edit Text with one text's outlines selected.
+pub(crate) fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
+    if id != "sketch.edit_text" {
+        return None;
     }
-    if apply {
-        let values: [Option<f64>; 4] = std::array::from_fn(|index| {
-            let value = editor.values.get(index)?;
-            if Some(value) == editor.initial.get(index) {
-                return editor.original.get(index).copied();
+    Some((kind_for(app, &selected_entity(app)?)?, Vec::new()))
+}
+
+/// Open the dialog for the text an outline (picked with the Edit Text tool) belongs to.
+pub(crate) fn open(app: &mut SolveApp, entity: &str) {
+    match kind_for(app, entity) {
+        Some(kind) => {
+            app.dialog = Some(Dialog::new(kind, Vec::new()));
+            app.tool = None;
+        }
+        None => app.set_status("Choose an outline belonging to sketch text", true),
+    }
+}
+
+/// Is the Edit Text dialog open?
+pub(crate) fn editing(app: &SolveApp) -> bool {
+    matches!(app.dialog.as_ref().map(|d| &d.kind), Some(Kind::Text(_)))
+}
+
+/// Keep the dialog in step with the design: false once its text is gone (sketch finished, the
+/// text deleted or undone). Other design changes leave it open; when the saved source itself
+/// changed (undo, a script), fields the user has not touched follow it.
+pub(crate) fn refresh(app: &SolveApp, k: &mut Tx) -> bool {
+    let Some((text, original)) = source(app, k.sketch, &k.link) else { return false };
+    if original != k.original {
+        let (scale, unit) = crate::prefs::unit_scale(&app.session.doc.units);
+        let fresh = fields(&original, unit, scale);
+        for ((value, initial), new) in k.values.iter_mut().zip(k.initial.iter_mut()).zip(fresh) {
+            if value == initial {
+                *value = new.clone();
             }
-            let parsed = value.trim().parse::<f64>().ok()?;
-            let internal = if index == 3 { parsed.to_radians() } else { parsed / editor.scale };
-            internal.is_finite().then_some(internal)
-        });
-        if let [Some(x), Some(y), Some(height), Some(angle)] = values {
-            let mut params = json!({"link":editor.link,"text":editor.text,"at":[x,y],"height":height});
-            // Omitting an unchanged angle preserves its exact saved radians in the engine.
-            if editor.values.get(3) != editor.initial.get(3) {
-                params["angle"] = json!(angle.to_degrees());
-            }
-            match app.run("sketch.edit_text", params) {
-                Ok(_) => {
-                    let _ = app.session.execute("select.clear", &json!({}));
-                    return;
-                }
-                Err(error) => editor.error = Some(error),
-            }
+            *initial = new;
+        }
+        k.original = original;
+        k.unit = unit;
+    }
+    if text != k.initial_text {
+        if k.text == k.initial_text {
+            k.text = text.clone();
+        }
+        k.initial_text = text;
+    }
+    true
+}
+
+/// The dialog's rows; true when Enter was pressed in a value field.
+pub(crate) fn rows(ui: &mut egui::Ui, k: &mut Tx) -> bool {
+    crate::dialogs::row_label(ui, "Text");
+    let width = ui.spacing().text_edit_width;
+    let response = ui.add(egui::TextEdit::multiline(&mut k.text).id_salt("sketch_text_content").desired_rows(3).desired_width(width));
+    crate::scenario::publish_handle("dialog:Text", response.rect.center());
+    if k.focus {
+        response.request_focus();
+        k.focus = false;
+    }
+    ui.end_row();
+    let mut enter = false;
+    for (label, value) in LABELS.iter().zip(k.values.iter_mut()) {
+        crate::dialogs::row_label(ui, label);
+        enter |= crate::dialogs::field(ui, value);
+        ui.end_row();
+    }
+    enter
+}
+
+/// The command OK runs. Fields take expressions with units and parameters; a bare number is
+/// in the design's units (lengths) or degrees (angle).
+pub(crate) fn commands(app: &SolveApp, k: &Tx) -> Result<Vec<(String, Value)>, String> {
+    let doc = &app.session.doc;
+    let mut out = [0.0; 4];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let (Some(value), Some(initial), Some(original), Some(kind), Some(label)) =
+            (k.values.get(i), k.initial.get(i), k.original.get(i), KINDS.get(i), LABELS.get(i))
+        else {
+            return Err("missing value".into());
+        };
+        *slot = if value == initial {
+            *original
         } else {
-            editor.error = Some(format!("Enter finite numbers; positions and height are in {}.", editor.unit));
-        }
+            let v = doc.eval(&doc.with_design_unit(value.trim(), *kind), *kind).map_err(|e| format!("{label}: {e}"))?;
+            if !v.is_finite() {
+                return Err(format!("{label}: not a finite number"));
+            }
+            v
+        };
     }
-    app.text_editor = Some(editor);
+    let [x, y, height, angle] = out;
+    let mut params = json!({"link": k.link, "text": k.text, "at": [x, y], "height": height});
+    // Omitting an unchanged angle keeps its exact saved radians.
+    if k.values.get(3) != k.initial.get(3) {
+        params["angle"] = json!(angle.to_degrees());
+    }
+    Ok(vec![("sketch.edit_text".into(), params)])
 }
 
 #[cfg(test)]
@@ -154,6 +203,18 @@ mod tests {
         (h, link, curve)
     }
 
+    fn tx(app: &SolveApp) -> &Tx {
+        match app.dialog.as_ref().map(|d| &d.kind) {
+            Some(Kind::Text(k)) => k,
+            _ => panic!("Edit Text is not open"),
+        }
+    }
+
+    fn ok(h: &mut Harness) {
+        h.step(&json!({"click":{"handle":"dialog:OK"}})).unwrap();
+        h.frames(2);
+    }
+
     fn replace(h: &mut Harness, handle: &str, value: &str) {
         h.step(&json!({"click":{"handle":handle}})).unwrap();
         h.step(&json!({"key":"A","cmd":true})).unwrap();
@@ -171,13 +232,13 @@ mod tests {
             .unwrap();
         crate::context_menu::run_item(&mut h.app, &item, egui::Pos2::ZERO);
         h.frames(3);
-        assert!(h.app.text_editor.is_some());
-        for (field, value) in [("text:content", "O"), ("text:0", "25"), ("text:1", "12"), ("text:2", "20"), ("text:3", "90")] {
+        assert!(editing(&h.app));
+        for (field, value) in [("dialog:Text", "O"), ("dialog:X", "25"), ("dialog:Y", "12"), ("dialog:Height", "20"), ("dialog:Angle", "90")] {
             replace(&mut h, field, value);
         }
         assert_eq!(h.app.session.doc.to_json(), before);
-        h.step(&json!({"widget":"Apply text"})).unwrap();
-        assert!(h.app.text_editor.is_none());
+        ok(&mut h);
+        assert!(!editing(&h.app));
         assert_eq!(h.app.session.undo.len(), undo + 1);
         let sid = h.app.session.active_sketch.unwrap();
         let sk = h.app.session.doc.sketch(sid).unwrap();
@@ -207,18 +268,18 @@ mod tests {
         let original = h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source.clone();
         h.app.start("sketch.edit_text");
         h.frames(3);
-        assert_eq!(h.app.text_editor.as_ref().unwrap().unit, "in");
-        replace(&mut h, "text:content", "O");
-        h.step(&json!({"widget":"Apply text"})).unwrap();
+        assert_eq!(tx(&h.app).unit, "in");
+        replace(&mut h, "dialog:Text", "O");
+        ok(&mut h);
         let LinkSource::Text { at, height, angle, .. } = original else { panic!("text source") };
         assert_eq!(h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source, LinkSource::Text { text: "O".into(), at, height, angle });
         h.app.session.selection = vec![Sel::SketchCurve { id: h.app.session.doc.sketch(sid).unwrap().curves[0].id.clone() }];
         h.app.start("sketch.edit_text");
         h.frames(3);
         let undo = h.app.session.undo.len();
-        replace(&mut h, "text:0", "1.2345");
-        replace(&mut h, "text:2", "0.25");
-        h.step(&json!({"widget":"Apply text"})).unwrap();
+        replace(&mut h, "dialog:X", "1.2345");
+        replace(&mut h, "dialog:Height", "0.25");
+        ok(&mut h);
         let LinkSource::Text { at: updated, height: size, angle: rotation, .. } = h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source
         else {
             panic!("text source")
@@ -237,13 +298,13 @@ mod tests {
         h.app.start("sketch.edit_text");
         h.frames(3);
         for value in ["NaN", "inf", "-5", "0"] {
-            replace(&mut h, "text:2", value);
-            h.step(&json!({"widget":"Apply text"})).unwrap();
-            assert!(h.app.text_editor.as_ref().unwrap().error.is_some());
+            replace(&mut h, "dialog:Height", value);
+            ok(&mut h);
+            assert!(h.app.dialog.as_ref().unwrap().error.is_some());
             assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before);
         }
-        h.step(&json!({"widget":"Cancel text"})).unwrap();
-        assert!(h.app.text_editor.is_none());
+        h.step(&json!({"widget":"Cancel"})).unwrap();
+        assert!(!editing(&h.app));
         assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before);
     }
 
@@ -256,13 +317,13 @@ mod tests {
         assert!(!crate::context_menu::items(&h.app, &crate::context_menu::Target::Viewport).iter().any(|item| item.id == "sketch.edit_text"));
         h.app.session.selection = vec![Sel::SketchCurve { id: curve }];
         h.app.start("sketch.edit_text");
-        assert!(h.app.text_editor.is_some());
+        assert!(editing(&h.app));
         h.app.start("sketch.line");
-        assert!(h.app.text_editor.is_none());
+        assert!(!editing(&h.app));
         h.app.start("sketch.edit_text");
-        assert!(h.app.text_editor.is_some());
+        assert!(editing(&h.app));
         crate::documents::open_tab(&mut h.app, solvecraft_engine::Session::default()).unwrap();
-        assert!(h.app.text_editor.is_none());
+        assert!(!editing(&h.app));
     }
 
     #[test]
@@ -278,9 +339,9 @@ mod tests {
         h.step(&json!({"start":"sketch.edit_text"})).unwrap();
         assert!(h.app.tool.is_some());
         h.step(&json!({"click":{"sketch":[midpoint.x,midpoint.y]}})).unwrap();
-        assert_eq!(h.app.text_editor.as_ref().unwrap().link, link);
+        assert_eq!(tx(&h.app).link, link);
         assert!(h.app.tool.is_none());
-        h.step(&json!({"widget":"Cancel text"})).unwrap();
+        h.step(&json!({"widget":"Cancel"})).unwrap();
     }
 
     #[test]
@@ -288,7 +349,7 @@ mod tests {
         let (mut h, _, _) = setup();
         h.app.start("sketch.edit_text");
         h.frames(3);
-        replace(&mut h, "text:content", "Pending text");
+        replace(&mut h, "dialog:Text", "Pending text");
         let before = (h.app.session.doc.to_json(), h.app.session.undo.len());
         h.app.help.menu = true;
         h.frames(2);
@@ -303,11 +364,50 @@ mod tests {
         assert_eq!(h.ctx.memory(|memory| memory.focused()), Some(focus));
         h.step(&json!({"text":"report-only-marker"})).unwrap();
         h.step(&json!({"key":"Escape"})).unwrap();
-        assert_eq!(h.app.text_editor.as_ref().unwrap().text, "Pending text");
+        assert_eq!(tx(&h.app).text, "Pending text");
         assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before);
         h.step(&json!({"widget":"Close draft"})).unwrap();
-        h.step(&json!({"widget":"Apply text"})).unwrap();
-        assert!(h.app.text_editor.is_none());
+        ok(&mut h);
+        assert!(!editing(&h.app));
         assert_eq!(h.app.session.undo.len(), before.1 + 1);
+    }
+
+    #[test]
+    fn fields_take_expressions_with_units_and_parameters() {
+        let (mut h, link, _) = setup();
+        h.app.run("parameters.add", json!({"name":"gap","expression":"4 mm","unit":"mm"})).unwrap();
+        h.app.run("document.units", json!({"units":"in"})).unwrap();
+        h.app.start("sketch.edit_text");
+        h.frames(3);
+        replace(&mut h, "dialog:X", "10 mm * 2 + 0.5 in");
+        replace(&mut h, "dialog:Y", "gap * 3");
+        replace(&mut h, "dialog:Height", "0.5");
+        replace(&mut h, "dialog:Angle", "45 + 45");
+        ok(&mut h);
+        assert!(!editing(&h.app), "{:?}", h.app.dialog.as_ref().and_then(|d| d.error.clone()));
+        let sid = h.app.session.active_sketch.unwrap();
+        let LinkSource::Text { at, height, angle, .. } = h.app.session.doc.sketch(sid).unwrap().link(&link).unwrap().source.clone() else {
+            panic!("text source")
+        };
+        assert!((at.x - 32.7).abs() < 1e-9);
+        assert!((at.y - 12.0).abs() < 1e-9);
+        assert!((height - 12.7).abs() < 1e-9);
+        assert!((angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unrelated_design_changes_keep_the_dialog_open() {
+        let (mut h, _, _) = setup();
+        h.app.start("sketch.edit_text");
+        h.frames(3);
+        replace(&mut h, "dialog:Text", "Kept");
+        h.app.run("sketch.line", json!({"points":[[50,0],[60,0]]})).unwrap();
+        h.frames(3);
+        assert!(editing(&h.app));
+        assert_eq!(tx(&h.app).text, "Kept");
+        h.app.run("edit.undo", json!({})).unwrap();
+        h.app.run("edit.undo", json!({})).unwrap();
+        h.frames(3);
+        assert!(!editing(&h.app), "the text it edits is gone");
     }
 }
