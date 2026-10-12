@@ -1411,6 +1411,8 @@ fn partial_depth_intersect_full_gauge_in_rotated_frames_does_not_invent_pockets(
         run(&mut s, "sketch.rectangle.two_point", json!({"p0":[20,20],"p1":[30,30]}));
         run(&mut s, "sketch.finish", json!({}));
         let mut tool_session = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        // The witness is built in the sketch's own component, so its caps lie in the sketch's frame.
+        run(&mut tool_session, "component.activate", json!({"component":owner}));
         run(&mut tool_session, "solid.extrude", json!({"sketch":"WorldTool","distance":2.5,"body_name":"CapWitness"}));
         let witness_state = tool_session.model.state();
         let witness = &witness_state.body("CapWitness").unwrap().body;

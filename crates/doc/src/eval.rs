@@ -1986,7 +1986,11 @@ fn feature_tools_with_constructor(
     let unnamed = |bodies: Vec<Body>| -> Vec<Traced> { bodies.into_iter().map(Traced::unnamed).collect() };
     match &f.kind {
         FeatureKind::Extrude { sketch, profiles, extent, operation, targets } => {
-            let ss = st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch} (it must come earlier in the timeline)")))?.clone();
+            let ss = sketch_in_feature_frame(
+                doc,
+                st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch} (it must come earlier in the timeline)")))?,
+                f.component,
+            )?;
             let regions = solidcraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
             // From / To Object: where the face or point lies along the normal, measured over the
             // middle of the profiles.
@@ -2129,7 +2133,11 @@ fn feature_tools_with_constructor(
             Ok(tools)
         }
         FeatureKind::Revolve { sketch, profiles, axis, angle, angle2, symmetric, convention, to, .. } => {
-            let ss = st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch} (it must come earlier in the timeline)")))?.clone();
+            let ss = sketch_in_feature_frame(
+                doc,
+                st.sketch(*sketch).ok_or_else(|| DocError::Unknown(format!("sketch {sketch} (it must come earlier in the timeline)")))?,
+                f.component,
+            )?;
             let regions = solidcraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
             let (o, d) = revolve_axis(&ss, axis)?;
             let angles = if to.is_some() {
@@ -2418,6 +2426,17 @@ fn map_wire(wire: &mut solidcraft_sketch::Wire, matrix: &Mat) {
     for point in wire.pts.iter_mut().chain(&mut wire.fit) {
         *point = crate::apply_point(matrix, *point);
     }
+}
+
+/// A feature's sketch as its component sees it: a sketch of another component that is placed
+/// differently is moved through both placements (as `state_in_frame` does for sketches on faces),
+/// so the tool is built where the sketch is shown. The sketch itself when they share a frame.
+fn sketch_in_feature_frame(doc: &Document, sketch: &SolvedSketch, consumer: u64) -> Result<SolvedSketch> {
+    let owner = doc.feature(sketch.feature).map(|feature| feature.component).unwrap_or(0);
+    if owner == consumer || doc.occurrences.is_empty() {
+        return Ok(sketch.clone());
+    }
+    profile_in_frame(doc, sketch, consumer)
 }
 
 fn profile_in_frame(doc: &Document, sketch: &SolvedSketch, consumer: u64) -> Result<SolvedSketch> {
