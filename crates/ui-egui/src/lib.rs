@@ -555,6 +555,15 @@ impl SolveApp {
                 }
                 return;
             }
+            if id == "sketch.project"
+                && let Some(refs) = tools::projection_preselection(&self.session.selection)
+            {
+                if self.run(id, json!({"refs":refs})).is_ok() {
+                    let _ = self.session.execute("select.clear", &json!({}));
+                    self.set_status("Projection applied", false);
+                }
+                return;
+            }
             // Curve-pair constraints can consume an exact preselection. Leave ambiguous
             // selections to the ordinary pick tool; never silently constrain a subset.
             if matches!(

@@ -231,6 +231,10 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   existing geometry before assigning positions, retaining saved curve IDs and constraints
   across enumeration changes and resize, including concentric circles. Ambiguous identities
   retain the last geometry and report a lost reference; permutation matching is bounded.
+- Project accepts complete supported preselection in one undo step. Visible external sketch
+  curves and points retain their source sketch identity; model geometry, axes and planes use
+  the existing linked projection commands. Rejection preserves the document and selection;
+  mixed selections retain ordinary tool-first picking.
 - Inline sketch dimensions: Tab and Shift+Tab cycle within the active shape's value boxes,
   selecting visited values for replacement. Expression completion retains forward-Tab
   priority; real keyboard regressions cover rectangles, lines and single-value circles.
