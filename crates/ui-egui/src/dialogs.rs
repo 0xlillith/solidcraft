@@ -236,6 +236,8 @@ pub enum Kind {
     Motion(crate::dialogs_motion::Mo),
     /// Insert Part from the standard parts library (`dialogs_parts`).
     Part(crate::dialogs_parts::Pt),
+    /// Edit Text: a sketch text's content and placement (`sketch_text`).
+    Text(crate::sketch_text::Tx),
 }
 
 /// The rest of the Hole dialog: placement, extents, tap type and drill point.
@@ -459,7 +461,8 @@ impl Dialog {
                     .or_else(|| crate::dialogs_plastic::start(app, id))
                     .or_else(|| crate::dialogs_appearance::start(app, id))
                     .or_else(|| crate::dialogs_motion::start(app, id))
-                    .or_else(|| crate::dialogs_parts::start(app, id))?;
+                    .or_else(|| crate::dialogs_parts::start(app, id))
+                    .or_else(|| crate::sketch_text::start(app, id))?;
                 Dialog::new(kind, inputs)
             }
         };
@@ -859,6 +862,7 @@ fn title(k: &Kind) -> &'static str {
         Kind::Appearance(_) => "APPEARANCE",
         Kind::Motion(k) => k.title(),
         Kind::Part(_) => "INSERT PART",
+        Kind::Text(_) => "EDIT TEXT",
     }
 }
 
@@ -1273,6 +1277,12 @@ fn auto_operation(app: &SolveApp, d: &mut Dialog) {
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     app.viewport.dialog_rect = None;
     let Some(mut d) = app.dialog.take() else { return };
+    // Edit Text lasts as long as its text: other design changes leave it open.
+    if let Kind::Text(k) = &mut d.kind
+        && !crate::sketch_text::refresh(app, k)
+    {
+        return;
+    }
     let _language = crate::i18n::scope(&app.preferences.language);
     auto_operation(app, &mut d);
     update_measure(app, &mut d);
@@ -1920,6 +1930,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     Kind::Appearance(k) => enter |= crate::dialogs_appearance::rows(app, ui, k, &mut d.inputs),
                     Kind::Motion(k) => enter |= crate::dialogs_motion::rows(app, ui, k, &mut d.inputs),
                     Kind::Part(k) => enter |= crate::dialogs_parts::rows(app, ui, k, &d.inputs),
+                    Kind::Text(k) => enter |= crate::sketch_text::rows(ui, k),
                     Kind::ConfirmDelete { with, fail, .. } => {
                         if !with.is_empty() {
                             row_label(ui, "Also deletes");
@@ -2028,6 +2039,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if !keep || cancel {
         crate::dialogs_motion::closed(app, &mut d, applied);
+    }
+    // The edited text's outlines are new curves: the old selection would name stale ids.
+    if applied && matches!(d.kind, Kind::Text(_)) {
+        let _ = app.session.execute("select.clear", &json!({}));
     }
     if keep && !cancel {
         app.dialog = Some(d);
@@ -2856,6 +2871,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         Kind::Appearance(k) => return Ok(crate::dialogs_appearance::commands(k, &d.inputs)),
         Kind::Motion(k) => return crate::dialogs_motion::commands(app, k, &d.inputs),
         Kind::Part(k) => return crate::dialogs_parts::commands(app, k, &d.inputs),
+        Kind::Text(k) => return crate::sketch_text::commands(app, k),
     };
     let mut params = params;
     if let Value::Object(m) = &mut params {

@@ -222,7 +222,9 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
             }
         }
     }
-    app.tool = Some(tool);
+    if !crate::sketch_text::editing(app) {
+        app.tool = Some(tool);
+    }
 }
 
 /// Put down the next point of the shape being drawn; the last point runs the command (with
