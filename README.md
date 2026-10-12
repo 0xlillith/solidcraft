@@ -79,7 +79,7 @@ renamed repository; old-name Pages and Flatpak URLs are not maintained as perman
   separately from through-hole outlines in the flat preview and DXF.
 - **Files**: design containers (`.solvecraft`) with lossless binary mesh payloads;
   plain JSON remains supported for opening, Save As and export. Desktop Open can show a saved
-  preview while checking geometry before editing. Export to STEP (AP242 with body names, colours and
+  experimental preview (explicit `preview: true` engine saves) while checking geometry before editing. Export to STEP (AP242 with body names, colours and
   components as assemblies; revolved faces as native planes, cylinders, cones, spheres and tori),
   IGES 5.3 (manifold solid B-reps with names and colours), 3MF, STL (binary/ASCII) and OBJ;
   3MF, STL and OBJ import as mesh bodies (they render, measure, move and export; solid features

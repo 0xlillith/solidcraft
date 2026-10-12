@@ -342,8 +342,9 @@ and reference-object placement remain separate work, as do loft rails and center
   format. Generated-mesh storage measurements reduce serialization and decoding work;
   evaluated geometry caching and instant cold display remain separate follow-up work.
   See [container format](docs/design-container.md) and [performance measurements](docs/perf.md).
-- Desktop Open can show a bounded saved display preview while rebuilding in the existing
-  file worker. Saves cache only already warm meshes; document/source fingerprints reject
+- Desktop Open can show an experimental, opt-in bounded saved display preview while rebuilding in the existing
+  file worker. Ordinary saves omit display caches; explicit `preview: true` saves cache
+  only already warm meshes. Document/source fingerprints reject
   stale previews. Preview geometry cannot be edited or measured, and cancelled or stale
   completions cannot replace a newer document. Evaluated B-rep restoration remains open.
 

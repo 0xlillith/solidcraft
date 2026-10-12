@@ -27,11 +27,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("save")
         .key("Ctrl+S")
         .noundo()
-        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast)"),
+        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); preview?: bool (experimental saved picture, default: false)"),
     CommandSpec::new("file.save_as", "Save As", save_as)
         .icon("save")
         .noundo()
-        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast)"),
+        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); preview?: bool (experimental saved picture, default: false)"),
     CommandSpec::new("doc.recovery_list", "Recoverable Designs", recovery_list)
         .noundo()
         .params("dir? (default: the recovery folder) → designs autosaved by apps that crashed or closed with unsaved changes"),
@@ -144,14 +144,14 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"path": path, "features": s.doc.features.len(), "errors": errors}))
 }
 
-fn write(s: &mut Session, path: &str, format: &str, compression: &str) -> Result<Value> {
+fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: bool) -> Result<Value> {
     let compression = match compression {
         "fast" => solvecraft_io::DesignCompression::Fast,
         "compact" => solvecraft_io::DesignCompression::Compact,
         _ => return Err(bad("file.save", "compression must be fast or compact")),
     };
     let bytes = match format {
-        "container" => solvecraft_io::write_design_container_with_preview(&s.doc, compression, saved_preview(s).as_ref())?,
+        "container" => solvecraft_io::write_design_container_with_preview(&s.doc, compression, preview.then(|| saved_preview(s)).flatten().as_ref())?,
         "json" => solvecraft_io::write_design(&s.doc),
         _ => return Err(bad("file.save", "format must be container or json")),
     };
@@ -197,7 +197,13 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         Some(x) if !x.trim().is_empty() => x.to_string(),
         _ => s.path.clone().ok_or_else(|| bad("file.save", "the design has no file yet: give a `path`"))?,
     };
-    write(s, &path, str_(p, "format").unwrap_or(default_design_format(&path)), str_(p, "compression").unwrap_or("fast"))
+    write(
+        s,
+        &path,
+        str_(p, "format").unwrap_or(default_design_format(&path)),
+        str_(p, "compression").unwrap_or("fast"),
+        bool_(p, "preview").unwrap_or(false),
+    )
 }
 
 fn default_design_format(path: &str) -> &'static str {
@@ -206,7 +212,13 @@ fn default_design_format(path: &str) -> &'static str {
 
 fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_arg(p, "file.save_as")?.to_string();
-    write(s, &path, str_(p, "format").unwrap_or(default_design_format(&path)), str_(p, "compression").unwrap_or("fast"))
+    write(
+        s,
+        &path,
+        str_(p, "format").unwrap_or(default_design_format(&path)),
+        str_(p, "compression").unwrap_or("fast"),
+        bool_(p, "preview").unwrap_or(false),
+    )
 }
 
 fn export_to(s: &Session, path: &str, format: Format, bodies: &[String]) -> Result<Value> {
@@ -301,7 +313,7 @@ mod tests {
             for index in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
                 let path = target.join(if index == 0 { "issue303-warm.json" } else { "issue303-warm.solvecraft" });
                 let began = std::time::Instant::now();
-                session.execute("file.save", &json!({"path":path})).unwrap();
+                session.execute("file.save", &json!({"path":path,"preview":true})).unwrap();
                 samples[index].push(began.elapsed().as_secs_f64() * 1000.0);
             }
         }
@@ -336,6 +348,13 @@ mod tests {
         for body in &state.bodies {
             body.mesh();
         }
+        let save_path = std::env::temp_dir().join(format!("solvecraft-preview-save-{}.solvecraft", std::process::id()));
+        s.execute("file.save", &json!({"path":save_path})).unwrap();
+        assert!(solvecraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_none(), "ordinary saves omit redundant display data");
+        s.execute("file.save", &json!({"path":save_path,"preview":true})).unwrap();
+        assert!(solvecraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_some());
+        let _ = std::fs::remove_file(&save_path);
+        let _ = std::fs::remove_file(format!("{}.bak", save_path.display()));
         let mut preview = saved_preview(&s).unwrap();
         // A checksum-valid but forged cached shape must not become editable geometry.
         for mesh in &mut preview.meshes {

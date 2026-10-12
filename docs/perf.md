@@ -114,7 +114,9 @@ display described below is separate from #287's import parallelism.
 
 ## Provisional saved display (#303)
 
-Desktop Open can show a saved picture while the existing file worker rebuilds geometry.
+Desktop Open can show an experimental saved picture while the existing file worker rebuilds geometry.
+It requires an explicit `preview: true` engine Save/Save As call. Ordinary saves omit
+display caches to avoid the measured overhead; native evaluated B-rep caching remains open.
 The cache contains only already warm evaluated display meshes, capped at 8 MiB, 1,024
 bodies and 100,000 triangles. Larger or cold models save without it. Cached geometry is
 never used for editing, measurements or picking. Source/document fingerprints and
@@ -141,8 +143,10 @@ Three runs on Windows, with no concurrent build or test suite, measured median a
 JSON saves of 7.679/7.610/7.630 ms and container-with-preview saves of
 10.319/10.633/10.541 ms. Preview decoding took 0.964/0.961/1.130 ms; the container
 was 2,510,490 bytes. This optional preview costs save time on this STEP fixture.
-An actual desktop sensor-enclosure opening prepared its saved picture in 24.320 ms;
-full geometry readiness is still measured separately and requires reconstruction.
+An actual desktop sensor-enclosure opening on e8a8e0f prepared its saved picture in
+24.320 ms; geometry reconstruction, display warmup and thumbnail preparation took
+8,913.212 ms. The same preview experiment is now explicitly opt-in; full geometry
+readiness still requires reconstruction.
 For actual desktop opening phases, launch with `SOLVECRAFT_PROFILE_OPEN=1`: `ready_ms`
 reports saved-picture preparation, while the normal phase log reports reconstruction,
 display warmup and thumbnail completion. Neither log measures the exact GPU first frame.
