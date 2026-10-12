@@ -2250,4 +2250,37 @@ mod tests {
         s.pockets.push(pocket.clone());
         assert!(s.record_pocket(pocket.region, 0.0, 0.5, &mut work).is_err());
     }
+
+    /// A sketch solved again after a parameter change leaves its corners off by ~1e-13 mm, so
+    /// its edges are not quite square to the axes. Such a tray (four 72° flanges, shrunk to
+    /// 400 x 300 from a larger size) failed to unfold in the planar arrangement while the same
+    /// tray drawn at that size unfolded.
+    #[test]
+    fn nearly_square_base_unfolds_like_the_exact_one() {
+        let rv = RuleValues { thickness: 2.0, k_factor: 0.5, bend_radius: 1.0, ..steel() };
+        let tray = |[a, b, c, d]: [Vec2; 4]| {
+            let mut s = base_flange("Body1", "AL2", &rv, Plane::XY, rect(a, b, c, d));
+            let picks = [Vec3::new(200.0, 0.0, 2.0), Vec3::new(400.0, 150.0, 2.0), Vec3::new(200.0, 300.0, 2.0), Vec3::new(0.0, 150.0, 2.0)];
+            s.add_flanges(&picks, 38.6, 72f64.to_radians(), 1.0, "inside", false).unwrap();
+            s
+        };
+        let flat_area = |s: &SheetBody| s.flat_regions().unwrap().iter().map(|r| r.area().abs()).sum::<f64>();
+        let square = [Vec2::new(0.0, 0.0), Vec2::new(400.0, 0.0), Vec2::new(400.0, 300.0), Vec2::new(0.0, 300.0)];
+        let exact = flat_area(&tray(square));
+        // The corners the solver left after the parameter change, and the rectangle turned by a hair.
+        let solved = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(400.0000000000001, 4.369543929613394e-13),
+            Vec2::new(400.00000000000017, 300.0000000000008),
+            Vec2::new(0.0, 300.0000000000009),
+        ];
+        let (c, s) = (1e-14f64.cos(), 1e-14f64.sin());
+        let turned = square.map(|p| Vec2::new(p.x * c - p.y * s, p.x * s + p.y * c));
+        for corners in [solved, turned] {
+            let mut sheet = tray(corners);
+            assert!((flat_area(&sheet) - exact).abs() < 1e-6, "{} {exact}", flat_area(&sheet));
+            sheet.flat = true;
+            assert!((vol(&sheet.solid().unwrap()) - exact * 2.0).abs() < 1e-3);
+        }
+    }
 }

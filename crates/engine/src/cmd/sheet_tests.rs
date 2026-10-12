@@ -702,6 +702,45 @@ fn fold_keeps_the_larger_side_either_way() {
     }
 }
 
+/// A tray shrunk by a parameter change unfolds like the same tray built at that size. The
+/// sketch solved again leaves its corners ~1e-13 mm off, and the flat pattern's planar
+/// arrangement used to drop a bend zone through a gap that small: "planar region arrangement
+/// failed", for W alone or both sizes, at 72° or 90°, while growing the tray worked.
+#[test]
+fn tray_shrunk_by_a_parameter_unfolds_like_one_built_at_that_size() {
+    for angle in [72.0, 90.0] {
+        let tray = |s: &mut Session, w: f64, h: f64| {
+            run(s, "parameters.add", json!({"name": "W", "expression": format!("{w} mm")}));
+            run(s, "parameters.add", json!({"name": "H", "expression": format!("{h} mm")}));
+            run(s, "sheet.manage_rules", json!({"name": "AL2", "thickness": "2 mm", "k_factor": "0.5", "bend_radius": "1 mm", "active": true}));
+            run(s, "sketch.create", json!({"plane": "XY", "name": "Tray"}));
+            run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [w, h]}));
+            run(s, "sketch.constraint.fix", json!({"entities": ["p1"]}));
+            run(s, "sketch.dimension", json!({"entities": ["l1"], "value": "W"}));
+            run(s, "sketch.dimension", json!({"entities": ["l2"], "value": "H"}));
+            run(s, "sketch.finish", json!({}));
+            run(s, "sheet.flange", json!({"type": "base", "sketch": "Tray"}));
+            let edges = json!([[w / 2.0, 0, 2], [w, h / 2.0, 2], [w / 2.0, h, 2], [0, h / 2.0, 2]]);
+            run(s, "sheet.flange", json!({"type": "edge", "edges": edges, "height": 38.6, "angle": angle}));
+            run(s, "sheet.unfold", json!({}));
+        };
+        let mut direct = Session::default();
+        tray(&mut direct, 400.0, 300.0);
+        let want = flat(&mut direct)["flat_size_mm"].clone();
+        let mut shrunk = Session::default();
+        tray(&mut shrunk, 2000.0, 2500.0);
+        for (name, expr) in [("W", "400 mm"), ("H", "300 mm")] {
+            let r = run(&mut shrunk, "parameters.change", json!({"name": name, "expression": expr}));
+            assert_eq!(r["errors"], json!([]), "{angle}° {name} = {expr}: {r}");
+        }
+        let got = flat(&mut shrunk)["flat_size_mm"].clone();
+        for k in 0..3 {
+            assert!((got[k].as_f64().unwrap() - want[k].as_f64().unwrap()).abs() < 1e-9, "{angle}°: {got} {want}");
+        }
+        assert!(rel(volume(&mut shrunk), volume(&mut direct)) < 1e-9, "{angle}°");
+    }
+}
+
 #[test]
 fn bend_table_exports_shop_dimensions_and_tracks_parameter_changes() {
     let mut s = Session::default();
