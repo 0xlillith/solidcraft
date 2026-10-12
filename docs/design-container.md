@@ -7,7 +7,7 @@ self-contained input/output format. `io::write_design` keeps its JSON contract;
 `io::write_design_container` is the fallible container writer.
 
 Packages have `container.json` with `{"format":"solvecraft-container/1"}` and
-`document.json` with the versioned parametric document (currently `solvecraft/13`).
+`document.json` with the versioned parametric document (currently `solvecraft/14`).
 The independent versions let document migrations evolve without changing blob encodings.
 Existing serialized document fields are retained automatically, without a second copy
 of the document schema or a deep clone of embedded payloads.
