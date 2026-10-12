@@ -366,12 +366,24 @@ pub fn length_number(mm: f64, units: &str, decimals: u8) -> String {
 /// Keep the stored value untouched unless the user actually changes the field.
 pub fn length_drag<'a>(value: &'a mut f64, units: &str, decimals: u8) -> egui::DragValue<'a> {
     let (scale, unit) = unit_scale(units);
-    egui::DragValue::new(value).speed(0.5).suffix(format!(" {unit}")).custom_formatter(move |mm, _| length_number(mm, unit, decimals)).custom_parser(
-        move |text| {
-            let value = text.trim().parse::<f64>().ok()? / scale;
-            value.is_finite().then_some(value)
-        },
-    )
+    egui::DragValue::new(value)
+        .speed(0.5)
+        .suffix(format!(" {unit}"))
+        .custom_formatter(move |mm, _| length_number(mm, unit, decimals))
+        .custom_parser(move |text| parse_length_mm(text, scale))
+}
+
+/// A length typed into a field, in millimetres: a bare number is in the design's units (`scale`
+/// units per millimetre); an explicit unit ("10 mm", "0.5 in", "2 cm + 3 mm") is honoured.
+pub fn parse_length_mm(text: &str, scale: f64) -> Option<f64> {
+    use solvecraft_engine::doc::expr;
+    if !(scale.is_finite() && scale > 0.0) {
+        return None;
+    }
+    let defaults = expr::Defaults { len: 1.0 / scale, ..expr::Defaults::default() };
+    let no_params = |n: &str| Err(solvecraft_engine::doc::DocError::Expr(format!("unknown parameter `{n}`")));
+    let value = expr::eval_with_defaults(text.trim(), &no_params, defaults).ok()?.to_kind_in(expr::Kind::Length, defaults).ok()?;
+    value.is_finite().then_some(value)
 }
 
 /// A length in millimetres in `units`, with `decimals` (for display).
@@ -794,6 +806,22 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn length_fields_read_bare_numbers_in_design_units_and_honour_explicit_units() {
+        let inch = unit_scale("in").0;
+        let close = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-9);
+        assert!(close(parse_length_mm("2", inch), 50.8));
+        assert!(close(parse_length_mm(" 10 mm ", inch), 10.0));
+        assert!(close(parse_length_mm("0.5 in", 1.0), 12.7));
+        assert!(close(parse_length_mm("1 in + 5 mm", unit_scale("cm").0), 30.4));
+        assert!(close(parse_length_mm("3", unit_scale("cm").0), 30.0));
+        assert!(close(parse_length_mm("3", 1.0), 3.0));
+        assert_eq!(parse_length_mm("10 deg", inch), None);
+        assert_eq!(parse_length_mm("abc", inch), None);
+        assert_eq!(parse_length_mm("", inch), None);
+        assert_eq!(parse_length_mm("1e400", 1.0), None);
+    }
 
     #[test]
     fn radial_context_menu_defaults_off_and_follows_preferences_transactions() {
