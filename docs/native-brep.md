@@ -18,8 +18,7 @@ shells are representable; material containment is not inferred from shell order.
 An edge references its start/end vertices in its curve's forward direction. Each
 face contains ordered closed loops of oriented edge uses. A reversed use swaps
 edge endpoints. Face `forward` controls surface orientation independently of the
-loop traversal; adapters must retain both. Shared edges are stored once per shell. This initial subset uses two distinct
-endpoint vertices per edge; closed single-vertex edges remain a follow-up.
+loop traversal; adapters must retain both. Shared edges are stored once per shell. Closed edges may reference the same endpoint vertex; individual adapters may refuse them.
 The validator checks references and connected closed loops. It does not certify
 watertightness, geometric coincidence, absence of self-intersections or trustworthy
 modelling state; backend extraction has additional requirements.
@@ -69,3 +68,25 @@ They must be preserved by the cache codec, not reconstructed from face counts or
 floating-point comparisons. A decoded cache remains provisional until authoritative
 re-evaluation finishes. The document and original blobs remain sufficient to reopen
 when a cache, representation, producer or adapter is unsupported.
+
+## Body binary envelope, version 2
+
+`SCBREP02` is the eight-byte envelope signature; schema 1 is nested in `solid`.
+The other fields are SolidCraft's color, paint, split boundaries, face-source
+certificates, operation history and regularization protection. No truck serde
+record, pointer, tessellation or STEP string is written. Changing field semantics
+requires a new envelope version, even if a Rust type keeps its name.
+
+Values use tags: null=0, false=1, true=2, signed integer=3, unsigned integer=4,
+binary64=5, UTF-8 string=6, array=7, object=8. Numbers use eight little-endian
+bytes. Strings and collections use unsigned 32-bit little-endian lengths; object
+keys are length-prefixed UTF-8, emitted lexicographically. Readers reject duplicate
+keys, unknown tags, non-finite numbers and trailing bytes. Limits are 64 MiB,
+2,000,000 values, depth 48, 100,000 entries per collection and 1 MiB per string.
+
+The truck adapter converts these explicit mathematical records into runtime
+topology only after validation. It refuses single-vertex closed edges, standalone
+polylines and unclamped spline domains, and refuses plane/revolution conversions
+that would change stored axes. These are adapter limitations, not persisted
+truck types. Decoded bodies remain provisional; the application must never use
+an untrusted cache as its editable model. Application cache integration is separate.

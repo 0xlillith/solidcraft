@@ -195,7 +195,7 @@ impl Brep {
             budget.add(shell.faces.len())?;
             require(!shell.faces.is_empty(), "empty shell")?;
             for edge in &shell.edges {
-                require(edge.vertices.iter().all(|&v| (v as usize) < shell.vertices.len()) && edge.vertices[0] != edge.vertices[1], "edge vertices")?;
+                require(edge.vertices.iter().all(|&v| (v as usize) < shell.vertices.len()), "edge vertices")?;
                 curve(&edge.curve, 0, &mut budget)?;
             }
             for face in &shell.faces {
@@ -271,6 +271,16 @@ mod tests {
         b.shells[0].vertices[0][0] = f64::NAN;
         assert!(b.validate().is_err());
     }
+    #[test]
+    fn closed_edge_can_share_its_endpoint_vertex() {
+        let mut body = triangle();
+        body.shells[0].vertices.truncate(1);
+        body.shells[0].edges =
+            vec![Edge { vertices: [0, 0], curve: Curve::Polyline { points: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [0., 0., 0.]] } }];
+        body.shells[0].faces[0].loops = vec![vec![EdgeUse { edge: 0, forward: true }]];
+        body.validate().unwrap();
+    }
+
     #[test]
     fn spline_domains_weights_and_nesting_are_bounded() {
         let mut budget = Budget(0);
