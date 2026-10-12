@@ -292,6 +292,9 @@ headline counts in-scope tabs only and lists the deferred ones separately.
   continuous collision detection; local thin walls and small details remain limitations.
   See [contact-set limits and recovery](docs/contact-sets.md).
 
+Feature dialog header chevrons collapse and restore the form without discarding selections
+or edited values, including the Appearance panel.
+
 ## Document-opening performance
 
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
