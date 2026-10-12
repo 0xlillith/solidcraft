@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use solvecraft_geom::{Plane, Vec2, Vec3};
-use solvecraft_sketch::Sketch;
+use solidcraft_geom::{Plane, Vec2, Vec3};
+use solidcraft_sketch::Sketch;
 
 use crate::construct::{AxisDef, GeoRef, PointDef};
 use crate::expr::{self, Kind};
@@ -328,6 +328,9 @@ pub enum FeatureKind {
         /// radius varying along each edge.
         #[serde(default, skip_serializing_if = "FilletStyle::is_constant")]
         style: FilletStyle,
+        /// What to do when the radius is too large for the geometry around the edges.
+        #[serde(default, skip_serializing_if = "FilletFit::is_exact")]
+        fit: FilletFit,
     },
     Chamfer {
         edges: Vec<Vec3>,
@@ -881,7 +884,7 @@ pub enum FeatureKind {
         step: String,
         /// The file's product/assembly tree, kept for components.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        components: Vec<solvecraft_kernel::StepNode>,
+        components: Vec<solidcraft_kernel::StepNode>,
     },
     /// Rebuild an upstream constant-section mesh with analytic planar/cylindrical faces.
     MeshConvert {
@@ -914,6 +917,22 @@ pub enum FilletStyle {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         smooth: bool,
     },
+}
+
+/// A fillet radius too large for the geometry around its edges: refused (`Exact`, the default),
+/// or reduced to the largest that works for all of them (`Reduce`), with a warning.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilletFit {
+    #[default]
+    Exact,
+    Reduce,
+}
+
+impl FilletFit {
+    pub fn is_exact(&self) -> bool {
+        *self == FilletFit::Exact
+    }
 }
 
 impl FilletStyle {
@@ -1544,7 +1563,8 @@ pub struct Feature {
     pub name: String,
     #[serde(default)]
     pub suppressed: bool,
-    /// Names for the bodies this feature creates (in order); missing ones get `BodyN`.
+    /// Names for the bodies this feature creates (in order); missing ones are numbered after the
+    /// first (`Ribs (4)`), or get `BodyN` when there is none (or see `shell_piece_order`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub body_names: Vec<String>,
     /// Parameter names of the feature's inputs (see `FeatureKind::inputs`), e.g. `d3`.
@@ -1570,6 +1590,8 @@ pub struct Feature {
     /// The pieces this feature splits a body into take its body names in the kernel's shell order,
     /// as builds before format 14 named them, instead of after their faces (`lineage::order_lumps`).
     /// Set on the features of designs saved before then, whose stored body names mean that order.
+    /// Such features also name the bodies past their `body_names` `BodyN`, as those builds did,
+    /// where newer ones number them after the first name (`Ribs (4)`, #373).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shell_piece_order: bool,
     #[serde(flatten)]
@@ -1675,7 +1697,7 @@ pub struct Document {
 pub struct NamedView {
     #[serde(default)]
     pub name: String,
-    pub target: solvecraft_geom::Vec3,
+    pub target: solidcraft_geom::Vec3,
     pub yaw: f64,
     pub pitch: f64,
     pub distance: f64,
@@ -1752,13 +1774,13 @@ impl Document {
         let mut st = state.clone();
         for b in &mut st.bodies {
             let c = self.body_color(b);
-            let faces: Vec<solvecraft_kernel::FacePaint> = self
+            let faces: Vec<solidcraft_kernel::FacePaint> = self
                 .face_colors(b)
                 .into_iter()
-                .map(|(face, l)| solvecraft_kernel::FacePaint { face, color: l.rgb(), opacity: l.opacity as f32 })
+                .map(|(face, l)| solidcraft_kernel::FacePaint { face, color: l.rgb(), opacity: l.opacity as f32 })
                 .collect();
             let opacity = self.model_body_opacity(b) as f32;
-            let paint = solvecraft_kernel::Paint { opacity, faces };
+            let paint = solidcraft_kernel::Paint { opacity, faces };
             if c != b.body.color() || b.body.paint() != Some(&paint) {
                 b.body = b.body.clone().with_color(c).with_paint(Some(paint));
             }
@@ -2192,14 +2214,14 @@ impl Document {
         &self,
         vals: &std::collections::BTreeMap<String, expr::Value>,
         sk: &mut Sketch,
-        stored: &solvecraft_sketch::DrivingValues,
-    ) -> Result<solvecraft_sketch::SolveReport> {
+        stored: &solidcraft_sketch::DrivingValues,
+    ) -> Result<solidcraft_sketch::SolveReport> {
         self.apply_dimension_values(vals, sk)?;
-        let mut report = solvecraft_sketch::solve_after_value_edit(sk, stored);
+        let mut report = solidcraft_sketch::solve_after_value_edit(sk, stored);
         if !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty() {
             // Source dimensions may have moved curves during the solve.
             sk.refresh_offsets()?;
-            report = if report.ok() { solvecraft_sketch::solve(sk) } else { solvecraft_sketch::solve_after_value_edit(sk, stored) };
+            report = if report.ok() { solidcraft_sketch::solve(sk) } else { solidcraft_sketch::solve_after_value_edit(sk, stored) };
         }
         Ok(report)
     }

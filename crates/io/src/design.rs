@@ -5,11 +5,13 @@ use std::io::{Cursor, Read, Write};
 
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use solvecraft_doc::{Document, FeatureKind, MeshData};
+use solidcraft_doc::{Document, FeatureKind, MeshData};
 
 use crate::{IoError, MAX_DESIGN_BYTES, Result, design_metadata::replace};
 
-const VERSION: &str = "solvecraft-container/1";
+const VERSION: &str = "solidcraft-container/1";
+const LEGACY_VERSION: &str = "solvecraft-container/1";
+const PREVIEW_VERSION: &str = "solidcraft-preview/1";
 const MAX_ENTRIES: usize = 10_000;
 const MAX_EXPANDED: usize = 512 << 20;
 const MESH_MAGIC: &[u8; 8] = b"SCMESH01";
@@ -125,11 +127,11 @@ pub fn write_design_container_with_preview(doc: &Document, compression: DesignCo
     }
     let mut canvases = Vec::with_capacity(doc.canvases.len());
     for canvas in &doc.canvases {
-        if canvas.data.len() > solvecraft_doc::canvas::MAX_CANVAS_BYTES.div_ceil(3) * 4 {
+        if canvas.data.len() > solidcraft_doc::canvas::MAX_CANVAS_BYTES.div_ceil(3) * 4 {
             return Err(invalid("canvas too large"));
         }
         let bytes = canvas.bytes().ok_or_else(|| invalid("invalid canvas base64"))?;
-        if !matches!(canvas.format.as_str(), "png" | "jpeg") || bytes.len() > solvecraft_doc::canvas::MAX_CANVAS_BYTES {
+        if !matches!(canvas.format.as_str(), "png" | "jpeg") || bytes.len() > solidcraft_doc::canvas::MAX_CANVAS_BYTES {
             return Err(invalid("invalid canvas format or size"));
         }
         let blob = writer.blob(&bytes, &canvas.format, false)?;
@@ -324,7 +326,7 @@ fn encode_preview(preview: &DesignPreview, document: &[u8]) -> Result<(Vec<u8>, 
         data.extend_from_slice(&bytes);
     }
     let manifest = serde_json::to_vec(&json!({
-        "format":"solvecraft-preview/1", "build":env!("SOLVECRAFT_DISPLAY_BUILD"),
+        "format":PREVIEW_VERSION, "build":env!("CARGO_PKG_VERSION"),
         "document":digest(document), "payload":digest(&data), "meshes":entries
     }))
     .map_err(invalid)?;
@@ -346,12 +348,12 @@ pub fn read_design_preview(bytes: &[u8]) -> Option<DesignPreview> {
 fn read_preview(bytes: &[u8]) -> Result<DesignPreview> {
     let mut reader = PackageReader::new(bytes)?;
     let container: Value = serde_json::from_slice(&reader.limited_part("container.json", 4096)?).map_err(invalid)?;
-    if container.get("format").and_then(Value::as_str) != Some(VERSION) {
+    if !matches!(container.get("format").and_then(Value::as_str), Some(VERSION | LEGACY_VERSION)) {
         return Err(invalid("unsupported container version"));
     }
     let manifest: Value = serde_json::from_slice(&reader.limited_part("cache/preview.json", 65_536)?).map_err(invalid)?;
-    if manifest.get("format").and_then(Value::as_str) != Some("solvecraft-preview/1")
-        || manifest.get("build").and_then(Value::as_str) != Some(env!("SOLVECRAFT_DISPLAY_BUILD"))
+    if manifest.get("format").and_then(Value::as_str) != Some(PREVIEW_VERSION)
+        || manifest.get("build").and_then(Value::as_str) != Some(env!("CARGO_PKG_VERSION"))
     {
         return Err(invalid("incompatible preview"));
     }
@@ -399,7 +401,7 @@ fn read_preview(bytes: &[u8]) -> Result<DesignPreview> {
 pub(super) fn read(bytes: &[u8]) -> Result<Document> {
     let mut reader = PackageReader::new(bytes)?;
     let version: Value = serde_json::from_slice(&reader.part("container.json")?).map_err(invalid)?;
-    if version.get("format").and_then(Value::as_str) != Some(VERSION) {
+    if !matches!(version.get("format").and_then(Value::as_str), Some(VERSION | LEGACY_VERSION)) {
         return Err(invalid("unsupported container version"));
     }
     let bytes = reader.part("document.json")?;
@@ -435,10 +437,10 @@ pub(super) fn read(bytes: &[u8]) -> Result<Document> {
         }
         let value = metadata.get("canvases").and_then(|v| v.get(index)).ok_or_else(|| invalid("missing canvas metadata"))?;
         let bytes = reader.blob(value, "image_blob", &canvas.format)?;
-        if bytes.len() > solvecraft_doc::canvas::MAX_CANVAS_BYTES {
+        if bytes.len() > solidcraft_doc::canvas::MAX_CANVAS_BYTES {
             return Err(invalid("canvas too large"));
         }
-        canvas.data = solvecraft_doc::canvas::base64_encode(bytes);
+        canvas.data = solidcraft_doc::canvas::base64_encode(bytes);
     }
     Ok(doc)
 }
@@ -446,7 +448,7 @@ pub(super) fn read(bytes: &[u8]) -> Result<Document> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solvecraft_geom::Vec2;
+    use solidcraft_geom::Vec2;
 
     fn mesh() -> MeshData {
         MeshData {
@@ -470,13 +472,13 @@ mod tests {
         other.name = "Same triangles, separate appearance".into();
         other.color = None;
         doc.add_feature(FeatureKind::MeshImport { file: "example.obj".into(), meshes: vec![mesh(), other] }, None).unwrap();
-        doc.canvases.push(solvecraft_doc::canvas::Canvas {
+        doc.canvases.push(solidcraft_doc::canvas::Canvas {
             id: 99,
             name: "Reference".into(),
             format: "png".into(),
-            data: solvecraft_doc::canvas::base64_encode(b"original image bytes"),
+            data: solidcraft_doc::canvas::base64_encode(b"original image bytes"),
             pixels: [1, 1],
-            plane: solvecraft_doc::PlaneRef::Origin { name: "XY".into() },
+            plane: solidcraft_doc::PlaneRef::Origin { name: "XY".into() },
             center: Vec2::new(0.0, 0.0),
             width: 10.0,
             angle: 0.0,
@@ -585,6 +587,16 @@ mod tests {
     }
 
     #[test]
+    fn draft_container_marker_remains_readable() {
+        let doc = Document::from_json(&document().to_json()).unwrap();
+        let mut entries = parts(&write_design_container(&doc).unwrap());
+        let marker: Value = serde_json::from_slice(&entries["container.json"]).unwrap();
+        assert_eq!(marker["format"], VERSION);
+        entries.insert("container.json".into(), serde_json::to_vec(&json!({"format": LEGACY_VERSION})).unwrap());
+        assert_eq!(crate::read_design(&package(&entries)).unwrap(), doc);
+    }
+
+    #[test]
     fn required_blobs_must_exist_and_match_hashes() {
         let bytes = write_design_container(&document()).unwrap();
         let mut entries = parts(&bytes);
@@ -628,7 +640,7 @@ mod tests {
         entries.insert("../escape".into(), vec![]);
         assert!(crate::read_design(&package(&entries)).is_err());
         entries.remove("../escape");
-        entries.insert("container.json".into(), br#"{"format":"solvecraft-container/999"}"#.to_vec());
+        entries.insert("container.json".into(), br#"{"format":"solidcraft-container/999"}"#.to_vec());
         assert!(crate::read_design(&package(&entries)).unwrap_err().to_string().contains("unsupported container version"));
         for length in (0..bytes.len()).step_by(17) {
             assert!(crate::read_design(&bytes[..length]).is_err());
@@ -676,7 +688,19 @@ mod tests {
 
     #[test]
     fn deterministic_archive_mutations_never_panic() {
-        let bytes = write_design_container(&document()).unwrap();
+        let preview = DesignPreview { meshes: vec![mesh()] };
+        let bytes = write_design_container_with_preview(&document(), DesignCompression::Fast, Some(&preview)).unwrap();
+        assert!(read_design_preview(&bytes).is_some());
+        for end in 0..bytes.len() {
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _ = crate::read_design(&bytes[..end]);
+                    let _ = read_design_preview(&bytes[..end]);
+                })
+                .is_ok(),
+                "truncated at {end}"
+            );
+        }
         let mut seed = 0x303_u64;
         for _ in 0..512 {
             seed ^= seed << 13;
@@ -685,7 +709,13 @@ mod tests {
             let mut changed = bytes.clone();
             let index = seed as usize % changed.len();
             changed[index] ^= (seed >> 32) as u8 | 1;
-            assert!(std::panic::catch_unwind(|| crate::read_design(&changed)).is_ok());
+            assert!(
+                std::panic::catch_unwind(|| {
+                    let _ = crate::read_design(&changed);
+                    let _ = read_design_preview(&changed);
+                })
+                .is_ok()
+            );
         }
     }
 
@@ -693,7 +723,7 @@ mod tests {
     fn metadata_round_trip_preserves_new_and_existing_fields() {
         let mut doc = Document::new("Empty");
         doc.units = "in".into();
-        doc.named_views.push(solvecraft_doc::NamedView { name: "View".into(), ..Default::default() });
+        doc.named_views.push(solidcraft_doc::NamedView { name: "View".into(), ..Default::default() });
         doc.param_comments.insert("test".into(), "metadata".into());
         let expected = crate::read_design(&crate::write_design(&doc)).unwrap();
         assert_eq!(crate::read_design(&write_design_container(&doc).unwrap()).unwrap(), expected);
@@ -715,14 +745,14 @@ mod tests {
     #[test]
     #[ignore = "manual IO performance measurement"]
     fn benchmark_step_storage() {
-        use solvecraft_geom::Vec3;
+        use solidcraft_geom::Vec3;
         let bodies: Vec<_> = (0..512)
             .map(|i| {
                 let corner = Vec3::new((i % 32) as f64 * 12.0, (i / 32) as f64 * 12.0, 0.0);
-                solvecraft_kernel::box_solid(corner, corner + Vec3::new(10.0, 10.0, 10.0)).unwrap()
+                solidcraft_kernel::box_solid(corner, corner + Vec3::new(10.0, 10.0, 10.0)).unwrap()
             })
             .collect();
-        let step = solvecraft_kernel::step_export(&bodies.iter().collect::<Vec<_>>(), "SolidCraft storage benchmark").unwrap();
+        let step = solidcraft_kernel::step_export(&bodies.iter().collect::<Vec<_>>(), "SolidCraft storage benchmark").unwrap();
         let mut doc = Document::new("Generated STEP benchmark");
         doc.add_feature(FeatureKind::Import { file: "generated.step".into(), step, components: Vec::new() }, None).unwrap();
         measure_storage(&doc, "step");
@@ -734,7 +764,7 @@ mod tests {
         let dir = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("issue303-{label}.json")), &json).unwrap();
-        std::fs::write(dir.join(format!("issue303-{label}.solvecraft")), &container).unwrap();
+        std::fs::write(dir.join(format!("issue303-{label}.solidcraft")), &container).unwrap();
         let mut timings = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
         for _ in 0..9 {
             let start = std::time::Instant::now();
@@ -769,7 +799,7 @@ mod tests {
             for index in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
                 let start = std::time::Instant::now();
                 let bytes = if index == 0 { crate::write_design(doc) } else { write_design_container(doc).unwrap() };
-                crate::write_atomic(&dir.join(format!("issue303-{label}-atomic-{index}.solvecraft")), &bytes, true).unwrap();
+                crate::write_atomic(&dir.join(format!("issue303-{label}-atomic-{index}.solidcraft")), &bytes, true).unwrap();
                 saves[index].push(start.elapsed().as_secs_f64() * 1000.0);
             }
         }

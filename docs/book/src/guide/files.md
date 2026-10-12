@@ -2,7 +2,7 @@
 
 | Format | Read | Write |
 |---|---|---|
-| `.solvecraft` (versioned container or JSON design) | yes | yes |
+| `.solidcraft` (versioned container or JSON design) | yes | yes |
 | `.json` (self-contained plain JSON design) | yes | yes |
 | STEP (AP203, AP214, AP242) | solids, assemblies, units, names, colours | AP242 with names, colours and the component tree |
 | IGES 5.3 | manifold solids, or trimmed surfaces sewn into solids | manifold solids with names and colours |
@@ -38,7 +38,7 @@ from a newer version are refused with a message.
 desktop; **Save As JSON** is also available in the File menu on desktop and web. Choose
 the `.json` extension for plain JSON. **Export Design as JSON** writes an independent,
 self-contained copy without changing the current file. Scripts can explicitly pass
-`"format": "json"` to `file.save` or `file.save_as` even with a `.solvecraft` name.
+`"format": "json"` to `file.save` or `file.save_as` even with a `.solidcraft` name.
 Opening detects the format from the contents, so existing JSON designs keep working.
 Containers favor fast reading and saving by default. Scripts can request
 `"compression": "compact"` when file size matters more than CPU time.
@@ -73,7 +73,7 @@ another device.
 1. Open the File menu and choose **Open** to show **Files in this browser**.
 2. Choose **Download open design** for the current design, including its unsaved changes,
    or **Download** beside a stored file for its last saved contents.
-3. Find the `.solvecraft` file in your browser's downloads. Whether a folder chooser appears
+3. Find the `.solidcraft` file in your browser's downloads. Whether a folder chooser appears
    depends on your browser's download settings.
 
 Use **Open from computer…** in the same panel to reopen a downloaded design. The web app

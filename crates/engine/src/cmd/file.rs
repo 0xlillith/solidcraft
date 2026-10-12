@@ -1,8 +1,8 @@
 //! Documents and files: new, open (designs and STEP), insert STEP, save, export.
 
 use serde_json::{Value, json};
-use solvecraft_doc::Document;
-use solvecraft_io::Format;
+use solidcraft_doc::Document;
+use solidcraft_io::Format;
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, str_, string_list};
@@ -14,7 +14,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("open")
         .key("Ctrl+O")
         .noundo()
-        .params("path: .solvecraft design, or a .step/.stp file (opens as a new design)"),
+        .params("path: .solidcraft design, or a .step/.stp file (opens as a new design)"),
     CommandSpec::new("file.insert_step", "Insert STEP", insert_step)
         .at("SOLID", "INSERT")
         .icon("import")
@@ -57,9 +57,9 @@ fn path_arg<'a>(p: &'a Value, cmd: &str) -> Result<&'a str> {
 }
 
 /// Read a STEP file as an Import feature.
-fn read_step(path: &str) -> Result<solvecraft_io::StepFeature> {
-    let bytes = solvecraft_io::vfs::read(path, solvecraft_io::MAX_STEP_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    solvecraft_io::step_import_feature(&bytes, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))
+fn read_step(path: &str) -> Result<solidcraft_io::StepFeature> {
+    let bytes = solidcraft_io::vfs::read(path, solidcraft_io::MAX_STEP_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    solidcraft_io::step_import_feature(&bytes, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))
 }
 
 /// Add an Import feature for a STEP file to the session's design.
@@ -83,8 +83,8 @@ fn add_step(s: &mut Session, path: &str, name: Option<&str>) -> Result<Value> {
 
 /// Add a MeshImport feature for a 3MF or STL file.
 fn add_mesh(s: &mut Session, path: &str, name: Option<&str>) -> Result<Value> {
-    let bytes = solvecraft_io::vfs::read(path, solvecraft_io::MAX_3MF_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let mf = solvecraft_io::mesh_import_feature(&bytes, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let bytes = solidcraft_io::vfs::read(path, solidcraft_io::MAX_3MF_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let mf = solidcraft_io::mesh_import_feature(&bytes, path).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     let fname = name.filter(|n| !n.trim().is_empty()).unwrap_or(&mf.name).to_string();
     let id = s.doc_mut().add_feature(mf.kind, Some(&fname))?;
     if let Some(f) = s.doc_mut().feature_mut(id) {
@@ -104,7 +104,7 @@ fn add_mesh(s: &mut Session, path: &str, name: Option<&str>) -> Result<Value> {
 fn insert_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.insert_mesh";
     let path = path_arg(p, cmd)?;
-    if !solvecraft_io::is_mesh_path(path) {
+    if !solidcraft_io::is_mesh_path(path) {
         return Err(bad(cmd, "only 3MF and STL files (.3mf, .stl) can be inserted as meshes"));
     }
     add_mesh(s, path, str_(p, "name"))
@@ -113,7 +113,7 @@ fn insert_mesh(s: &mut Session, p: &Value) -> Result<Value> {
 fn insert_step(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.insert_step";
     let path = path_arg(p, cmd)?;
-    if !solvecraft_io::is_step_path(path) {
+    if !solidcraft_io::is_step_path(path) {
         return Err(bad(cmd, "only STEP files (.step, .stp) can be inserted"));
     }
     add_step(s, path, str_(p, "name"))
@@ -121,20 +121,20 @@ fn insert_step(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn open(s: &mut Session, p: &Value) -> Result<Value> {
     let path = path_arg(p, "doc.open")?;
-    if solvecraft_io::is_step_path(path) || solvecraft_io::is_mesh_path(path) {
+    if solidcraft_io::is_step_path(path) || solidcraft_io::is_mesh_path(path) {
         // A new, unsaved design holding the file's bodies.
         let stem = std::path::Path::new(path).file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
         let mut fresh = Session::new(Document::new(&stem));
-        let r = if solvecraft_io::is_step_path(path) { add_step(&mut fresh, path, None)? } else { add_mesh(&mut fresh, path, None)? };
+        let r = if solidcraft_io::is_step_path(path) { add_step(&mut fresh, path, None)? } else { add_mesh(&mut fresh, path, None)? };
         fresh.undo.clear();
         *s = fresh;
         let errors = s.model.results.iter().filter(|r| r.error.is_some()).count();
         return Ok(json!({"path": path, "features": s.doc.features.len(), "errors": errors, "bodies": r["bodies"], "warnings": r["warnings"]}));
     }
-    let bytes = solvecraft_io::vfs::read(path, solvecraft_io::MAX_DESIGN_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let doc = solvecraft_io::read_design(&bytes)?;
+    let bytes = solidcraft_io::vfs::read(path, solidcraft_io::MAX_DESIGN_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    let doc = solidcraft_io::read_design(&bytes)?;
     if let Some(notify) = s.open_preview.take()
-        && let Some(preview) = solvecraft_io::read_design_preview(&bytes)
+        && let Some(preview) = solidcraft_io::read_design_preview(&bytes)
     {
         notify(preview);
     }
@@ -146,24 +146,24 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: bool) -> Result<Value> {
     let compression = match compression {
-        "fast" => solvecraft_io::DesignCompression::Fast,
-        "compact" => solvecraft_io::DesignCompression::Compact,
+        "fast" => solidcraft_io::DesignCompression::Fast,
+        "compact" => solidcraft_io::DesignCompression::Compact,
         _ => return Err(bad("file.save", "compression must be fast or compact")),
     };
     let bytes = match format {
-        "container" => solvecraft_io::write_design_container_with_preview(&s.doc, compression, preview.then(|| saved_preview(s)).flatten().as_ref())?,
-        "json" => solvecraft_io::write_design(&s.doc),
+        "container" => solidcraft_io::write_design_container_with_preview(&s.doc, compression, preview.then(|| saved_preview(s)).flatten().as_ref())?,
+        "json" => solidcraft_io::write_design(&s.doc),
         _ => return Err(bad("file.save", "format must be container or json")),
     };
     // Atomic, keeping the version being replaced as `<file>.bak`.
-    solvecraft_io::write_atomic(std::path::Path::new(path), &bytes, true).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    solidcraft_io::write_atomic(std::path::Path::new(path), &bytes, true).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     s.path = Some(path.to_string());
     s.mark_saved();
     Ok(json!({"path": path, "bytes": bytes.len()}))
 }
 
 /// Cache only warm display geometry. A save never waits for an unevaluated mesh.
-fn saved_preview(s: &Session) -> Option<solvecraft_io::DesignPreview> {
+fn saved_preview(s: &Session) -> Option<solidcraft_io::DesignPreview> {
     if s.active_sketch.is_some() || !s.pending_moves.is_empty() || s.model.results.iter().any(|r| r.error.is_some()) {
         return None;
     }
@@ -171,7 +171,7 @@ fn saved_preview(s: &Session) -> Option<solvecraft_io::DesignPreview> {
     if world.bodies.is_empty() || world.bodies.len() > 1024 {
         return None;
     }
-    let mut preview = solvecraft_io::DesignPreview::default();
+    let mut preview = solidcraft_io::DesignPreview::default();
     let mut bytes = 0usize;
     let mut triangles = 0usize;
     for body in &world.bodies {
@@ -182,7 +182,7 @@ fn saved_preview(s: &Session) -> Option<solvecraft_io::DesignPreview> {
         if bytes > 8 << 20 || triangles > 100_000 {
             return None;
         }
-        preview.meshes.push(solvecraft_doc::MeshData {
+        preview.meshes.push(solidcraft_doc::MeshData {
             name: body.name.clone(),
             positions: mesh.positions.iter().flat_map(|p| [p.x, p.y, p.z]).collect(),
             triangles: mesh.triangles.iter().flatten().copied().collect(),
@@ -228,14 +228,14 @@ fn export_to(s: &Session, path: &str, format: Format, bodies: &[String]) -> Resu
         if !bodies.is_empty() {
             return Err(bad("file.export", "design JSON exports the complete document; omit bodies"));
         }
-        solvecraft_io::write_design(&s.doc)
+        solidcraft_io::write_design(&s.doc)
     } else if format == Format::Step && bodies.is_empty() && !s.doc.occurrences.is_empty() {
-        solvecraft_io::step_assembly(&s.doc, &s.doc.painted(&s.model.state()), &name)?
+        solidcraft_io::step_assembly(&s.doc, &s.doc.painted(&s.model.state()), &name)?
     } else {
         // Bodies carry the colour they are shown in (appearance, material or imported).
-        solvecraft_io::export(&s.doc.painted(&s.world_state()), bodies, format, &name)?
+        solidcraft_io::export(&s.doc.painted(&s.world_state()), bodies, format, &name)?
     };
-    solvecraft_io::vfs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
+    solidcraft_io::vfs::write(path, &bytes).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     Ok(json!({"path": path, "bytes": bytes.len(), "format": format!("{format:?}")}))
 }
 
@@ -303,7 +303,7 @@ mod tests {
         // The mesh storage fixture intentionally does not evaluate geometry. Use
         // original valid STEP boxes for the engine/display-cache measurement.
         let input = target.join("issue303-step.json");
-        let doc = solvecraft_io::read_design(&std::fs::read(input).unwrap()).unwrap();
+        let doc = solidcraft_io::read_design(&std::fs::read(input).unwrap()).unwrap();
         let mut session = Session::new(doc);
         for body in &session.world_state().bodies {
             body.mesh();
@@ -311,7 +311,7 @@ mod tests {
         let mut samples = [Vec::new(), Vec::new()];
         for round in 0..9 {
             for index in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
-                let path = target.join(if index == 0 { "issue303-warm.json" } else { "issue303-warm.solvecraft" });
+                let path = target.join(if index == 0 { "issue303-warm.json" } else { "issue303-warm.solidcraft" });
                 let began = std::time::Instant::now();
                 session.execute("file.save", &json!({"path":path,"preview":true})).unwrap();
                 samples[index].push(began.elapsed().as_secs_f64() * 1000.0);
@@ -320,13 +320,13 @@ mod tests {
         for s in &mut samples {
             s.sort_by(f64::total_cmp);
         }
-        let bytes = std::fs::read(target.join("issue303-warm.solvecraft")).unwrap();
-        assert!(solvecraft_io::read_design_preview(&bytes).is_some());
-        assert_eq!(solvecraft_io::read_design(&bytes).unwrap(), *session.doc);
+        let bytes = std::fs::read(target.join("issue303-warm.solidcraft")).unwrap();
+        assert!(solidcraft_io::read_design_preview(&bytes).is_some());
+        assert_eq!(solidcraft_io::read_design(&bytes).unwrap(), *session.doc);
         let mut reads = Vec::new();
         for _ in 0..9 {
             let began = std::time::Instant::now();
-            assert!(solvecraft_io::read_design_preview(&bytes).is_some());
+            assert!(solidcraft_io::read_design_preview(&bytes).is_some());
             reads.push(began.elapsed().as_secs_f64() * 1000.0);
         }
         reads.sort_by(f64::total_cmp);
@@ -348,11 +348,11 @@ mod tests {
         for body in &state.bodies {
             body.mesh();
         }
-        let save_path = std::env::temp_dir().join(format!("solvecraft-preview-save-{}.solvecraft", std::process::id()));
+        let save_path = std::env::temp_dir().join(format!("solidcraft-preview-save-{}.solidcraft", std::process::id()));
         s.execute("file.save", &json!({"path":save_path})).unwrap();
-        assert!(solvecraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_none(), "ordinary saves omit redundant display data");
+        assert!(solidcraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_none(), "ordinary saves omit redundant display data");
         s.execute("file.save", &json!({"path":save_path,"preview":true})).unwrap();
-        assert!(solvecraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_some());
+        assert!(solidcraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_some());
         let _ = std::fs::remove_file(&save_path);
         let _ = std::fs::remove_file(format!("{}.bak", save_path.display()));
         let mut preview = saved_preview(&s).unwrap();
@@ -362,8 +362,8 @@ mod tests {
                 *coordinate *= 10.0;
             }
         }
-        let bytes = solvecraft_io::write_design_container_with_preview(&s.doc, solvecraft_io::DesignCompression::Fast, Some(&preview)).unwrap();
-        let path = std::env::temp_dir().join(format!("solvecraft-preview-{}.solvecraft", std::process::id()));
+        let bytes = solidcraft_io::write_design_container_with_preview(&s.doc, solidcraft_io::DesignCompression::Fast, Some(&preview)).unwrap();
+        let path = std::env::temp_dir().join(format!("solidcraft-preview-{}.solidcraft", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let callback_seen = seen.clone();
@@ -422,18 +422,18 @@ mod tests {
 
     #[test]
     fn design_save_formats_reopen_and_preserve_atomic_backups() {
-        let dir = std::env::temp_dir().join(format!("solvecraft-container-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("solidcraft-container-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let packaged = dir.join("design.solvecraft");
+        let packaged = dir.join("design.solidcraft");
         let plain = dir.join("design.json");
         let export = dir.join("export.json");
         let mut session = Session::default();
         session.execute("solid.box", &json!({"length":10,"width":20,"height":30})).unwrap();
         session.execute("file.save_as", &json!({"path":packaged})).unwrap();
         let original = std::fs::read(&packaged).unwrap();
-        assert!(solvecraft_io::is_design_container(&original));
+        assert!(solidcraft_io::is_design_container(&original));
         session.execute("file.save_as", &json!({"path":plain})).unwrap();
-        assert!(std::fs::read_to_string(&plain).unwrap().contains("solvecraft/"));
+        assert!(std::fs::read_to_string(&plain).unwrap().contains("solidcraft/"));
         let path = session.path.clone();
         session.execute("file.export", &json!({"path":export,"format":"json"})).unwrap();
         assert_eq!(session.path, path);
@@ -446,12 +446,12 @@ mod tests {
             assert!((measure["bodies"][0]["volume_mm3"].as_f64().unwrap() - 6000.0).abs() < 1e-6);
         }
         session.execute("file.save", &json!({"path":packaged})).unwrap();
-        assert_eq!(std::fs::read(solvecraft_io::backup_path(&packaged)).unwrap(), original);
+        assert_eq!(std::fs::read(solidcraft_io::backup_path(&packaged)).unwrap(), original);
         let before = std::fs::read(&packaged).unwrap();
         assert!(session.execute("file.save", &json!({"path":packaged,"format":"invalid"})).is_err());
         assert_eq!(std::fs::read(&packaged).unwrap(), before);
         session.execute("file.save", &json!({"path":packaged,"format":"json"})).unwrap();
-        assert!(std::fs::read_to_string(&packaged).unwrap().contains("solvecraft/"));
+        assert!(std::fs::read_to_string(&packaged).unwrap().contains("solidcraft/"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

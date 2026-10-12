@@ -11,7 +11,7 @@ use std::sync::{
 use serde_json::Value;
 #[cfg(not(target_arch = "wasm32"))]
 use serde_json::json;
-use solvecraft_engine::{Session, doc::Document};
+use solidcraft_engine::{Session, doc::Document};
 
 use crate::SolveApp;
 
@@ -110,7 +110,7 @@ fn start(app: &mut SolveApp) {
                     let picture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| saved_picture(preview))).ok().flatten();
                     if let Some(picture) = picture.filter(|_| !cancelled.load(Ordering::Relaxed)) {
                         let _ = preview_tx.send(picture);
-                        if std::env::var_os("SOLVECRAFT_PROFILE_OPEN").is_some() {
+                        if solidcraft_engine::geom::env::var_os("PROFILE_OPEN").is_some() {
                             eprintln!("SolidCraft saved preview: ready_ms={:.3}", preview_began.elapsed().as_secs_f64() * 1000.0);
                         }
                     }
@@ -131,8 +131,8 @@ fn start(app: &mut SolveApp) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn saved_picture(preview: solvecraft_engine::io::DesignPreview) -> Option<egui::ColorImage> {
-    use solvecraft_engine::{
+fn saved_picture(preview: solidcraft_engine::io::DesignPreview) -> Option<egui::ColorImage> {
+    use solidcraft_engine::{
         geom::{Aabb3, Mesh, Vec3},
         render::{Camera, Rgb, Scene, SceneMesh, StandardView},
     };
@@ -173,14 +173,14 @@ fn saved_picture(preview: solvecraft_engine::io::DesignPreview) -> Option<egui::
     if !preview_work_fits(&scene, &camera) {
         return None;
     }
-    let canvas = solvecraft_engine::render::render(&scene, &camera, 320, 200);
+    let canvas = solidcraft_engine::render::render(&scene, &camera, 320, 200);
     Some(egui::ColorImage::from_rgba_unmultiplied([320, 200], &canvas.rgba))
 }
 
 /// Bound raster work as well as file size: repeated full-screen triangles must
 /// not monopolize the file worker. Match the rasterizer's 2x sampling rectangles.
 #[cfg(not(target_arch = "wasm32"))]
-fn preview_work_fits(scene: &solvecraft_engine::render::Scene, camera: &solvecraft_engine::render::Camera) -> bool {
+fn preview_work_fits(scene: &solidcraft_engine::render::Scene, camera: &solidcraft_engine::render::Camera) -> bool {
     let mut pixels = 0.0;
     let projection = camera.view_proj(640.0 / 400.0, scene.radius.max(1.0));
     for body in &scene.meshes {
@@ -221,14 +221,14 @@ fn preview_work_fits(scene: &solvecraft_engine::render::Scene, camera: &solvecra
 
 #[cfg(not(target_arch = "wasm32"))]
 fn compute(mut session: Session, path: &str, insert: bool, phase: &AtomicU8, cancelled: &AtomicBool) -> Job {
-    let profile = std::env::var_os("SOLVECRAFT_PROFILE_OPEN").is_some();
+    let profile = solidcraft_engine::geom::env::var_os("PROFILE_OPEN").is_some();
     let began = std::time::Instant::now();
     if cancelled.load(Ordering::Relaxed) {
         return Err("file operation cancelled".into());
     }
     let command = if !insert {
         "doc.open"
-    } else if solvecraft_engine::io::is_mesh_path(path) {
+    } else if solidcraft_engine::io::is_mesh_path(path) {
         "file.insert_mesh"
     } else {
         "file.insert_step"
@@ -375,7 +375,7 @@ mod tests {
             let (preview_tx, preview_rx) = std::sync::mpsc::channel();
             preview_tx.send(egui::ColorImage::new([2, 2], vec![egui::Color32::RED; 4])).unwrap();
             app.file_load.running = Some(Running {
-                request: Request { path: "old.solvecraft".into(), insert },
+                request: Request { path: "old.solidcraft".into(), insert },
                 base,
                 base_revision: app.session.revision,
                 before: Vec::new(),
@@ -404,8 +404,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn provisional_picture_renders_without_adopting_cached_meshes() {
-        let preview = solvecraft_engine::io::DesignPreview {
-            meshes: vec![solvecraft_engine::doc::MeshData {
+        let preview = solidcraft_engine::io::DesignPreview {
+            meshes: vec![solidcraft_engine::doc::MeshData {
                 name: "Saved triangle".into(),
                 positions: vec![0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0],
                 triangles: vec![0, 1, 2],
@@ -420,8 +420,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn repeated_large_preview_triangles_are_a_cache_miss_before_rasterization() {
-        let preview = solvecraft_engine::io::DesignPreview {
-            meshes: vec![solvecraft_engine::doc::MeshData {
+        let preview = solidcraft_engine::io::DesignPreview {
+            meshes: vec![solidcraft_engine::doc::MeshData {
                 name: "Hostile overdraw".into(),
                 positions: vec![0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0, 0.0],
                 triangles: (0..10_000).flat_map(|_| [0, 1, 2]).collect(),

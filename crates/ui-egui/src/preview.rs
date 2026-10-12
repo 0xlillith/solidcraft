@@ -1,5 +1,5 @@
 //! Live operation previews. While a feature dialog is open, its commands are evaluated on a
-//! scratch copy of the session ([`solvecraft_engine::Session::preview`]), off the UI thread
+//! scratch copy of the session ([`solidcraft_engine::Session::preview`]), off the UI thread
 //! where threads exist, and the result is drawn in place of the bodies it changes: new surface
 //! tinted, removed material as a translucent ghost. The last good preview stays up while the
 //! next one computes or when an input makes the feature fail (the error shows in the dialog).
@@ -9,9 +9,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use serde_json::Value;
-use solvecraft_engine::Session;
-use solvecraft_engine::doc::ModelState;
-use solvecraft_engine::geom::{Aabb3, Mesh, Vec3};
+use solidcraft_engine::Session;
+use solidcraft_engine::doc::ModelState;
+use solidcraft_engine::geom::{Aabb3, Mesh, Vec3};
 
 use crate::SolveApp;
 use crate::gpu::{GpuScene, SceneSlot};
@@ -41,6 +41,8 @@ pub struct Built {
     pub error: Option<String>,
     /// Extent of what the preview shows (the view's depth range must cover it).
     pub bounds: Aabb3,
+    /// The radius a fillet used when it reduced one too large for its edges (`fit: reduce`).
+    pub applied: Option<f64>,
 }
 
 type Job = Result<Built, String>;
@@ -66,6 +68,8 @@ pub struct PreviewState {
     /// Time the last preview took (ms), for `ui.inspect`.
     pub ms: f64,
     started: f64,
+    /// The radius the previewed fillet used when it reduced the one asked for.
+    pub applied: Option<f64>,
 }
 
 impl PreviewState {
@@ -73,6 +77,7 @@ impl PreviewState {
         self.running = None;
         self.shown_key = None;
         self.error = None;
+        self.applied = None;
         self.busy = false;
         if self.active || !self.replaced.is_empty() {
             self.active = false;
@@ -98,9 +103,13 @@ impl PreviewState {
                 self.bounds = b.bounds;
                 self.active = true;
                 self.error = b.error;
+                self.applied = b.applied;
                 self.set_scene(b.scene);
             }
-            Err(e) => self.error = Some(e),
+            Err(e) => {
+                self.error = Some(e);
+                self.applied = None;
+            }
         }
     }
 
@@ -220,6 +229,7 @@ pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
             let p = real.map_err(|e| e.to_string())?;
             let mut b = guard(&|| build(&p.before, &p.after, colors))?;
             b.bounds = state_bounds(&p.after);
+            b.applied = p.after.fitted_radii().find(|(id, _)| p.before.fitted_radius(*id).is_none()).map(|(_, r)| r);
             Ok(b)
         }
     }
@@ -256,7 +266,7 @@ fn build_tool(before: &ModelState, after: &ModelState, c: Colors, op: &str) -> B
             }
         }
     }
-    Built { scene: sc, replaced: Vec::new(), error: None, bounds: Aabb3::EMPTY }
+    Built { scene: sc, replaced: Vec::new(), error: None, bounds: Aabb3::EMPTY, applied: None }
 }
 
 /// The same commands making a new body instead of joining, cutting or intersecting, and the
@@ -289,7 +299,7 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
         if before.construct.iter().any(|old| old == construct) {
             continue;
         }
-        if let solvecraft_engine::doc::construct::ConstructGeom::Plane(plane) = construct.geom {
+        if let solidcraft_engine::doc::construct::ConstructGeom::Plane(plane) = construct.geom {
             let (o, x, y) = (plane.origin, plane.x * 10.0, plane.y * 10.0);
             let quad = [o - x - y, o + x - y, o + x + y, o - x + y];
             let color = [c.added[0], c.added[1], c.added[2], 64];
@@ -357,7 +367,7 @@ pub fn build(before: &ModelState, after: &ModelState, c: Colors) -> Built {
             replaced.push(b.name.clone());
         }
     }
-    Built { scene: sc, replaced, error: None, bounds: Aabb3::EMPTY }
+    Built { scene: sc, replaced, error: None, bounds: Aabb3::EMPTY, applied: None }
 }
 
 /// Is face `f` of `m` new surface, i.e. not on the old mesh? Decided by a vote of points on it
@@ -449,7 +459,7 @@ mod tests {
 
     #[test]
     fn a_hole_shows_its_cut_through_the_body() {
-        let mut s = solvecraft_engine::Session::default();
+        let mut s = solidcraft_engine::Session::default();
         s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20})).unwrap();
         let p = s.preview(&[("solid.hole".to_string(), json!({"position": [20, 15, 20], "diameter": 5, "depth": 10}))]).unwrap();
         let b = build(&p.before, &p.after, colors());

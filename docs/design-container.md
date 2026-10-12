@@ -1,13 +1,13 @@
 # Design containers, version 1
 
-The `.solvecraft` extension is retained for compatibility. Opening detects the ZIP
+New designs use `.solidcraft`; `.solvecraft` remains a supported legacy extension. Opening detects the ZIP
 local-header signature (`50 4b 03 04`) independently of the name; otherwise it uses
 the existing JSON design reader and migrations. Plain JSON remains a fully supported,
 self-contained input/output format. `io::write_design` keeps its JSON contract;
 `io::write_design_container` is the fallible container writer.
 
-Packages have `container.json` with `{"format":"solvecraft-container/1"}` and
-`document.json` with the versioned parametric document (currently `solvecraft/14`).
+Packages have `container.json` with `{"format":"solidcraft-container/1"}` and
+`document.json` with the versioned parametric document (currently `solidcraft/14`).
 The independent versions let document migrations evolve without changing blob encodings.
 Existing serialized document fields are retained automatically, without a second copy
 of the document schema or a deep clone of embedded payloads.
@@ -68,9 +68,11 @@ use the same lossless encoding as imported meshes. Extra cache size is optional;
 it is omitted if it would put the container near the file-size cap.
 
 The manifest includes SHA-256 of the exact document metadata (whose blob references
-contain content hashes), the preview payload and a build fingerprint. The latter
-hashes the geometry, document, engine, rendering, IO and vendored kernel source plus
-dependency lockfile and workspace configuration. Changes invalidate the display cache.
+contain content hashes), the preview payload, `solidcraft-preview/1` and the application
+package version. A version mismatch invalidates the display cache. Development builds
+with the same package version may briefly show an older picture before the authoritative
+rebuild replaces it; previews never supply model state. Earlier draft containers using
+`solvecraft-container/1` remain readable, with their obsolete previews treated as misses.
 Missing, obsolete, oversized or malformed preview data is a cache miss, not a failed
 design open. All archive-wide safety budgets still apply.
 
