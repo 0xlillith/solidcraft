@@ -4,6 +4,8 @@ use serde_json::{Value, json};
 
 use crate::*;
 
+mod mesh_convert;
+
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     match s.execute(id, &p) {
         Ok(v) => v,
