@@ -64,6 +64,10 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Dimensioning and error reporting
 
+- Construction planes cannot take an origin-plane name (XY, XZ, YZ, Top, Front, Right). Plane
+  arguments reject such a name when an older design's construction plane already has it. Use
+  the other alias, the construction feature's numeric ID or an explicit plane; existing
+  stored references keep their saved meaning. Section Analysis uses the same check.
 - Sketch text can be edited from a selected outline's context menu or the Edit Text command.
   Content, baseline X/Y, height and rotation update the original text source in one undo step;
   cancelling or rejecting an invalid value preserves the sketch. Position and height fields
