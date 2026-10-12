@@ -304,5 +304,11 @@ headline counts in-scope tabs only and lists the deferred ones separately.
 
 ## Kernel
 
+- Shell of a stepped, joined planar body no longer creates horizontal subdivisions across
+  continuous walls. Fresh axis-aligned Cut walls are stitched using their exact construction
+  support and shared topology, preserving real steps and intentional boundaries. The local
+  reported case returns from 86 to 49 faces with unchanged material and bounds; regressions
+  cover stepped stock, STEP round trips and saved projections from removed pieces.
+
 truck (Apache-2.0) behind our own `kernel` crate, with our own blend operation and boolean
 retry/validation; see `plan/adr/0001-geometry-kernel.md` (local) — summary in README.
