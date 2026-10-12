@@ -18,7 +18,12 @@ use crate::{DocError, Document, IDENTITY, Mat, Result, apply_point, apply_vector
 
 // Bound the aggregate geometry, including sampled curves and intermediate clipping pieces.
 // These are work limits, never geometry truncation: a larger input returns a useful error.
+// Exact lines and arcs count once each (the planar booleans work on them whole); sampled
+// curves count their 0.001 mm chords.
 const MAX_FLAT_POINTS: usize = 16_384;
+// The 0.001 mm chords of everything, arcs included: what the planar booleans sample (their
+// own limit is the same).
+const MAX_FLAT_SAMPLES: usize = 65_536;
 const MAX_FLAT_PIECES: usize = 4096;
 const MAX_FLAT_WORK: usize = 500_000_000;
 
@@ -69,7 +74,6 @@ fn planar_region(region: &Region2) -> Result<Region2> {
     region_complexity(std::slice::from_ref(region))?;
     let convert = |lp: &Loop2| -> Result<Loop2> {
         if lp.segs.iter().all(|s| matches!(s, Seg2::Line { .. } | Seg2::Arc { .. })) {
-            flat_polyline(lp)?;
             Ok(lp.clone())
         } else {
             // Keep free-form profiles through controlled 0.001 mm chord sampling.
@@ -87,7 +91,7 @@ fn region_complexity(regions: &[Region2]) -> Result<(usize, usize)> {
 }
 
 fn regions_complexity<'a>(regions: impl Iterator<Item = &'a Region2>) -> Result<(usize, usize)> {
-    let (mut edges, mut points) = (0usize, 0usize);
+    let (mut edges, mut points, mut samples) = (0usize, 0usize, 0usize);
     let mut pieces = 0usize;
     for region in regions {
         pieces += 1;
@@ -99,9 +103,13 @@ fn regions_complexity<'a>(regions: impl Iterator<Item = &'a Region2>) -> Result<
             if edges > MAX_FLAT_POINTS {
                 return Err(flat_budget_error());
             }
-            points = points.saturating_add(flat_polyline(lp)?.len());
-            if points > MAX_FLAT_POINTS {
-                return Err(flat_budget_error());
+            for seg in &lp.segs {
+                let chords = seg.polyline(1e-3).len().saturating_sub(1);
+                points = points.saturating_add(if matches!(seg, Seg2::Line { .. } | Seg2::Arc { .. }) { 1 } else { chords });
+                samples = samples.saturating_add(chords);
+                if points > MAX_FLAT_POINTS || samples > MAX_FLAT_SAMPLES {
+                    return Err(flat_budget_error());
+                }
             }
         }
     }
@@ -2335,7 +2343,7 @@ mod tests {
     fn flat_geometry_budgets_reject_aggregate_and_intermediate_work() {
         let mut s = plate(100.0, 60.0);
         // Each arc is individually legal, but their combined sampled points exceed the cap.
-        s.base.outer.segs = vec![Seg2::Arc { center: Vec2::ZERO, radius: 1000.0, start: 0.0, sweep: std::f64::consts::TAU }; 8];
+        s.base.outer.segs = vec![Seg2::Arc { center: Vec2::ZERO, radius: 1000.0, start: 0.0, sweep: std::f64::consts::TAU }; 32];
         assert!(s.flat_regions().unwrap_err().to_string().contains("budget"));
         let mut s = plate(100.0, 60.0);
         s.holes = vec![Region2 { outer: Loop2::circle(Vec2::new(20.0, 20.0), 1.0), holes: vec![] }; MAX_FLAT_PIECES + 1];
@@ -2344,6 +2352,21 @@ mod tests {
         assert!(merge_loops(&p, &mut FlatWork::new()).unwrap_err().to_string().contains("budget"));
         // Exhausting a clipping/merge allowance must report an error before work begins.
         assert!(merge_loops(&[vec![Vec2::ZERO, Vec2::X, Vec2::Y]], &mut FlatWork(0)).is_err());
+    }
+
+    #[test]
+    fn round_cutouts_count_as_exact_arcs_in_the_flat_budget() {
+        // 240 round 4 mm holes sample to over 16 384 chords of 0.001 mm, but are 480 exact arcs.
+        let mut s = plate(250.0, 130.0);
+        for i in 0..24 {
+            for j in 0..10 {
+                s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(5.0 + 10.0 * i as f64, 15.0 + 10.0 * j as f64), 2.0), holes: vec![] });
+            }
+        }
+        let regions = s.flat_regions().unwrap();
+        assert_eq!(regions[0].holes.len(), 240);
+        let area = 250.0 * 130.0 - 240.0 * std::f64::consts::PI * 2.0 * 2.0;
+        assert!((regions[0].area() - area).abs() < 1e-6);
     }
 
     #[test]
