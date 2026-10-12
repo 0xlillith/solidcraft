@@ -12,6 +12,10 @@ use crate::viewport::{Hit, Proj, pick, sketch_point_at};
 #[path = "sketch_display_preview_tests.rs"]
 mod display_preview_tests;
 
+#[cfg(test)]
+#[path = "sketch_neutral_click_tests.rs"]
+mod neutral_click_tests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// Click points; `n` points complete the shape (0 = chain until finished).
@@ -144,11 +148,17 @@ pub fn on_click(app: &mut SolveApp, proj: &Proj, pos: Pos2) {
         return;
     }
     match tool.kind {
-        Kind::Draw(_) => {
+        Kind::Draw(n) => {
             if let Some(mut p) = sketch_point_at(app, proj, pos) {
                 // Typed values win over the cursor; lines snap to horizontal/vertical.
                 if tool.dims.iter().any(|b| b.locked) || (tool.cmd == "sketch.line" && p.1.is_none()) {
                     p = (crate::sketch_dims::effective(app, &tool, p.0), None);
+                }
+                // A repeated initial point supplies no extent. Keep waiting rather than
+                // attempting a degenerate shape; explicit typed values still validate.
+                if n != 1 && tool.pts.len() == 1 && tool.pts.first().is_some_and(|first| first.0 == p.0) && !tool.dims.iter().any(|b| b.locked) {
+                    app.tool = Some(tool);
+                    return;
                 }
                 app.tool = Some(tool);
                 place(app, p);
