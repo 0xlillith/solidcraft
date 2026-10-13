@@ -61,6 +61,11 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- R3 adds the integrated Render workspace, an overlay-free product scene with existing
+  world placements/appearances, runtime GPU viewport capabilities and named camera/background
+  controls. Raster transparency remains an approximation; HDRI/PBR, jobs/export and optional
+  engines are later phases. See [the workspace contract](docs/render-workspace.md).
+
 - R2 adds bounded named render setups, versioned persistence and `render.settings.get/set`.
   Proven render-only changes preserve evaluated/stale geometry and prepared world data,
   including undo/redo and checkpoint restore. No render workspace or new image output is

@@ -28,7 +28,7 @@ it returns `{setups, defaults}`. Reads do not evaluate the model or change histo
 | Field | Default | Saved contract |
 |---|---|---|
 | `backend` | `builtin` | Valid R1 backend ID, at most 64 ASCII bytes; unavailable IDs survive reopen |
-| `mode` | `preview` | R1 `preview` / `final` mode; availability checked by a future render request |
+| `mode` | `preview` | R1 `quick` / `preview` / `final` mode; availability checked by a render request |
 | `camera` | Existing `Camera::default()` | Snapshot of target, yaw, pitch, roll, distance, fov and up; mm/radians, existing Z-up default |
 | `width`, `height` | 1024, 768 | Positive, each at most 4096; product at most 4,194,304 pixels |
 | `format` | `png` | R1 output format (`png` / `exr`); saving EXR does not add an encoder |
