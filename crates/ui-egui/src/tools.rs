@@ -639,13 +639,8 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     let Some((h, _)) = t.hover.clone() else { return };
     let h = crate::sketch_dims::effective(app, t, h);
     if let Some(corners) = polygon_outline(t, h, crate::sketch_dims::locked_value(app, t, "Sides").unwrap_or(6.0)) {
-        for edge in corners.windows(2) {
-            if let [a, b] = edge
-                && let (Some(a), Some(b)) = (to(*a), to(*b))
-            {
-                painter.line_segment([a, b], stroke);
-            }
-        }
+        let outline: Vec<_> = corners.iter().map(|c| ss.plane.to_world(*c)).collect();
+        paint_sketch_path(&outline, crate::sketch_palette::mode(app), painter, proj, stroke);
         crate::scenario::publish_count("polygon_preview_edges", (corners.len() - 1) as f64);
         if t.cmd == "sketch.polygon.edge" {
             return;
