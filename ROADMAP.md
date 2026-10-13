@@ -61,6 +61,11 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- Bounded PNG/JPEG texture admission (#900) validates in-memory sources and returns
+  completed RGBA8 pixels with explicit color/data roles. It is an input utility only:
+  ICC/16-bit normalization, local wood mapping, resource persistence and the renderer
+  consumer remain separate work. See [limits and licensed-file probes](docs/render-texture-input.md).
+
 - A bounded cooperative Radiance RGBE input utility is available in L1 render;
   it does not yet enable HDRI/PBR rendering or a document import command. See
   [the input contract](docs/render-hdr-input.md) and #813 for integration work.
