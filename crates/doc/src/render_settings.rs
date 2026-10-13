@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_render::{BackendId, Camera, RenderFormat, RenderLimits, RenderMode};
+use solidcraft_geom::Vec3;
+use solidcraft_render::{BackendId, Camera, RenderFormat, RenderLimits, RenderMode, UpAxis};
 
 use crate::{DocError, Result};
 
@@ -15,6 +16,7 @@ pub const MAX_SETUP_NAME_BYTES: usize = 128;
 pub struct RenderSetup {
     pub backend: BackendId,
     pub mode: RenderMode,
+    #[serde(deserialize_with = "SavedCamera::deserialize")]
     pub camera: Camera,
     pub width: u32,
     pub height: u32,
@@ -25,6 +27,23 @@ pub struct RenderSetup {
     pub environment_intensity: f64,
     /// sRGB background. Alpha/output colour management belong to rendering phases.
     pub background: [u8; 3],
+}
+
+// Reuse Camera's representation and defaults, but reject misspelled saved fields. A remote
+// derive constructs Camera itself, so adding a Camera field requires updating this adapter.
+// Navigation/named-view deserialization keeps its existing compatibility policy.
+#[derive(Deserialize)]
+#[serde(remote = "Camera", deny_unknown_fields)]
+struct SavedCamera {
+    target: Vec3,
+    yaw: f64,
+    pitch: f64,
+    #[serde(default)]
+    roll: f64,
+    distance: f64,
+    fov: f64,
+    #[serde(default)]
+    up: UpAxis,
 }
 
 impl Default for RenderSetup {
@@ -129,6 +148,22 @@ mod tests {
     use super::*;
     use crate::Document;
     use std::sync::Arc;
+
+    #[test]
+    fn camera_fields_are_strict_without_changing_existing_camera_defaults() {
+        let mut camera = serde_json::to_value(Camera::default()).unwrap();
+        camera["fov_degrees"] = serde_json::json!(45);
+        let saved = serde_json::json!({"setups":{"Studio":{"camera":camera}}});
+        let mut doc = serde_json::to_value(Document::default()).unwrap();
+        doc["render"] = saved.clone();
+        assert!(Document::from_json(&doc.to_string()).is_err());
+        assert!(serde_json::from_value::<RenderSettings>(saved).is_err());
+        camera.as_object_mut().unwrap().remove("fov_degrees");
+        camera.as_object_mut().unwrap().remove("roll");
+        camera.as_object_mut().unwrap().remove("up");
+        let setup: RenderSetup = serde_json::from_value(serde_json::json!({"camera":camera})).unwrap();
+        assert_eq!(setup.camera, Camera::default());
+    }
 
     #[test]
     fn legacy_and_named_setups_round_trip_without_changing_other_data() {

@@ -69,12 +69,15 @@ fn settings_history_preserves_geometry_cache_and_dirty_state() {
 #[test]
 fn invalid_settings_and_limit_are_atomic() {
     let mut s = Session::default();
+    let mut camera_with_typo = serde_json::to_value(solidcraft_render::Camera::default()).unwrap();
+    camera_with_typo["fov_degrees"] = json!(45);
     for patch in [
         json!({"width":0}),
         json!({"width":4097}),
         json!({"height":null}),
         json!({"unknown":true}),
         json!({"camera":{"distance":0}}),
+        json!({"camera":camera_with_typo}),
         json!({"exposure_ev":33}),
         json!({"environment_intensity":101}),
     ] {

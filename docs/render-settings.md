@@ -15,9 +15,10 @@ of [#620](https://github.com/bherbruck/solidcraft/issues/620).
 
 `set` creates a named setup from defaults or replaces supplied top-level fields in an
 existing setup. A supplied `camera` replaces the whole camera; it is not a recursive
-patch. Omitted fields retain their values. Unknown fields, invalid types and invalid
-values fail before document mutation. A new empty `set` saves the defaults; setting
-an existing setup to identical values is a no-op, preserving redo history and revision.
+patch. Omitted fields retain their values. Unknown fields (including camera fields),
+invalid types and invalid values fail before document mutation. A new empty `set`
+saves the defaults; setting an existing setup to identical values is a no-op,
+preserving redo history and revision.
 Each effective edit is one undo step and marks the document dirty. There is no delete
 or rename command in this slice.
 
