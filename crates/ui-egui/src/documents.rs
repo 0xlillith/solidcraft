@@ -88,6 +88,7 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
         let _ = crate::render_workspace::enter(app, false);
     }
     // Whatever was going on in the design leaves with it.
+    crate::sketch_text_move::cancel_drag(app);
     crate::dialogs::cancel(app);
     crate::dim_view::cancel();
     app.tool = None;
@@ -205,6 +206,7 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
     app.docs.closing = None;
     if n <= 1 {
         // The last design: a blank one takes its place.
+        crate::sketch_text_move::cancel_drag(app);
         let rev = app.session.revision;
         crate::dialogs::cancel(app);
         app.tool = None;

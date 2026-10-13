@@ -81,6 +81,10 @@
 //!   bend (`rim.bend0`, `rim.bend1`). Version 16 designs need no transformation; the version
 //!   stamp makes 0.8.0 (which reads up to 16) ask for an update instead of meeting names it
 //!   can't resolve.
+//!   Convert to Sheet Metal can take bend edges (`bends` in the feature: points on the sharp
+//!   edges of a solid or shelled body that become bends). A conversion without `bends` is the
+//!   plate conversion it always was and saves as before; 0.8.0 would drop the bend edges and
+//!   refuse the body as no plate.
 //! - 18: named render setups (`render.setups`) save renderer-independent intent. An absent
 //!   field defaults to no setups; geometry, appearances and materials retain their meaning.
 //!   Earlier readers reject this version rather than silently discarding saved setups.
