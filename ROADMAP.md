@@ -61,6 +61,8 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Dimensioning and error reporting
 
+- Point has a default Sketch CREATE toolbar button alongside the existing drawing tools.
+  Saved custom layouts are preserved; Reset Toolbar restores the default Point button.
 - Construction planes cannot take an origin-plane name (XY, XZ, YZ, Top, Front, Right). Plane
   arguments reject such a name when an older design's construction plane already has it. Use
   the other alias, the construction feature's numeric ID or an explicit plane; existing
