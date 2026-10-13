@@ -112,6 +112,22 @@ fn a_body_cut_in_pieces_twice_gets_pieces_of_their_own_names() {
 
 /// A join that bridges two bodies makes them one body, not an overlap of the first and the second.
 #[test]
+fn extrude_a_face_where_another_body_lies_flush_on_it() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 4, "body_name": "A"}));
+    run(&mut s, "solid.box", json!({"corner": [10, 0, 4], "length": 10, "width": 20, "height": 1, "body_name": "B"}));
+    // A's top and B's bottom both lie at the point: which one is meant has to be said.
+    let e = s.execute("solid.extrude", &json!({"face": [15, 5, 4], "distance": "2 mm", "operation": "new"})).unwrap_err().to_string();
+    assert!(e.contains("A") && e.contains("B") && e.contains("face_body"), "{e}");
+    let r = run(&mut s, "solid.extrude", json!({"face": [15, 5, 4], "face_body": "A", "distance": "2 mm", "operation": "new", "body_name": "C"}));
+    let m = run(&mut s, "inspect.measure", json!({"bodies": ["C"]}));
+    let v = m["total"]["volume_mm3"].as_f64().unwrap();
+    assert!((v - 20.0 * 20.0 * 2.0).abs() < 1e-6, "{v} {r}");
+    let e = s.execute("solid.extrude", &json!({"face": [15, 5, 4], "face_body": "Nope", "distance": "2 mm"})).unwrap_err().to_string();
+    assert!(e.contains("Nope"), "{e}");
+}
+
+#[test]
 fn join_bridging_two_bodies_merges_them() {
     let mut s = Session::default();
     run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
