@@ -50,8 +50,8 @@ Claude Desktop (`claude_desktop_config.json`), bridged to a running app:
 | Tool | Arguments | What it does |
 |---|---|---|
 | `list_commands` | `filter?` | The command catalog: id, label, tab/panel, shortcut, parameter docs, enabled now. `filter` matches id, label, tab and panel. |
-| `execute` | `command`, `params?`, `verbose?` (default true) | Run any command with JSON parameters (`list_commands` shows them). Failures leave the design unchanged. A feature command replies with the feature (`feature`, `name`), every body (`bodies`) and the bodies it created (`created_bodies`). See compact replies below. |
-| `batch` | `commands: [{command, params}]`, `rollback?` (default true), `verbose?` (default true) | Run steps in order, stop at the first error and undo the completed steps. The reply names the failing step (`failed.index`, `failed.command`, `failed.error`) and every result before it. |
+| `execute` | `command`, `params?`, `verbose?` (default true) | Run any command with JSON parameters (`list_commands` shows them). Failures leave the design unchanged. A feature command replies with the feature (`feature`, `name`), every body (`bodies`) and the bodies it created, changed and removed (`created_bodies`, `changed_bodies`, `removed_bodies`). `verbose: false` uses the same compact reply as `batch`. |
+| `batch` | `commands: [{command, params}]`, `rollback?` (default true), `verbose?` (default true) | Run steps in order, stop at the first error and undo the completed steps. The reply names the failing step (`failed.index`, `failed.command`, `failed.error`) and every result before it. `verbose: false` keeps the reply small in large designs: feature steps leave out the full body list (`created_bodies`, `changed_bodies`, `removed_bodies` stay) and sketch steps the ids they repeat outside `created`. |
 | `inspect_design` | `measure?` (default true), `sketches?` (default true) | Parameters, timeline (type, suppressed, rolled back, error, warning, timing), bodies (volume, area, centre of mass, bbox, face/edge/vertex counts, visible), sketches (curves, points, constraints, profiles, DOF, solve status, visible), selection, undo depth. Hide helper sketches, bodies or construction planes with `execute` `browser.visibility` (`{items, visible}` or `{folder, visible}`). |
 | `measure` | `body?` | Volume (mm³), area (mm²), centre of mass, bbox and topology counts per body, with totals. |
 | `body_topology` | `body` | Edges (index, midpoint, length, ends) and faces (index, area, centroid, normal). An edge midpoint is the `[x,y,z]` that picks that edge for fillet and chamfer. |
@@ -84,20 +84,22 @@ the batch added to the undo history.)
 
 ## Compact replies
 
-For long command sequences, set `verbose: false` on `execute` or `batch`. Feature
-replies omit the repeated full `bodies` inventory, retain `created_bodies`, and report
-`removed_bodies` when names disappear. Sketch replies retain every ID under `created`
-and omit only identical top-level ID arrays; named corners and sides remain available.
-Feature IDs, errors, warnings and batch rollback behavior are unchanged. The default
-reply is unchanged when `verbose` is omitted or true.
+`execute` and `batch` default to `verbose: true`, preserving the full command results.
+For long modelling sessions, set `verbose: false` at the tool-argument level:
 
-Compact mode reads the unmeasured body inventory before each command; a failed read
-prevents that command from running. These names do not describe every geometry change
-to an existing body. Use `inspect_design` for the complete current state. Explicit
-inspection results and import replies listing only imported bodies remain intact.
+```json
+{"name": "execute", "arguments": {"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}, "verbose": false}}
+```
+
+Feature replies omit the full `bodies` list while keeping `feature`, `name`,
+`created_bodies`, `changed_bodies` and `removed_bodies`. A cut can therefore report a
+changed body even when no body name was added or removed. Sketch replies keep new
+IDs under `created` and omit only identical top-level `points`, `curves`,
+`constraints` and `dimensions` lists. Other fields and errors are unchanged;
+inspection commands still return their complete results. Compaction uses the
+engine's reply directly, without an additional design-inspection request.
 
 ## Demo: an enclosure built over MCP
-
 
 `examples/demo/enclosure_mcp.py` is a small MCP client. It drives a running app (`solidcraft
 --control PORT`) through `solidcraft-cli mcp --connect` and builds an electronics enclosure one

@@ -435,109 +435,6 @@ fn legacy_design_files_and_resource_uris() {
     assert!(d["result"]["contents"][0]["text"].as_str().unwrap().contains("timeline"));
 }
 
-#[test]
-fn compact_replies_name_new_and_removed_bodies_without_repeating_old_ones() {
-    let mut s = server();
-    let cube = |x: i64, y: i64| json!({"command":"solid.box","params":{"length":1,"width":1,"height":1,"corner":[x,y,0],"operation":"new"}});
-    let existing: Vec<_> = (0..50).map(|i| cube(2 * i, 0)).collect();
-    tool(&mut s, "batch", json!({"commands":existing}));
-    let more: Vec<_> = (0..3).map(|i| cube(2 * i, 5)).collect();
-    let compact = tool(&mut s, "batch", json!({"commands":more,"verbose":false}));
-    assert_eq!(compact["completed"], 3);
-    let text = compact.to_string();
-    for (i, name) in ["Body51", "Body52", "Body53"].iter().enumerate() {
-        assert_eq!(compact["results"][i]["created_bodies"], json!([name]));
-        assert!(compact["results"][i].get("bodies").is_none());
-        assert!(compact["results"][i]["feature"].is_number());
-    }
-    for old in ["Body1", "Body25", "Body50"] {
-        assert!(!text.contains(&format!("\"{old}\"")), "{text}");
-    }
-    assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], 53);
-    let mut default = server();
-    let existing: Vec<_> = (0..50).map(|i| cube(2 * i, 0)).collect();
-    tool(&mut default, "batch", json!({"commands":existing}));
-    let more: Vec<_> = (0..3).map(|i| cube(2 * i, 5)).collect();
-    let verbose = tool(&mut default, "batch", json!({"commands":more}));
-    assert!(verbose["results"][0]["bodies"].as_array().unwrap().contains(&json!("Body1")));
-    assert!(text.len() * 3 < verbose.to_string().len(), "{} vs {} bytes", text.len(), verbose.to_string().len());
-    eprintln!("three feature replies: compact {} bytes, default {} bytes", text.len(), verbose.to_string().len());
-    let removed = tool(&mut s, "execute", json!({"command":"solid.remove","params":{"bodies":["Body1"]},"verbose":false}));
-    assert_eq!(removed["removed_bodies"], json!(["Body1"]));
-    assert_eq!(removed["created_bodies"], json!([]));
-    assert!(removed.get("bodies").is_none());
-    assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], 52);
-}
-
-#[test]
-fn compact_sketch_replies_keep_ids_and_semantic_fields_and_preserve_inspection() {
-    let mut s = server();
-    tool(&mut s, "execute", json!({"command":"sketch.create","params":{"plane":"XY"},"verbose":false}));
-    let r = tool(&mut s, "execute", json!({"command":"sketch.rectangle.two_point","params":{"p0":[0,0],"p1":[10,10]},"verbose":false}));
-    assert_eq!(r["created"]["curves"].as_array().unwrap().len(), 4);
-    assert_eq!(r["created"]["points"].as_array().unwrap().len(), 4);
-    assert!(r.get("curves").is_none() && r.get("constraints").is_none());
-    assert!(r["corners"]["bottom_left"].is_string() && r["sides"]["bottom"].is_string());
-    let inspected = tool(&mut s, "execute", json!({"command":"document.inspect","params":{"measure":false},"verbose":false}));
-    assert!(inspected["bodies"].is_array());
-    assert_eq!(inspected["undo"], 2, "compact bookkeeping must not add undo steps");
-    let verbose = tool(&mut s, "execute", json!({"command":"sketch.rectangle.two_point","params":{"p0":[20,0],"p1":[30,10]},"verbose":true}));
-    assert_eq!(verbose["curves"], verbose["created"]["curves"]);
-    assert_eq!(verbose["constraints"], verbose["created"]["constraints"]);
-}
-
-#[test]
-fn compact_batch_preserves_failure_and_rollback_behavior() {
-    for rollback in [true, false] {
-        let mut s = server();
-        tool(&mut s, "execute", json!({"command":"solid.box","params":{"length":1,"width":1,"height":1}}));
-        let r = raw_tool(
-            &mut s,
-            "batch",
-            json!({"verbose":false,"rollback":rollback,"commands":[
-                {"command":"solid.box","params":{"length":1,"width":1,"height":1,"corner":[10,0,0],"operation":"new"}},
-                {"command":"NoSuchCommand"}
-            ]}),
-        );
-        assert_eq!(r["result"]["isError"], true);
-        let r: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(r["failed"]["index"], 1);
-        assert_eq!(r["failed"]["command"], "NoSuchCommand");
-        assert_eq!(r["rolled_back"], rollback);
-        assert_eq!(r["results"][0]["created_bodies"], json!(["Body2"]));
-        assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], if rollback { 1 } else { 2 });
-    }
-    let mut s = server();
-    let r = raw_tool(&mut s, "execute", json!({"command":"solid.box","params":{"length":1,"width":1,"height":1},"verbose":"false"}));
-    assert!(r.get("error").is_some(), "{r}");
-    assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], 0);
-}
-
-#[test]
-fn compact_reply_inspection_failure_never_executes_the_edit() {
-    struct Unavailable {
-        edited: bool,
-    }
-    impl crate::backend::Backend for Unavailable {
-        fn call(&mut self, method: &str, _: Value) -> Result<Value, String> {
-            if method == "engine.execute" {
-                self.edited = true;
-            }
-            Err("inspection unavailable".into())
-        }
-        fn has_ui(&self) -> bool {
-            true
-        }
-        fn describe(&self) -> String {
-            "unavailable test bridge".into()
-        }
-    }
-    let mut b = Unavailable { edited: false };
-    let r = crate::tools::call_tool(&mut b, "execute", &json!({"command":"solid.box","verbose":false}));
-    assert_eq!(r["isError"], true);
-    assert!(!b.edited);
-}
-
 /// #528: an agent saves the angle of a product photo as a named view once, then renders the
 /// model from that view after each change. The render must use the saved camera, not a
 /// standard view.
@@ -582,10 +479,34 @@ fn compact_batch_reply_does_not_repeat_the_body_list() {
     }
 }
 
+/// A compact batch reply keeps what each step did: the body a cut changed, and a sketch
+/// command's new ids once (under `created`); the default reply is unchanged.
+#[test]
+fn compact_batch_reply_keeps_changed_bodies_and_created_ids() {
+    let mut s = server();
+    let steps = json!([
+        {"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "body_name": "Base"}},
+        {"command": "solid.box", "params": {"length": 4, "width": 4, "height": 10, "corner": [3, 3, 5], "operation": "cut", "targets": ["Base"]}},
+        {"command": "sketch.create", "params": {"plane": "XY"}},
+        {"command": "sketch.rectangle.two_point", "params": {"p0": [20, 0], "p1": [30, 10]}},
+    ]);
+    let full = tool(&mut s, "batch", json!({"commands": steps}));
+    assert_eq!(full["results"][1]["bodies"], json!(["Base"]), "{full}");
+    assert_eq!(full["results"][3]["curves"], full["results"][3]["created"]["curves"], "{full}");
+    tool(&mut s, "new_design", json!({}));
+    let r = tool(&mut s, "batch", json!({"commands": steps, "verbose": false}));
+    let cut = &r["results"][1];
+    assert!(cut.get("bodies").is_none(), "{r}");
+    assert_eq!(cut["changed_bodies"], json!(["Base"]), "{r}");
+    let rect = &r["results"][3];
+    assert!(rect.get("curves").is_none() && rect.get("constraints").is_none(), "{r}");
+    assert_eq!(rect["created"]["curves"].as_array().map(Vec::len), Some(4), "{r}");
+    assert!(rect["sides"].is_object(), "results that are not repeated stay: {r}");
+}
+
 /// #531: a product model keeps an optional variant hidden in its default presentation. Hiding
 /// it must survive saving and reopening the design (suppressing it would change the design).
 #[test]
-#[ignore = "fails until #531 is fixed"]
 fn hidden_body_stays_hidden_after_save_and_reopen() {
     let mut s = server();
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "body_name": "Base"}}));
@@ -611,4 +532,85 @@ fn hidden_body_stays_hidden_after_save_and_reopen() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(base, true);
     assert_eq!(variant, false, "the hidden body is visible again after reopening");
+}
+
+/// Single execute calls share batch compaction without changing geometry or inspection.
+#[test]
+fn compact_execute_keeps_changes_ids_and_default_replies() {
+    let mut s = server();
+    let commands = json!([
+        {"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10, "body_name": "Base"}},
+        {"command": "solid.box", "params": {"length": 4, "width": 4, "height": 10, "corner": [3, 3, 5], "operation": "cut", "targets": ["Base"]}},
+        {"command": "sketch.create", "params": {"plane": "XY"}},
+        {"command": "sketch.rectangle.two_point", "params": {"p0": [20, 0], "p1": [30, 10]}}
+    ]);
+    let full: Vec<Value> = commands.as_array().unwrap().iter().map(|a| tool(&mut s, "execute", a.clone())).collect();
+    assert_eq!(full[0]["bodies"], json!(["Base"]));
+    assert_eq!(full[3]["curves"], full[3]["created"]["curves"]);
+    let expected_volume = volume(&mut s);
+    for verbose in [true, false] {
+        tool(&mut s, "new_design", json!({}));
+        for (a, expected) in commands.as_array().unwrap().iter().zip(&full) {
+            let mut a = a.clone();
+            a["verbose"] = json!(verbose);
+            let mut actual = tool(&mut s, "execute", a);
+            let mut expected = expected.clone();
+            // Independent executions have different timings; the field must still be present.
+            if expected.get("ms").is_some() {
+                assert!(actual["ms"].is_number());
+                actual.as_object_mut().unwrap().remove("ms");
+                expected.as_object_mut().unwrap().remove("ms");
+            }
+            if !verbose {
+                // Compare against the full result with only the documented repeated fields removed.
+                let o = expected.as_object_mut().unwrap();
+                if o.contains_key("created_bodies") {
+                    o.remove("bodies");
+                }
+                for key in ["points", "curves", "constraints", "dimensions"] {
+                    if o.get(key).is_some_and(|v| o.get("created").and_then(|c| c.get(key)) == Some(v)) {
+                        o.remove(key);
+                    }
+                }
+            }
+            assert_eq!(actual, expected);
+        }
+        assert!((volume(&mut s) - expected_volume).abs() < 1e-9);
+        let inspect = tool(&mut s, "execute", json!({"command": "sketch.inspect", "verbose": false}));
+        assert_eq!(inspect["curves"].as_array().map(Vec::len), Some(4));
+        let invalid = raw_tool(&mut s, "execute", json!({"command": "solid.box", "verbose": "false"}));
+        assert_eq!(invalid["error"]["code"], -32602);
+        assert!((volume(&mut s) - expected_volume).abs() < 1e-9);
+        let error = raw_tool(&mut s, "execute", json!({"command": "not.a.command", "verbose": false}));
+        assert_eq!(error["result"]["isError"], true);
+    }
+}
+
+/// A connected app sees exactly one engine call; no inventory inspection is needed.
+#[test]
+fn compact_execute_uses_one_backend_call_and_keeps_removed_bodies() {
+    struct ReplyOnly {
+        calls: usize,
+    }
+    impl crate::backend::Backend for ReplyOnly {
+        fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+            assert_eq!(method, "engine.execute");
+            assert_eq!(params, json!({"command": "test.feature", "params": {}}));
+            self.calls += 1;
+            Ok(
+                json!({"feature": 7, "name": "Combine1", "bodies": ["Base"], "created_bodies": [], "changed_bodies": ["Base"], "removed_bodies": ["Tool"]}),
+            )
+        }
+        fn has_ui(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "test".into()
+        }
+    }
+    let mut b = ReplyOnly { calls: 0 };
+    let r = crate::tools::call_tool(&mut b, "execute", &json!({"command": "test.feature", "verbose": false}));
+    let v: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(b.calls, 1);
+    assert_eq!(v, json!({"feature": 7, "name": "Combine1", "created_bodies": [], "changed_bodies": ["Base"], "removed_bodies": ["Tool"]}));
 }

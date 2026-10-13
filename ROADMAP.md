@@ -61,6 +61,17 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Dimensioning and error reporting
 
+- MCP `execute` accepts `verbose: false`, sharing the compact reply helper used by
+  `batch`: body changes and created sketch IDs stay, while repeated lists are omitted.
+  Both tools retain full replies by default.
+
+- Inscribed, circumscribed and edge polygon tools preview their actual outline before
+  placement, including orientation and the selected side count.
+- Construction (X) preserves the active sketch drawing tool, picked anchors and inline
+  dimension values, so line type can change while a shape is in progress.
+- Planar sketch construction previews and hover feedback keep the same dashed pattern as
+  committed geometry; centerlines retain their dash-dot pattern.
+
 - Point has a default Sketch CREATE toolbar button alongside the existing drawing tools.
   Saved custom layouts are preserved; Reset Toolbar restores the default Point button.
 - Construction planes cannot take an origin-plane name (XY, XZ, YZ, Top, Front, Right). Plane
@@ -145,12 +156,6 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 - Saved projections from a removed strip retain their geometry and report the lost
   reference. Explicitly reselect the wall to repair that projection.
 
-## Agent command replies
-
-- MCP `execute` and `batch` accept opt-in compact replies (`verbose: false`), retaining
-  created IDs and created/removed body names without repeating full feature inventories.
-  Default replies and checkpoint rollback remain unchanged; see [MCP](docs/mcp.md).
-
 ## View navigation
 
 - Desktop Ctrl/Cmd +/- and 0 change or reset the saved UI scale. The scale slider keeps
@@ -164,6 +169,11 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   top/bottom heading are preserved. Diagonals include 45-degree edge and isometric corner views.
 
 ## Known limitations
+
+- Scheduled and manual CI scan locked dependency advisories, bans and sources with
+  cargo-deny. Vulnerabilities fail the scan; unmaintained crates warn. Local vendored
+  patches require separate upstream review because advisory databases cannot version-match
+  their path dependencies. Pull requests retain the existing licence checks.
 
 - Associative shell-face sketches require a unique certified planar source. Nested shell
   attachments and ambiguous coincident sources remain unsupported.
@@ -332,6 +342,10 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   tapered or bend-crossing machining refuses atomically instead of restoring material later.
   Sketches attach to a sheet's flat faces (base and flanges, either side) by panel, in the
   flat pattern's coordinates, and follow it through rebuilds and unfold/refold.
+  A flange on another flange's far edge (a return) follows that flange's closed end and keeps
+  clear of the flange beside it, and the returns of one feature are mitred toward each other
+  with the rule's gap where their flanges meet at a corner; returns of separate features, and
+  flanges on returns, are not closed toward each other.
 - Rolling-ball fillet accuracy: independent offset-cylinder tee references check surface
   distance, actual trimmed tessellation, supporting-cylinder contacts and tangency at two
   scales. The measured trimmed-part error is below 0.0001 mm; this is an analytic geometry
