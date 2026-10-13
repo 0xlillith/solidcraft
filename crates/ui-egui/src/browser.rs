@@ -19,6 +19,7 @@ use solidcraft_engine::doc::FeatureKind;
 
 use crate::context_menu::{Item, Target};
 use crate::theme::Tokens;
+
 use crate::{SolveApp, icons};
 
 thread_local! {
@@ -563,7 +564,7 @@ fn browser_panel(app: &mut SolveApp, ui: &mut egui::Ui, timeline_above: bool) {
 
 fn browser_contents(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions) {
     let t = Tokens::get();
-    ui.label(RichText::new("BROWSER").size(11.0).strong().color(t.text_dim));
+    ui.label(RichText::new(crate::i18n::tr_label("BROWSER")).size(11.0).strong().color(t.text_dim));
     ui.add_space(4.0);
     browser_rows(app, ui, acts);
 }
@@ -1077,27 +1078,27 @@ fn canvas_panel(app: &mut SolveApp, ctx: &egui::Context) {
                         });
                         ui.end_row();
                     }
-                    ui.label("Distance");
+                    ui.label(crate::i18n::tr_label("Distance"));
                     ui.add(crate::prefs::length_drag(&mut m.distance, &app.session.doc.units, app.preferences.length_decimals).range(0.001..=1e6));
                     ui.end_row();
                 } else {
                     let (mut x, mut y, mut w, mut ang, mut op, mut flip) = (c.center.x, c.center.y, c.width, c.angle.to_degrees(), c.opacity, c.flip);
-                    ui.label("Center X");
+                    ui.label(crate::i18n::tr_label("Center X"));
                     let r1 = ui.add(crate::prefs::length_drag(&mut x, &app.session.doc.units, app.preferences.length_decimals));
                     ui.end_row();
-                    ui.label("Center Y");
+                    ui.label(crate::i18n::tr_label("Center Y"));
                     let r2 = ui.add(crate::prefs::length_drag(&mut y, &app.session.doc.units, app.preferences.length_decimals));
                     ui.end_row();
-                    ui.label("Width");
+                    ui.label(crate::i18n::tr_label("Width"));
                     let r3 = ui.add(crate::prefs::length_drag(&mut w, &app.session.doc.units, app.preferences.length_decimals).range(0.01..=1e6));
                     ui.end_row();
-                    ui.label("Angle");
+                    ui.label(crate::i18n::tr_label("Angle"));
                     let r4 = ui.add(egui::DragValue::new(&mut ang).speed(1.0).suffix(" deg"));
                     ui.end_row();
-                    ui.label("Opacity");
+                    ui.label(crate::i18n::tr_label("Opacity"));
                     let r5 = ui.add(egui::Slider::new(&mut op, 0.0..=1.0));
                     ui.end_row();
-                    ui.label("Flip");
+                    ui.label(crate::i18n::tr_label("Flip"));
                     let r6 = ui.checkbox(&mut flip, "");
                     ui.end_row();
                     if [r1, r2, r3, r4, r5, r6].iter().any(|r| r.changed()) {
@@ -1628,7 +1629,7 @@ fn occurrence_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         .collapsible(false)
         .show(&ctx, |ui| {
             if !m.path.is_empty() && app.session.occurrence_scope_count(&m.path).is_ok_and(|n| n > 1) {
-                ui.label("This child is shared. Position changes apply to every copy of its parent.");
+                ui.label(crate::i18n::tr_label("This child is shared. Position changes apply to every copy of its parent."));
             }
             egui::Grid::new("sc_occ_grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 for (k, axis) in ["X distance", "Y distance", "Z distance"].iter().enumerate() {
@@ -1650,10 +1651,10 @@ fn occurrence_panel(app: &mut SolveApp, ui: &mut egui::Ui) {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("Capture All Positions").clicked() {
+                if ui.button(crate::i18n::tr_label("Capture All Positions")).clicked() {
                     action = Some("capture");
                 }
-                if ui.button("Revert All Positions").clicked() {
+                if ui.button(crate::i18n::tr_label("Revert All Positions")).clicked() {
                     action = Some("revert");
                 }
             });
@@ -1842,7 +1843,7 @@ fn capture_prompt(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let n = app.session.pending_moves.len();
     let mut answer: Option<&str> = None;
-    crate::frame::window(ctx, "Capture Position", crate::frame::Width::Normal)
+    crate::frame::window(ctx, crate::i18n::tr_label("Capture Position"), crate::frame::Width::Normal)
         .id(egui::Id::new("sc_capture_prompt"))
         .collapsible(false)
         .resizable(false)
@@ -1856,10 +1857,10 @@ fn capture_prompt(app: &mut SolveApp, ctx: &egui::Context) {
             ui.label(RichText::new("Capture keeps the new position; Revert puts it back.").color(Tokens::get().text_dim));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("Capture Position").clicked() {
+                if ui.button(crate::i18n::tr_label("Capture Position")).clicked() {
                     answer = Some("capture");
                 }
-                if ui.button("Revert").clicked() {
+                if ui.button(crate::i18n::tr_label("Revert")).clicked() {
                     answer = Some("revert");
                 }
                 if ui.button("Cancel").clicked() {
