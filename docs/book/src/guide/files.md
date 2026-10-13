@@ -47,8 +47,11 @@ Containers deduplicate identical STEP, mesh and image payloads. Mesh coordinates
 their original double precision; this is not a conversion to STL. Geometry still rebuilds
 from the timeline when opening. When a saved display preview is available, desktop Open
 shows it while checking geometry; editing starts after the complete rebuild. Cancelling
-keeps the current design. Previews cannot be edited or measured. This experimental option
-requires `preview: true` in an engine Save/Save As call; ordinary saves omit display caches.
+keeps the current design. Previews cannot be edited or measured. Warm saves may include
+a disposable geometry cache; saving never rebuilds cold geometry just to create one.
+Scripts can opt out with `cache: false`. An additional display-mesh cache remains opt-in
+with `preview: true`. Unsupported or mismatched caches are ignored. Browser opening
+still rebuilds synchronously.
 The repository's `docs/design-container.md` describes limits and encoding details.
 
 Current designs use format 15, including sketch face anchors on cylinder caps, sketch axis
