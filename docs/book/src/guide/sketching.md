@@ -41,6 +41,13 @@ of a `.ttf` / `.otf` file, and the **Edit Text** dialog has a **Font** field for
 error, and the font is kept with the text in the design, so the text stays editable in it. `SOLIDCRAFT_FONT_DIRS`
 adds folders to the ones searched for installed fonts.
 
+Right-click a letter's filled interior or outline and choose **Edit Text**. You can also
+start **Edit Text** first and click the letter. All outlines belonging to that text are
+highlighted while the dialog is open. A profile bounded by multiple text sources or other
+geometry cannot identify one text: use **Select Other** to choose its outline instead.
+Change the text, font, baseline X/Y, height or angle, then confirm with **OK**; **Cancel**
+keeps the original text. Position and height use the document's units.
+
 **Project** (P) and **Intersect** bring model edges into the sketch as linked geometry that
 follows later changes. Sketching on a face projects its edges automatically.
 For Project, select visible source curves or points from another sketch, model edges,
