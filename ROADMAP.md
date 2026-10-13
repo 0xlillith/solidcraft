@@ -164,6 +164,11 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Known limitations
 
+- Scheduled and manual CI scan locked dependency advisories, bans and sources with
+  cargo-deny. Vulnerabilities fail the scan; unmaintained crates warn. Local vendored
+  patches require separate upstream review because advisory databases cannot version-match
+  their path dependencies. Pull requests retain the existing licence checks.
+
 - Associative shell-face sketches require a unique certified planar source. Nested shell
   attachments and ambiguous coincident sources remain unsupported.
 - Fillets and chamfers: constant, variable-radius and chord-length fillets; a radius per edge,
