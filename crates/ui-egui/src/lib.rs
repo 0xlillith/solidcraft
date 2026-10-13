@@ -729,6 +729,7 @@ impl SolveApp {
         if let Some(d) = &self.dialog {
             v.extend(d.items());
         }
+        v.extend(sketch_text::highlighted(self));
         v.extend(sketch_text_move::highlighted(self));
         v
     }
