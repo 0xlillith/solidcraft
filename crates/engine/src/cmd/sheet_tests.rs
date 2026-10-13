@@ -955,6 +955,81 @@ fn tray_shrunk_by_a_parameter_unfolds_like_one_built_at_that_size() {
 }
 
 #[test]
+fn the_bend_table_and_the_dxf_follow_what_flat_cuts_leave_of_a_bend() {
+    // A 200 x 100 plate with a 40 mm flange along y = 0: the bend's centre line runs at y = -pi/2
+    // (R 1, T 2, K 0.5: a bend allowance of pi) from x = 0 to 200.
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name": "R", "thickness": "2 mm", "k_factor": "0.5", "bend_radius": "2 mm", "active": true}));
+    base(&mut s, 200.0, 100.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[100, 0, 2]], "height": 40, "angle": 90, "radius": 1, "position": "outside"}));
+    // (bend number, length, start x, end x) of every row; all on the centre line.
+    let rows = |s: &mut Session| -> Vec<(u64, f64, f64, f64)> {
+        let f = flat(s);
+        let num = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+        f["bends"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|b| {
+                assert!((num(&b["start"][1]) + FRAC_PI_2).abs() < 1e-9 && (num(&b["end"][1]) + FRAC_PI_2).abs() < 1e-9, "{b}");
+                (b["bend"].as_u64().unwrap_or(0), num(&b["length"]), num(&b["start"][0]), num(&b["end"][0]))
+            })
+            .collect()
+    };
+    let close = |got: &[(u64, f64, f64, f64)], want: &[(u64, f64, f64, f64)]| {
+        got.len() == want.len()
+            && got.iter().zip(want).all(|(g, w)| g.0 == w.0 && (g.1 - w.1).abs() < 1e-9 && (g.2 - w.2).abs() < 1e-9 && (g.3 - w.3).abs() < 1e-9)
+    };
+    // The DXF's bend lines: both ends' x of every LINE along the centre line, left to right; the
+    // BEND_UP layer holds nothing else.
+    let bend_lines = |s: &mut Session| -> Vec<(f64, f64)> {
+        let text = run(s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+        let on_layer = text.lines().collect::<Vec<_>>().windows(2).filter(|w| w[0].trim() == "8" && w[1].trim() == "BEND_UP").count();
+        let mut found: Vec<(f64, f64)> = solidcraft_io::read_dxf(&text)
+            .unwrap()
+            .iter()
+            .filter_map(|g| match g {
+                solidcraft_io::Geom2::Line(a, b) if (a.y + FRAC_PI_2).abs() < 1e-6 && (b.y + FRAC_PI_2).abs() < 1e-6 => {
+                    Some((a.x.min(b.x), a.x.max(b.x)))
+                }
+                _ => None,
+            })
+            .collect();
+        found.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(found.len(), on_layer, "{text}");
+        found
+    };
+    assert!(close(&rows(&mut s), &[(1, 200.0, 0.0, 200.0)]), "{:?}", rows(&mut s));
+    assert_eq!(bend_lines(&mut s).len(), 1);
+    // A flat cut takes the flange's left half, its bend and a strip of the base.
+    run(&mut s, "sheet.unfold", json!({}));
+    rectangle_tool(&mut s, "Half", [-10.0, -60.0], [100.0, 10.0]);
+    run(&mut s, "solid.extrude", json!({"sketch": "Half", "through_all": true, "direction": "symmetric", "operation": "cut"}));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!(close(&rows(&mut s), &[(1, 100.0, 100.0, 200.0)]), "{:?}", rows(&mut s));
+    let lines = bend_lines(&mut s);
+    assert!(lines.len() == 1 && (lines[0].0 - 100.0).abs() < 1e-6 && (lines[0].1 - 200.0).abs() < 1e-6, "{lines:?}");
+    let csv = run(&mut s, "sheet.export_bend_table", json!({}));
+    let text = csv["text"].as_str().unwrap_or_default();
+    assert_eq!((text.lines().count(), csv["bends"].as_u64()), (2, Some(1)), "{text}");
+    assert!(text.lines().nth(1).is_some_and(|l| l.contains(",1,90.000000000,up,1.000000000,3.141592654,100.000000000,100.000000000,")), "{text}");
+    // A slot across what is left splits the bend: a row and a line for each piece, both bend 1.
+    run(&mut s, "sheet.unfold", json!({}));
+    rectangle_tool(&mut s, "Slot", [140.0, -20.0], [160.0, 10.0]);
+    run(&mut s, "solid.extrude", json!({"sketch": "Slot", "through_all": true, "direction": "symmetric", "operation": "cut"}));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!(close(&rows(&mut s), &[(1, 40.0, 100.0, 140.0), (1, 40.0, 160.0, 200.0)]), "{:?}", rows(&mut s));
+    let lines = bend_lines(&mut s);
+    assert!(lines.len() == 2 && (lines[0].1 - 140.0).abs() < 1e-6 && (lines[1].0 - 160.0).abs() < 1e-6, "{lines:?}");
+    let csv = run(&mut s, "sheet.export_bend_table", json!({}));
+    assert_eq!((csv["text"].as_str().unwrap_or_default().lines().count(), csv["bends"].as_u64()), (3, Some(2)));
+    // Unfolded, the flat pattern lists the same pieces.
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!(close(&rows(&mut s), &[(1, 40.0, 100.0, 140.0), (1, 40.0, 160.0, 200.0)]), "{:?}", rows(&mut s));
+}
+
+#[test]
 fn bend_table_exports_shop_dimensions_and_tracks_parameter_changes() {
     let mut s = Session::default();
     run(&mut s, "sheet.manage_rules", json!({"name": "Shop, \"steel\"", "thickness": 2, "bend_radius": 3, "k_factor": 0.4}));

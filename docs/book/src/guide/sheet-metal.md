@@ -64,7 +64,10 @@ per edge with an angle and a height box; an empty box takes the value above.
 For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
 `format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
 radii, allowances and flat centre-line coordinates. Lengths use millimetres and angles use
-degrees. Supply `path` to save it, or omit `path` to receive the content through the command
+degrees. A bend is listed where its centre line has material: one that a cut-out has shortened
+gives the length and ends it has left, and one that cut-outs split gives a row for every piece,
+all with the bend's number (the flat pattern and the DXF draw the same pieces as bend lines).
+Supply `path` to save it, or omit `path` to receive the content through the command
 response. `body` defaults to the last sheet body. Exporting does not add a timeline entry or
 consume an undo step.
 
