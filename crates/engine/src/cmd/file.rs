@@ -81,7 +81,7 @@ fn add_step(s: &mut Session, path: &str, name: Option<&str>) -> Result<Value> {
     let st = s.model.state();
     let bodies: Vec<&str> = st.bodies.iter().filter(|b| b.feature == id).map(|b| b.name.as_str()).collect();
     let fname = s.doc.feature(id).map(|f| f.name.clone()).unwrap_or_default();
-    Ok(json!({"path": path, "feature": id, "name": fname, "bodies": bodies, "warnings": sf.warnings}))
+    Ok(json!({"path": path, "feature": id, "name": fname, "bodies": bodies, "created_bodies": bodies, "warnings": sf.warnings}))
 }
 
 /// Add a MeshImport feature for a 3MF or STL file.
@@ -101,7 +101,7 @@ fn add_mesh(s: &mut Session, path: &str, name: Option<&str>) -> Result<Value> {
     let st = s.model.state();
     let bodies: Vec<&str> = st.bodies.iter().filter(|b| b.feature == id).map(|b| b.name.as_str()).collect();
     let fname = s.doc.feature(id).map(|f| f.name.clone()).unwrap_or_default();
-    Ok(json!({"path": path, "feature": id, "name": fname, "bodies": bodies, "warnings": mf.warnings}))
+    Ok(json!({"path": path, "feature": id, "name": fname, "bodies": bodies, "created_bodies": bodies, "warnings": mf.warnings}))
 }
 
 fn insert_mesh(s: &mut Session, p: &Value) -> Result<Value> {
@@ -192,7 +192,7 @@ fn write_file(s: &mut Session, path: &str, format: &str, compression: &str, prev
     };
     let bytes = match format {
         "container" => s.design_container(compression, preview, cache)?,
-        "json" => solidcraft_io::write_design(&s.doc),
+        "json" => solidcraft_io::write_design(&s.design()),
         _ => return Err(bad("file.save", "format must be container or json")),
     };
     // Atomic, keeping the version being replaced as `<file>.bak`.
@@ -209,7 +209,7 @@ impl Session {
         let geometry = cache.then(|| saved_geometry(self)).flatten();
         let preview = preview.then(|| saved_preview(self)).flatten();
         let thumbnail = cache.then(|| thumbnail::saved(self)).flatten();
-        solidcraft_io::write_design_container_with_thumbnail(&self.doc, compression, preview.as_ref(), geometry.as_deref(), thumbnail.as_deref())
+        solidcraft_io::write_design_container_with_thumbnail(&self.design(), compression, preview.as_ref(), geometry.as_deref(), thumbnail.as_deref())
     }
 }
 
@@ -293,7 +293,7 @@ fn export_to(s: &Session, path: &str, format: Format, bodies: &[String]) -> Resu
         if !bodies.is_empty() {
             return Err(bad("file.export", "design JSON exports the complete document; omit bodies"));
         }
-        solidcraft_io::write_design(&s.doc)
+        solidcraft_io::write_design(&s.design())
     } else if format == Format::Step && bodies.is_empty() && !s.doc.occurrences.is_empty() {
         solidcraft_io::step_assembly(&s.doc, &s.doc.painted(&s.model.state()), &name)?
     } else {

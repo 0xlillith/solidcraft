@@ -61,6 +61,13 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Dimensioning and error reporting
 
+- Inscribed, circumscribed and edge polygon tools preview their actual outline before
+  placement, including orientation and the selected side count.
+- Construction (X) preserves the active sketch drawing tool, picked anchors and inline
+  dimension values, so line type can change while a shape is in progress.
+- Planar sketch construction previews and hover feedback keep the same dashed pattern as
+  committed geometry; centerlines retain their dash-dot pattern.
+
 - Point has a default Sketch CREATE toolbar button alongside the existing drawing tools.
   Saved custom layouts are preserved; Reset Toolbar restores the default Point button.
 - Construction planes cannot take an origin-plane name (XY, XZ, YZ, Top, Front, Right). Plane
@@ -147,6 +154,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## View navigation
 
+- Desktop Ctrl/Cmd +/- and 0 change or reset the saved UI scale. The scale slider keeps
+  its layout stable during a drag and applies the selected scale on release.
+
 - OpenSCAD navigation preset: left drag orbits, right/middle drag pans, Shift+right/middle
   drag zooms, and the wheel zooms. Available in the shared desktop/web Navigation preferences.
 - Compact clickable signed X/Y/Z axis tips, smooth drag-to-orbit, and Shift-orbit snapping
@@ -155,6 +165,11 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   top/bottom heading are preserved. Diagonals include 45-degree edge and isometric corner views.
 
 ## Known limitations
+
+- Scheduled and manual CI scan locked dependency advisories, bans and sources with
+  cargo-deny. Vulnerabilities fail the scan; unmaintained crates warn. Local vendored
+  patches require separate upstream review because advisory databases cannot version-match
+  their path dependencies. Pull requests retain the existing licence checks.
 
 - Associative shell-face sketches require a unique certified planar source. Nested shell
   attachments and ambiguous coincident sources remain unsupported.

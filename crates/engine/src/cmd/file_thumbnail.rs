@@ -107,6 +107,29 @@ mod tests {
     }
 
     #[test]
+    fn portable_thumbnail_preserves_saved_visibility() {
+        let mut session = Session::default();
+        session.execute("solid.box", &serde_json::json!({"length":10,"width":20,"height":30,"body_name":"Visible"})).unwrap();
+        session.execute("solid.box", &serde_json::json!({"length":100,"width":100,"height":100,"body_name":"Hidden"})).unwrap();
+        session.execute("browser.visibility", &serde_json::json!({"items":["Hidden"],"visible":false})).unwrap();
+        let world = session.world_state();
+        for body in &world.bodies {
+            body.mesh();
+        }
+        let expected = saved(&session).unwrap();
+        let bytes = session.design_container(solidcraft_io::DesignCompression::Fast, false, true).unwrap();
+        let doc = solidcraft_io::read_design(&bytes).unwrap();
+        assert_eq!(doc.visibility.hidden_bodies, vec!["Hidden"]);
+        assert_eq!(doc, *session.design());
+        assert_eq!(solidcraft_io::read_design_thumbnail(&bytes), Some(expected));
+        let reopened = Session::new(doc);
+        assert_eq!(reopened.visibility, session.visibility);
+        let disabled = session.design_container(solidcraft_io::DesignCompression::Fast, false, false).unwrap();
+        assert_eq!(solidcraft_io::read_design(&disabled).unwrap().visibility, session.visibility);
+        assert!(solidcraft_io::read_design_thumbnail(&disabled).is_none());
+    }
+
+    #[test]
     fn portable_thumbnail_never_forces_cold_evaluation_or_meshing() {
         let mut session = Session::default();
         session.execute("solid.box", &serde_json::json!({"length":10,"width":20,"height":30})).unwrap();
