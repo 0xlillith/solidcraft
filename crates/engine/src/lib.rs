@@ -16,6 +16,7 @@ pub mod occurrences;
 pub mod params;
 pub mod product_scene;
 pub mod recovery;
+pub mod render_jobs;
 pub mod sample;
 pub mod view;
 
@@ -228,6 +229,7 @@ pub struct Session {
     pub camera: Option<render::Camera>,
     /// Host-owned viewport metadata, never saved or included in history.
     render_viewport: Option<Arc<render::ExecutorDescriptor>>,
+    render_jobs: render_jobs::Jobs,
     /// The visibility the design file holds (what `is_dirty` compares with).
     saved_visibility: Visibility,
     /// States to go back to (`edit.checkpoint`, `edit.restore_checkpoint`): how batches of
@@ -325,6 +327,7 @@ impl Session {
             visibility,
             camera: None,
             render_viewport: None,
+            render_jobs: Default::default(),
             #[cfg(test)]
             evaluations: 0,
             crash_journal: false,
@@ -345,6 +348,13 @@ impl Session {
         if let Some(viewport) = &self.render_viewport {
             backend.executors.push((**viewport).clone());
         }
+        if let Some(executor) = &self.render_jobs.descriptor {
+            let mut executor = executor.clone();
+            if self.render_jobs.host.as_ref().is_none_or(|host| !host.is_available()) {
+                executor.availability = render::Availability::Unavailable { reason: "CPU image host is unavailable".into() };
+            }
+            backend.executors.push(executor);
+        }
         backend
     }
 
@@ -362,6 +372,9 @@ impl Session {
                 return Err(EngineError::Other("host viewport executor must contain only viewport profiles".into()));
             }
             let mut backend = render::builtin_backend();
+            if let Some(executor) = &self.render_jobs.descriptor {
+                backend.executors.push(executor.clone());
+            }
             backend.executors.push(executor.clone());
             // Resolution validates the whole registry, including duplicate executor IDs.
             let request = render::RenderRequest {
@@ -572,6 +585,7 @@ impl Session {
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value> {
         let spec = find_command(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
         let host_viewport = self.render_viewport.clone();
+        let host_jobs = self.render_jobs.host.clone();
         let live = spec.live.filter(|_| params.get("live").and_then(Value::as_bool) == Some(true));
         if live.is_none() && spec.reads_model && self.model.is_stale() {
             self.refresh();
@@ -610,6 +624,9 @@ impl Session {
         // New/open/recover can replace the Session. Device ownership belongs to the host,
         // so its capability metadata survives those document lifecycle commands.
         self.render_viewport = host_viewport;
+        if self.render_jobs.host.is_none() && host_jobs.is_some() {
+            self.set_render_job_host(host_jobs)?;
+        }
         if outermost && crash::enabled() {
             // A failed command leaves the design as it was (restored below).
             let failed = r.as_ref().err().map(ToString::to_string);
@@ -751,6 +768,7 @@ impl Session {
             visibility: self.visibility.clone(),
             camera: self.camera,
             render_viewport: self.render_viewport.clone(),
+            render_jobs: self.render_jobs.scratch(),
             saved_visibility: self.saved_visibility.clone(),
             #[cfg(test)]
             evaluations: 0,

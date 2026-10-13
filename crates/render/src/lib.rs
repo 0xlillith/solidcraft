@@ -7,6 +7,7 @@
 mod backend;
 mod camera;
 mod curve_display;
+pub mod job;
 mod product;
 mod raster;
 

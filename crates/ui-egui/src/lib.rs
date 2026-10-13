@@ -296,7 +296,16 @@ pub struct SolveApp {
 }
 
 impl SolveApp {
-    pub fn new(session: Session, services: Services) -> Self {
+    pub fn new(mut session: Session, services: Services) -> Self {
+        #[cfg(test)]
+        let image_host = Some(solidcraft_engine::render::job::CpuHost::cooperative());
+        #[cfg(not(test))]
+        let image_host = solidcraft_engine::render::job::CpuHost::for_platform().map_err(|e| log::error!("render image host: {e}")).ok();
+        if let Err(e) = session.set_render_job_host(image_host.clone()) {
+            log::error!("render image host: {e}");
+        }
+        let mut render_workspace = render_workspace::State::default();
+        render_workspace.image_host = image_host;
         SolveApp {
             session,
             ui: UiState::default(),
@@ -307,7 +316,7 @@ impl SolveApp {
             pre_sketch_marker: None,
             services,
             viewport: viewport::ViewportState::default(),
-            render_workspace: Default::default(),
+            render_workspace,
             tool: None,
             dialog: None,
             params: None,
@@ -1018,6 +1027,7 @@ impl SolveApp {
     /// Per-frame logic before layout.
     pub fn logic(&mut self, ctx: &egui::Context) {
         render_workspace::sync_backend(self);
+        render_workspace::tick(self, ctx);
         file_load::tick(self, ctx);
         self.esc_handled = false;
         prefs::apply(self, ctx);

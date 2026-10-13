@@ -3,6 +3,40 @@ use crate::scenario::Harness;
 use solidcraft_engine::Session;
 
 #[test]
+fn clicked_image_controls_complete_cancel_and_export_without_dirtying_the_design() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":1400}));
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.draft.width = 16;
+    h.app.render_workspace.view.draft.height = 16;
+    h.app.render_workspace.view.dirty = true;
+    h.frames(3);
+    let doc = h.app.session.doc.clone();
+    let undo = h.app.session.undo.len();
+    h.step(&json!({"widget":"Check Render Request"})).unwrap();
+    h.step(&json!({"widget":"Start Render"})).unwrap();
+    for _ in 0..50 {
+        h.frames(1);
+        if h.app.render_workspace.view.completed.is_some() {
+            break;
+        }
+    }
+    let good = h.app.render_workspace.view.completed.unwrap();
+    h.step(&json!({"widget":"Export PNG"})).unwrap();
+    assert!(h.dir.join("render.png").is_file());
+    h.app.render_workspace.view.draft.width = 1024;
+    h.app.render_workspace.view.draft.height = 768;
+    h.step(&json!({"widget":"Start Render"})).unwrap();
+    h.step(&json!({"widget":"Cancel Render"})).unwrap();
+    h.frames(5);
+    assert_eq!(h.app.render_workspace.view.completed, Some(good));
+    assert_eq!(h.app.session.execute("render.status", &json!({"job":h.app.render_workspace.view.job})).unwrap()["progress"]["phase"], "cancelled");
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert_eq!(h.app.session.undo.len(), undo);
+    assert!(!h.app.session.is_dirty());
+}
+
+#[test]
 fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
     let mut h = Harness::new();
     h.app.run("solid.box", json!({"length":10,"width":20,"height":5,"body_name":"Product"})).unwrap();
@@ -68,15 +102,15 @@ fn render_drafts_and_capabilities_are_isolated_across_document_switches() {
     crate::documents::open_tab(&mut h.app, Session::default()).unwrap();
     assert!(!active(&h.app));
     assert_eq!(h.app.render_workspace.view.name, "Studio");
-    assert_eq!(h.app.session.render_backend().executors.len(), 2);
+    assert_eq!(h.app.session.render_backend().executors.len(), 3);
     crate::documents::switch(&mut h.app, 0);
     assert_eq!(h.app.render_workspace.view.name, "First draft");
     assert_eq!(h.app.render_workspace.view.draft.background, [20, 40, 60]);
     assert!(h.app.render_workspace.view.dirty);
-    assert_eq!(h.app.session.render_backend().executors.len(), 2);
+    assert_eq!(h.app.session.render_backend().executors.len(), 3);
     h.app.run("file.new", json!({})).unwrap();
     assert_eq!(h.app.render_workspace.view.name, "Studio");
-    assert_eq!(h.app.session.render_backend().executors.len(), 2);
+    assert_eq!(h.app.session.render_backend().executors.len(), 3);
 }
 
 #[test]

@@ -1,5 +1,10 @@
 # Integrated Render workspace (R3)
 
+R4a builds on this viewport contract with a separately advertised CPU product-image
+executor and Check/Start/Cancel/Export controls. See [render jobs](render-jobs.md) for
+the asynchronous protocol, image limits, captured revisions and PNG export. The legacy
+`ui.render` snapshot remains a separate route.
+
 Choose **Render** in the workspace switcher after finishing a modelling operation.
 The current integrated GPU renderer shows a separate product scene. Return to Design
 restores its camera, projection preference and existing viewport drawing policy.

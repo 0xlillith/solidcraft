@@ -25,6 +25,10 @@ answered within 60 seconds is replied to with `{"ok": false, "error": "timeout"}
 
 Commands never open dialogs when run this way. `solidcraft-cli commands` prints the same registry.
 
+Product images use `render.preflight/start/status/cancel/export` through `engine.execute`.
+Keep the returned session-scoped job ID for subsequent calls; status does not block or
+render. See [render jobs](render-jobs.md) for capture, cancellation and export semantics.
+
 Every `sketch.*` command that changes a sketch adds `created: {points, curves, constraints,
 dimensions}` to its result (and `wires` for 3D curves): the ids of what it added, in creation
 order, next to whatever else the command returns (`curves`, `sides`, `corners`…). Sketch ids are

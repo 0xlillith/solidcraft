@@ -10,7 +10,19 @@ use super::CommandSpec;
 use crate::params::bad;
 use crate::{Result, Session};
 
+mod jobs;
+
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.preflight", "Check Render Request", jobs::preflight).noundo().doc_only()
+    .params("setup?: saved name OR settings?: full RenderSetup; transparent_background?: false; replace?: false. Validates the installed image host and bounded captured product scene without starting work. Stale geometry is rejected. See docs/render-jobs.md"),
+CommandSpec::new("render.start", "Render Image", jobs::start).noundo().doc_only().at("RENDER", "IMAGE").icon("box")
+    .params("Same request as render.preflight. Captures an immutable product scene and queues a bounded image job. Returns its session-scoped job identity, captured scene_generation and progress. Does not change the design. See docs/render-jobs.md"),
+CommandSpec::new("render.status", "Render Progress", jobs::status).noundo().doc_only()
+    .params("job: {session, serial, generation}. Non-blocking progress, error and completed frame metadata; no image bytes and no rendering in this call."),
+CommandSpec::new("render.cancel", "Cancel Render", jobs::cancel).noundo().doc_only()
+    .params("job: {session, serial, generation}. Requests cooperative cancellation; completed jobs remain completed. Late cancelled frames cannot be published."),
+CommandSpec::new("render.export", "Export Render Image", jobs::export).noundo().doc_only()
+    .params("job: {session, serial, generation}, path: PNG destination, overwrite?: false. Exports a retained completed image atomically; an existing destination is preserved on failure. See docs/render-jobs.md"),
 CommandSpec::new("render.backends", "Render Backends", backends)
     .noundo()
     .doc_only()
@@ -181,3 +193,6 @@ mod tests {
 
 #[cfg(test)]
 mod settings_tests;
+
+#[cfg(test)]
+mod job_tests;

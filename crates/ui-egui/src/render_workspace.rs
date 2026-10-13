@@ -22,6 +22,7 @@ mod tests;
 
 pub struct State {
     pub host: Option<ExecutorDescriptor>,
+    pub image_host: Option<solidcraft_engine::render::job::CpuHost>,
     pub view: ViewState,
     revision: u64,
     design_camera: Option<(Camera, bool)>,
@@ -37,11 +38,15 @@ pub struct ViewState {
     pub name: String,
     draft: RenderSetup,
     dirty: bool,
+    job: Option<solidcraft_engine::render::job::JobId>,
+    completed: Option<solidcraft_engine::render::job::JobId>,
+    transparent: bool,
+    overwrite: bool,
 }
 
 impl Default for ViewState {
     fn default() -> Self {
-        Self { name: "Studio".into(), draft: RenderSetup::default(), dirty: false }
+        Self { name: "Studio".into(), draft: RenderSetup::default(), dirty: false, job: None, completed: None, transparent: false, overwrite: false }
     }
 }
 
@@ -49,6 +54,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             host: None,
+            image_host: None,
             view: Default::default(),
             revision: u64::MAX,
             design_camera: None,
@@ -87,6 +93,12 @@ pub fn host_executor(max_dimension: u32, depth: bool, samples: u32) -> Result<Ex
 }
 
 pub fn sync_backend(app: &mut SolveApp) {
+    if app.session.render_job_host().is_none()
+        && let Some(host) = &app.render_workspace.image_host
+        && let Err(e) = app.session.set_render_job_host(Some(host.clone()))
+    {
+        app.set_status(e.to_string(), true);
+    }
     if app.session.render_viewport() == app.render_workspace.host.as_ref() {
         return;
     }
@@ -95,9 +107,22 @@ pub fn sync_backend(app: &mut SolveApp) {
     }
 }
 
+/// Cooperative work belongs to the frame loop, never to a status/control request. Keep
+/// scheduling frames even after leaving Render so a browser job can finish in Design.
+pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
+    if let Some(host) = &app.render_workspace.image_host {
+        match host.pump(1024) {
+            Ok(true) => ctx.request_repaint(),
+            Ok(false) => {}
+            Err(e) => app.set_status(e.to_string(), true),
+        }
+    }
+}
+
 pub fn reset_document(app: &mut SolveApp) {
     let host = app.render_workspace.host.clone();
-    app.render_workspace = State { host, ..Default::default() };
+    let image_host = app.render_workspace.image_host.clone();
+    app.render_workspace = State { host, image_host, ..Default::default() };
     if active(app) {
         app.ui.tab = "SOLID".into();
     }
@@ -211,6 +236,8 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                 }
                 ui.separator();
+                image_controls(app, ui);
+                ui.separator();
                 ui.small("Drag to orbit; middle-drag to pan; scroll to zoom. Save Setup records the current camera.");
                 if ui.button("Return to Design").clicked()
                     && let Err(e) = enter(app, false)
@@ -219,6 +246,88 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             });
         });
+}
+
+fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui.heading("Render Image");
+    ui.small("CPU preview image · PNG · approximate transparency");
+    ui.horizontal(|ui| {
+        ui.label("Width");
+        if ui.add(egui::DragValue::new(&mut app.render_workspace.view.draft.width).range(1..=4096)).changed() {
+            app.render_workspace.view.dirty = true;
+        }
+        ui.label("Height");
+        if ui.add(egui::DragValue::new(&mut app.render_workspace.view.draft.height).range(1..=4096)).changed() {
+            app.render_workspace.view.dirty = true;
+        }
+    });
+    ui.checkbox(&mut app.render_workspace.view.transparent, "Transparent background");
+    if ui.button("Check Render Request").clicked() {
+        let settings = RenderSetup { camera: app.cam, ..app.render_workspace.view.draft.clone() };
+        if app.run("render.preflight", json!({"settings":settings,"transparent_background":app.render_workspace.view.transparent})).is_ok() {
+            app.set_status("Render request is supported; the queue and memory pool are checked again at start.", false);
+        }
+    }
+    let mut busy = false;
+    if let Some(job) = app.render_workspace.view.job {
+        match app.session.execute("render.status", &json!({"job":job})) {
+            Ok(status) => {
+                let phase = status["progress"]["phase"].as_str().unwrap_or("unknown");
+                busy = matches!(phase, "queued" | "preparing" | "running" | "encoding" | "cancelling");
+                ui.label(match phase {
+                    "queued" => "Waiting to render",
+                    "preparing" => "Preparing image",
+                    "running" => "Rendering image",
+                    "encoding" => "Encoding PNG",
+                    "cancelling" => "Cancelling",
+                    "cancelled" => "Render cancelled",
+                    "completed" => "Image ready to export",
+                    "failed" => "Render failed",
+                    _ => "Render status unavailable",
+                });
+                if phase == "completed" {
+                    app.render_workspace.view.completed = Some(job);
+                }
+                if let Some(message) = status["error"]["message"].as_str() {
+                    ui.label(message);
+                    if status["error"]["code"] == "limit_exceeded" {
+                        ui.small("Try a smaller image or simpler scene.");
+                    }
+                }
+                if busy {
+                    let done = status["progress"]["done"].as_u64().unwrap_or(0);
+                    let total = status["progress"]["total"].as_u64().unwrap_or(1).max(1);
+                    ui.add(egui::ProgressBar::new((done as f64 / total as f64).clamp(0.0, 1.0) as f32));
+                    ui.ctx().request_repaint();
+                    if ui.button("Cancel Render").clicked() {
+                        let _ = app.run("render.cancel", json!({"job":job}));
+                    }
+                }
+                if let Some(revision) = status["scene_generation"].as_u64()
+                    && revision != app.session.revision
+                {
+                    ui.small("This image uses the scene captured before subsequent changes.");
+                }
+            }
+            Err(e) => {
+                ui.label(e.to_string());
+            }
+        }
+    }
+    if ui.add_enabled(!busy, egui::Button::new("Start Render")).clicked() {
+        let settings = RenderSetup { camera: app.cam, ..app.render_workspace.view.draft.clone() };
+        if let Ok(reply) = app.run("render.start", json!({"settings":settings,"transparent_background":app.render_workspace.view.transparent})) {
+            app.render_workspace.view.job = serde_json::from_value(reply["job"].clone()).ok();
+            ui.ctx().request_repaint();
+        }
+    }
+    ui.checkbox(&mut app.render_workspace.view.overwrite, "Replace existing file");
+    if ui.add_enabled(app.render_workspace.view.completed.is_some(), egui::Button::new("Export PNG")).clicked()
+        && let Some(job) = app.render_workspace.view.completed
+        && let Some(path) = app.services.pick_save.as_ref().and_then(|pick| pick("render.png", &["png"]))
+    {
+        let _ = app.run("render.export", json!({"job":job,"path":path,"overwrite":app.render_workspace.view.overwrite}));
+    }
 }
 
 /// Convert only product surfaces; geometry budgets are admitted before vertex allocation.
