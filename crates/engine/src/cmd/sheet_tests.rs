@@ -2478,7 +2478,6 @@ fn hole_face_names(s: &mut Session) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "fails until #535 is fixed"]
 fn a_hole_on_a_folded_panel_keeps_the_name_of_its_sketch_circle() {
     // A Ø10 hole at x = 20 on a 100 x 60 plate; the fold at x = 40 stands that (smaller) side up.
     let mut s = Session::default();
