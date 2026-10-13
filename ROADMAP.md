@@ -61,6 +61,10 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- Combined integration is tracked in #842, with the first local scalar library in
+  #846. See [phase boundaries and validation gates](docs/render-integration.md).
+  Texture mapping and HDRI/PBR remain coordinated renderer follow-ups.
+
 - R4a adds bounded CPU product-image jobs, cancellation and atomic PNG export through
   engine commands, the Render panel, CLI and persistent MCP. Immutable captures and
   results stay outside persistence/undo; native workers and cooperative browser tasks
@@ -76,6 +80,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   including undo/redo and checkpoint restore. No render workspace or new image output is
   enabled; see [settings and refresh policy](docs/render-settings.md).
 
+- A bounded cooperative Radiance RGBE input utility is available in L1 render;
+  it does not yet enable HDRI/PBR rendering or a document import command. See
+  [the input contract](docs/render-hdr-input.md) and #813 for integration work.
 - R1 adds renderer-independent backend/profile metadata, strict request resolution and
   bounded image/scratch admission checks, exposed by the read-only `render.backends`
   command. It describes the current CPU raster snapshot path without evaluating the model.

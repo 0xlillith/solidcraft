@@ -1,5 +1,9 @@
 # Render backend capabilities (R1)
 
+This page describes the R1 metadata contract. The installed GPU viewport and CPU
+product-job hosts extend it through complete profiles; HDR input preparation adds
+no lighting capability. See [the integrated phase boundaries](render-integration.md).
+
 `render.backends` discovers render metadata without opening a window, probing a GPU,
 evaluating the model or changing the document, camera, dirty state or undo/redo history.
 It also leaves a model made stale by a live sketch gesture stale.

@@ -8,6 +8,7 @@ mod backend;
 mod camera;
 mod curve_display;
 pub mod job;
+pub mod lighting;
 mod product;
 mod raster;
 
