@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 
 use crate::SolveApp;
+use crate::frame::Level;
 use crate::theme::Tokens;
 
 thread_local! {
@@ -128,6 +129,31 @@ fn selected_curves(app: &SolveApp) -> Vec<String> {
     app.session.selection.iter().filter_map(|s| if let Sel::SketchCurve { id } = s { Some(id.clone()) } else { None }).collect()
 }
 
+/// The line types among the selected curves of the active sketch, indexed like the palette's
+/// buttons (0 normal, 1 construction, 2 centerline); a mixed selection marks each of its types.
+fn selected_linetypes(app: &SolveApp) -> [bool; 3] {
+    let mut types = [false; 3];
+    let curves = selected_curves(app);
+    if curves.is_empty() {
+        return types;
+    }
+    let st = app.session.world_state();
+    let Some(ss) = app.session.active_sketch.and_then(|s| st.sketch(s)) else { return types };
+    for c in curves.iter().filter_map(|id| ss.sketch.curve_index(id).and_then(|i| ss.sketch.curves.get(i))) {
+        let k = if c.centerline {
+            2
+        } else if c.construction {
+            1
+        } else {
+            0
+        };
+        if let Some(t) = types.get_mut(k) {
+            *t = true;
+        }
+    }
+    types
+}
+
 /// Set the line type of the selected curves: 0 normal, 1 construction, 2 centerline (lines).
 pub fn set_linetype(app: &mut SolveApp, kind: u8) {
     let curves = selected_curves(app);
@@ -205,6 +231,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut look = false;
     let mut finish = false;
     let has_curves = !selected_curves(app).is_empty();
+    let selected_types = selected_linetypes(app);
+    let margin_bottom = f32::from(frame.inner_margin.bottom);
     let response = crate::frame::docked(
         app.tr("ui.heading_sketch_palette"),
         egui::Id::new("sc_sketch_palette"),
@@ -217,7 +245,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         let width = WIDTH.min((vp.width() * 0.46 - 16.0).max(120.0));
         ui.set_width(width);
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-        ui.horizontal(|ui| {
+        let line = ui.text_style_height(&egui::TextStyle::Body);
+        let gap = ui.spacing().item_spacing.y;
+        crate::frame::heading(ui, Level::Title, width, |ui| {
             let folded = FOLDED.with(Cell::get);
             if ui.add(egui::Button::new(RichText::new(if folded { "+" } else { "−" }).size(14.0)).frame(false)).clicked() {
                 FOLDED.with(|f| f.set(!folded));
@@ -228,23 +258,28 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             return;
         }
         let ofold = OPTIONS_FOLDED.with(Cell::get);
-        if ui
-            .add(egui::Button::new(RichText::new(format!("{} {}", if ofold { "+" } else { "−" }, app.tr("ui.options"))).size(12.0)).frame(false))
-            .clicked()
-        {
-            OPTIONS_FOLDED.with(|f| f.set(!ofold));
-        }
+        crate::frame::heading(ui, Level::Section, width, |ui| {
+            if ui
+                .add(egui::Button::new(RichText::new(format!("{} {}", if ofold { "+" } else { "−" }, app.tr("ui.options"))).size(12.0)).frame(false))
+                .clicked()
+            {
+                OPTIONS_FOLDED.with(|f| f.set(!ofold));
+            }
+        });
         if !ofold {
-            let options_height = (bottom - ui.cursor().top() - 68.0).max(24.0);
+            // Keep room for the footer: status heading and line, a line, Finish Sketch, a line.
+            let footer = 5.0 * line + ui.spacing().interact_size.y + 6.0 * gap + 8.0;
+            let options_height = (bottom - ui.cursor().top() - footer).max(24.0);
             let options =
                 egui::ScrollArea::vertical().id_salt("sc_palette_options").max_height(options_height).auto_shrink([false, true]).show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.label(app.tr("ui.linetype"));
                         ui.horizontal(|ui| {
-                            // With a selection: convert it; without: the mode new curves are drawn in.
+                            // With a selection: its line type, and a click converts it; without:
+                            // the mode new curves are drawn in.
                             let current = mode(app);
                             for (i, (label, tip)) in [("—", "Normal"), ("- -", "Construction"), ("-·-", "Centerline")].iter().enumerate() {
-                                let on = !has_curves && current == i as u8;
+                                let on = if has_curves { selected_types.get(i).copied().unwrap_or(false) } else { current == i as u8 };
                                 let tr_tip = app.tr_label(tip);
                                 let tip = if has_curves {
                                     crate::i18n::format("sketch.make_selection", &[("linetype", tr_tip)])
@@ -272,9 +307,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             crate::scenario::publish_rect("sketch_palette:options", options.inner_rect);
         }
         ui.add_space(4.0);
+        // The status changes when the sketch needs attention, so it gets its own heading.
+        crate::frame::heading(ui, Level::Section, width, |ui| {
+            ui.label(RichText::new(app.tr("ui.sketch_status")).size(12.0));
+        });
         ui.label(RichText::new(crate::i18n::tr_dyn(&dof_line)).color(if ok { t.sketch_accent } else { t.text_dim }));
-        ui.add_space(4.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // One line between the status and Finish Sketch, and below it to the edge.
+        ui.add_space((line - gap).max(0.0));
+        // A row as tall as the button, so the gap below it is just the line.
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 0.0), egui::Layout::right_to_left(egui::Align::Min), |ui| {
             let button = ui.add(egui::Button::new(RichText::new(app.tr("ui.finish_sketch")).color(Color32::WHITE)).fill(t.accent));
             crate::scenario::publish_rect("sketch_palette:finish", button.rect);
             crate::scenario::publish_handle("sketch_palette:finish", button.rect.center());
@@ -282,6 +323,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 finish = true;
             }
         });
+        ui.add_space((line - margin_bottom).max(0.0));
     });
     app.viewport.palette_rect = response.map(|r| r.response.rect);
     if let Some(r) = app.viewport.palette_rect {
@@ -350,6 +392,38 @@ mod tests {
             assert!(h.app.session.active_sketch.is_none(), "Finish Sketch must work at scale{scale} height{height}");
             assert_eq!(h.app.session.doc.to_json(), baseline);
         }
+    }
+
+    #[test]
+    fn linetype_buttons_follow_the_selection_and_fall_back_to_the_mode() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        let curve = |r: Value| r["curves"][0].as_str().unwrap().to_string();
+        let normal = curve(h.app.run("sketch.line", json!({"points":[[0,0],[20,0]],"infer":false,"connect":false})).unwrap());
+        let cons = curve(h.app.run("sketch.line", json!({"points":[[0,10],[20,10]],"infer":false,"connect":false})).unwrap());
+        let center = curve(h.app.run("sketch.line", json!({"points":[[0,20],[20,20]],"infer":false,"connect":false})).unwrap());
+        h.app.run("sketch.construction", json!({"curves":[cons],"value":true})).unwrap();
+        h.app.run("sketch.centerline", json!({"curves":[center],"value":true})).unwrap();
+        // Which of Normal, Construction and Centerline the palette shows pressed.
+        let pressed = |h: &mut crate::scenario::Harness, ids: &[&String]| {
+            h.app.session.selection = ids.iter().map(|id| Sel::SketchCurve { id: (*id).clone() }).collect();
+            h.settle();
+            let tree = h.output.accesskit_update.as_ref().unwrap();
+            ["—", "- -", "-·-"]
+                .map(|label| tree.nodes.iter().any(|(_, n)| n.label() == Some(label) && n.toggled() == Some(egui::accesskit::Toggled::True)))
+        };
+        assert_eq!(pressed(&mut h, &[&normal]), [true, false, false]);
+        assert_eq!(pressed(&mut h, &[&cons]), [false, true, false]);
+        assert_eq!(pressed(&mut h, &[&center]), [false, false, true]);
+        // A mixed selection shows each of its line types.
+        assert_eq!(pressed(&mut h, &[&normal, &center]), [true, false, true]);
+        // Nothing selected: the drawing mode.
+        assert_eq!(pressed(&mut h, &[]), [true, false, false]);
+        set_mode(&mut h.app, 1);
+        assert_eq!(pressed(&mut h, &[]), [false, true, false]);
+        // A selection overrides the mode until it is cleared.
+        assert_eq!(pressed(&mut h, &[&normal]), [true, false, false]);
+        assert_eq!(pressed(&mut h, &[]), [false, true, false]);
     }
 
     #[test]

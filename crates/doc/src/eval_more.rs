@@ -430,7 +430,14 @@ pub(super) fn sheet_eval(
             }
             let picks = sheet_picks(sh, f, edges, warning);
             let n0 = sh.flanges.len();
-            sh.add_flanges(&picks, h, a, rr, position, *flip)?;
+            let (_, notes) = sh.add_flanges_noted(&picks, h, a, rr, position, *flip)?;
+            if !notes.is_empty() {
+                let notes = notes.join("; ");
+                *warning = Some(match warning.take() {
+                    Some(w) => format!("{w}; {notes}"),
+                    None => notes,
+                });
+            }
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }

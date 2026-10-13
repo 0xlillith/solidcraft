@@ -644,7 +644,8 @@ fn fold_through_cut_outs() {
     assert!(v < vp - 900.0 && v > vp - 1100.0, "{v} {vp}");
     run(&mut s, "sheet.unfold", json!({}));
     assert!((volume(&mut s) - (15000.0 - 1000.0)).abs() < 1e-3, "{}", volume(&mut s));
-    // A round hole across the bend is not supported yet, and says so.
+    // A round hole across the bend folds too: its edge runs over the bend as a curve on the
+    // bend's cylinder, and unfolds to the same round hole.
     let mut c = Session::default();
     base(&mut c, 100.0, 60.0);
     run(&mut c, "sketch.create", json!({"plane": "XY", "name": "Hole"}));
@@ -652,8 +653,14 @@ fn fold_through_cut_outs() {
     run(&mut c, "sketch.finish", json!({}));
     run(&mut c, "solid.extrude", json!({"sketch": "Hole", "through_all": true, "operation": "cut", "direction": "symmetric"}));
     fold_line(&mut c);
-    let e = c.execute("sheet.fold", &json!({"sketch": "FoldLine", "curve": "fl"})).map(|_| ()).unwrap_err().to_string();
-    assert!(e.contains("not supported yet"), "{e}");
+    run(&mut c, "sheet.fold", json!({"sketch": "FoldLine", "curve": "fl"}));
+    let f = flat(&mut c);
+    assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(1), "{f}");
+    let folded = volume(&mut c);
+    assert!(folded < 15000.0 - 150.0, "{folded}");
+    run(&mut c, "sheet.unfold", json!({}));
+    let want = 15000.0 - std::f64::consts::PI * 25.0 * 2.5;
+    assert!((volume(&mut c) - want).abs() < 0.05, "{} vs {want}", volume(&mut c));
 }
 
 #[test]
@@ -1411,6 +1418,8 @@ fn partial_depth_intersect_full_gauge_in_rotated_frames_does_not_invent_pockets(
         run(&mut s, "sketch.rectangle.two_point", json!({"p0":[20,20],"p1":[30,30]}));
         run(&mut s, "sketch.finish", json!({}));
         let mut tool_session = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        // The witness is built in the sketch's own component, so its caps lie in the sketch's frame.
+        run(&mut tool_session, "component.activate", json!({"component":owner}));
         run(&mut tool_session, "solid.extrude", json!({"sketch":"WorldTool","distance":2.5,"body_name":"CapWitness"}));
         let witness_state = tool_session.model.state();
         let witness = &witness_state.body("CapWitness").unwrap().body;
@@ -1716,6 +1725,41 @@ fn hole_beside_two_adjacent_edge_flanges_cuts_and_bends_stay_guarded() {
     assert!(error.contains("bend"), "{error}");
 }
 
+/// The guard of #296 sews every bend on its own. A bend that carries a folded round cut-out
+/// (curved edges on both of its cylinders, a ruled wall between them) sews like any other: a hole
+/// beside it cuts, and a hole in the bend is still refused.
+#[test]
+fn hole_beside_a_bend_with_a_round_cut_out_cuts_and_the_bend_stays_guarded() {
+    let build = |s: &mut Session| {
+        base(s, 80.0, 40.0);
+        run(s, "sheet.flange", json!({"edges":[[40.0, 0.0, 2.5]],"height":30,"angle":90}));
+        run(s, "sheet.unfold", json!({}));
+        run(s, "sketch.create", json!({"plane":"XY","name":"Across"}));
+        run(s, "sketch.circle.center", json!({"center":[60.0, 0.0],"radius":4}));
+        run(s, "sketch.finish", json!({}));
+        run(s, "solid.extrude", json!({"sketch":"Across","through_all":true,"operation":"cut","direction":"symmetric"}));
+        run(s, "sheet.refold", json!({}));
+    };
+    let hole = |s: &mut Session, name: &str, centre: [f64; 2]| {
+        run(s, "sketch.create", json!({"plane":"XY","name":name}));
+        run(s, "sketch.circle.center", json!({"center":centre,"radius":3}));
+        run(s, "sketch.finish", json!({}));
+        s.execute("solid.extrude", &json!({"sketch":name,"through_all":true,"operation":"cut"}))
+    };
+    let mut s = Session::default();
+    build(&mut s);
+    let before = volume(&mut s);
+    if let Err(e) = hole(&mut s, "Hole", [25.0, 20.0]) {
+        panic!("hole beside a bend with a round cut-out: {e}");
+    }
+    let after = volume(&mut s);
+    assert!((before - after - 9.0 * PI * 2.5).abs() < 0.05, "{before} -> {after}");
+    let mut bend = Session::default();
+    build(&mut bend);
+    let error = hole(&mut bend, "Bend", [25.0, 1.5]).unwrap_err().to_string();
+    assert!(error.contains("bend"), "{error}");
+}
+
 /// A fold whose stored `fixed` point ends up off the sheet after a parameter change keeps working:
 /// the point still says which side stays (#370). Only a new pick off the sheet is refused (#263).
 #[test]
@@ -1752,4 +1796,72 @@ fn fold_fixed_point_above_the_sheet_is_not_silently_accepted() {
             assert!(warned, "fixed [90, 30, 20] is 17.5 mm above the sheet, yet the fold succeeded silently: {r}");
         }
     }
+}
+
+/// A 120 x 90 tray in 2 mm aluminium (R 1, K 0.5): four 38.6 mm flanges at `deg` in one feature.
+fn alu_tray(s: &mut Session, deg: f64, rule: Value) {
+    let mut r = json!({"name": "AL2", "thickness": "2 mm", "k_factor": 0.5, "bend_radius": "1 mm", "gap": "0.5 mm", "active": true});
+    if let (Some(r), Some(extra)) = (r.as_object_mut(), rule.as_object()) {
+        r.extend(extra.clone());
+    }
+    run(s, "sheet.manage_rules", r);
+    base(s, 120.0, 90.0);
+    run(s, "sheet.flange", json!({"edges": [[60, 0, 2], [120, 45, 2], [60, 90, 2], [0, 45, 2]], "height": 38.6, "angle": format!("{deg} deg")}));
+}
+
+#[test]
+fn closed_corners_reach_the_flat_pattern_and_the_dxf() {
+    use std::f64::consts::SQRT_2;
+    // 60° and 105° are angles whose flat pattern was lost to a rounding slip in the planar arrangement.
+    for deg in [60.0f64, 72.0, 90.0, 105.0] {
+        let mut s = Session::default();
+        alu_tray(&mut s, deg, json!({}));
+        assert!(s.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()), "{deg}: {:?}", s.model.results);
+        // The end of the flange on y = 0 at the corner at the origin, by hand (see the doc tests):
+        // x(w) = g/√2 + T·sinθ − w·cosθ at flat y = s0 − BA − (w − s0), for w = s0 and w = 38.6.
+        let th = deg.to_radians();
+        let (s0, ba) = (3.0 * (th / 2.0).tan(), th * 2.0);
+        let x_end = |w: f64| 0.5 / SQRT_2 + 2.0 * th.sin() - w * th.cos();
+        let f = flat(&mut s);
+        let outline: Vec<(f64, f64)> = f["outline"][0]
+            .as_array()
+            .map(|l| l.iter().map(|p| (p[0].as_f64().unwrap_or(f64::NAN), p[1].as_f64().unwrap_or(f64::NAN))).collect())
+            .unwrap_or_default();
+        assert_eq!(f["outline"].as_array().map(Vec::len), Some(1), "{deg}: {f}");
+        for (x, y) in [(x_end(s0), s0 - ba), (x_end(38.6), s0 - ba - (38.6 - s0))] {
+            assert!(outline.iter().any(|p| (p.0 - x).abs() < 1e-6 && (p.1 - y).abs() < 1e-6), "{deg}: ({x}, {y}) not in {outline:?}");
+        }
+        // The folded part holds the flat pattern's material (K = 0.5 keeps the volume).
+        let n = outline.len();
+        let area = (0..n).map(|i| outline[i].0 * outline[(i + 1) % n].1 - outline[(i + 1) % n].0 * outline[i].1).sum::<f64>().abs() / 2.0;
+        let v = volume(&mut s);
+        assert!((v - area * 2.0).abs() < 1e-3 * v, "{deg}: {v} vs {}", area * 2.0);
+        // The DXF: the closed outline in straight lines, four bend lines.
+        let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+        assert_eq!(dxf.matches("0\nLINE\n").count(), n + 4, "{deg}: {n} outline points");
+        // Unfold and refold keep it.
+        run(&mut s, "sheet.unfold", json!({}));
+        run(&mut s, "sheet.refold", json!({}));
+        assert!((volume(&mut s) - v).abs() < 1e-6 * v, "{deg}");
+        // A cut made folded still goes through with the corners closed: a Ø20 hole in the base.
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Hole"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [60, 45], "diameter": 20}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": "Hole", "distance": 10, "operation": "cut", "through_all": true}));
+        let want = PI * 100.0 * 2.0;
+        assert!((v - volume(&mut s) - want).abs() < 1e-3 * want, "{deg}: {v} - {} vs {want}", volume(&mut s));
+        assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), Some(1), "{deg}");
+    }
+}
+
+#[test]
+fn corners_left_open_are_reported_on_the_flange() {
+    let mut s = Session::default();
+    alu_tray(&mut s, 72.0, json!({"gap": "0 mm"}));
+    let w = s.model.results.last().and_then(|r| r.warning.clone()).unwrap_or_default();
+    assert_eq!(w.matches("left open").count(), 4, "{w}");
+    // Open corners still fold, unfold and take cuts.
+    run(&mut s, "sheet.unfold", json!({}));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!(volume(&mut s) > 0.0);
 }
