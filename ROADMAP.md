@@ -367,6 +367,10 @@ and reference-object placement remain separate work, as do loft rails and center
   evaluation or meshing; explicit `preview: true` remains a separate warm-mesh option.
   Keys, resource budgets and document/revision guards reject incompatible, hostile or
   stale results. A second modelling kernel still requires its own tested adapter.
+- Warm saves with explicit `cache: true` can also carry a bounded PNG thumbnail from already cached meshes.
+  Home reads it without rebuilding the design when its local picture is missing;
+  mismatched or malformed thumbnails fall back to normal generation. The image is
+  kernel-independent and saving never forces cold meshing to produce it.
 
 - Cold rebuild profiling separates parsing, geometry, placement, display meshing and
   thumbnails. Straight-line closest-point projection and exact curved-surface evaluation
