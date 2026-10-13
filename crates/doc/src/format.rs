@@ -73,13 +73,16 @@
 //!   certificate: the target's `name`, e.g. a cut wall `F5:side:l1` or a pattern copy
 //!   `F4:top@F6.2`), where no construction certificate names it alone. Anchors with
 //!   construction certificates resolve as before.
+//! - 17: named render setups (`render.setups`) save renderer-independent intent. An absent
+//!   field defaults to no setups; geometry, appearances and materials retain their meaning.
+//!   Earlier readers reject this version rather than silently discarding saved setups.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 16;
+pub const FORMAT: u32 = 17;
 
 pub fn format_string(n: u32) -> String {
     format!("solidcraft/{n}")
@@ -96,7 +99,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 15] = [
+const JSON_STEPS: [JsonStep; 16] = [
     |_| Ok(()),
     v2_to_v3,
     v3_to_v4,
@@ -110,6 +113,7 @@ const JSON_STEPS: [JsonStep; 15] = [
     |_| Ok(()),
     |_| Ok(()),
     v13_to_v14,
+    |_| Ok(()),
     |_| Ok(()),
     |_| Ok(()),
 ];

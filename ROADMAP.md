@@ -61,6 +61,11 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- R2 adds bounded named render setups, versioned persistence and `render.settings.get/set`.
+  Proven render-only changes preserve evaluated/stale geometry and prepared world data,
+  including undo/redo and checkpoint restore. No render workspace or new image output is
+  enabled; see [settings and refresh policy](docs/render-settings.md).
+
 - R1 adds renderer-independent backend/profile metadata, strict request resolution and
   bounded image/scratch admission checks, exposed by the read-only `render.backends`
   command. It describes the current CPU raster snapshot path without evaluating the model.
