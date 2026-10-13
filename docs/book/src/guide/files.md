@@ -52,6 +52,10 @@ a disposable geometry cache; saving never rebuilds cold geometry just to create 
 Scripts can opt out with `cache: false`. An additional display-mesh cache remains opt-in
 with `preview: true`. Unsupported or mismatched caches are ignored. Browser opening
 still rebuilds synchronously.
+Warm saves can also include a small PNG thumbnail. It travels with the file, so
+Home can show the recent design without reconstructing it when no local picture
+is available. Missing or incompatible pictures use the usual thumbnail generation.
+`cache: false` omits the portable thumbnail too.
 The repository's `docs/design-container.md` describes limits and encoding details.
 
 Current designs use format 15, including sketch face anchors on cylinder caps, sketch axis

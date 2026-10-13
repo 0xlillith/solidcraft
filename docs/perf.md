@@ -534,3 +534,44 @@ eliminated. A live frame's held solve was already cheap: the seed places the str
 returns at once. Of a live strip frame, the seed reads the constraints in about 0.15 ms, so a
 per-gesture cache of that reading is not worth its invalidation (its signs depend on the
 reference positions, which change every step).
+
+## Portable thumbnail save cost (#303)
+
+Measured 2026-10-13 on the same Windows machine and `ci` profile as above, but
+with **SolidCraft 0.7.0** on both sides: `d3d215b` before the thumbnail change and
+this portable-thumbnail increment after it. A preserved executable of the baseline
+and the new executable ran the existing `benchmark_native_cache_save` on the same
+STEP and sensor documents. Three paired batches alternated before/after order;
+each batch performed nine alternating atomic saves per encoding. The values below
+are medians of the three batch medians, not a percentile of all individual saves.
+No compilation, test suite or desktop model was running during these measurements.
+
+| 512-cube STEP encoding | Before PNG (ms) | After PNG (ms) | Container bytes before → after |
+|---|---:|---:|---:|
+| Plain JSON | 10.334 | 9.676 | 1,998,826 → 1,998,826 |
+| Container, `cache: false` | 8.850 | 9.013 | 1,950,084 → 1,950,084 |
+| Native cache, fast | 45.323 | 53.473 | 4,694,035 → 4,720,385 |
+| Native cache, compact | 42.739 | 48.643 | 837,067 → 863,417 |
+
+The PNG itself is 25,916 bytes; its key and ZIP records bring the increase to
+26,350 bytes. Fast-cache batch medians ranged from 41.585–47.779 ms before and
+53.212–56.556 ms after. Compact ranged from 36.672–43.040 ms before and
+47.688–51.724 ms after. The approximately 8 ms fast-save increase is a measured
+cost on this example, not a general latency bound. JSON bytes and document/source
+blob bytes were compared across both implementations and remained identical.
+
+The sensor enclosure deliberately receives **no portable PNG**: its projected
+triangle boxes total 4,293,457 supersampled pixels, above the four-million work
+budget. The native fast container remains 379,099 bytes. Its save batch medians
+are 14.714 ms before (12.187–14.956) and 13.728 ms after (13.439–14.648); these
+vary within the observed run ranges and do not establish a speedup. Home retains
+its existing thumbnail-generation fallback for this case. A small triangle count
+alone does not guarantee eligibility, because large overlapping faces cost more.
+
+Actual desktop check: copy the STEP container to a new public temporary path,
+start SolidCraft 0.7.0 with that path in Recent and an empty local thumbnail cache,
+and show Home without opening the design. The portable picture was ready in one
+observed 47.6 ms check; no local PNG was created and the active document remained
+empty. The screenshot shows the transferred file's picture while built-in sample
+pictures are still loading. This is one functional visual check, not a first-frame
+benchmark. The separate counting-reader regression proves source-blob deferral.
