@@ -41,6 +41,14 @@ of a `.ttf` / `.otf` file, and the **Edit Text** dialog has a **Font** field for
 error, and the font is kept with the text in the design, so the text stays editable in it. `SOLIDCRAFT_FONT_DIRS`
 adds folders to the ones searched for installed fonts.
 
+Drag a text outline to move all its letters together. Let go to finish in one undo step,
+or press **Esc** during the drag to restore the original text. The text stays editable.
+For an exact displacement, select an outline and choose **Move/Copy** from its context menu.
+Enter **Distance X**, **Distance Y** and an optional **Angle** about the text's baseline;
+lengths accept document units or explicit units such as `1 in`. Enable **Create Copy** to
+leave the original in place and create a separately editable text. **Cancel** leaves the
+design unchanged. Projected geometry remains protected from ordinary dragging.
+
 **Project** (P) and **Intersect** bring model edges into the sketch as linked geometry that
 follows later changes. Sketching on a face projects its edges automatically.
 For Project, select visible source curves or points from another sketch, model edges,
