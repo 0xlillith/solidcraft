@@ -61,6 +61,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- A bounded cooperative Radiance RGBE input utility is available in L1 render;
+  it does not yet enable HDRI/PBR rendering or a document import command. See
+  [the input contract](docs/render-hdr-input.md) and #813 for integration work.
 - R1 adds renderer-independent backend/profile metadata, strict request resolution and
   bounded image/scratch admission checks, exposed by the read-only `render.backends`
   command. It describes the current CPU raster snapshot path without evaluating the model.

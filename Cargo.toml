@@ -51,7 +51,7 @@ quick-xml = "0.41"
 ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 
 # images
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
 
 # ui
 egui = "0.36"
