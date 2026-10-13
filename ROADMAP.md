@@ -71,6 +71,12 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- The first local scalar library (#846) exports reusable assigned colour/opacity looks
+  and design-local physical materials, validates exact revisions and copies selected
+  definitions through existing commands. The desktop Appearance panel opens/applies
+  presets; browser library opening and rich texture/resource packs remain follow-ups.
+  See [the scalar catalog contract](docs/book/src/dev/local-libraries.md).
+
 - Combined integration is tracked in #842, with the first local scalar library in
   #846. See [phase boundaries and validation gates](docs/render-integration.md).
   Texture mapping and HDRI/PBR remain coordinated renderer follow-ups.
