@@ -62,12 +62,14 @@ impl ModelBody {
     pub fn definition_name(&self) -> &str {
         self.source_name.as_deref().unwrap_or(&self.name)
     }
-    /// Display mesh (chord tolerance 1/1000 of the body size), computed once.
+    /// Display mesh, computed once: chord tolerance 1/1000 of the body size, and no facet of a
+    /// curved face or edge turning more than [`kernel::DISPLAY_ANGLE`], so that a bend or a
+    /// hole that is small beside the body is still drawn round.
     pub fn mesh(&self) -> Arc<Mesh> {
         self.mesh
             .get_or_init(|| {
                 let tol = (self.body.size() * 1e-3).max(1e-3);
-                Arc::new(self.body.display_mesh(tol).unwrap_or_default())
+                Arc::new(self.body.display_mesh_angular(tol, kernel::DISPLAY_ANGLE).unwrap_or_default())
             })
             .clone()
     }
@@ -1063,10 +1065,12 @@ pub fn select_profiles(ss: &SolvedSketch, sel: &ProfileSel) -> Result<Vec<Region
     }
     let out: Vec<Region2> = match sel {
         // "All" means what was drawn: projected reference geometry (a face's auto-projected
-        // edges) only counts when the drawn curves alone make no profile.
+        // edges) only counts when the drawn curves alone make no profile. Text is drawn, and
+        // its letters keep their counters as holes (the counters are not filled in).
         ProfileSel::All => {
             let drawn = solidcraft_sketch::find_drawn_profiles(&ss.sketch);
-            if drawn.is_empty() { ps.iter().map(|p| p.region.clone()).collect() } else { drawn.into_iter().map(|p| p.region).collect() }
+            let chosen = if drawn.is_empty() { ps.clone() } else { drawn };
+            solidcraft_sketch::without_text_counters(&ss.sketch, chosen).into_iter().map(|p| p.region).collect()
         }
         ProfileSel::Indices { indices } => {
             let mut v = Vec::new();
@@ -1323,7 +1327,9 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
             });
             let live: std::collections::BTreeSet<&str> = state.bodies.iter().map(|b| b.name.as_str()).collect();
             state.threads.retain(|t| live.contains(t.body.as_str()));
-            // A cut can leave a body in pieces: each piece becomes its own body ("Bar", "Bar (1)").
+            // A cut can leave a body in pieces: each piece becomes its own body ("Bar", "Bar (1)"),
+            // numbered on past names already taken (a body cut in pieces before).
+            let mut taken: std::collections::BTreeSet<String> = state.bodies.iter().map(|b| b.name.clone()).collect();
             let mut split: Vec<ModelBody> = Vec::new();
             for mb in std::mem::take(&mut state.bodies) {
                 if !affected.contains(&mb.name) || state.sheets.iter().any(|s| s.body == mb.name) {
@@ -1339,7 +1345,12 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
                 // (so pieces of one face in different bodies are told apart).
                 let lineages = crate::lineage::Lineage::lumps(&mb.body, mb.lineage().as_deref(), &pieces);
                 for (k, (p, lineage)) in pieces.into_iter().zip(lineages).enumerate() {
-                    let name = if k == 0 { mb.name.clone() } else { format!("{} ({k})", mb.name) };
+                    let name = if k == 0 {
+                        mb.name.clone()
+                    } else {
+                        (k..=k + taken.len()).map(|j| format!("{} ({j})", mb.name)).find(|n| !taken.contains(n)).unwrap_or_default()
+                    };
+                    taken.insert(name.clone());
                     split.push(ModelBody::new(name, p, mb.feature).with_lineage(lineage));
                 }
             }
@@ -3797,7 +3808,7 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             st.bodies.push(ModelBody::traced_new(name, b, f.id));
             Ok(())
         }
-        FeatureKind::Move { bodies, translate, rotate_axis, angle } => {
+        FeatureKind::Move { bodies, translate, rotate_axis, angle, copy } => {
             let t =
                 Vec3::new(val(vals, &translate[0], Kind::Length)?, val(vals, &translate[1], Kind::Length)?, val(vals, &translate[2], Kind::Length)?);
             let ang = match angle {
@@ -3805,11 +3816,20 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 None => 0.0,
             };
             let axis = rotate_axis.unwrap_or(Vec3::Z);
+            // With `copy` set, the source body is kept in place and the transform lands on a new
+            // body pushed beside it instead of replacing it.
+            let mut output = 0;
             for n in bodies {
                 let i = st.bodies.iter().position(|b| &b.name == n).ok_or_else(|| DocError::Unknown(format!("body `{n}`")))?;
-                if let Some(mb) = st.bodies.get_mut(i) {
-                    let nb = Traced::step(kernel::transform(&mb.body, t, Vec3::ZERO, axis, ang)?, &[&mb.traced()]);
-                    *mb = ModelBody::traced_new(mb.name.clone(), nb, mb.feature);
+                let Some(mb) = st.bodies.get(i).cloned() else { continue };
+                let nb = kernel::transform(&mb.body, t, Vec3::ZERO, axis, ang)?;
+                if *copy {
+                    let traced = moved_copy(&mb, nb, 1);
+                    let name = copy_body_name(st, f, output, &mb.name);
+                    st.bodies.push(ModelBody::traced_new(name, traced, f.id));
+                    output += 1;
+                } else if let Some(slot) = st.bodies.get_mut(i) {
+                    *slot = ModelBody::traced_new(mb.name.clone(), Traced::step(nb, &[&mb.traced()]), mb.feature);
                 }
             }
             Ok(())

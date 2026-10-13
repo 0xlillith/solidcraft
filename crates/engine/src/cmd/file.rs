@@ -27,11 +27,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("save")
         .key("Ctrl+S")
         .noundo()
-        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); cache?: bool (warm native geometry, default: true); preview?: bool (saved display meshes, default: false)"),
+        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); cache?: bool (warm native geometry, default: false); preview?: bool (saved display meshes, default: false)"),
     CommandSpec::new("file.save_as", "Save As", save_as)
         .icon("save")
         .noundo()
-        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); cache?: bool (warm native geometry, default: true); preview?: bool (saved display meshes, default: false)"),
+        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); cache?: bool (warm native geometry, default: false); preview?: bool (saved display meshes, default: false)"),
     CommandSpec::new("doc.recovery_list", "Recoverable Designs", recovery_list)
         .noundo()
         .params("dir? (default: the recovery folder) → designs autosaved by apps that crashed or closed with unsaved changes"),
@@ -262,7 +262,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         str_(p, "format").unwrap_or(default_design_format(&path)),
         str_(p, "compression").unwrap_or("fast"),
         bool_(p, "preview").unwrap_or(false),
-        bool_(p, "cache").unwrap_or(true),
+        bool_(p, "cache").unwrap_or(false),
     )
 }
 
@@ -278,7 +278,7 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
         str_(p, "format").unwrap_or(default_design_format(&path)),
         str_(p, "compression").unwrap_or("fast"),
         bool_(p, "preview").unwrap_or(false),
-        bool_(p, "cache").unwrap_or(true),
+        bool_(p, "cache").unwrap_or(false),
     )
 }
 
@@ -415,7 +415,7 @@ mod tests {
         let save_path = std::env::temp_dir().join(format!("solidcraft-preview-save-{}.solidcraft", std::process::id()));
         s.execute("file.save", &json!({"path":save_path})).unwrap();
         let saved = std::fs::read(&save_path).unwrap();
-        assert!(solidcraft_io::read_design_geometry(&saved).is_some());
+        assert!(solidcraft_io::read_design_geometry(&saved).is_none(), "ordinary saves omit native geometry caches");
         assert!(!saved.windows(b"cache/preview.bin".len()).any(|s| s == b"cache/preview.bin"), "ordinary saves omit redundant display meshes");
         s.execute("file.save", &json!({"path":save_path,"preview":true})).unwrap();
         assert!(solidcraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_some());
@@ -487,6 +487,35 @@ mod tests {
         assert!(editing.active_sketch.is_some());
         assert!(saved_preview(&editing).is_none());
         assert!(saved_geometry(&editing).is_none());
+    }
+
+    #[test]
+    fn save_and_save_as_require_explicit_native_cache_opt_in() {
+        let mut session = Session::new(Document::new("Cache opt-in"));
+        session.execute("solid.box", &json!({"length":10,"width":20,"height":30})).unwrap();
+        let world = session.world_state();
+        for body in &world.bodies {
+            body.mesh();
+        }
+        let path = std::env::temp_dir().join(format!("solidcraft-cache-opt-in-{}.solidcraft", std::process::id()));
+        for command in ["file.save", "file.save_as"] {
+            for cache in [None, Some(true), Some(false), None] {
+                let mut params = json!({"path":path});
+                if let Some(cache) = cache {
+                    params["cache"] = json!(cache);
+                }
+                session.execute(command, &params).unwrap();
+                let bytes = std::fs::read(&path).unwrap();
+                assert_eq!(solidcraft_io::read_design_geometry(&bytes).is_some(), cache == Some(true), "{command}: {cache:?}");
+                assert!(
+                    !bytes.windows(b"cache/preview.bin".len()).any(|entry| entry == b"cache/preview.bin"),
+                    "display meshes require preview: true"
+                );
+                assert_eq!(solidcraft_io::read_design(&bytes).unwrap(), *session.doc);
+            }
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(format!("{}.bak", path.display())).unwrap();
     }
 
     #[test]

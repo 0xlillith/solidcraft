@@ -7,7 +7,7 @@ self-contained input/output format. `io::write_design` keeps its JSON contract;
 `io::write_design_container` is the fallible container writer.
 
 Packages have `container.json` with `{"format":"solidcraft-container/1"}` and
-`document.json` with the versioned parametric document (currently `solidcraft/15`).
+`document.json` with the versioned parametric document (currently `solidcraft/16`).
 The independent versions let document migrations evolve without changing blob encodings.
 Existing serialized document fields are retained automatically, without a second copy
 of the document schema or a deep clone of embedded payloads.
@@ -112,8 +112,10 @@ larger metadata misses the cache and uses the normal authoritative part-size bud
 
 ## Native evaluated cache
 
-Warm engine Save/Save As and browser downloads include `cache/key.json` and
-`cache/brep.bin` by default. `cache: false` opts out; JSON and recovery/autosave
+Engine Save/Save As can include `cache/key.json` and `cache/brep.bin` when
+explicitly requested with `cache: true` and geometry is warm. The default is
+`cache: false`, including browser downloads, to avoid extra save time and file size.
+JSON and recovery/autosave
 remain independent of the native cache. Saving never forces cold placement,
 evaluation or tessellation. Active sketches, uncaptured moves, errors, mesh bodies,
 unsupported adapter representations and exceeded budgets omit the cache.

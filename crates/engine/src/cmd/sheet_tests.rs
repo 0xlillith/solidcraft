@@ -2061,6 +2061,103 @@ fn closed_corners_reach_the_flat_pattern_and_the_dxf() {
 }
 
 #[test]
+fn corner_reliefs_of_the_rule_reach_the_part_the_flat_pattern_and_the_dxf() {
+    use solidcraft_geom::Vec2;
+    // The tray at 72°: its bends meet at the corners of the base, s0 = 3·tan 36° in from the sheet's
+    // edges, and are BA = 2θ wide in the flat. A relief 8 mm across reaches r = 4 mm along both edges
+    // and takes, at each corner, r²·π/4 (round) or r² (rectangular) of the base and r of two bends.
+    let th = 72f64.to_radians();
+    let (s0, ba) = (3.0 * (th / 2.0).tan(), th * 2.0);
+    let corners = [(s0, s0), (120.0 - s0, s0), (120.0 - s0, 90.0 - s0), (s0, 90.0 - s0)];
+    let export = |s: &mut Session| run(s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+    let mut notch = Session::default();
+    alu_tray(&mut notch, 72.0, json!({"corner_relief": "8 mm"}));
+    let v0 = volume(&mut notch);
+    assert_eq!(export(&mut notch).matches("0\nARC\n").count(), 0);
+    run(&mut notch, "sheet.unfold", json!({}));
+    let flat0 = volume(&mut notch);
+    for (shape, of_the_base) in [("round", 4.0 * PI), ("rectangular", 16.0)] {
+        let mut s = Session::default();
+        alu_tray(&mut s, 72.0, json!({"corner_relief_shape": shape, "corner_relief": "8 mm"}));
+        assert!(s.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()), "{shape}: {:?}", s.model.results);
+        let listed = run(&mut s, "sheet.rules", json!({}));
+        assert_eq!(listed["rules"][0]["rule"]["corner_relief_shape"], shape);
+        assert_eq!(listed["rules"][0]["values"]["corner_relief_shape"], shape);
+        // The folded part loses what the flat pattern loses (K = 0.5 keeps the volume of a bend).
+        let (v, want) = (volume(&mut s), 4.0 * (of_the_base + 8.0 * ba) * 2.0);
+        assert!((v0 - v - want).abs() < 0.1, "{shape}: {v0} - {v} vs {want}");
+        // The bend table: every bend is 8 mm shorter.
+        let f = flat(&mut s);
+        let lengths: Vec<f64> =
+            f["bends"].as_array().map(|b| b.iter().map(|b| b["length"].as_f64().unwrap_or(f64::NAN)).collect()).unwrap_or_default();
+        for (got, edge) in lengths.iter().zip([120.0, 90.0, 120.0, 90.0]) {
+            assert!(lengths.len() == 4 && (got - (edge - 2.0 * s0 - 8.0)).abs() < 1e-6, "{shape}: {lengths:?}");
+        }
+        assert_eq!(f["outline"].as_array().map(Vec::len), Some(1), "{shape}");
+        // The DXF: the round reliefs are arcs of radius 4 about the four corners, the square ones lines.
+        let dxf = export(&mut s);
+        let arcs: Vec<(Vec2, f64)> = solidcraft_io::read_dxf(&dxf)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|g| if let solidcraft_io::Geom2::Arc { c, a, .. } = g { Some((*c, a.dist(*c))) } else { None })
+            .collect();
+        if shape == "round" {
+            assert_eq!(arcs.len(), 4, "{arcs:?}");
+            for (x, y) in corners {
+                assert!(arcs.iter().any(|(c, r)| c.dist(Vec2::new(x, y)) < 1e-6 && (r - 4.0).abs() < 1e-6), "({x}, {y}): {arcs:?}");
+            }
+        } else {
+            assert!(arcs.is_empty() && dxf.contains(&format!("{:.6}\n20\n{:.6}\n", s0 + 4.0, s0 + 4.0)), "{arcs:?}");
+        }
+        // Unfold and refold keep it, and a cut made folded still goes through: a Ø20 hole in the base.
+        run(&mut s, "sheet.unfold", json!({}));
+        assert!((flat0 - volume(&mut s) - want).abs() < 0.1, "{shape}: unfolded {flat0} - {} vs {want}", volume(&mut s));
+        run(&mut s, "sheet.refold", json!({}));
+        assert!((volume(&mut s) - v).abs() < 1e-6 * v, "{shape}");
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Hole"}));
+        run(&mut s, "sketch.circle.center", json!({"center": [60, 45], "diameter": 20}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": "Hole", "distance": 10, "operation": "cut", "through_all": true}));
+        assert!((v - volume(&mut s) - PI * 100.0 * 2.0).abs() < 0.5, "{shape}: {v} - {}", volume(&mut s));
+        let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+        assert!((volume(&mut reopened) - volume(&mut s)).abs() < 1e-6, "{shape}");
+    }
+}
+
+#[test]
+fn the_corner_relief_shape_is_a_rule_setting_checked_and_undone() {
+    let mut s = Session::default();
+    alu_tray(&mut s, 72.0, json!({}));
+    let shape = |s: &mut Session| run(s, "sheet.rules", json!({}))["rules"][0]["rule"]["corner_relief_shape"].clone();
+    let v0 = volume(&mut s);
+    assert_eq!(shape(&mut s), "notch");
+    // Only the three names are shapes; a refused one changes nothing.
+    for wrong in [json!("star"), json!("square"), json!(""), json!(2)] {
+        let e = s.execute("sheet.manage_rules", &json!({"name": "AL2", "corner_relief_shape": wrong})).map(|_| ()).unwrap_err().to_string();
+        assert!(e.contains("`corner_relief_shape` must be notch, round or rectangular"), "{e}");
+    }
+    assert!(shape(&mut s) == "notch" && volume(&mut s) == v0);
+    // Changing the rule changes the parts made with it; other settings leave the shape alone.
+    let r = run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "corner_relief_shape": "Round"}));
+    assert_eq!((&r["rule"]["corner_relief_shape"], &r["values"]["corner_relief_shape"]), (&json!("round"), &json!("round")));
+    let round = volume(&mut s);
+    assert!(round < v0 - 200.0, "{v0} -> {round}");
+    run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "hem_gap": "0.02 mm"}));
+    assert!(shape(&mut s) == "round" && volume(&mut s) == round);
+    run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "corner_relief_shape": null, "corner_relief": "6 mm"}));
+    assert!(shape(&mut s) == "round" && volume(&mut s) > round);
+    for _ in 0..3 {
+        run(&mut s, "edit.undo", json!({}));
+    }
+    assert!(shape(&mut s) == "notch" && volume(&mut s) == v0);
+    // A relief longer than the bends is left out and reported on the flange; the part is the notched one.
+    run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "corner_relief_shape": "rectangular", "corner_relief": "200 mm"}));
+    let w = s.model.results.last().and_then(|r| r.warning.clone()).unwrap_or_default();
+    assert_eq!(w.matches("no corner relief at (").count(), 4, "{w}");
+    assert!(w.contains("would take a whole bend away") && volume(&mut s) == v0, "{w}");
+}
+
+#[test]
 fn corners_left_open_are_reported_on_the_flange() {
     let mut s = Session::default();
     alu_tray(&mut s, 72.0, json!({"gap": "0 mm"}));

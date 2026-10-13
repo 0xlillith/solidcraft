@@ -153,8 +153,10 @@ display warmup and thumbnail completion. Neither log measures the exact GPU firs
 
 ## Native cache opening (#303)
 
-Warm container saves now include the portable native B-rep cache by default, without
-duplicating display meshes. `cache: false` omits it. Desktop Open reads metadata and
+The portable native B-rep cache is opt-in with `cache: true` on warm container
+saves, without duplicating display meshes. Ordinary saves and browser downloads
+default to `cache: false`: the measurements below do not justify imposing the
+additional save time and file size on every design. Desktop Open reads metadata and
 optional geometry through a seekable file, produces a bounded provisional picture,
 then resolves original sources and reconstructs the complete session before editing.
 This improves the opportunity for early display, not the cost of authoritative feature
@@ -236,7 +238,7 @@ these results do not establish a memory reduction. Final-mesh readiness varied
 from 611 to 856 ms for STEP and 3.84 to 4.60 s for the enclosure; small differences
 in full-opening medians should not be read as modelling speedups. Compact storage
 reduces this STEP example's size and atomic-save time, but costs slightly more save
-time on the enclosure. `cache: false` retains the phase-one save path;
+time on the enclosure. The default `cache: false` retains the phase-one save path;
 `compression: "compact"` is an explicit space/CPU choice. Larger or unsupported
 geometry can exceed the documented budgets and reopen without a provisional image.
 
