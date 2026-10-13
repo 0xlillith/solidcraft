@@ -5,6 +5,12 @@ original ancestry and are validated together on a pinned upstream revision. The
 integration PR is a reviewable combined tree; it does not assert that any constituent
 PR has merged. Maintainers can choose the combined or individual merge path.
 
+The refreshed stack incorporates upstream `c3ebe139`. Upstream now owns document
+format 18 for Unstitch/Reverse Normal, so saved render setups use format 19 with
+explicit migration coverage for 17 and 18. The Design viewport retains upstream GPU
+tessellation; the separate product scene continues to upload its prepared CPU meshes.
+The already-merged HDR input contribution is retained through its original ancestry.
+
 | Phase | Existing contribution / deliverable | Completion gate |
 |---|---|---|
 | 1 | R2 #667, R3 #706, R4a #800: saved setups, integrated product workspace and bounded CPU PNG jobs | Setup save/reopen/undo, document isolation, strict capabilities, cancellation, native exports and full repository gate |
@@ -48,6 +54,10 @@ Run `cargo xtask ci` before each integration/code arc is committed. Record actua
 counts, platform, pinned upstream and any failure in the PR, separately from remote
 checks. Existing Windows kernel issue #796 is not fixed or suppressed by render work.
 No geometry baseline or test assertion is weakened to publish an integration.
+On upstream `c3ebe139`, the refreshed full local run also reported robustness-golden
+failures; the engine and GPU test binaries were bounded after 15 minutes without
+complete summaries. Those interrupted binaries are not passes. The PR records the
+exact failed cases, focused reproductions and limits separately from completed gates.
 Native compilation, wasm compilation and actual browser interaction are separate
 claims. Use original small examples and actual app/PNG evidence for visible changes;
 do not commit generated review media or commercial reference assets.

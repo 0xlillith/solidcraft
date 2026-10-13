@@ -66,6 +66,7 @@ fn catalog_appearance_copy_keeps_mass_and_survives_undo_and_cold_reopen_without_
     let catalog = catalog();
     file.write(&catalog);
     let mut s = session();
+    let original_format = s.doc.format.clone();
     let before = s.execute("component.properties", &json!({})).unwrap()["total"]["mass_g"].as_f64().unwrap();
     let undo = s.undo.len();
     apply_entry(&mut s, &file, &catalog.entries[0], json!({"bodies":["Body1"]})).unwrap();
@@ -79,7 +80,7 @@ fn catalog_appearance_copy_keeps_mass_and_survives_undo_and_cold_reopen_without_
     s.execute("edit.redo", &json!({})).unwrap();
     let reopened = Session::new(solidcraft_io::read_design(&saved).unwrap());
     assert_eq!(reopened.doc.appearances, s.doc.appearances);
-    assert_eq!(solidcraft_doc::format::FORMAT, 18, "scalar library adds no document schema");
+    assert_eq!(reopened.doc.format, original_format, "scalar library adds no document schema");
 }
 
 #[test]
