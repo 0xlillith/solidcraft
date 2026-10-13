@@ -285,6 +285,8 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   record their coordinate frame; legacy wires migrate from known provenance without changing
   coordinates. Broken legacy links with missing provenance can require explicit refresh or relink.
   See [occurrence workflows](docs/occurrence-workflows.md).
+- Toolbar drops on panel labels, gaps and margins append commands with insertion feedback;
+  button drops keep insert-before ordering.
 - Parameters and Configurations have distinct actions in the SOLID toolbar's CONFIGURE panel.
   Parameters opens the user/model variable editor; Configurations opens the configuration table.
   Configure remains available in the panel dropdown.
