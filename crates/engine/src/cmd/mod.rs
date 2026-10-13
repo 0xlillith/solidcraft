@@ -38,6 +38,7 @@ pub(crate) use measure_sel::measure_items;
 mod kernel_heal_tests;
 mod parameters;
 mod plastic;
+mod render;
 mod sheet;
 mod sketch;
 pub(crate) use sketch::author_path_for_rebind;
@@ -220,6 +221,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(materials::COMMANDS.iter());
     v.extend(section::COMMANDS.iter());
     v.extend(diagnostics::COMMANDS.iter());
+    v.extend(render::COMMANDS.iter());
     v
 }
 
