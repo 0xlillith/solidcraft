@@ -985,6 +985,28 @@ fn same_seg(a: &Seg2, b: &Seg2, tol: f64) -> bool {
     }
 }
 
+/// A closed loop's segments with each run that `joins` says continue one another made one line.
+fn rejoined(segs: Vec<Seg2>, joins: &impl Fn(&Seg2, &Seg2) -> bool) -> Vec<Seg2> {
+    let n = segs.len();
+    let join = |i: usize| segs.get((i + n - 1) % n).zip(segs.get(i)).is_some_and(|(s, t)| joins(s, t));
+    // Start where a run starts; a loop that is all one run (it can't close) stays as it is.
+    let Some(k) = (0..n).find(|&i| !join(i)) else { return segs };
+    let mut out: Vec<Seg2> = Vec::with_capacity(n);
+    for j in 0..n {
+        let i = (k + j) % n;
+        let Some(s) = segs.get(i).copied() else { continue };
+        if j > 0
+            && join(i)
+            && let Some(Seg2::Line { b, .. }) = out.last_mut()
+        {
+            *b = s.end();
+            continue;
+        }
+        out.push(s);
+    }
+    out
+}
+
 /// Union of regions that touch along shared boundary segments (one extrude of several adjacent
 /// profiles makes one body). Disjoint regions stay separate.
 pub fn merge_regions(regions: &[Region2]) -> Vec<Region2> {
@@ -1022,6 +1044,17 @@ pub fn merge_regions(regions: &[Region2]) -> Vec<Region2> {
     if !shared {
         return regions.to_vec();
     }
+    // Where the shared boundaries ended, the outline is left split in two: the lines on either
+    // side are one edge again (else they make split faces and vertices that booleans trip on).
+    let ends: Vec<Vec2> = segs.iter().zip(&alive).filter(|(_, a)| !**a).flat_map(|(s, _)| [s.start(), s.end()]).collect();
+    let rejoin = |s: &Seg2, t: &Seg2| match (*s, *t) {
+        (Seg2::Line { a, b }, Seg2::Line { a: b2, b: c }) => {
+            b.dist(b2) <= tol
+                && ends.iter().any(|e| e.dist(b) <= tol)
+                && (b - a).normalized().zip((c - b).normalized()).is_some_and(|(u, v)| u.dot(v) > 1.0 - 1e-12)
+        }
+        _ => false,
+    };
     let rest: Vec<Seg2> = segs.iter().zip(&alive).filter(|(_, a)| **a).map(|(s, _)| *s).collect();
     // Chain into loops, taking the sharpest left turn where several continue.
     let mut used = vec![false; rest.len()];
@@ -1058,7 +1091,7 @@ pub fn merge_regions(regions: &[Region2]) -> Vec<Region2> {
             }
         }
         if !lp.is_empty() && lp.first().zip(lp.last()).is_some_and(|(f, l)| l.end().dist(f.start()) <= tol) {
-            loops.push(Loop2 { segs: lp });
+            loops.push(Loop2 { segs: rejoined(lp, &rejoin) });
         }
     }
     let outers: Vec<&Loop2> = loops.iter().filter(|l| l.signed_area() > 0.0).collect();

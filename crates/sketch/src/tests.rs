@@ -334,6 +334,9 @@ fn merging_adjacent_regions() {
     let mut areas: Vec<f64> = m.iter().map(|r| r.area()).collect();
     areas.sort_by(f64::total_cmp);
     assert!((areas[0] - 50.0).abs() < 1e-9 && (areas[1] - 200.0).abs() < 1e-9, "{areas:?}");
+    // The two squares make one rectangle: the outline isn't left split where the shared edge was.
+    let sides = m.iter().map(|r| r.outer.segs.len()).collect::<Vec<_>>();
+    assert!(sides.contains(&4) && sides.contains(&3), "{sides:?}");
 }
 
 #[test]
