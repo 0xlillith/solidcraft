@@ -1,6 +1,7 @@
 //! MCP tool definitions and dispatch. Every tool is a thin wrapper over engine commands
 //! (`engine.execute`) and the inspection / rendering control methods.
 
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Map, Value, json};
@@ -68,6 +69,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 json!({
                     "command": string("Command id (see list_commands)"),
                     "params": {"type": "object", "description": "The command's parameters"},
+                    "verbose": {"type": "boolean", "description": "Full reply (default true). False omits repeated feature body inventories and duplicate sketch ID lists."},
                 }),
                 &["command"],
             ),
@@ -89,6 +91,7 @@ pub fn tool_definitions() -> Vec<Value> {
                         "items": {"type": "object", "properties": {"command": {"type": "string"}, "params": {"type": "object"}}, "required": ["command"]},
                     },
                     "rollback": {"type": "boolean", "description": "Undo completed steps when one fails (default true)"},
+                    "verbose": {"type": "boolean", "description": "Full step replies (default true). False returns compact feature metadata, created/removed body names and sketch IDs."},
                 }),
                 &["commands"],
             ),
@@ -319,6 +322,57 @@ fn exec(b: &mut dyn Backend, command: &str, params: Value) -> Result<Value, Stri
     b.call("engine.execute", json!({"command": command, "params": params}))
 }
 
+/// Capture names before execution, so an inspection failure cannot follow a successful edit.
+/// This unmeasured read does not alter history or require body tessellation.
+fn exec_reply(b: &mut dyn Backend, command: &str, params: Value, verbose: bool) -> Result<Value, String> {
+    if verbose {
+        return exec(b, command, params);
+    }
+    let before = b.call("document.inspect", json!({"measure": false}))?;
+    let names: BTreeSet<String> = before
+        .get("bodies")
+        .and_then(Value::as_array)
+        .ok_or("compact reply: body inventory is unavailable")?
+        .iter()
+        .map(|body| body.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect::<Option<_>>()
+        .ok_or("compact reply: invalid body inventory")?;
+    let mut result = exec(b, command, params)?;
+    if let Some(object) = result.as_object_mut() {
+        // add_feature replies include the whole inventory and an evaluation time. Import
+        // replies instead list just their imported bodies; preserve those useful names.
+        if object.get("feature").is_some_and(Value::is_number) && object.contains_key("ms") {
+            let after: Option<Vec<String>> = object
+                .get("bodies")
+                .and_then(Value::as_array)
+                .and_then(|bodies| bodies.iter().map(|body| body.as_str().map(str::to_owned)).collect());
+            if let Some(after) = after {
+                object.remove("bodies");
+                object.entry("created_bodies").or_insert_with(|| json!(after.iter().filter(|name| !names.contains(*name)).collect::<Vec<_>>()));
+                let after: BTreeSet<_> = after.into_iter().collect();
+                let removed: Vec<_> = names.difference(&after).collect();
+                if !removed.is_empty() {
+                    object.insert("removed_bodies".into(), json!(removed));
+                }
+            }
+        }
+        // Keep every created ID, once, without dropping non-duplicate semantic fields
+        // such as a rectangle's named corners or sides, errors, warnings or measurements.
+        let duplicates: Vec<String> = object
+            .get("created")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .filter(|(key, value)| value.is_array() && object.get(*key) == Some(*value))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in duplicates {
+            object.remove(&key);
+        }
+    }
+    Ok(result)
+}
+
 fn pick(a: &Map<String, Value>, keys: &[&str]) -> Value {
     Value::Object(keys.iter().filter_map(|k| a.get(*k).filter(|v| !v.is_null()).map(|v| (k.to_string(), v.clone()))).collect())
 }
@@ -340,7 +394,12 @@ fn dispatch(b: &mut dyn Backend, name: &str, a: &Map<String, Value>) -> Result<V
         }
         "execute" => {
             let id = str_arg(a, "command").ok_or("`command` is required")?;
-            exec(b, id, a.get("params").cloned().filter(Value::is_object).unwrap_or(json!({})))
+            exec_reply(
+                b,
+                id,
+                a.get("params").cloned().filter(Value::is_object).unwrap_or(json!({})),
+                a.get("verbose").and_then(Value::as_bool).unwrap_or(true),
+            )
         }
         "inspect_design" => {
             let measure = a.get("measure").and_then(Value::as_bool).unwrap_or(true);
@@ -454,7 +513,12 @@ fn batch(b: &mut dyn Backend, a: &Map<String, Value>) -> Value {
     for (i, step) in steps.iter().enumerate() {
         let command = step.get("command").or_else(|| step.get("id")).and_then(Value::as_str);
         let r = match command {
-            Some(id) => exec(b, id, step.get("params").cloned().filter(|p| !p.is_null()).unwrap_or(json!({}))),
+            Some(id) => exec_reply(
+                b,
+                id,
+                step.get("params").cloned().filter(|p| !p.is_null()).unwrap_or(json!({})),
+                a.get("verbose").and_then(Value::as_bool).unwrap_or(true),
+            ),
             None => Err("missing `command`".to_string()),
         };
         match r {

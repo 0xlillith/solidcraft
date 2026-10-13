@@ -145,6 +145,12 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 - Saved projections from a removed strip retain their geometry and report the lost
   reference. Explicitly reselect the wall to repair that projection.
 
+## Agent command replies
+
+- MCP `execute` and `batch` accept opt-in compact replies (`verbose: false`), retaining
+  created IDs and created/removed body names without repeating full feature inventories.
+  Default replies and checkpoint rollback remain unchanged; see [MCP](docs/mcp.md).
+
 ## View navigation
 
 - Desktop Ctrl/Cmd +/- and 0 change or reset the saved UI scale. The scale slider keeps

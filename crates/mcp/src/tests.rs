@@ -435,6 +435,109 @@ fn legacy_design_files_and_resource_uris() {
     assert!(d["result"]["contents"][0]["text"].as_str().unwrap().contains("timeline"));
 }
 
+#[test]
+fn compact_replies_name_new_and_removed_bodies_without_repeating_old_ones() {
+    let mut s = server();
+    let cube = |x: i64, y: i64| json!({"command":"solid.box","params":{"length":1,"width":1,"height":1,"corner":[x,y,0],"operation":"new"}});
+    let existing: Vec<_> = (0..50).map(|i| cube(2 * i, 0)).collect();
+    tool(&mut s, "batch", json!({"commands":existing}));
+    let more: Vec<_> = (0..3).map(|i| cube(2 * i, 5)).collect();
+    let compact = tool(&mut s, "batch", json!({"commands":more,"verbose":false}));
+    assert_eq!(compact["completed"], 3);
+    let text = compact.to_string();
+    for (i, name) in ["Body51", "Body52", "Body53"].iter().enumerate() {
+        assert_eq!(compact["results"][i]["created_bodies"], json!([name]));
+        assert!(compact["results"][i].get("bodies").is_none());
+        assert!(compact["results"][i]["feature"].is_number());
+    }
+    for old in ["Body1", "Body25", "Body50"] {
+        assert!(!text.contains(&format!("\"{old}\"")), "{text}");
+    }
+    assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], 53);
+    let mut default = server();
+    let existing: Vec<_> = (0..50).map(|i| cube(2 * i, 0)).collect();
+    tool(&mut default, "batch", json!({"commands":existing}));
+    let more: Vec<_> = (0..3).map(|i| cube(2 * i, 5)).collect();
+    let verbose = tool(&mut default, "batch", json!({"commands":more}));
+    assert!(verbose["results"][0]["bodies"].as_array().unwrap().contains(&json!("Body1")));
+    assert!(text.len() * 3 < verbose.to_string().len(), "{} vs {} bytes", text.len(), verbose.to_string().len());
+    eprintln!("three feature replies: compact {} bytes, default {} bytes", text.len(), verbose.to_string().len());
+    let removed = tool(&mut s, "execute", json!({"command":"solid.remove","params":{"bodies":["Body1"]},"verbose":false}));
+    assert_eq!(removed["removed_bodies"], json!(["Body1"]));
+    assert_eq!(removed["created_bodies"], json!([]));
+    assert!(removed.get("bodies").is_none());
+    assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], 52);
+}
+
+#[test]
+fn compact_sketch_replies_keep_ids_and_semantic_fields_and_preserve_inspection() {
+    let mut s = server();
+    tool(&mut s, "execute", json!({"command":"sketch.create","params":{"plane":"XY"},"verbose":false}));
+    let r = tool(&mut s, "execute", json!({"command":"sketch.rectangle.two_point","params":{"p0":[0,0],"p1":[10,10]},"verbose":false}));
+    assert_eq!(r["created"]["curves"].as_array().unwrap().len(), 4);
+    assert_eq!(r["created"]["points"].as_array().unwrap().len(), 4);
+    assert!(r.get("curves").is_none() && r.get("constraints").is_none());
+    assert!(r["corners"]["bottom_left"].is_string() && r["sides"]["bottom"].is_string());
+    let inspected = tool(&mut s, "execute", json!({"command":"document.inspect","params":{"measure":false},"verbose":false}));
+    assert!(inspected["bodies"].is_array());
+    assert_eq!(inspected["undo"], 2, "compact bookkeeping must not add undo steps");
+    let verbose = tool(&mut s, "execute", json!({"command":"sketch.rectangle.two_point","params":{"p0":[20,0],"p1":[30,10]},"verbose":true}));
+    assert_eq!(verbose["curves"], verbose["created"]["curves"]);
+    assert_eq!(verbose["constraints"], verbose["created"]["constraints"]);
+}
+
+#[test]
+fn compact_batch_preserves_failure_and_rollback_behavior() {
+    for rollback in [true, false] {
+        let mut s = server();
+        tool(&mut s, "execute", json!({"command":"solid.box","params":{"length":1,"width":1,"height":1}}));
+        let r = raw_tool(
+            &mut s,
+            "batch",
+            json!({"verbose":false,"rollback":rollback,"commands":[
+                {"command":"solid.box","params":{"length":1,"width":1,"height":1,"corner":[10,0,0],"operation":"new"}},
+                {"command":"NoSuchCommand"}
+            ]}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        let r: Value = serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(r["failed"]["index"], 1);
+        assert_eq!(r["failed"]["command"], "NoSuchCommand");
+        assert_eq!(r["rolled_back"], rollback);
+        assert_eq!(r["results"][0]["created_bodies"], json!(["Body2"]));
+        assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], if rollback { 1 } else { 2 });
+    }
+    let mut s = server();
+    let r = raw_tool(&mut s, "execute", json!({"command":"solid.box","params":{"length":1,"width":1,"height":1},"verbose":"false"}));
+    assert!(r.get("error").is_some(), "{r}");
+    assert_eq!(tool(&mut s, "measure", json!({}))["body_count"], 0);
+}
+
+#[test]
+fn compact_reply_inspection_failure_never_executes_the_edit() {
+    struct Unavailable {
+        edited: bool,
+    }
+    impl crate::backend::Backend for Unavailable {
+        fn call(&mut self, method: &str, _: Value) -> Result<Value, String> {
+            if method == "engine.execute" {
+                self.edited = true;
+            }
+            Err("inspection unavailable".into())
+        }
+        fn has_ui(&self) -> bool {
+            true
+        }
+        fn describe(&self) -> String {
+            "unavailable test bridge".into()
+        }
+    }
+    let mut b = Unavailable { edited: false };
+    let r = crate::tools::call_tool(&mut b, "execute", &json!({"command":"solid.box","verbose":false}));
+    assert_eq!(r["isError"], true);
+    assert!(!b.edited);
+}
+
 /// #528: an agent saves the angle of a product photo as a named view once, then renders the
 /// model from that view after each change. The render must use the saved camera, not a
 /// standard view.
@@ -459,7 +562,6 @@ fn screenshot_renders_a_saved_named_view() {
 /// is mostly the same body list once per step. A compact batch reply names only what each step
 /// added or changed.
 #[test]
-#[ignore = "fails until #530 is fixed"]
 fn compact_batch_reply_does_not_repeat_the_body_list() {
     let mut s = server();
     let cube =

@@ -50,8 +50,8 @@ Claude Desktop (`claude_desktop_config.json`), bridged to a running app:
 | Tool | Arguments | What it does |
 |---|---|---|
 | `list_commands` | `filter?` | The command catalog: id, label, tab/panel, shortcut, parameter docs, enabled now. `filter` matches id, label, tab and panel. |
-| `execute` | `command`, `params?` | Run any command with JSON parameters (`list_commands` shows them). Failures leave the design unchanged. A feature command replies with the feature (`feature`, `name`), every body (`bodies`) and the bodies it created (`created_bodies`). |
-| `batch` | `commands: [{command, params}]`, `rollback?` (default true) | Run steps in order, stop at the first error and undo the completed steps. The reply names the failing step (`failed.index`, `failed.command`, `failed.error`) and every result before it. |
+| `execute` | `command`, `params?`, `verbose?` (default true) | Run any command with JSON parameters (`list_commands` shows them). Failures leave the design unchanged. A feature command replies with the feature (`feature`, `name`), every body (`bodies`) and the bodies it created (`created_bodies`). See compact replies below. |
+| `batch` | `commands: [{command, params}]`, `rollback?` (default true), `verbose?` (default true) | Run steps in order, stop at the first error and undo the completed steps. The reply names the failing step (`failed.index`, `failed.command`, `failed.error`) and every result before it. |
 | `inspect_design` | `measure?` (default true), `sketches?` (default true) | Parameters, timeline (type, suppressed, rolled back, error, warning, timing), bodies (volume, area, centre of mass, bbox, face/edge/vertex counts, visible), sketches (curves, points, constraints, profiles, DOF, solve status, visible), selection, undo depth. Hide helper sketches, bodies or construction planes with `execute` `browser.visibility` (`{items, visible}` or `{folder, visible}`). |
 | `measure` | `body?` | Volume (mm³), area (mm²), centre of mass, bbox and topology counts per body, with totals. |
 | `body_topology` | `body` | Edges (index, midpoint, length, ends) and faces (index, area, centroid, normal). An edge midpoint is the `[x,y,z]` that picks that edge for fillet and chamfer. |
@@ -82,7 +82,22 @@ however long the history is. Batches that call `file.new` or `doc.open` get the 
 not its file path. (An older app without checkpoints falls back to undoing as many steps as
 the batch added to the undo history.)
 
+## Compact replies
+
+For long command sequences, set `verbose: false` on `execute` or `batch`. Feature
+replies omit the repeated full `bodies` inventory, retain `created_bodies`, and report
+`removed_bodies` when names disappear. Sketch replies retain every ID under `created`
+and omit only identical top-level ID arrays; named corners and sides remain available.
+Feature IDs, errors, warnings and batch rollback behavior are unchanged. The default
+reply is unchanged when `verbose` is omitted or true.
+
+Compact mode reads the unmeasured body inventory before each command; a failed read
+prevents that command from running. These names do not describe every geometry change
+to an existing body. Use `inspect_design` for the complete current state. Explicit
+inspection results and import replies listing only imported bodies remain intact.
+
 ## Demo: an enclosure built over MCP
+
 
 `examples/demo/enclosure_mcp.py` is a small MCP client. It drives a running app (`solidcraft
 --control PORT`) through `solidcraft-cli mcp --connect` and builds an electronics enclosure one
