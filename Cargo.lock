@@ -3375,6 +3375,7 @@ version = "0.7.0"
 dependencies = [
  "log",
  "serde",
+ "serde_json",
  "solidcraft-geom",
  "thiserror 2.0.21",
  "truck-meshalgo",
