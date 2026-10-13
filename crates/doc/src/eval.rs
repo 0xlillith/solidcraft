@@ -1323,7 +1323,9 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
             });
             let live: std::collections::BTreeSet<&str> = state.bodies.iter().map(|b| b.name.as_str()).collect();
             state.threads.retain(|t| live.contains(t.body.as_str()));
-            // A cut can leave a body in pieces: each piece becomes its own body ("Bar", "Bar (1)").
+            // A cut can leave a body in pieces: each piece becomes its own body ("Bar", "Bar (1)"),
+            // numbered on past names already taken (a body cut in pieces before).
+            let mut taken: std::collections::BTreeSet<String> = state.bodies.iter().map(|b| b.name.clone()).collect();
             let mut split: Vec<ModelBody> = Vec::new();
             for mb in std::mem::take(&mut state.bodies) {
                 if !affected.contains(&mb.name) || state.sheets.iter().any(|s| s.body == mb.name) {
@@ -1339,7 +1341,12 @@ fn apply_traced(state: &mut ModelState, f: &Feature, tools: Vec<Traced>, op: Ope
                 // (so pieces of one face in different bodies are told apart).
                 let lineages = crate::lineage::Lineage::lumps(&mb.body, mb.lineage().as_deref(), &pieces);
                 for (k, (p, lineage)) in pieces.into_iter().zip(lineages).enumerate() {
-                    let name = if k == 0 { mb.name.clone() } else { format!("{} ({k})", mb.name) };
+                    let name = if k == 0 {
+                        mb.name.clone()
+                    } else {
+                        (k..=k + taken.len()).map(|j| format!("{} ({j})", mb.name)).find(|n| !taken.contains(n)).unwrap_or_default()
+                    };
+                    taken.insert(name.clone());
                     split.push(ModelBody::new(name, p, mb.feature).with_lineage(lineage));
                 }
             }
