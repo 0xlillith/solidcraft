@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 mod adapter;
 mod binary;
+mod preview;
+pub use preview::native_preview_mesh;
 
 const MAGIC: &[u8; 8] = b"SCBREP02";
 const MAX_BYTES: usize = 64 << 20;
