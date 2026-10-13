@@ -1865,3 +1865,302 @@ fn corners_left_open_are_reported_on_the_flange() {
     run(&mut s, "sheet.refold", json!({}));
     assert!(volume(&mut s) > 0.0);
 }
+
+/// 2 mm aluminium (R 1, K 0.5, gap 0.5) and a 120 x 90 base flange.
+fn alu_base(s: &mut Session) {
+    run(
+        s,
+        "sheet.manage_rules",
+        json!({"name": "AL2", "thickness": "2 mm", "k_factor": 0.5, "bend_radius": "1 mm", "gap": "0.5 mm", "active": true}),
+    );
+    base(s, 120.0, 90.0);
+}
+
+/// The base's four edges (bottom, right, top, left) in one feature: 75° and 38.6 high from the
+/// feature, then 90°, 105° at 30 high and 120° at 25 high from the edges themselves.
+fn four_angles_in_one_feature() -> Session {
+    let mut s = Session::default();
+    alu_base(&mut s);
+    let edges = json!([
+        [60, 0, 2],
+        {"point": [120, 45, 2], "angle": "90 deg"},
+        {"point": [60, 90, 2], "angle": 105, "height": "30 mm"},
+        {"point": {"x": 0, "y": 45, "z": 2}, "angle": "120 deg", "height": 25}
+    ]);
+    run(&mut s, "sheet.flange", json!({"edges": edges, "height": 38.6, "angle": "75 deg"}));
+    s
+}
+
+/// The flat outline's points.
+fn outline_points(f: &Value) -> Vec<(f64, f64)> {
+    let loops = f["outline"].as_array().cloned().unwrap_or_default();
+    loops
+        .iter()
+        .flat_map(|l| l.as_array().cloned().unwrap_or_default())
+        .map(|q| (q[0].as_f64().unwrap_or(f64::NAN), q[1].as_f64().unwrap_or(f64::NAN)))
+        .collect()
+}
+
+/// Two point lists are the same set of points, to 1e-6.
+fn same_points(a: &[(f64, f64)], b: &[(f64, f64)]) -> bool {
+    a.len() == b.len() && a.iter().all(|p| b.iter().any(|q| (p.0 - q.0).abs() < 1e-6 && (p.1 - q.1).abs() < 1e-6))
+}
+
+fn bend_angles(s: &mut Session) -> Vec<f64> {
+    flat(s)["bends"].as_array().cloned().unwrap_or_default().iter().map(|b| b["angle_deg"].as_f64().unwrap_or(f64::NAN).round()).collect()
+}
+
+fn no_errors_or_warnings(s: &Session) -> bool {
+    s.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none())
+}
+
+/// The flanges of [`four_angles_in_one_feature`] (bottom, right, top, left): angles in degrees
+/// and heights.
+const FOUR_ANGLES: [f64; 4] = [75.0, 90.0, 105.0, 120.0];
+const FOUR_HEIGHTS: [f64; 4] = [38.6, 38.6, 30.0, 25.0];
+
+/// That tray's panels in the flat pattern by hand (T 2, R 1, K 0.5, gap g 0.5; the derivation
+/// is with the doc tests). Folded, a flange at θ whose neighbour at a corner is at φ ends
+/// x(w) = ((g/2)·√(2 − 2·cosθ·cosφ) + T·(1 − cosθ·cosφ) − w·sinθ·cosφ) / sinφ along its edge from
+/// that corner, w up its outer face from the virtual sharp. In the flat that point lies
+/// s0 − BA − (w − s0) into the base from the edge, with s0 = (R + T)·tan(θ/2) the setback and
+/// BA = θ·(R + K·T) the bend allowance; the panel spans w = s0 … the flange's height.
+fn hand_panels() -> Vec<Vec<(f64, f64)>> {
+    // Each edge's start corner, its direction, the direction into the base, and its length.
+    let frames: [((f64, f64), (f64, f64), (f64, f64), f64); 4] = [
+        ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), 120.0),
+        ((120.0, 0.0), (0.0, 1.0), (-1.0, 0.0), 90.0),
+        ((120.0, 90.0), (-1.0, 0.0), (0.0, -1.0), 120.0),
+        ((0.0, 90.0), (0.0, -1.0), (1.0, 0.0), 90.0),
+    ];
+    (0..4)
+        .map(|i| {
+            let (o, d, v, len) = frames[i];
+            let (th, h) = (FOUR_ANGLES[i].to_radians(), FOUR_HEIGHTS[i]);
+            let (s0, ba) = (3.0 * (th / 2.0).tan(), th * 2.0);
+            let x_end = |phi: f64, w: f64| {
+                let c = th.cos() * phi.cos();
+                (0.25 * (2.0 - 2.0 * c).sqrt() + 2.0 * (1.0 - c) - w * th.sin() * phi.cos()) / phi.sin()
+            };
+            let (prev, next) = (FOUR_ANGLES[(i + 3) % 4].to_radians(), FOUR_ANGLES[(i + 1) % 4].to_radians());
+            let at = |u: f64, w: f64| {
+                let into = s0 - ba - (w - s0);
+                (o.0 + d.0 * u + v.0 * into, o.1 + d.1 * u + v.1 * into)
+            };
+            vec![at(x_end(prev, s0), s0), at(x_end(prev, h), h), at(len - x_end(next, h), h), at(len - x_end(next, s0), s0)]
+        })
+        .collect()
+}
+
+/// A polygon's area.
+fn polygon_area(p: &[(f64, f64)]) -> f64 {
+    let n = p.len();
+    (0..n).map(|i| p[i].0 * p[(i + 1) % n].1 - p[(i + 1) % n].0 * p[i].1).sum::<f64>().abs() / 2.0
+}
+
+#[test]
+fn edge_flanges_take_their_own_angle_and_height_per_edge() {
+    let mut one = four_angles_in_one_feature();
+    assert!(no_errors_or_warnings(&one), "{:?}", one.model.results);
+    let f1 = flat(&mut one);
+    // The bends: each edge's own angle, as long as the base's edge between its neighbours' bend
+    // start lines (each s0 in from the original edge).
+    assert_eq!(bend_angles(&mut one), FOUR_ANGLES);
+    let s0 = FOUR_ANGLES.map(|a| 3.0 * (a.to_radians() / 2.0).tan());
+    let ba = FOUR_ANGLES.map(|a| a.to_radians() * 2.0);
+    let (w, h) = (120.0 - s0[3] - s0[1], 90.0 - s0[0] - s0[2]);
+    let lengths: Vec<f64> = f1["bends"].as_array().cloned().unwrap_or_default().iter().map(|b| b["length"].as_f64().unwrap_or(f64::NAN)).collect();
+    assert_eq!(lengths.len(), 4, "{f1}");
+    for (got, want) in lengths.iter().zip([w, h, w, h]) {
+        assert!((got - want).abs() < 1e-6, "{lengths:?} vs {w} and {h}");
+    }
+    // The flat pattern is one outline through every hand-derived panel corner.
+    let (outline, panels) = (outline_points(&f1), hand_panels());
+    assert_eq!(f1["outline"].as_array().map(Vec::len), Some(1), "{f1}");
+    for (i, panel) in panels.iter().enumerate() {
+        for &(x, y) in panel {
+            assert!(outline.iter().any(|p| (p.0 - x).abs() < 1e-6 && (p.1 - y).abs() < 1e-6), "flange {i}: ({x}, {y}) not in {outline:?}");
+        }
+    }
+    // It holds the base, the four bend zones and the four panels, nothing more or less, and its
+    // size is the panels' extent.
+    let area = w * h + (ba[0] + ba[2]) * w + (ba[1] + ba[3]) * h + panels.iter().map(|p| polygon_area(p)).sum::<f64>();
+    assert!(rel(polygon_area(&outline), area) < 1e-9, "{} vs {area}", polygon_area(&outline));
+    let all = panels.concat();
+    let span = |k: fn(&(f64, f64)) -> f64| all.iter().map(k).fold(f64::MIN, f64::max) - all.iter().map(k).fold(f64::MAX, f64::min);
+    for (k, want) in [span(|p| p.0), span(|p| p.1), 2.0].into_iter().enumerate() {
+        assert!((f1["flat_size_mm"][k].as_f64().unwrap_or(f64::NAN) - want).abs() < 1e-6, "{}: {want}", f1["flat_size_mm"]);
+    }
+    // Folded, the part holds that material (K = 0.5 keeps the volume).
+    let v1 = volume(&mut one);
+    assert!(rel(v1, area * 2.0) < 1e-3, "{v1} vs {}", area * 2.0);
+    // The DXF: the outline in straight lines, and four bend lines.
+    let dxf = run(&mut one, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or_default().to_string();
+    assert_eq!(dxf.matches("0\nLINE\n").count(), outline.len() + 4, "{} outline points", outline.len());
+    // Unfold and refold keep it.
+    run(&mut one, "sheet.unfold", json!({}));
+    assert!(same_points(&outline_points(&flat(&mut one)), &outline_points(&f1)));
+    run(&mut one, "sheet.refold", json!({}));
+    assert!(rel(volume(&mut one), v1) < 1e-9);
+    // Saved, an edge with its own values is an object and one without is the point it always was.
+    let text = one.doc.to_json();
+    let saved: Value = serde_json::from_str(&text).unwrap();
+    let flange = saved["features"]
+        .as_array()
+        .and_then(|f| f.iter().find(|f| f["type"] == "sheet_flange" && f["edges"].as_array().is_some_and(|e| e.len() == 4)));
+    assert_eq!(
+        flange.map(|f| f["edges"].clone()),
+        Some(json!([
+            [60.0, 0.0, 2.0],
+            {"point": [120.0, 45.0, 2.0], "angle": "90 deg"},
+            {"point": [60.0, 90.0, 2.0], "angle": "105", "height": "30 mm"},
+            {"point": [0.0, 45.0, 2.0], "angle": "120 deg", "height": "25"}
+        ])),
+        "{saved}"
+    );
+    // Reopened, it is the same part.
+    let mut again = Session::new(solidcraft_doc::Document::from_json(&text).unwrap());
+    assert!(no_errors_or_warnings(&again), "{:?}", again.model.results);
+    assert!(rel(volume(&mut again), v1) < 1e-9);
+}
+
+#[test]
+fn per_edge_values_are_expressions_and_feature_inputs() {
+    let build = |angle: &str, height: &str| {
+        let mut s = Session::default();
+        alu_base(&mut s);
+        run(&mut s, "parameters.add", json!({"name": "wall_angle", "expression": "105 deg"}));
+        run(&mut s, "parameters.add", json!({"name": "wall_height", "expression": "30 mm"}));
+        let edges = json!([[60, 0, 2], {"point": [120, 45, 2], "angle": "90 deg"}, {"point": [60, 90, 2], "angle": angle, "height": height}]);
+        run(&mut s, "sheet.flange", json!({"edges": edges, "height": 38.6, "angle": "75 deg"}));
+        assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+        s
+    };
+    let part = |s: &mut Session| (volume(s), outline_points(&flat(s)));
+    let mut s = build("wall_angle", "wall_height");
+    // The feature's inputs: its own, then each edge's, in the order of the edges.
+    let labels: Vec<String> =
+        s.doc.features.last().map(|f| f.kind.inputs().into_iter().map(|(l, e, _)| format!("{l}={e}")).collect()).unwrap_or_default();
+    assert_eq!(labels, ["Height=38.6", "Angle=75 deg", "Edge angle=90 deg", "Edge angle=wall_angle", "Edge height=wall_height"]);
+    // Changing the user parameters moves that flange.
+    run(&mut s, "parameters.change", json!({"name": "wall_angle", "expression": "110 deg"}));
+    run(&mut s, "parameters.change", json!({"name": "wall_height", "expression": "34 mm"}));
+    let (v, outline) = part(&mut build("110 deg", "34 mm"));
+    assert!(rel(volume(&mut s), v) < 1e-9, "{} vs {v}", volume(&mut s));
+    assert!(same_points(&outline_points(&flat(&mut s)), &outline));
+    // So does the feature's own input for an edge, by its parameter name (the last two).
+    let names = s.doc.features.last().map(|f| f.param_names.clone()).unwrap_or_default();
+    assert_eq!(names.len(), 5, "{names:?}");
+    run(&mut s, "parameters.change", json!({"name": names[3], "expression": "100 deg"}));
+    run(&mut s, "parameters.change", json!({"name": names[4], "expression": "36 mm"}));
+    let (v, outline) = part(&mut build("100 deg", "36 mm"));
+    assert!(rel(volume(&mut s), v) < 1e-9, "{} vs {v}", volume(&mut s));
+    assert!(same_points(&outline_points(&flat(&mut s)), &outline));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+}
+
+#[test]
+fn bad_per_edge_input_is_refused_and_plain_edges_stay_plain() {
+    let mut s = Session::default();
+    alu_base(&mut s);
+    let err = |s: &mut Session, edges: Value| {
+        s.execute("sheet.flange", &json!({"edges": edges, "height": 38.6, "angle": "90 deg"})).err().map(|e| e.to_string()).unwrap_or_default()
+    };
+    // The wrong kind of value, or no expression at all: the edge and the key are named.
+    let e = err(&mut s, json!([[60, 0, 2], {"point": [120, 45, 2], "angle": "10 mm"}]));
+    assert!(e.contains("edges[1].angle"), "{e}");
+    let e = err(&mut s, json!([{"point": [60, 0, 2], "height": "30 deg"}]));
+    assert!(e.contains("edges[0].height"), "{e}");
+    let e = err(&mut s, json!([{"point": [60, 0, 2], "angle": "nope"}]));
+    assert!(e.contains("edges[0].angle"), "{e}");
+    let e = err(&mut s, json!([{"point": [60, 0, 2], "angle": [1, 2]}]));
+    assert!(e.contains("edges[0]") && e.contains("`angle` must be a number or an expression"), "{e}");
+    // An unknown key, a point that is none, an angle without `point`, something that is no edge.
+    let e = err(&mut s, json!([{"point": [60, 0, 2], "twist": 3}]));
+    assert!(e.contains("edges[0]") && e.contains("unknown key `twist`"), "{e}");
+    let e = err(&mut s, json!([{"point": [60, 0], "angle": "60 deg"}]));
+    assert!(e.contains("edges[0]") && e.contains("`point` must be [x, y, z]"), "{e}");
+    let e = err(&mut s, json!([{"x": 60, "y": 0, "z": 2, "angle": "60 deg"}]));
+    assert!(e.contains("edges[0]") && e.contains("unknown key"), "{e}");
+    let e = err(&mut s, json!([{"angle": "60 deg"}]));
+    assert!(e.contains("edges[0]") && e.contains("`point` must be [x, y, z]"), "{e}");
+    let e = err(&mut s, json!(["edge"]));
+    assert!(e.contains("edges[0]"), "{e}");
+    let e = err(&mut s, json!([]));
+    assert!(e.contains("1…1000"), "{e}");
+    // Evaluated: an angle outside 0…180° and a height under the bend's, each naming its edge.
+    let e = err(&mut s, json!([[60, 0, 2], {"point": [120, 45, 2], "angle": "200 deg"}]));
+    assert!(e.contains("edge 2") && e.contains("angle must be between 0 and 180"), "{e}");
+    let e = err(&mut s, json!([{"point": [60, 0, 2], "height": "2 mm"}, [120, 45, 2]]));
+    assert!(e.contains("edge 1") && e.contains("height must be at least"), "{e}");
+    // None of it added a feature.
+    assert_eq!(s.doc.features.len(), 2, "{:?}", s.doc.features.iter().map(|f| f.name.clone()).collect::<Vec<_>>());
+    // Plain points, `{x, y, z}` points and `{point}` without values are saved as the points they were.
+    run(&mut s, "sheet.flange", json!({"edges": [[60, 0, 2], {"x": 120, "y": 45, "z": 2}, {"point": [60, 90, 2]}], "height": 20, "angle": "90 deg"}));
+    let edges = serde_json::to_value(s.doc.features.last().map(|f| f.kind.clone())).unwrap()["edges"].clone();
+    assert_eq!(edges, json!([[60.0, 0.0, 2.0], [120.0, 45.0, 2.0], [60.0, 90.0, 2.0]]));
+}
+
+#[test]
+fn editing_a_flange_keeps_each_edges_own_values_with_its_edge() {
+    let mut s = four_angles_in_one_feature();
+    let id = s.doc.features.last().map(|f| f.id).unwrap_or(0);
+    // Give the first edge 80° and take the 90° off the second.
+    let edges = json!([
+        {"point": [60, 0, 2], "angle": "80 deg"},
+        [120, 45, 2],
+        {"point": [60, 90, 2], "angle": "105 deg", "height": "30 mm"},
+        {"point": [0, 45, 2], "angle": "120 deg", "height": "25 mm"}
+    ]);
+    run(&mut s, "timeline.edit", json!({"feature": id, "set": {"edges": edges}}));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+    assert_eq!(bend_angles(&mut s), [80.0, 75.0, 105.0, 120.0]);
+    let kind = |s: &Session| serde_json::to_value(s.doc.features.last().map(|f| f.kind.clone())).unwrap();
+    assert_eq!(kind(&s)["edges"][1], json!([120.0, 45.0, 2.0]), "no value of its own: a plain point again");
+    let (v, outline) = (volume(&mut s), outline_points(&flat(&mut s)));
+    // The same edges in another order are the same part: each value follows its edge.
+    let edges = json!([
+        {"point": [0, 45, 2], "angle": "120 deg", "height": "25 mm"},
+        {"point": [60, 90, 2], "angle": "105 deg", "height": "30 mm"},
+        {"point": [60, 0, 2], "angle": "80 deg"},
+        [120, 45, 2]
+    ]);
+    run(&mut s, "timeline.edit", json!({"feature": id, "set": {"edges": edges}}));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+    assert_eq!(bend_angles(&mut s), [120.0, 105.0, 80.0, 75.0]);
+    assert!(rel(volume(&mut s), v) < 1e-9, "{} vs {v}", volume(&mut s));
+    assert!(same_points(&outline_points(&flat(&mut s)), &outline));
+    // A bad edit is refused and leaves the feature as it was.
+    let before = kind(&s);
+    assert!(s.execute("timeline.edit", &json!({"feature": id, "set": {"edges": [{"point": [60, 0, 2], "angle": "80 deg", "colour": 1}]}})).is_err());
+    assert!(s.execute("timeline.edit", &json!({"feature": id, "set": {"edges": [{"point": [60, 0, 2], "angle": "250 deg"}]}})).is_err());
+    assert_eq!(kind(&s), before);
+    assert_eq!(bend_angles(&mut s), [120.0, 105.0, 80.0, 75.0]);
+}
+
+#[test]
+fn designs_without_per_edge_values_are_read_and_written_as_before() {
+    let mut s = Session::default();
+    alu_base(&mut s);
+    run(&mut s, "sheet.flange", json!({"edges": [[60, 0, 2], [120, 45, 2], [60, 90, 2], [0, 45, 2]], "height": 38.6, "angle": "72 deg"}));
+    let v = volume(&mut s);
+    let text = s.doc.to_json();
+    let mut design: Value = serde_json::from_str(&text).unwrap();
+    let flange = design["features"].as_array().and_then(|f| f.iter().position(|f| f["type"] == "sheet_flange")).unwrap();
+    assert_eq!(design["features"][flange]["edges"], json!([[60.0, 0.0, 2.0], [120.0, 45.0, 2.0], [60.0, 90.0, 2.0], [0.0, 45.0, 2.0]]));
+    let mut same = Session::new(solidcraft_doc::Document::from_json(&text).unwrap());
+    assert!(rel(volume(&mut same), v) < 1e-12);
+    // A design file whose last edge carries its own angle is the part the command makes.
+    design["features"][flange]["edges"][3] = json!({"point": [0.0, 45.0, 2.0], "angle": "100 deg"});
+    let mut opened = Session::new(solidcraft_doc::Document::from_json(&design.to_string()).unwrap());
+    assert!(no_errors_or_warnings(&opened), "{:?}", opened.model.results);
+    let mut made = Session::default();
+    alu_base(&mut made);
+    let edges = json!([[60, 0, 2], [120, 45, 2], [60, 90, 2], {"point": [0, 45, 2], "angle": "100 deg"}]);
+    run(&mut made, "sheet.flange", json!({"edges": edges, "height": 38.6, "angle": "72 deg"}));
+    let (vo, vm) = (volume(&mut opened), volume(&mut made));
+    assert!(rel(vo, vm) < 1e-9 && rel(vo, v) > 1e-4, "{vo} vs {vm} vs {v}");
+    // A key this build doesn't know is refused, not dropped.
+    design["features"][flange]["edges"][3] = json!({"point": [0.0, 45.0, 2.0], "twist": "3 deg"});
+    assert!(solidcraft_doc::Document::from_json(&design.to_string()).is_err());
+}

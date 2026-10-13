@@ -387,9 +387,11 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
             (solidcraft_doc::edge_refs(&st, body, edges), solidcraft_doc::edge_names_for(&st, body, edges))
         }
         // Sheet metal edges are named by the sheet model.
-        FeatureKind::SheetFlange { edges, .. } | FeatureKind::SheetHem { edges, .. } => {
-            (Vec::new(), solidcraft_doc::sheet::sheet_edge_names(&s.model.state(), edges))
+        FeatureKind::SheetFlange { edges, .. } => {
+            let points: Vec<_> = edges.iter().map(|e| e.point).collect();
+            (Vec::new(), solidcraft_doc::sheet::sheet_edge_names(&s.model.state(), &points))
         }
+        FeatureKind::SheetHem { edges, .. } => (Vec::new(), solidcraft_doc::sheet::sheet_edge_names(&s.model.state(), edges)),
         _ => (Vec::new(), Vec::new()),
     };
     let face_names = {

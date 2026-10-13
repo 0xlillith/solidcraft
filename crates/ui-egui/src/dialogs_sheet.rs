@@ -46,6 +46,9 @@ pub enum Sm {
         distance: String,
         reverse: bool,
         rule: usize,
+        /// Edge flanges: the edges with an angle and/or a height of their own (the picked point,
+        /// angle, height; an empty text means the dialog's), from the rows per edge.
+        own: Vec<(Vec3, String, String)>,
     },
     Hem {
         length: String,
@@ -125,6 +128,7 @@ fn new_flange(ty: usize) -> Sm {
         distance: "20 mm".into(),
         reverse: false,
         rule: 0,
+        own: Vec::new(),
     }
 }
 
@@ -188,7 +192,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     let t = Tokens::get();
     let mut enter = false;
     match k {
-        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule } => {
+        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own } => {
             *ty = flange_type(inputs);
             row_label(ui, "Type");
             ui.label(FLANGE_TYPES.get(*ty).copied().unwrap_or(""));
@@ -209,6 +213,34 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     crate::params_dialog::complete(ui, &r, radius);
                     enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.end_row();
+                    // With several edges, a row for each: an angle and a height of its own, left
+                    // empty for the values above (shown as the hints).
+                    let points = edge_point_list(inputs);
+                    if points.len() > 1 || own.iter().any(|o| !(o.1.trim().is_empty() && o.2.trim().is_empty())) {
+                        row_label(ui, "Per Edge");
+                        ui.label(RichText::new("angle, height").weak()).on_hover_text("An edge's own angle and height. Empty: the values above.");
+                        ui.end_row();
+                        let w = ((ui.spacing().text_edit_width - ui.spacing().item_spacing.x) / 2.0).max(40.0);
+                        for (n, p) in points.iter().enumerate() {
+                            let slot = own_slot(own, *p);
+                            let Some((_, a, h)) = own.get_mut(slot) else { continue };
+                            row_label(ui, &format!("Edge {}", n + 1));
+                            ui.horizontal(|ui| {
+                                for (text, hint, what, id) in
+                                    [(a, angle.as_str(), "angle", "sm_edge_angle"), (h, height.as_str(), "height", "sm_edge_height")]
+                                {
+                                    let r = ui
+                                        .add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(w).id_salt((id, n)))
+                                        .on_hover_text(format!("The {what} of the edge picked at ({:.1}, {:.1}, {:.1})", p.x, p.y, p.z));
+                                    // For scenarios and the control channel: `dialog:Edge 2 angle`.
+                                    crate::scenario::publish_handle(&format!("dialog:Edge {} {what}", n + 1), r.rect.center());
+                                    crate::params_dialog::complete(ui, &r, text);
+                                    enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    }
                 }
                 2 => {
                     row_label(ui, "Distance");
@@ -419,14 +451,48 @@ fn edge_points(inputs: &[SelInput]) -> Vec<Value> {
     items(inputs, 0).iter().filter_map(|x| if let Sel::Edge { point, .. } = x { Some(pt(*point)) } else { None }).collect()
 }
 
+/// The picked edges' points.
+fn edge_point_list(inputs: &[SelInput]) -> Vec<Vec3> {
+    items(inputs, 0).iter().filter_map(|x| if let Sel::Edge { point, .. } = x { Some(*point) } else { None }).collect()
+}
+
+/// Where the own angle and height of the edge picked at `p` are kept (an empty entry on first use).
+fn own_slot(own: &mut Vec<(Vec3, String, String)>, p: Vec3) -> usize {
+    own.iter().position(|o| o.0.dist(p) < 1e-9).unwrap_or_else(|| {
+        own.push((p, String::new(), String::new()));
+        own.len() - 1
+    })
+}
+
+/// The edges for `sheet.flange`: a plain point, or `{point, angle?, height?}` for an edge with
+/// an angle and/or a height of its own.
+fn flange_edges(inputs: &[SelInput], own: &[(Vec3, String, String)]) -> Vec<Value> {
+    edge_point_list(inputs)
+        .into_iter()
+        .map(|p| {
+            let (a, h) = own.iter().find(|o| o.0.dist(p) < 1e-9).map(|o| (o.1.trim(), o.2.trim())).unwrap_or(("", ""));
+            if a.is_empty() && h.is_empty() {
+                return pt(p);
+            }
+            let mut e = json!({"point": pt(p)});
+            for (k, v) in [("angle", a), ("height", h)] {
+                if !v.is_empty() {
+                    e[k] = json!(v);
+                }
+            }
+            e
+        })
+        .collect()
+}
+
 /// The commands the dialog's OK runs (`extra`: parameters kept from the feature being edited).
 pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String, Value>) -> Result<Vec<(String, Value)>, String> {
     let s = &app.session;
     let (cmd, mut p): (&str, Value) = match k {
-        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, .. } => {
+        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, .. } => {
             let mut p = match flange_type(inputs) {
                 1 => {
-                    let mut p = json!({"type": "edge", "edges": edge_points(inputs), "height": height, "angle": angle,
+                    let mut p = json!({"type": "edge", "edges": flange_edges(inputs, own), "height": height, "angle": angle,
                         "position": POSITIONS.get(*position).copied().unwrap_or("inside")});
                     if !radius.trim().is_empty() {
                         p["radius"] = json!(radius);
@@ -572,6 +638,16 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             if let Some(b) = body {
                 extra.insert("body".into(), json!(b));
             }
+            // The edges, and the angle and height some have of their own (kept by the point the
+            // edge's selection carries).
+            let (mut picked, mut own) = (Vec::new(), Vec::new());
+            for e in edges {
+                let Some(sel) = edge_sel(s, e.point) else { continue };
+                if let (Sel::Edge { point, .. }, true) = (&sel, e.angle.is_some() || e.height.is_some()) {
+                    own.push((*point, e.angle.clone().unwrap_or_default(), e.height.clone().unwrap_or_default()));
+                }
+                picked.push(sel);
+            }
             let f = Sm::Flange {
                 ty: 1,
                 height: height.clone(),
@@ -582,8 +658,9 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                 distance: "20 mm".into(),
                 reverse: false,
                 rule: 0,
+                own,
             };
-            (f, edges.iter().filter_map(|p| edge_sel(s, *p)).collect())
+            (f, picked)
         }
         FeatureKind::SheetHem { edges, length, gap, flip, body } => {
             if let Some(b) = body {
