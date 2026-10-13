@@ -97,6 +97,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   cancelling or rejecting an invalid value preserves the sketch. Position and height fields
   use the document units captured when editing starts; generated outlines remain associated
   with their text source, and untouched inputs preserve their saved internal values.
+  Dragging a text outline moves the entire source in one undo step; Escape restores the
+  gesture. Move/Copy on a selected text outline provides unit-aware X/Y distances and rotation
+  about its baseline; copies keep an independent editable text source.
 - Repeating the initial point of a planar multi-point sketch drawing tool is neutral: the tool
   waits for a distinct point without a degenerate-shape error or history entry. Typed input
   and programmatic commands retain their validation.
