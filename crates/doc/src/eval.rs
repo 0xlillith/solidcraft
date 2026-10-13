@@ -62,12 +62,14 @@ impl ModelBody {
     pub fn definition_name(&self) -> &str {
         self.source_name.as_deref().unwrap_or(&self.name)
     }
-    /// Display mesh (chord tolerance 1/1000 of the body size), computed once.
+    /// Display mesh, computed once: chord tolerance 1/1000 of the body size, and no facet of a
+    /// curved face or edge turning more than [`kernel::DISPLAY_ANGLE`], so that a bend or a
+    /// hole that is small beside the body is still drawn round.
     pub fn mesh(&self) -> Arc<Mesh> {
         self.mesh
             .get_or_init(|| {
                 let tol = (self.body.size() * 1e-3).max(1e-3);
-                Arc::new(self.body.display_mesh(tol).unwrap_or_default())
+                Arc::new(self.body.display_mesh_angular(tol, kernel::DISPLAY_ANGLE).unwrap_or_default())
             })
             .clone()
     }
