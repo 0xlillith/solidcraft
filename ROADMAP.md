@@ -61,6 +61,8 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Dimensioning and error reporting
 
+- Inscribed, circumscribed and edge polygon tools preview their actual outline before
+  placement, including orientation and the selected side count.
 - Construction (X) preserves the active sketch drawing tool, picked anchors and inline
   dimension values, so line type can change while a shape is in progress.
 - Planar sketch construction previews and hover feedback keep the same dashed pattern as
