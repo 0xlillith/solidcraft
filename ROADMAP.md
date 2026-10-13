@@ -61,6 +61,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Dimensioning and error reporting
 
+- Inscribed, circumscribed and edge polygon tools preview their actual outline before
+  placement, including orientation and the selected side count.
+
 - Point has a default Sketch CREATE toolbar button alongside the existing drawing tools.
   Saved custom layouts are preserved; Reset Toolbar restores the default Point button.
 - Construction planes cannot take an origin-plane name (XY, XZ, YZ, Top, Front, Right). Plane

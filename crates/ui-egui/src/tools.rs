@@ -561,6 +561,37 @@ pub(crate) fn preview_curve(t: &Tool, hover: Vec2, sweep: Option<f64>) -> Option
     Some(sk)
 }
 
+/// The polygon's actual straight edges, in the same orientation as the eventual command.
+/// Keep preview work bounded even while a side-count expression is being edited.
+pub(crate) fn polygon_outline(t: &Tool, hover: Vec2, sides: f64) -> Option<Vec<Vec2>> {
+    if !hover.is_finite() || !(3.0..=200.0).contains(&sides) || sides.fract() != 0.0 || t.pts.len() != 1 {
+        return None;
+    }
+    let a = t.pts.first()?.0;
+    let n = sides as usize;
+    let half = std::f64::consts::PI / sides;
+    let distance = a.dist(hover);
+    if !a.is_finite() || !distance.is_finite() || distance <= 1e-9 {
+        return None;
+    }
+    let (centre, radius, start) = match t.cmd {
+        "sketch.polygon.inscribed" => (a, distance, (hover - a).angle()),
+        "sketch.polygon.circumscribed" => (a, distance / half.cos(), (hover - a).angle() + half),
+        "sketch.polygon.edge" => {
+            let radius = distance / (2.0 * half.sin());
+            let centre = (a + hover) * 0.5 + (hover - a).normalized()?.perp() * (radius * half.cos());
+            (centre, radius, (a - centre).angle())
+        }
+        _ => return None,
+    };
+    let mut corners: Vec<_> = (0..n).map(|i| centre + Vec2::from_angle(start + std::f64::consts::TAU * i as f64 / sides) * radius).collect();
+    if corners.iter().any(|p| !p.is_finite()) {
+        return None;
+    }
+    corners.push(*corners.first()?);
+    Some(corners)
+}
+
 pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     if crate::sketch3d::preview(app, t, painter, proj) {
         return;
@@ -588,6 +619,20 @@ pub fn preview(app: &SolveApp, t: &Tool, painter: &egui::Painter, proj: &Proj) {
     }
     let Some((h, _)) = t.hover.clone() else { return };
     let h = crate::sketch_dims::effective(app, t, h);
+    if let Some(corners) = polygon_outline(t, h, crate::sketch_dims::locked_value(app, t, "Sides").unwrap_or(6.0)) {
+        for edge in corners.windows(2) {
+            if let [a, b] = edge
+                && let (Some(a), Some(b)) = (to(*a), to(*b))
+            {
+                painter.line_segment([a, b], stroke);
+            }
+        }
+        crate::scenario::publish_count("polygon_preview_edges", (corners.len() - 1) as f64);
+        if t.cmd == "sketch.polygon.edge" {
+            return;
+        }
+    }
+
     if let Some(curve) = preview_curve(t, h, crate::sketch_dims::locked_value(app, t, "Sweep")) {
         paint_preview_curve(&curve, &ss.plane, painter, proj, stroke);
         return;
