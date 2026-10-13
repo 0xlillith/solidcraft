@@ -1,5 +1,8 @@
 //! Documents and files: new, open (designs and STEP), insert STEP, save, export.
 
+#[path = "file_thumbnail.rs"]
+mod thumbnail;
+
 use serde_json::{Value, json};
 use solidcraft_doc::Document;
 use solidcraft_io::Format;
@@ -205,7 +208,8 @@ impl Session {
     pub fn design_container(&self, compression: solidcraft_io::DesignCompression, preview: bool, cache: bool) -> solidcraft_io::Result<Vec<u8>> {
         let geometry = cache.then(|| saved_geometry(self)).flatten();
         let preview = preview.then(|| saved_preview(self)).flatten();
-        solidcraft_io::write_design_container_with_cache(&self.design(), compression, preview.as_ref(), geometry.as_deref())
+        let thumbnail = cache.then(|| thumbnail::saved(self)).flatten();
+        solidcraft_io::write_design_container_with_thumbnail(&self.design(), compression, preview.as_ref(), geometry.as_deref(), thumbnail.as_deref())
     }
 }
 
@@ -507,6 +511,7 @@ mod tests {
                 session.execute(command, &params).unwrap();
                 let bytes = std::fs::read(&path).unwrap();
                 assert_eq!(solidcraft_io::read_design_geometry(&bytes).is_some(), cache == Some(true), "{command}: {cache:?}");
+                assert_eq!(solidcraft_io::read_design_thumbnail(&bytes).is_some(), cache == Some(true), "{command}: {cache:?}");
                 assert!(
                     !bytes.windows(b"cache/preview.bin".len()).any(|entry| entry == b"cache/preview.bin"),
                     "display meshes require preview: true"
