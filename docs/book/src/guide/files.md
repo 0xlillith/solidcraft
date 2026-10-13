@@ -36,7 +36,9 @@ keep a model's faces (for loads, boundary conditions or feature edges); other 3M
 them. The format is specified in [`docs/formats/3mf-face-tags.md`](https://github.com/bherbruck/solidcraft/blob/main/docs/formats/3mf-face-tags.md).
 
 Saves are atomic: a crash at any moment leaves either the old file or the new one, and the
-replaced version is kept as `<file>.bak`. Unsaved changes are autosaved to a recovery folder,
+replaced version is kept as `<file>.bak`. A save keeps the file's permissions, and a design
+opened through a symbolic link (a synced folder linked into a project) is saved into the file the
+link points to, so the link stays. Unsaved changes are autosaved to a recovery folder,
 and the next launch offers to recover them. Older design files are upgraded on open, and files
 from a newer version are refused with a message.
 
