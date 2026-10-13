@@ -109,14 +109,14 @@ See [the versioned container format](design-container.md) for layout and bounds.
 
 This phase does not restore evaluated B-reps, skip STEP import, or make cold geometry
 rebuilds instant. A matching cache key is not enough to trust unvalidated geometry.
-Evaluated B-rep/state restoration remains further work in #303. The provisional saved
-display described below is separate from #287's import parallelism.
+The native B-rep increment described below supplies provisional display, not editable
+session restoration. It is separate from #287's import parallelism.
 
-## Provisional saved display (#303)
+## Opt-in mesh preview measurements (#303, phase one)
 
-Desktop Open can show an experimental saved picture while the existing file worker rebuilds geometry.
+The phase-one desktop implementation can show an experimental saved picture while the file worker rebuilds geometry.
 It requires an explicit `preview: true` engine Save/Save As call. Ordinary saves omit
-display caches to avoid the measured overhead; native evaluated B-rep caching remains open.
+display meshes to avoid the measured overhead; these measurements predate native B-rep caching.
 The cache contains only already warm evaluated display meshes, capped at 8 MiB, 1,024
 bodies and 100,000 triangles. Larger or cold models save without it. Cached geometry is
 never used for editing, measurements or picking. Source/document fingerprints and
@@ -150,6 +150,106 @@ readiness still requires reconstruction.
 For actual desktop opening phases, launch with `SOLIDCRAFT_PROFILE_OPEN=1`: `ready_ms`
 reports saved-picture preparation, while the normal phase log reports reconstruction,
 display warmup and thumbnail completion. Neither log measures the exact GPU first frame.
+
+## Native cache opening (#303)
+
+Warm container saves now include the portable native B-rep cache by default, without
+duplicating display meshes. `cache: false` omits it. Desktop Open reads metadata and
+optional geometry through a seekable file, produces a bounded provisional picture,
+then resolves original sources and reconstructs the complete session before editing.
+This improves the opportunity for early display, not the cost of authoritative feature
+evaluation. An absent, invalid or incompatible cache uses the original reconstruction.
+Browser OPFS/downloads share the format; browser opening still rebuilds synchronously.
+
+The reproducible engine benchmarks separate atomic saving, provisional mesh readiness,
+reconstruction and final display-mesh readiness:
+
+```sh
+cargo test -p solidcraft-io --profile ci benchmark_step_storage -- --ignored --nocapture --test-threads=1
+cargo test -p solidcraft-engine --profile ci benchmark_native_cache_save -- --ignored --nocapture --test-threads=1
+cargo test -p solidcraft-engine --profile ci benchmark_native_cache_open -- --ignored --nocapture --test-threads=1
+```
+
+Use an absolute `CARGO_TARGET_DIR`. The save benchmark defaults to the generated
+512-box STEP document and accepts `SOLIDCRAFT_BENCH_FILE` for another public design.
+It alternates nine saves of each encoding, including flush/replacement/backup, and
+verifies document identity and native-cache presence. It never times initial fixture
+evaluation as save work. Open runs once per process; `SOLIDCRAFT_BENCH_ENCODING`
+selects 0=JSON, 1=container without cache, 2=native cache, 3=compact native cache.
+Changing only `cache/key.json`'s application version provides a cache-miss control.
+Fresh processes do not imply a cold operating-system file cache. The engine callback
+time is provisional mesh readiness, not a rendered desktop frame; use the desktop
+profile log and actual screenshots to check the saved picture and completed model.
+
+Measured 2026-10-13 on Windows 11, Ryzen AI MAX+ 395 (16 cores/32 threads), `ci`
+profile, code at `66025ca` with upstream `809ecf7` (0.6.0, including #437's pattern
+improvement). These compare encodings on the same code; they do not attribute that
+upstream modelling improvement to the file cache. Runs started after the local build
+and full CI suite finished; ordinary desktop activity remained. Save values are the
+median of nine alternating atomic saves. Open values are medians of five fresh
+processes per encoding, alternating forward/reverse order. Memory is each process's
+peak working set from Windows `GetProcessMemoryInfo`, sampled every 10 ms, then
+the median across those five processes; it excludes a desktop window/GPU.
+
+The original STEP fixture is a 32 by 16 array of 10 mm cubes, 12 mm apart, exported
+by SolidCraft: 512 bodies and 6,144 final triangles. Its JSON embeds about 2 MB of
+STEP. Every encoding reopens without feature errors and with those same counts.
+
+| STEP encoding | Bytes | Atomic save, ms |
+|---|---:|---:|
+| JSON | 1,998,826 | 10.426 |
+| Container, no cache | 1,950,084 | 10.504 |
+| Native cache, fast | 4,663,312 | 46.054 |
+| Native cache, compact | 831,274 | 40.650 |
+
+| STEP encoding | Provisional mesh, ms | Reconstructed, ms | Final meshes, ms | Peak working set, MiB |
+|---|---:|---:|---:|---:|
+| JSON | none | 184.333 | 745.195 | 39.902 |
+| Container, no cache | none | 176.602 | 714.002 | 40.242 |
+| Native cache, fast | 58.908 | 238.770 | 776.833 | 40.840 |
+| Native cache, compact | 60.721 | 237.415 | 722.605 | 40.754 |
+| Native cache miss | none | 187.144 | 708.130 | 40.418 |
+
+The public `examples/acceptance/sensor_enclosure.json` script, saved as a JSON
+design, has 21 features, two bodies and 4,364 final triangles on this revision.
+
+| Sensor enclosure encoding | Bytes | Atomic save, ms |
+|---|---:|---:|
+| JSON | 52,281 | 6.619 |
+| Container, no cache | 5,545 | 4.864 |
+| Native cache, fast | 371,876 | 13.644 |
+| Native cache, compact | 71,663 | 14.537 |
+
+| Sensor enclosure encoding | Provisional mesh, ms | Reconstructed, ms | Final meshes, ms | Peak working set, MiB |
+|---|---:|---:|---:|---:|
+| JSON | none | 4,514.438 | 4,518.675 | 69.289 |
+| Container, no cache | none | 4,441.558 | 4,445.679 | 70.172 |
+| Native cache, fast | 253.934 | 4,570.961 | 4,575.373 | 69.816 |
+| Native cache, compact | 257.758 | 4,651.220 | 4,656.308 | 70.664 |
+| Native cache miss | none | 4,417.438 | 4,423.233 | 70.328 |
+
+Native display is available earlier, at the cost of encoding, file size and work
+before reconstruction. It does not make the full design editable earlier, and these
+results do not establish a memory reduction. Across all runs, final-mesh readiness
+varied from 623 to 810 ms for STEP and 4.24 to 6.99 s for the enclosure; small
+differences in full-opening medians should not be read as modelling speedups.
+Compact storage helps this STEP example's size and atomic-save time, but costs
+slightly more save time on the enclosure. `cache: false` retains the phase-one save
+path; `compression: "compact"` is an explicit space/CPU choice. Larger or unsupported
+geometry can exceed the documented budgets and reopen without a provisional image.
+
+A separate desktop check used a fresh 0.6.0 application process for each enclosure
+encoding, with no local compilation or test suite running. The native cache's
+provisional picture was prepared at 459 ms and captured visibly during opening;
+the completed model was adopted in 7.09 s. JSON had no provisional picture and
+completed in 6.31 s. These are single visual checks, not repeated timing medians;
+the worker reported 6.73/5.95 s respectively, and the external observations include
+UI scheduling and screenshot requests. During native opening, 109 control-channel
+inspections had a median round trip of 15.4 ms and a maximum of 45.7 ms (JSON:
+100 inspections, 19.8/45.2 ms). The provisional picture is explicitly labelled as
+being checked before editing; the final frame shows the rebuilt Case and Lid and
+their editable feature timeline. This confirms early feedback and responsiveness,
+not faster completion of feature evaluation.
 
 ## Analytic extrusion source preparation
 
