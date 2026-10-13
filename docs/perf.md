@@ -183,7 +183,7 @@ profile log and actual screenshots to check the saved picture and completed mode
 
 Measured 2026-10-13 on Windows 11, Ryzen AI MAX+ 395 (16 cores/32 threads), `ci`
 profile, with the neutral codec revision `75381fa`, envelope `SCBREP03`, producer
-`solidcraft-truck-adapter/2`, and this opening integration on upstream `2880525`
+`solidcraft-truck-adapter/2`, and opening integration revision `3243422` on upstream `2880525`
 (0.6.0). These replace the earlier prototype measurements. They compare encodings
 on the same code and do not attribute upstream modelling improvements to the cache.
 Runs started after local builds and the complete CI suite finished; ordinary
