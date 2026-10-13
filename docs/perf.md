@@ -182,14 +182,16 @@ time is provisional mesh readiness, not a rendered desktop frame; use the deskto
 profile log and actual screenshots to check the saved picture and completed model.
 
 Measured 2026-10-13 on Windows 11, Ryzen AI MAX+ 395 (16 cores/32 threads), `ci`
-profile, code at `66025ca` with upstream `809ecf7` (0.6.0, including #437's pattern
-improvement). These compare encodings on the same code; they do not attribute that
-upstream modelling improvement to the file cache. Runs started after the local build
-and full CI suite finished; ordinary desktop activity remained. Save values are the
-median of nine alternating atomic saves. Open values are medians of five fresh
-processes per encoding, alternating forward/reverse order. Memory is each process's
-peak working set from Windows `GetProcessMemoryInfo`, sampled every 10 ms, then
-the median across those five processes; it excludes a desktop window/GPU.
+profile, with the neutral codec revision `75381fa`, envelope `SCBREP03`, producer
+`solidcraft-truck-adapter/2`, and this opening integration on upstream `2880525`
+(0.6.0). These replace the earlier prototype measurements. They compare encodings
+on the same code and do not attribute upstream modelling improvements to the cache.
+Runs started after local builds and the complete CI suite finished; ordinary
+desktop activity remained. Save values are medians of nine alternating atomic
+saves. Open values are medians of five fresh processes per encoding, alternating
+forward/reverse order. Memory is each process's peak working set from Windows
+`GetProcessMemoryInfo`, sampled every 10 ms, then the median across those five
+processes; it excludes a desktop window/GPU.
 
 The original STEP fixture is a 32 by 16 array of 10 mm cubes, 12 mm apart, exported
 by SolidCraft: 512 bodies and 6,144 final triangles. Its JSON embeds about 2 MB of
@@ -197,59 +199,59 @@ STEP. Every encoding reopens without feature errors and with those same counts.
 
 | STEP encoding | Bytes | Atomic save, ms |
 |---|---:|---:|
-| JSON | 1,998,826 | 10.426 |
-| Container, no cache | 1,950,084 | 10.504 |
-| Native cache, fast | 4,663,312 | 46.054 |
-| Native cache, compact | 831,274 | 40.650 |
+| JSON | 1,998,826 | 12.616 |
+| Container, no cache | 1,950,084 | 10.516 |
+| Native cache, fast | 4,694,035 | 47.755 |
+| Native cache, compact | 837,067 | 44.015 |
 
 | STEP encoding | Provisional mesh, ms | Reconstructed, ms | Final meshes, ms | Peak working set, MiB |
 |---|---:|---:|---:|---:|
-| JSON | none | 184.333 | 745.195 | 39.902 |
-| Container, no cache | none | 176.602 | 714.002 | 40.242 |
-| Native cache, fast | 58.908 | 238.770 | 776.833 | 40.840 |
-| Native cache, compact | 60.721 | 237.415 | 722.605 | 40.754 |
-| Native cache miss | none | 187.144 | 708.130 | 40.418 |
+| JSON | none | 175.842 | 748.911 | 40.102 |
+| Container, no cache | none | 175.885 | 722.306 | 40.504 |
+| Native cache, fast | 62.099 | 228.794 | 747.976 | 40.883 |
+| Native cache, compact | 65.981 | 235.403 | 762.120 | 40.918 |
+| Native cache miss | none | 169.039 | 647.617 | 40.453 |
 
 The public `examples/acceptance/sensor_enclosure.json` script, saved as a JSON
 design, has 21 features, two bodies and 4,364 final triangles on this revision.
 
 | Sensor enclosure encoding | Bytes | Atomic save, ms |
 |---|---:|---:|
-| JSON | 52,281 | 6.619 |
-| Container, no cache | 5,545 | 4.864 |
-| Native cache, fast | 371,876 | 13.644 |
-| Native cache, compact | 71,663 | 14.537 |
+| JSON | 52,281 | 5.243 |
+| Container, no cache | 5,545 | 4.969 |
+| Native cache, fast | 379,095 | 12.646 |
+| Native cache, compact | 72,603 | 14.111 |
 
 | Sensor enclosure encoding | Provisional mesh, ms | Reconstructed, ms | Final meshes, ms | Peak working set, MiB |
 |---|---:|---:|---:|---:|
-| JSON | none | 4,514.438 | 4,518.675 | 69.289 |
-| Container, no cache | none | 4,441.558 | 4,445.679 | 70.172 |
-| Native cache, fast | 253.934 | 4,570.961 | 4,575.373 | 69.816 |
-| Native cache, compact | 257.758 | 4,651.220 | 4,656.308 | 70.664 |
-| Native cache miss | none | 4,417.438 | 4,423.233 | 70.328 |
+| JSON | none | 3,979.063 | 3,984.593 | 70.438 |
+| Container, no cache | none | 4,038.127 | 4,042.006 | 71.789 |
+| Native cache, fast | 241.541 | 4,269.124 | 4,274.272 | 70.465 |
+| Native cache, compact | 236.739 | 4,271.254 | 4,275.159 | 70.148 |
+| Native cache miss | none | 4,136.517 | 4,140.903 | 69.941 |
 
 Native display is available earlier, at the cost of encoding, file size and work
-before reconstruction. It does not make the full design editable earlier, and these
-results do not establish a memory reduction. Across all runs, final-mesh readiness
-varied from 623 to 810 ms for STEP and 4.24 to 6.99 s for the enclosure; small
-differences in full-opening medians should not be read as modelling speedups.
-Compact storage helps this STEP example's size and atomic-save time, but costs
-slightly more save time on the enclosure. `cache: false` retains the phase-one save
-path; `compression: "compact"` is an explicit space/CPU choice. Larger or unsupported
+before reconstruction. It does not make the full design editable earlier, and
+these results do not establish a memory reduction. Final-mesh readiness varied
+from 611 to 856 ms for STEP and 3.84 to 4.60 s for the enclosure; small differences
+in full-opening medians should not be read as modelling speedups. Compact storage
+reduces this STEP example's size and atomic-save time, but costs slightly more save
+time on the enclosure. `cache: false` retains the phase-one save path;
+`compression: "compact"` is an explicit space/CPU choice. Larger or unsupported
 geometry can exceed the documented budgets and reopen without a provisional image.
 
 A separate desktop check used a fresh 0.6.0 application process for each enclosure
 encoding, with no local compilation or test suite running. The native cache's
-provisional picture was prepared at 459 ms and captured visibly during opening;
-the completed model was adopted in 7.09 s. JSON had no provisional picture and
-completed in 6.31 s. These are single visual checks, not repeated timing medians;
-the worker reported 6.73/5.95 s respectively, and the external observations include
-UI scheduling and screenshot requests. During native opening, 109 control-channel
-inspections had a median round trip of 15.4 ms and a maximum of 45.7 ms (JSON:
-100 inspections, 19.8/45.2 ms). The provisional picture is explicitly labelled as
+provisional picture was prepared at 429 ms and captured visibly during opening;
+the completed model was adopted in 6.48 s. JSON had no provisional picture and
+completed in 6.08 s. These are single visual checks, not repeated timing medians;
+the worker reported 6.10/5.66 s respectively, and external observations include
+UI scheduling and screenshot requests. During native opening, 94 control-channel
+inspections had a median round trip of 20.8 ms and a maximum of 106.5 ms (JSON:
+95 inspections, 20.3/36.9 ms). The provisional picture is explicitly labelled as
 being checked before editing; the final frame shows the rebuilt Case and Lid and
-their editable feature timeline. This confirms early feedback and responsiveness,
-not faster completion of feature evaluation.
+their editable feature timeline. This demonstrates early feedback, not faster
+completion of feature evaluation or a worst-case UI-latency guarantee.
 
 ## Analytic extrusion source preparation
 

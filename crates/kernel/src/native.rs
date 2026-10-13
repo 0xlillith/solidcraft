@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 mod adapter;
 mod binary;
+mod metadata;
 mod preview;
 pub use preview::native_preview_mesh;
 
-const MAGIC: &[u8; 8] = b"SCBREP02";
+// 01/02 were development-only prototypes; independent metadata records start at 03.
+const MAGIC: &[u8; 8] = b"SCBREP03";
 const MAX_BYTES: usize = 64 << 20;
 const MAX_ITEMS: usize = 100_000;
 
@@ -18,18 +20,14 @@ const MAX_ITEMS: usize = 100_000;
 #[serde(deny_unknown_fields)]
 struct SavedBody {
     solid: solidcraft_geom::brep::Brep,
-    color: Option<[f32; 3]>,
-    paint: Option<crate::Paint>,
-    splits: Option<Vec<Vec<solidcraft_geom::Vec3>>>,
-    face_sources: Option<Vec<Option<crate::FaceSource>>>,
-    history: Option<crate::history::History>,
-    regularization_protected: bool,
+    metadata: solidcraft_geom::brep::envelope::Metadata,
 }
 fn invalid(detail: impl std::fmt::Display) -> KernelError {
     KernelError::Invalid(format!("native B-rep: {detail}"))
 }
 
-/// Exact topology, native curves/surfaces, construction certificates and history.
+/// Explicit topology, spatial geometry, construction certificates and history.
+/// Procedural intersections use bounded fitting for provisional cache display.
 /// Failure is a cache miss at the IO boundary, never a failed document save.
 pub fn encode_native_body(body: &Body) -> Result<Vec<u8>> {
     guard("encode native B-rep", || {
@@ -53,16 +51,8 @@ pub fn encode_native_body(body: &Body) -> Result<Vec<u8>> {
         if body.mesh.is_some() {
             return Err(invalid("mesh bodies are source blobs, not B-rep"));
         }
-        let saved = SavedBody {
-            solid: adapter::encode(&body.solid)?,
-            color: body.color,
-            paint: body.paint.as_deref().cloned(),
-            splits: body.splits.as_deref().cloned(),
-            face_sources: body.face_sources.as_deref().cloned(),
-            history: body.history.as_deref().cloned(),
-            regularization_protected: body.regularization_protected,
-        };
-        // Saving already evaluated geometry must not re-run intersection projections.
+        let saved = SavedBody { solid: adapter::encode(&body.solid)?, metadata: metadata::encode(body)? };
+        // Structural validation does not invoke another geometric reconstruction.
         validate_topology(&saved)?;
         let value = serde_json::to_value(saved).map_err(invalid)?;
         validate_value(&value, 0)?;
@@ -92,17 +82,19 @@ pub fn decode_native_body(bytes: &[u8]) -> Result<Body> {
         let saved: SavedBody = serde_json::from_value(value).map_err(invalid)?;
         validate_topology(&saved)?;
         let solid = adapter::decode(saved.solid)?;
-        Ok(Body {
+        let mut body = Body {
             solid: Arc::new(solid),
             coarse_missing: None,
             mesh: None,
-            color: saved.color,
-            paint: saved.paint.map(Arc::new),
-            splits: saved.splits.map(Arc::new),
-            face_sources: saved.face_sources.map(Arc::new),
-            history: saved.history.map(Arc::new),
-            regularization_protected: saved.regularization_protected,
-        })
+            color: None,
+            paint: None,
+            splits: None,
+            face_sources: None,
+            history: None,
+            regularization_protected: false,
+        };
+        metadata::apply(&mut body, saved.metadata)?;
+        Ok(body)
     })
 }
 
@@ -110,14 +102,18 @@ fn validate_topology(saved: &SavedBody) -> Result<()> {
     saved.solid.validate().map_err(invalid)?;
     let faces: usize = saved.solid.shells.iter().map(|s| s.faces.len()).sum();
     let edges: usize = saved.solid.shells.iter().map(|s| s.edges.len()).sum();
+    let saved = &saved.metadata;
+    if saved.version != solidcraft_geom::brep::envelope::VERSION {
+        return Err(invalid("metadata version"));
+    }
     if saved.face_sources.as_ref().is_some_and(|s| s.len() != faces) {
         return Err(invalid("face source count"));
     }
     if let Some(history) = &saved.history
         && (history.faces.len() != faces
             || history.edges.len() != edges
-            || history.operands > MAX_ITEMS
-            || history.edges.iter().flat_map(|e| &e.faces).any(|&f| f >= faces))
+            || history.operands as usize > MAX_ITEMS
+            || history.edges.iter().flat_map(|e| &e.faces).any(|&f| f as usize >= faces))
     {
         return Err(invalid("history topology"));
     }
@@ -128,7 +124,7 @@ fn validate_topology(saved: &SavedBody) -> Result<()> {
         && (!paint.opacity.is_finite()
             || !(0.0..=1.0).contains(&paint.opacity)
             || paint.faces.iter().any(|p| {
-                p.face >= faces
+                p.face as usize >= faces
                     || !p.opacity.is_finite()
                     || !(0.0..=1.0).contains(&p.opacity)
                     || p.color.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
@@ -222,6 +218,48 @@ mod tests {
             if !body.is_surface() {
                 equal(&body, &restored);
             }
+        }
+    }
+
+    #[test]
+    fn box_and_fillet_have_stable_wire_records() {
+        let cube = crate::box_solid(Vec3::ZERO, Vec3::new(40., 30., 10.)).unwrap();
+        let rounded = crate::fillet(&cube, &[Vec3::new(20., 0., 10.)], 2.).unwrap();
+        let records: Vec<_> = [cube, rounded]
+            .iter()
+            .map(|body| {
+                let bytes = encode_native_body(body).unwrap();
+                assert_eq!(&bytes[..8], b"SCBREP03");
+                let mut raw = &bytes[8..];
+                let value = binary::read(&mut raw, 0, &mut 2_000_000).unwrap();
+                assert!(raw.is_empty());
+                value
+            })
+            .collect();
+        let actual = serde_json::json!(records);
+        let expected: Value = serde_json::from_str(include_str!("native/fixtures/box-fillet-v3.json")).unwrap();
+        compare_wire(&expected, &actual);
+    }
+
+    fn compare_wire(expected: &Value, actual: &Value) {
+        match (expected, actual) {
+            (Value::Number(a), Value::Number(b)) if a.is_f64() && b.is_f64() => {
+                let (a, b) = (a.as_f64().unwrap(), b.as_f64().unwrap());
+                assert!((a - b).abs() <= 1e-10 * a.abs().max(1.), "wire number changed: {a} vs {b}");
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                assert_eq!(a.len(), b.len());
+                for (a, b) in a.iter().zip(b) {
+                    compare_wire(a, b);
+                }
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
+                for (key, a) in a {
+                    compare_wire(a, &b[key]);
+                }
+            }
+            _ => assert_eq!(expected, actual),
         }
     }
 

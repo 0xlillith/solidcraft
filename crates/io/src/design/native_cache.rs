@@ -1,6 +1,6 @@
 //! Optional native cache. Its SolidCraft schema is independent of the producing kernel.
 use super::*;
-const PRODUCER: &str = "solidcraft-truck-adapter/1";
+const PRODUCER: &str = "solidcraft-truck-adapter/2";
 /// Provisional evaluated geometry. Never an editable document state.
 #[derive(Clone)]
 pub struct DesignGeometry {

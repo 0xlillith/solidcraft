@@ -7,7 +7,7 @@ self-contained input/output format. `io::write_design` keeps its JSON contract;
 `io::write_design_container` is the fallible container writer.
 
 Packages have `container.json` with `{"format":"solidcraft-container/1"}` and
-`document.json` with the versioned parametric document (currently `solidcraft/14`).
+`document.json` with the versioned parametric document (currently `solidcraft/15`).
 The independent versions let document migrations evolve without changing blob encodings.
 Existing serialized document fields are retained automatically, without a second copy
 of the document schema or a deep clone of embedded payloads.
@@ -119,7 +119,7 @@ evaluation or tessellation. Active sketches, uncaptured moves, errors, mesh bodi
 unsupported adapter representations and exceeded budgets omit the cache.
 
 The manifest records `solidcraft-brep-cache/1`, the package version, the explicit
-producer revision `solidcraft-truck-adapter/1`, exact document/payload SHA-256 hashes
+producer revision `solidcraft-truck-adapter/2`, exact document/payload SHA-256 hashes
 and contiguous named body slices. The producer revision is deliberately maintained
 when adapter semantics change; it is not a source-tree fingerprint or build script.
 The binary data uses [SolidCraft's portable B-rep schema and codec](native-brep.md),
@@ -162,7 +162,8 @@ phase-one container PR (#327):
    No truck serialized structs, memory layouts, pointers or opaque kernel blobs
    form part of the persisted contract. No evaluated STEP round trip is a substitute.
 3. Separate adapters between the neutral schema and supported kernels. Unsupported
-   geometry or provenance is a cache miss, never a lossy approximation. A neutral
+   geometry or provenance is a cache miss. Explicitly fitted intersection splines
+   carry their fitting target and remain provisional display geometry. A neutral
    file schema alone does not prove interoperability: each adapter needs round-trip,
    modelling and naming tests; compatibility with a second kernel is unverified
    until that adapter exists. Kernel/version information belongs in producer and
