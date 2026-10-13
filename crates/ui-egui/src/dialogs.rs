@@ -248,6 +248,9 @@ pub enum Kind {
     /// Edit Text: a sketch text's content and placement (`sketch_text`).
     Text(crate::sketch_text::Tx),
     TextMove(crate::sketch_text_move::TextMove),
+    /// Sketch-space modify tools: scale, and later offset, fillet, chamfer, the patterns,
+    /// mirror and move (`sketch_modify_ui`).
+    SketchModify(crate::sketch_modify_ui::Mod),
 }
 
 /// The Single hole placement's input: places on planar faces. A pick on or near a sketch point
@@ -294,6 +297,8 @@ pub struct Dialog {
     pub extra: serde_json::Map<String, Value>,
     /// What the inputs were when OK was refused: `error` stays only while they still are.
     pub refused: Option<Refused>,
+    /// Create Sketch opened by a sketch tool's shortcut: that tool starts once the sketch is open.
+    pub then_start: Option<&'static str>,
 }
 
 /// The commands a dialog's inputs make (or why they make none), its picks, and the design's
@@ -323,11 +328,10 @@ fn fits(a: Accept, s: &Sel) -> bool {
         Sel::SketchCurve { .. } => a & (AXES | CURVES) != 0,
         Sel::Vertex { .. } => a & selection::VERTICES != 0,
         Sel::Feature { .. } => a & selection::FEATURES != 0,
-        Sel::SketchPoint { .. }
-        | Sel::SketchConstraint { .. }
-        | Sel::Occurrence { .. }
-        | Sel::ExternalSketchCurve { .. }
-        | Sel::ExternalSketchPoint { .. } => false,
+        // Sketch points go into a sketch command's own inputs (Entities, a base point), so a
+        // box selection and a pre-selection reach them the way a click already does.
+        Sel::SketchPoint { .. } => a & selection::POINTS != 0,
+        Sel::SketchConstraint { .. } | Sel::Occurrence { .. } | Sel::ExternalSketchCurve { .. } | Sel::ExternalSketchPoint { .. } => false,
     }
 }
 
@@ -350,6 +354,7 @@ impl Dialog {
             collapsed: false,
             extra: serde_json::Map::new(),
             refused: None,
+            then_start: None,
         }
     }
 
@@ -525,7 +530,8 @@ impl Dialog {
                     .or_else(|| crate::dialogs_motion::start(app, id))
                     .or_else(|| crate::dialogs_parts::start(app, id))
                     .or_else(|| crate::sketch_text::start(app, id))
-                    .or_else(|| crate::sketch_text_move::start(app, id))?;
+                    .or_else(|| crate::sketch_text_move::start(app, id))
+                    .or_else(|| crate::sketch_modify_ui::start(app, id))?;
                 Dialog::new(kind, inputs)
             }
         };
@@ -702,6 +708,7 @@ impl Dialog {
             Kind::Sheet(k) => return k.primary(&self.inputs),
             Kind::Surface(k) => return k.primary(),
             Kind::Plastic(k) => return k.primary(),
+            Kind::SketchModify(k) => return k.primary(),
             _ => return None,
         })
     }
@@ -994,6 +1001,7 @@ fn title(k: &Kind) -> &'static str {
         Kind::Part(_) => "INSERT PART",
         Kind::Text(_) => "EDIT TEXT",
         Kind::TextMove(_) => "MOVE/COPY TEXT",
+        Kind::SketchModify(k) => k.title(),
     }
 }
 
@@ -1692,7 +1700,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                                 &mut d.extra,
                                 "fi_type",
                                 "type",
-                                &[("Constant", "constant"), ("Chord Length", "chord"), ("Variable", "variable")],
+                                &[("Constant", "constant"), ("Chord Length", "chord"), ("Variable", "variable"), ("Spline", "spline")],
                             );
                             ui.end_row();
                         }
@@ -1701,7 +1709,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             if !*chamfer {
                                 match rtype {
                                     1 => "Chord Length",
-                                    2 => "Start Radius",
+                                    2 | 3 => "Start Radius",
                                     _ => "Radius",
                                 }
                             } else if *ctype == 0 {
@@ -1712,11 +1720,18 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         );
                         enter |= field(ui, radius);
                         ui.end_row();
-                        // A constant radius too large for the edges: refused, or reduced to the
-                        // largest that fits (the preview shows what was used).
+                        // A constant radius too large for the edges: refused, reduced to the
+                        // largest that fits (the preview shows what was used), or tapered along
+                        // the edges to the room there.
                         if !*chamfer && rtype == 0 {
                             row_label(ui, "Radius Fit");
-                            let fit = extra_choice(ui, &mut d.extra, "fi_fit", "fit", &[("Exact", "exact"), ("Reduce to Fit", "reduce")]);
+                            let fit = extra_choice(
+                                ui,
+                                &mut d.extra,
+                                "fi_fit",
+                                "fit",
+                                &[("Exact", "exact"), ("Reduce to Fit", "reduce"), ("Taper to Fit", "taper")],
+                            );
                             ui.end_row();
                             if fit == 1
                                 && let Some((lo, hi)) = app.preview.applied
@@ -1788,6 +1803,21 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                                 extra_check(ui, &mut d.extra, "smooth");
                                 ui.end_row();
                             }
+                        }
+                        if !*chamfer && rtype == 3 {
+                            // The radius along the edge as a B-spline: its control radii from the
+                            // start end, also dragged by their handles on the edge.
+                            row_label(ui, "Swap Ends");
+                            extra_check(ui, &mut d.extra, "swap_ends");
+                            ui.end_row();
+                            let mut radii = spline_radii(&mut d.extra, radius);
+                            let n = radii.len();
+                            for (k, r) in radii.iter_mut().enumerate() {
+                                row_label(ui, if k + 1 == n { "End Radius" } else { "Control Radius" });
+                                enter |= field(ui, r);
+                                ui.end_row();
+                            }
+                            d.extra.insert("radii".into(), json!(radii));
                         }
                         row_label(ui, "Tangent Chain");
                         ui.checkbox(chain, "");
@@ -2122,6 +2152,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     Kind::Assembly(k) => enter |= crate::dialogs_assembly::rows(app, ui, k, &mut d.inputs, &mut d.active),
                     Kind::Sheet(k) => enter |= crate::dialogs_sheet::rows(app, ui, k, &mut d.inputs),
                     Kind::Surface(k) => enter |= crate::dialogs_surface::rows(ui, k),
+                    Kind::SketchModify(k) => enter |= crate::sketch_modify_ui::rows(ui, k),
                     Kind::Plastic(k) => enter |= crate::dialogs_plastic::rows(app, ui, k, &d.inputs),
                     Kind::Appearance(k) => enter |= crate::dialogs_appearance::rows(app, ui, k, &mut d.inputs),
                     Kind::Motion(k) => enter |= crate::dialogs_motion::rows(app, ui, k, &mut d.inputs),
@@ -2216,12 +2247,16 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         cancel = true;
     }
     // A plane picked for a new sketch starts it right away.
+    let mut then_start = None;
     if matches!(d.kind, Kind::Sketch)
         && d.error.is_none()
         && let Some(sel) = d.inputs.first().and_then(|i| i.items.first()).cloned()
     {
         match start_sketch(app, &sel) {
-            Ok(()) => cancel = true,
+            Ok(()) => {
+                cancel = true;
+                then_start = d.then_start;
+            }
             Err(error) => d.refuse(app, error),
         }
     }
@@ -2246,6 +2281,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     } else if let Some((_, marker)) = d.editing {
         // Editing done: put the timeline marker back where it was.
         let _ = roll_marker(app, marker);
+    }
+    // The shortcut that asked for this sketch starts its tool in it.
+    if let Some(id) = then_start {
+        app.start(id);
     }
 }
 
@@ -2365,6 +2404,29 @@ fn extra_field(ui: &mut egui::Ui, extra: &mut serde_json::Map<String, Value>, ke
     let enter = field(ui, &mut v);
     extra.insert(key.into(), json!(v));
     enter
+}
+
+/// A spline fillet's control radii after the start radius, as expressions. A dialog without a
+/// spline yet gets a cubic one of two spans, all its control radii `radius`.
+pub(crate) fn spline_radii(extra: &mut serde_json::Map<String, Value>, radius: &str) -> Vec<String> {
+    let radii: Vec<String> = extra
+        .get("radii")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|r| match r {
+            Value::String(x) => Some(x.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        })
+        .collect();
+    let knots = extra.get("knots").and_then(Value::as_array).map_or(0, Vec::len);
+    // All control radii (the start radius and these) plus the degree (1…3) plus one.
+    if !radii.is_empty() && (radii.len() + 3..=radii.len() + 5).contains(&knots) {
+        return radii;
+    }
+    extra.insert("knots".into(), json!([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0]));
+    vec![radius.to_string(); 4]
 }
 
 /// A variable fillet's middle radii as (position, radius expression).
@@ -2746,7 +2808,8 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 ("solid.chamfer", p)
             } else {
                 let mut p = json!({"edges": edges, "radius": radius});
-                if d.extra.get("type").and_then(Value::as_str) == Some("variable") {
+                let style = d.extra.get("type").and_then(Value::as_str);
+                if matches!(style, Some("variable" | "spline")) {
                     // The start radius goes at one end of the first edge (Swap Ends: the other).
                     let ends = sels(d, 0).iter().find_map(|x| match x {
                         Sel::Edge { body, index, .. } => {
@@ -2759,7 +2822,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                         p["start"] = pt(if swap { b } else { a });
                     }
                     let mids = mid_points(&d.extra);
-                    if !mids.is_empty() {
+                    if style == Some("variable") && !mids.is_empty() {
                         p["mid"] = json!(mids.iter().map(|(t, r)| json!([t, r])).collect::<Vec<_>>());
                         if d.extra.get("smooth").and_then(Value::as_bool).unwrap_or(false) {
                             p["smooth"] = json!(true);
@@ -3147,6 +3210,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         Kind::Assembly(k) => return crate::dialogs_assembly::commands(app, k, &d.inputs),
         Kind::Sheet(k) => return crate::dialogs_sheet::commands(app, k, &d.inputs, &d.extra),
         Kind::Surface(k) => return crate::dialogs_surface::commands(app, k, &d.inputs, &d.extra),
+        Kind::SketchModify(k) => return crate::sketch_modify_ui::commands(app, k, &d.inputs, &d.extra),
         Kind::Plastic(k) => return crate::dialogs_plastic::commands(app, k, &d.inputs, &d.extra),
         Kind::Appearance(k) => return Ok(crate::dialogs_appearance::commands(k, &d.inputs)),
         Kind::Motion(k) => return crate::dialogs_motion::commands(app, k, &d.inputs),
@@ -3541,9 +3605,17 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                     *flip = *f;
                 }
             }
-            // A fillet that reduces a radius too large for its edges.
-            if let FeatureKind::Fillet { fit: solidcraft_engine::doc::FilletFit::Reduce, .. } = &f.kind {
-                d.extra.insert("fit".into(), json!("reduce"));
+            // A fillet that reduces or tapers a radius too large for its edges.
+            if let FeatureKind::Fillet { fit, .. } = &f.kind {
+                use solidcraft_engine::doc::FilletFit;
+                let mode = match fit {
+                    FilletFit::Exact => None,
+                    FilletFit::Reduce => Some("reduce"),
+                    FilletFit::Taper => Some("taper"),
+                };
+                if let Some(mode) = mode {
+                    d.extra.insert("fit".into(), json!(mode));
+                }
             }
             // A chord-length or variable fillet.
             if let FeatureKind::Fillet { style, .. } = &f.kind {
@@ -3552,11 +3624,21 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                     FilletStyle::Chord => {
                         d.extra.insert("type".into(), json!("chord"));
                     }
-                    FilletStyle::Variable { radius2, start, mid, smooth } => {
-                        d.extra.insert("type".into(), json!("variable"));
-                        d.extra.insert("radius2".into(), json!(radius2));
-                        d.extra.insert("mid".into(), json!(mid.iter().map(|(t, r)| json!([t, r])).collect::<Vec<_>>()));
-                        d.extra.insert("smooth".into(), json!(smooth));
+                    FilletStyle::Variable { start, .. } | FilletStyle::Spline { start, .. } => {
+                        match style {
+                            FilletStyle::Variable { radius2, mid, smooth, .. } => {
+                                d.extra.insert("type".into(), json!("variable"));
+                                d.extra.insert("radius2".into(), json!(radius2));
+                                d.extra.insert("mid".into(), json!(mid.iter().map(|(t, r)| json!([t, r])).collect::<Vec<_>>()));
+                                d.extra.insert("smooth".into(), json!(smooth));
+                            }
+                            FilletStyle::Spline { knots, radii, .. } => {
+                                d.extra.insert("type".into(), json!("spline"));
+                                d.extra.insert("knots".into(), json!(knots));
+                                d.extra.insert("radii".into(), json!(radii));
+                            }
+                            FilletStyle::Constant | FilletStyle::Chord => {}
+                        }
                         // The start was the first edge's last point: ends swapped.
                         let first_end = edges.first().and_then(|p| edge_sel(s, *p)).and_then(|x| match x {
                             Sel::Edge { body, index, .. } => {

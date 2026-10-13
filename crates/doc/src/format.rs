@@ -85,6 +85,15 @@
 //!   edges of a solid or shelled body that become bends). A conversion without `bends` is the
 //!   plate conversion it always was and saves as before; 0.8.0 would drop the bend edges and
 //!   refuse the body as no plate.
+//!   A sketch's link to a projected edge can also keep the edge's persistent name (`edge_name`,
+//!   beside `face_name`) and is then found by it, wherever the edge went. A link without it is
+//!   the edge nearest its point, as it always was, and takes the name when its sketch is next
+//!   edited.
+//!   A fillet's `fit` can be `taper` (the radius follows the room along each edge it doesn't
+//!   fit). Fillets with `exact` or `reduce` save as before; 0.8.0 would refuse the unknown fit.
+//!   A fillet's `type` can be `spline` (the radius along each edge a B-spline: `start`, `knots`,
+//!   and the control radii after `radius` in `radii`). Other fillets save as before; 0.8.0 would
+//!   refuse the unknown type.
 //! - 18: named render setups (`render.setups`) save renderer-independent intent. An absent
 //!   field defaults to no setups; geometry, appearances and materials retain their meaning.
 //!   Earlier readers reject this version rather than silently discarding saved setups.

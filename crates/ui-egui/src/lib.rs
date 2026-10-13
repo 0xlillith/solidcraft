@@ -70,6 +70,8 @@ mod extrude_edit_tests;
 mod file_load;
 #[cfg(test)]
 mod file_load_ui_tests;
+#[cfg(test)]
+mod fillet_spline_handle_tests;
 pub mod palette;
 pub mod params_dialog;
 pub mod prefs;
@@ -106,6 +108,9 @@ mod sketch_drag_ui_tests;
 #[cfg(test)]
 mod sketch_edit_tests;
 mod sketch_families;
+pub mod sketch_modify_ui;
+#[cfg(test)]
+mod sketch_modify_ui_tests;
 pub mod sketch_palette;
 pub(crate) mod sketch_text;
 mod sketch_text_move;
@@ -545,6 +550,16 @@ impl SolveApp {
     pub fn start(&mut self, id: &str) {
         // A file is loading: the design waits for it.
         if self.file_load.busy() {
+            return;
+        }
+        // A disabled command starts nothing, however it was reached. The toolbar greys its
+        // button, but a shortcut, the command palette and the control channel all land here.
+        // Its reason goes to the status line, so the refusal is never silent.
+        if let Some(info) = solidcraft_engine::find_command(id).map(|c| c.info(&self.session))
+            && let Some(why) = info.disabled_reason
+        {
+            let label = self.tr_label(info.label).to_string();
+            self.set_status(format!("{label}: {why}"), true);
             return;
         }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).
