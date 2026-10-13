@@ -2361,18 +2361,25 @@ impl Document {
     /// the sketch over is refused. Offsets whose sources moved are refreshed and solved again:
     /// from the stored state again after a refused or failed first solve (the geometry is still
     /// the stored one), from the solved one otherwise.
+    ///
+    /// `moved_from`: the stored sketch, when `sk` is that sketch with its links refreshed. A
+    /// link's points are where their source is now; the sides and turns the solve keeps are
+    /// those of the stored state ([`Sketch::positions_in`]), not the ones read beside a line
+    /// that has moved past a point.
     pub fn solve_sketch(
         &self,
         vals: &std::collections::BTreeMap<String, expr::Value>,
         sk: &mut Sketch,
         stored: &solidcraft_sketch::DrivingValues,
+        moved_from: Option<&Sketch>,
     ) -> Result<solidcraft_sketch::SolveReport> {
         self.apply_dimension_values(vals, sk)?;
-        let mut report = solidcraft_sketch::solve_after_value_edit(sk, stored);
+        let was = |sk: &Sketch| moved_from.and_then(|from| sk.positions_in(from));
+        let mut report = solidcraft_sketch::solve_after_edit(sk, stored, was(sk).as_deref());
         if !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty() {
             // Source dimensions may have moved curves during the solve.
             sk.refresh_offsets()?;
-            report = if report.ok() { solidcraft_sketch::solve(sk) } else { solidcraft_sketch::solve_after_value_edit(sk, stored) };
+            report = if report.ok() { solidcraft_sketch::solve(sk) } else { solidcraft_sketch::solve_after_edit(sk, stored, was(sk).as_deref()) };
         }
         Ok(report)
     }

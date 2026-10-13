@@ -3347,9 +3347,10 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             if let Some(w) = face_warning {
                 warns.insert(0, w);
             }
-            // The stored sketch is solved for its stored values.
+            // The stored sketch is solved for its stored values, with its links where they
+            // were stored: a link that moved must not change the side a dimension from it is on.
             let stored = sk.driving_values();
-            let report = doc.solve_sketch(vals, &mut sk, &stored)?;
+            let report = doc.solve_sketch(vals, &mut sk, &stored, Some(sketch))?;
             if !report.keeps_orientation() {
                 warns.insert(0, report.failure(|f| format!("the sketch constraints conflict ({f})")));
             }
