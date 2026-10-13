@@ -30,7 +30,6 @@ pub fn promoted(tab: &str, panel: &str) -> usize {
     match (tab, panel) {
         ("SOLID", "CREATE") => 4,
         ("SOLID", "MODIFY") => 4,
-        ("SKETCH", "CREATE") => 6,
         ("SKETCH", "CONSTRAINTS") => 6,
         (_, "FINISH SKETCH") => 1,
         _ => 2,
