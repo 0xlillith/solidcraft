@@ -61,6 +61,32 @@ per edge with an angle and a height box; an empty box takes the value above.
  "height":38.6,"angle":"75 deg"}}
 ```
 
+A flange can also stand on the far edge of another flange: a return, such as a lip turned in
+along the top of a tray's walls. It runs along that edge from end to end, so it follows the
+closed end of the flange it stands on, slanted or not. Two returns of one feature whose flanges
+meet at a corner of the base are closed toward each other as well, with the rule's gap. They
+are mitred either side of a plane that runs along the mean of the two panels' normals, bisects
+their bend lines and passes where the lines their panels start on cross. Returns that lie in
+one plane (level returns on a tray's walls, whatever the walls' angle) then meet on the corner's
+bisector, like the sides of a picture frame. Each panel ends on a slanted line in the flat.
+Each bend stops square where all of it keeps half the gap from that plane, at the latest at
+the end of the flange it stands on, which can leave a short stretch of that flange's edge bare.
+Returns turned opposite ways pass each other. A return that meets no other at a corner ends
+with the flange it stands on; where the flange beside that one leans in over it, the return is
+cut back until it keeps as clear of that flange as the end of the flange it stands on does.
+Returns that can't be closed stay open with a warning, as on the base. Returns of separate
+features don't close toward each other either: make the returns round a corner in one feature.
+A corner relief changes none of this: it leaves the flanges' closed ends as they are, so the
+returns on them close over a relieved corner as over a whole one.
+
+```json
+{"command":"sheet.flange","params":{"edges":[[60,2,20],[118,45,20],[60,88,20],[2,45,20]],
+ "height":12,"angle":"90 deg"}}
+```
+
+(The four returns of a 120 x 90 tray in 2 mm sheet with 90° walls 20 high: each point is the
+middle of a wall's far edge on its inner face, so the returns turn in over the base.)
+
 For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
 `format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
 radii, allowances and flat centre-line coordinates. Lengths use millimetres and angles use
