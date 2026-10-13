@@ -318,3 +318,65 @@ fn pocket_depth_labels_follow_inches_without_changing_flat_data() {
     assert_eq!(super::pocket_label(&app, &json!({"side":"top","depth_mm":25.4*0.1234})).as_deref(), Some("Top pocket: 0.1234 in deep"));
     assert!(super::pocket_label(&app, &json!({"side":"top","depth_mm":-1})).is_none());
 }
+
+/// Edges with an angle and/or a height of their own: the texts of the dialog's rows per edge
+/// become `{point, angle?, height?}` edges while the others stay plain points; Edit Feature
+/// brings them back and rebuilds the same flanges.
+#[test]
+fn edge_flanges_can_have_an_angle_and_a_height_of_their_own() {
+    let mut app = plate();
+    app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    let edges: Vec<Sel> = [[50.0, 0.0, 2.5], [50.0, 60.0, 2.5], [0.0, 30.0, 2.5], [100.0, 30.0, 2.5]]
+        .iter()
+        .filter_map(|p| edge_sel(&app.session, Vec3::new(p[0], p[1], p[2])))
+        .collect();
+    assert_eq!(edges.len(), 4);
+    let point = |i: usize| if let Sel::Edge { point, .. } = &edges[i] { *point } else { Vec3::ZERO };
+    app.session.selection = edges.clone();
+    app.start("sheet.flange");
+    let mut d = app.dialog.clone().unwrap();
+    if let Kind::Sheet(Sm::Flange { height, angle, own, .. }) = &mut d.kind {
+        *height = "20 mm".into();
+        *angle = "75 deg".into();
+        // The second edge: its own angle; the fourth: both; the third: texts left blank.
+        own.push((point(1), "100 deg".into(), String::new()));
+        own.push((point(3), "90 deg".into(), "15 mm".into()));
+        own.push((point(2), "  ".into(), String::new()));
+    }
+    let c = apply_commands(&app, &d).unwrap();
+    assert_eq!(
+        c[0].1["edges"],
+        json!([pt(point(0)), {"point": pt(point(1)), "angle": "100 deg"}, pt(point(2)), {"point": pt(point(3)), "angle": "90 deg", "height": "15 mm"}]),
+        "no text or a blank one: a plain point"
+    );
+    run_all(&mut app, c);
+    let bends = app.session.execute("sheet.flat_pattern", &json!({})).unwrap()["bends"].clone();
+    let angles: Vec<f64> = bends.as_array().unwrap().iter().map(|b| b["angle_deg"].as_f64().unwrap().round()).collect();
+    assert_eq!(angles, [75.0, 100.0, 75.0, 90.0], "{bends}");
+    assert!(app.session.model.results.iter().all(|r| r.error.is_none()), "{:?}", app.session.model.results);
+    // Edit Feature: the edges and their own values come back, and OK rebuilds the same part.
+    let f = app.session.doc.features.last().unwrap().clone();
+    let mut e = edit_dialog(&app, f.id, None).unwrap();
+    assert_eq!(e.inputs[0].items.len(), 4);
+    let Kind::Sheet(Sm::Flange { own, .. }) = &e.kind else { panic!("not a flange dialog") };
+    assert_eq!(own.len(), 2, "{own:?}");
+    assert!(own.iter().any(|o| o.0.dist(point(1)) < 1e-9 && o.1 == "100 deg" && o.2.is_empty()), "{own:?}");
+    assert!(own.iter().any(|o| o.0.dist(point(3)) < 1e-9 && o.1 == "90 deg" && o.2 == "15 mm"), "{own:?}");
+    let volume = |app: &mut SolveApp| app.session.execute("inspect.measure", &json!({})).unwrap()["total"]["volume_mm3"].as_f64().unwrap();
+    let before = volume(&mut app);
+    let c = apply_commands(&app, &e).unwrap();
+    assert_eq!(c[0].0, "timeline.redefine");
+    assert_eq!(c[0].1["params"]["edges"][1], json!({"point": pt(point(1)), "angle": "100 deg"}));
+    assert_eq!(c[0].1["params"]["edges"][3]["height"], "15 mm");
+    run_all(&mut app, c);
+    let after = volume(&mut app);
+    assert!((after - before).abs() < 1e-6 * before, "{after} vs {before}");
+    // Taking edges out of the selection leaves each value with its edge.
+    e.inputs[0].items.remove(2);
+    e.inputs[0].items.remove(0);
+    let c = apply_commands(&app, &e).unwrap();
+    assert_eq!(
+        c[0].1["params"]["edges"],
+        json!([{"point": pt(point(1)), "angle": "100 deg"}, {"point": pt(point(3)), "angle": "90 deg", "height": "15 mm"}])
+    );
+}

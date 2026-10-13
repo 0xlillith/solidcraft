@@ -24,6 +24,24 @@ opposite ways, ends that would overlap in the flat pattern) stays open, and the 
 reports a warning saying where. A flange added by a later feature leaves the corner as it was:
 the earlier flange keeps its length and the new one ends at its bend.
 
+The flanges of one edge flange feature can each have an angle and a height of their own. An
+entry of `edges` is a point `[x, y, z]`, which takes the feature's `height` and `angle`, or an
+object `{"point": [x, y, z], "angle": "105 deg", "height": "30 mm"}` whose `angle` and `height`
+(either one, or both) replace them for that edge. They are expressions like the feature's own,
+so parameters work, and each is a feature input of its own (`Edge angle`, `Edge height`) after
+`Height` and `Angle`. The corners between such flanges close like those between equal ones:
+the ends run toward each other the rule's gap apart, either side of the plane halfway between
+the two flanges, and a taller flange's end keeps that line up to its own tip. This is how to
+close a corner between flanges at different angles, because flanges of separate features
+don't close toward each other. In the Flange dialog, picking more than one edge shows a row
+per edge with an angle and a height box; an empty box takes the value above.
+
+```json
+{"command":"sheet.flange","params":{"edges":[[60,0,2],{"point":[120,45,2],"angle":"90 deg"},
+ {"point":[60,90,2],"angle":"105 deg","height":"30 mm"},{"point":[0,45,2],"angle":"120 deg","height":"25 mm"}],
+ "height":38.6,"angle":"75 deg"}}
+```
+
 For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
 `format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
 radii, allowances and flat centre-line coordinates. Lengths use millimetres and angles use

@@ -488,12 +488,15 @@ pub fn read_design_file(path: &str, notify: Option<impl FnOnce(DesignPreview)>) 
     #[cfg(not(target_arch = "wasm32"))]
     let mut source = {
         let metadata = std::fs::metadata(path).map_err(invalid)?;
-        if !metadata.is_file() || metadata.len() > MAX_DESIGN_BYTES as u64 {
-            return Err(invalid("not a regular bounded design file"));
+        if !metadata.is_file() {
+            return Err(invalid("not a regular file"));
+        }
+        if metadata.len() > MAX_DESIGN_BYTES as u64 {
+            return Err(invalid("file too large"));
         }
         let file = std::fs::File::open(path).map_err(invalid)?;
         if !file.metadata().map_err(invalid)?.is_file() {
-            return Err(invalid("not a regular design file"));
+            return Err(invalid("not a regular file"));
         }
         file
     };
@@ -652,6 +655,14 @@ mod tests {
         assert!(reader.preview().is_none());
         assert_eq!(reader.read_document().unwrap().to_json(), doc.to_json());
         assert!(DesignContainerReader::new(Cursor::new(vec![0u8; 1])).is_err());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_reader_refuses_nonfiles_before_notifying_preview() {
+        let directory = std::env::temp_dir();
+        let result = read_design_file(directory.to_str().unwrap(), Some(|_| panic!("non-file supplied a preview")));
+        assert!(result.is_err_and(|e| e.to_string().contains("not a regular file")));
     }
 
     fn native_geometry() -> Vec<DesignGeometry> {

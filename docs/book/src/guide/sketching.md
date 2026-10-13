@@ -21,6 +21,10 @@ constraint status and **Finish Sketch** button remain visible.
 
 ## Geometry
 
+**Point** is available directly on the default Sketch **CREATE** toolbar. Click it, then
+click in the sketch to place a point. Existing toolbar customizations are kept; use
+**Reset Toolbar** from the toolbar's context menu to restore the default buttons.
+
 Lines and polylines (L), rectangles (two-point R, three-point, centre), circles (centre C,
 two-point, three-point, tangent), arcs (three-point, centre, tangent), polygons, slots, ellipses,
 fit-point and control-point splines, conics, points and text. **Construction** (X) turns curves

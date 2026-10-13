@@ -322,6 +322,14 @@ fn edit_feature(s: &mut Session, p: &Value) -> Result<Value> {
         nf.edge_refs = solidcraft_doc::edge_refs(&before, body, a);
         nf.edge_names = solidcraft_doc::edge_names_for(&before, body, a);
     }
+    // New or reordered flange edges: their names now, so each edge's own angle and height stay
+    // with the edge they were given for.
+    if let (FeatureKind::SheetFlange { edges: a, .. }, FeatureKind::SheetFlange { edges: b, .. }) = (&nf.kind, &f.kind) {
+        let points = |e: &[solidcraft_doc::FlangeEdge]| e.iter().map(|x| x.point).collect::<Vec<_>>();
+        if points(a) != points(b) {
+            nf.edge_names = solidcraft_doc::sheet::sheet_edge_names(&s.model.state_before(id), &points(a));
+        }
+    }
     // Profiles picked by index or point are kept by their curves, as when the feature was made.
     if nf.kind.clone().profile_sels_mut() != f.kind.clone().profile_sels_mut() {
         super::features::stable_profiles(s, &mut nf.kind)?;

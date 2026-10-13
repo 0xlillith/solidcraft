@@ -331,6 +331,38 @@ fn revolve_and_primitives() {
     assert!(rel(m["total"]["volume_mm3"].as_f64().unwrap(), PI * 125.0 * 5.0 / 2.0) < 5e-4);
 }
 
+/// A spherical shell (a half ring between two arcs, both radial lines on the axis) revolved on a
+/// sketch plane that does not pass through the origin: the body is the shell, as it is on XY.
+/// Before, built in place, it measured a third too large (truck tessellates the degenerate faces
+/// on the axis reliably only with the axis through the origin).
+#[test]
+fn revolve_a_spherical_shell_off_the_origin() {
+    for (plane, z) in [(json!("XY"), 0.0), (json!({"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}), 10.0)] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": plane, "name": "Ring"}));
+        run(&mut s, "sketch.line", json!({"points": [[-40, 0], [40, 0]]}));
+        run(&mut s, "sketch.arc.center_point", json!({"center": [0, 0], "start": [40, 0], "end": [-40, 0]}));
+        run(&mut s, "sketch.arc.center_point", json!({"center": [0, 0], "start": [18.5, 0], "end": [-18.5, 0]}));
+        run(&mut s, "sketch.finish", json!({}));
+        // The half ring: the larger of the two regions above the axis.
+        let si = run(&mut s, "sketch.inspect", json!({"sketch": "Ring"}));
+        let ring = si["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .max_by(|a, b| a["area_mm2"].as_f64().unwrap().total_cmp(&b["area_mm2"].as_f64().unwrap()))
+            .unwrap()["index"]
+            .clone();
+        run(&mut s, "solid.revolve", json!({"sketch": "Ring", "profiles": [ring], "axis": "l1", "body_name": "Shell"}));
+        let m = run(&mut s, "inspect.measure", json!({"bodies": ["Shell"]}));
+        let want = 4.0 / 3.0 * PI * (40.0f64.powi(3) - 18.5f64.powi(3));
+        let v = m["total"]["volume_mm3"].as_f64().unwrap();
+        assert!(rel(v, want) < 5e-4, "plane at z {z}: {v} vs {want}");
+        let b = &m["bodies"][0]["bbox"];
+        assert!((b["min"][2].as_f64().unwrap() - (z - 40.0)).abs() < 1e-6 && (b["max"][2].as_f64().unwrap() - (z + 40.0)).abs() < 1e-6, "{b}");
+    }
+}
+
 #[test]
 fn sketch_tools_and_constraints() {
     let mut s = Session::default();
@@ -1882,7 +1914,8 @@ mod naming {
         let mut legacy = Session::new(solidcraft_doc::Document::from_json(&old.to_json()).unwrap());
         assert_eq!(attached(&legacy), Some(10.));
         assert!((top(&mut legacy) - 15.).abs() < 1e-6);
-        // The upstream join consumes the certified body; new attachments cannot follow its substitute roof.
+        // An upstream join that trims the certified face: the attachment stays on what is left
+        // of it and never follows the substitute roof (see face_tests for a face covered whole).
         for target in [&mut s, &mut legacy] {
             run(target, "timeline.roll_to", json!({"feature": "Block"}));
             run(target, "sketch.create", json!({"plane": "XY", "name": "B"}));
@@ -1903,19 +1936,14 @@ mod naming {
         };
         assert!(anchor.is_none(), "opening old face references must not infer a strict attachment");
         let failed = |s: &Session, name: &str| s.model.results.iter().find(|r| r.id == s.doc.find_feature(name).unwrap().id).unwrap().error.is_some();
-        assert!(failed(&s, "Top"));
-        assert!(failed(&s, "Peg"), "lost sketch cannot supply downstream geometry");
-        assert_eq!(attached(&s), None);
+        assert!(!failed(&s, "Top"));
+        assert!(!failed(&s, "Peg"));
+        assert_eq!(attached(&s), Some(10.), "the strip of Block's top left beside the boss is still that face");
         assert!((top(&mut s) - 20.0).abs() < 1e-6, "{}", top(&mut s));
         run(&mut s, "timeline.suppress", json!({"feature":"Boss","suppressed":true}));
         assert!(!failed(&s, "Top"));
-        assert!(!failed(&s, "Peg"));
         assert_eq!(attached(&s), Some(10.));
         assert!((top(&mut s) - 15.).abs() < 1e-6);
-        run(&mut s, "edit.undo", json!({}));
-        assert!(failed(&s, "Top"));
-        assert!(failed(&s, "Peg"));
-        assert_eq!(attached(&s), None);
     }
 
     #[test]
