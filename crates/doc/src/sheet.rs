@@ -298,6 +298,15 @@ pub struct SheetFlange {
     pub tag: String,
 }
 
+/// One edge flange to make: a pick on the sheet's edge, and that flange's height (to the outer
+/// face, from the virtual sharp) and angle (radians).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EdgeFlange {
+    pub pick: Vec3,
+    pub height: f64,
+    pub angle: f64,
+}
+
 /// A sheet metal body (see the module docs).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SheetBody {
@@ -1368,38 +1377,54 @@ impl SheetBody {
         position: &str,
         flip: bool,
     ) -> Result<(Vec<usize>, Vec<String>)> {
-        if !(angle > 1e-6 && angle <= std::f64::consts::PI - 1e-6) {
-            return Err(DocError::Invalid("the flange angle must be between 0 and 180°".into()));
-        }
-        if picks.is_empty() || picks.len() > 1000 {
+        let each: Vec<EdgeFlange> = picks.iter().map(|&pick| EdgeFlange { pick, height, angle }).collect();
+        self.add_flanges_each(&each, radius, position, flip)
+    }
+
+    /// Edge flanges that each have their own height and angle, in one go: every edge is trimmed
+    /// back by its own setback first, then the flanges are added and the corners between them
+    /// are closed. The closing works from the two flanges it joins (each one's own fold and
+    /// leg), so unequal flanges close like equal ones.
+    pub fn add_flanges_each(&mut self, edges: &[EdgeFlange], radius: f64, position: &str, flip: bool) -> Result<(Vec<usize>, Vec<String>)> {
+        if edges.is_empty() || edges.len() > 1000 {
             return Err(DocError::Invalid("pick 1…1000 edges".into()));
         }
-        let sharp = (radius + self.t) * (angle / 2.0).tan();
-        let setback = match position {
-            "inside" | "" => sharp,
-            "outside" => 0.0,
-            "middle" | "mid" => sharp / 2.0,
-            other => return Err(DocError::Invalid(format!("unknown bend position `{other}` (inside, outside or middle)"))),
-        };
-        let leg = height - sharp;
-        if leg < -1e-9 {
-            return Err(DocError::Invalid(format!("the flange height must be at least {sharp:.3} mm for this bend")));
+        // With several edges a message says which one it is about.
+        let on = |k: usize| if edges.len() > 1 { format!("edge {}: ", k + 1) } else { String::new() };
+        // Each edge's setback and leg (the panel past the bend) follow its own angle and height.
+        let mut sizes = Vec::with_capacity(edges.len());
+        for (k, e) in edges.iter().enumerate() {
+            if !(e.angle > 1e-6 && e.angle <= std::f64::consts::PI - 1e-6) {
+                return Err(DocError::Invalid(format!("{}the flange angle must be between 0 and 180°", on(k))));
+            }
+            let sharp = (radius + self.t) * (e.angle / 2.0).tan();
+            let setback = match position {
+                "inside" | "" => sharp,
+                "outside" => 0.0,
+                "middle" | "mid" => sharp / 2.0,
+                other => return Err(DocError::Invalid(format!("unknown bend position `{other}` (inside, outside or middle)"))),
+            };
+            let leg = e.height - sharp;
+            if !(leg >= -1e-9) {
+                return Err(DocError::Invalid(format!("{}the flange height must be at least {sharp:.3} mm for this bend", on(k))));
+            }
+            sizes.push((setback, leg));
         }
         // Find every edge before anything moves.
         let mut found = Vec::new();
-        for p in picks {
-            let (panel, a, b, top, dist) = self.edge_at(*p).ok_or_else(|| DocError::Invalid("no sheet edge there".into()))?;
+        for (e, &(setback, leg)) in edges.iter().zip(&sizes) {
+            let (panel, a, b, top, dist) = self.edge_at(e.pick).ok_or_else(|| DocError::Invalid("no sheet edge there".into()))?;
             if dist > self.t * 2.0 + 1e-3 {
                 return Err(DocError::Invalid("pick an edge of the sheet's top or bottom face".into()));
             }
             let d = (b - a).normalized().ok_or_else(|| DocError::Invalid("edge".into()))?;
-            found.push((panel, a, b, d, top));
+            found.push((panel, a, b, d, top, setback, leg, e.angle));
         }
-        for (panel, a, b, _, _) in &found {
-            self.trim(*panel, *a, *b, setback)?;
+        for (panel, a, b, _, _, setback, _, _) in &found {
+            self.trim(*panel, *a, *b, *setback)?;
         }
         let mut made = Vec::new();
-        for (panel, a, b, d, top) in found {
+        for (panel, a, b, d, top, setback, leg, angle) in found {
             let outward = Vec2::new(d.y, -d.x);
             let line_o = a - outward * setback;
             // The trimmed edge: along d, on the moved line.
@@ -2000,6 +2025,72 @@ impl SheetBody {
         best.map(|(_, q)| q)
     }
 
+    /// The persistent name of a panel: `base`, a flange's tag, or `#<index>` for an untagged
+    /// flange; `flat` for the whole sheet while it is unfolded.
+    fn panel_name(&self, pi: Option<usize>) -> String {
+        match pi {
+            _ if self.flat => "flat".into(),
+            None => "base".into(),
+            Some(i) => match self.flanges.get(i) {
+                Some(f) if !f.tag.is_empty() => f.tag.clone(),
+                _ => format!("#{i}"),
+            },
+        }
+    }
+
+    /// The plane of a flat face of a panel (`top`: the face at the thickness, else the bottom
+    /// one), facing out of the sheet. Its coordinates are the flat pattern's (the bottom
+    /// face's mirrored in y), so a sketch on it measures as the flat pattern does.
+    fn panel_face_plane(&self, world: &Mat, top: bool) -> Option<Plane> {
+        let (x, y) = (apply_vector(world, Vec3::X), apply_vector(world, Vec3::Y));
+        Plane::new(apply_point(world, Vec3::new(0.0, 0.0, if top { self.t } else { 0.0 })), x, if top { y } else { y * -1.0 })
+    }
+
+    /// The flat face of the sheet that a point lies on (sheet coordinates, within `tol`, which
+    /// stays below a quarter of the thickness): its persistent name (`<panel>:top` or
+    /// `<panel>:bottom`) and its plane (see [`panel_face`](Self::panel_face)).
+    pub fn panel_face_at(&self, p: Vec3, tol: f64) -> Option<(String, Plane)> {
+        let tol = tol.min(self.t * 0.25);
+        let flat = if self.flat { self.flat_regions().ok()? } else { Vec::new() };
+        let panels = if self.flat { vec![(None, self.base.clone())] } else { self.panels() };
+        for (pi, region) in panels {
+            let world = self.world(pi);
+            let Some(inverse) = mat_inverse(&world) else { continue };
+            let q = apply_point(&inverse, p);
+            let top = (q.z - self.t).abs() < q.z.abs();
+            if (if top { (q.z - self.t).abs() } else { q.z.abs() }) > tol {
+                continue;
+            }
+            let q2 = Vec2::new(q.x, q.y);
+            if if self.flat { flat.iter().any(|r| r.contains(q2)) } else { region.contains(q2) } {
+                return Some((format!("{}:{}", self.panel_name(pi), if top { "top" } else { "bottom" }), self.panel_face_plane(&world, top)?));
+            }
+        }
+        None
+    }
+
+    /// The plane of the flat face with this persistent name (see [`panel_face_at`](Self::panel_face_at)).
+    /// A face named while the sheet was folded follows its panel; one named unfolded (`flat`)
+    /// is the flat sheet's own plane.
+    pub fn panel_face(&self, name: &str) -> Option<Plane> {
+        let (panel, side) = name.rsplit_once(':')?;
+        let top = match side {
+            "top" => true,
+            "bottom" => false,
+            _ => return None,
+        };
+        let pi = match panel {
+            "flat" | "base" => None,
+            tag => Some(
+                self.flanges
+                    .iter()
+                    .position(|f| f.tag == tag)
+                    .or_else(|| tag.strip_prefix('#')?.parse::<usize>().ok().filter(|i| *i < self.flanges.len()))?,
+            ),
+        };
+        self.panel_face_plane(&self.world(pi), top)
+    }
+
     /// Map a region in a world plane to flat coordinates through a panel's placement.
     pub fn region_to_flat(&self, panel: Option<usize>, plane: &Plane, r: &Region2) -> Result<Region2> {
         region_complexity(std::slice::from_ref(r))?;
@@ -2298,6 +2389,52 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
     Ok(sheet)
 }
 
+/// The name a sketch keeps for a flat face of a sheet: `sheet:<body>:<panel>:<top|bottom>`.
+pub fn sheet_face_name(body: &str, face: &str) -> String {
+    format!("sheet:{body}:{face}")
+}
+
+/// Point the sheet face a sketch plane is attached to (also beneath an offset or a rotation)
+/// at body `new`, when it is on body `old`.
+pub fn rename_plane_sheet_body(plane: &mut crate::PlaneRef, old: &str, new: &str) {
+    match plane {
+        crate::PlaneRef::Face { name: Some(name), anchor: None, .. } => {
+            let renamed = split_sheet_face_name(name).filter(|(body, _)| *body == old).map(|(_, face)| sheet_face_name(new, face));
+            if let Some(renamed) = renamed {
+                *name = renamed;
+            }
+        }
+        crate::PlaneRef::Offset { base, .. } | crate::PlaneRef::AtAngle { base, .. } => rename_plane_sheet_body(base, old, new),
+        _ => {}
+    }
+}
+
+/// The sheet face a sketch plane is attached to (also beneath an offset or a rotation): its
+/// [`sheet_face_name`].
+pub fn plane_sheet_face(plane: &crate::PlaneRef) -> Option<&str> {
+    match plane {
+        crate::PlaneRef::Face { name: Some(name), anchor: None, .. } if split_sheet_face_name(name).is_some() => Some(name),
+        crate::PlaneRef::Offset { base, .. } | crate::PlaneRef::AtAngle { base, .. } => plane_sheet_face(base),
+        _ => None,
+    }
+}
+
+/// The body and the `<panel>:<side>` of a [`sheet_face_name`].
+pub fn split_sheet_face_name(name: &str) -> Option<(&str, &str)> {
+    let rest = name.strip_prefix("sheet:")?;
+    let (head, side) = rest.rsplit_once(':')?;
+    let (body, panel) = head.rsplit_once(':')?;
+    (!body.is_empty() && !panel.is_empty() && !side.is_empty()).then_some(())?;
+    Some((body, rest.get(body.len() + 1..)?))
+}
+
+/// The plane of the sheet face with a [`sheet_face_name`], in the body's own coordinates.
+pub fn sheet_face_plane(st: &crate::ModelState, name: &str) -> Option<(String, Plane)> {
+    let (body, face) = split_sheet_face_name(name)?;
+    let plane = st.sheets.iter().find(|s| s.body == body)?.panel_face(face)?;
+    Some((body.to_string(), plane))
+}
+
 /// Persistent names of the sheet edges nearest each world point (empty when none).
 pub fn sheet_edge_names(st: &crate::ModelState, pts: &[Vec3]) -> Vec<String> {
     pts.iter()
@@ -2366,6 +2503,85 @@ mod tests {
         s.add_flange(Vec3::new(50.0, 0.0, 2.5), 15.0, std::f64::consts::FRAC_PI_4, 2.5, "inside", false).unwrap();
         assert!((vol(&s.solid().unwrap()) - 18450.777).abs() < 2.0);
         assert!((s.flat_size().unwrap().1 - 73.685298).abs() < 1e-5);
+    }
+
+    #[test]
+    fn flat_faces_of_a_sheet_are_found_and_named_by_panel() {
+        use std::f64::consts::FRAC_PI_2;
+        // Steel, 2.5 thick, R = T: a 90° flange on the y = 0 edge stands between the planes
+        // y = 0 (its outer face) and y = 2.5 (its inner face) from z = 5 up.
+        let mut s = plate(100.0, 60.0);
+        s.add_flange(Vec3::new(50.0, 0.0, 2.5), 20.0, FRAC_PI_2, 2.5, "inside", false).unwrap();
+        s.flanges[0].tag = "F7.0".into();
+        let face = |s: &SheetBody, p: Vec3| s.panel_face_at(p, 1e-6);
+        let (name, plane) = face(&s, Vec3::new(50.0, 30.0, 2.5)).unwrap();
+        assert_eq!(name, "base:top");
+        assert!(plane.normal().dist(Vec3::Z) < 1e-12 && (plane.origin.z - 2.5).abs() < 1e-12);
+        // The top face's coordinates are the flat pattern's; the bottom face's mirror y.
+        assert!(plane.to_local(Vec3::new(30.0, 20.0, 2.5)).dist(Vec2::new(30.0, 20.0)) < 1e-12);
+        let (name, plane) = face(&s, Vec3::new(50.0, 30.0, 0.0)).unwrap();
+        assert_eq!(name, "base:bottom");
+        assert!(plane.normal().dist(Vec3::Z * -1.0) < 1e-12 && plane.origin.z.abs() < 1e-12);
+        assert!(plane.to_local(Vec3::new(30.0, 20.0, 0.0)).dist(Vec2::new(30.0, -20.0)) < 1e-12);
+        // The flange's inner face is the sheet's top side there; 7 mm up it is flat y = 5 − BA − 7.
+        let ba = FRAC_PI_2 * (2.5 + 0.44 * 2.5);
+        let (inner, plane) = face(&s, Vec3::new(30.0, 2.5, 12.0)).unwrap();
+        assert_eq!(inner, "F7.0:top");
+        assert!(plane.normal().dist(Vec3::Y) < 1e-12, "{:?}", plane.normal());
+        assert!(plane.to_local(Vec3::new(30.0, 2.5, 12.0)).dist(Vec2::new(30.0, 5.0 - ba - 7.0)) < 1e-9);
+        let (outer, plane) = face(&s, Vec3::new(30.0, 0.0, 12.0)).unwrap();
+        assert_eq!(outer, "F7.0:bottom");
+        assert!(plane.normal().dist(Vec3::Y * -1.0) < 1e-12, "{:?}", plane.normal());
+        // A name gives the same plane again.
+        for p in [Vec3::new(50.0, 30.0, 2.5), Vec3::new(50.0, 30.0, 0.0), Vec3::new(30.0, 2.5, 12.0), Vec3::new(30.0, 0.0, 12.0)] {
+            let (name, plane) = face(&s, p).unwrap();
+            assert_eq!(s.panel_face(&name), Some(plane), "{name}");
+        }
+        // Inside the sheet, on the bend, beside the sheet, above the flange: no flat face.
+        for p in [Vec3::new(50.0, 30.0, 1.0), Vec3::new(50.0, 1.0, 1.0), Vec3::new(150.0, 30.0, 2.5), Vec3::new(30.0, 2.5, 40.0)] {
+            assert!(face(&s, p).is_none(), "{p:?}");
+        }
+        // Names that are no face, or no flange, give no plane.
+        for name in ["base", "base:side", "nobody:top", "#7:top", "F8.0:top", ""] {
+            assert!(s.panel_face(name).is_none(), "{name}");
+        }
+        // A flange without a tag is named by its index.
+        s.flanges[0].tag.clear();
+        assert_eq!(face(&s, Vec3::new(30.0, 2.5, 12.0)).map(|f| f.0).as_deref(), Some("#0:top"));
+        assert!(s.panel_face("#0:bottom").is_some());
+        // Unfolded, the whole sheet is one panel.
+        s.flat = true;
+        assert_eq!(face(&s, Vec3::new(50.0, -10.0, 2.5)).map(|f| f.0).as_deref(), Some("flat:top"));
+        assert!(s.panel_face("flat:bottom").is_some());
+    }
+
+    #[test]
+    fn a_pick_beside_a_thin_sheet_takes_the_nearer_face() {
+        // The tolerance of a pick on a large part is far above a thin sheet's thickness, and
+        // never reaches a quarter of it here: the nearer side wins, the middle is no face.
+        let rv = RuleValues { thickness: 0.5, ..steel() };
+        let s = base_flange(
+            "Thin",
+            "Sheet",
+            &rv,
+            Plane::XY,
+            rect(Vec2::new(0.0, 0.0), Vec2::new(100.0, 0.0), Vec2::new(100.0, 60.0), Vec2::new(0.0, 60.0)),
+        );
+        let at = |z: f64| s.panel_face_at(Vec3::new(50.0, 30.0, z), 5.0).map(|f| f.0);
+        assert_eq!(at(0.4).as_deref(), Some("base:top"));
+        assert_eq!(at(0.1).as_deref(), Some("base:bottom"));
+        assert_eq!(at(0.25), None);
+        assert_eq!(at(3.0), None);
+    }
+
+    #[test]
+    fn sheet_face_names_split_from_the_right() {
+        assert_eq!(split_sheet_face_name(&sheet_face_name("Body1", "F7.0:top")), Some(("Body1", "F7.0:top")));
+        // A body name may hold colons; the panel and the side never do.
+        assert_eq!(split_sheet_face_name("sheet:Part:2:base:bottom"), Some(("Part:2", "base:bottom")));
+        for name in ["", "sheet", "sheet:Body1", "sheet:Body1:top", "sheet::base:top", "sheet:Body1::top", "sheet:Body1:base:", "Body1:base:top"] {
+            assert_eq!(split_sheet_face_name(name), None, "{name}");
+        }
     }
 
     #[test]
@@ -2894,5 +3110,265 @@ mod tests {
                 holds_the_flat_material(&s, &what);
             }
         }
+    }
+
+    /// Edge flanges on `base`, each with its own height and angle, added in one call. Returns the
+    /// sheet and the notes on corners left open.
+    fn flanges_each(base: Region2, rv: &RuleValues, each: &[EdgeFlange]) -> (SheetBody, Vec<String>) {
+        let mut s = base_flange("Body1", "AL2", rv, Plane::XY, base);
+        let notes = s.add_flanges_each(each, rv.bend_radius, "inside", false).unwrap().1;
+        (s, notes)
+    }
+
+    /// The 120 x 90 tray's four flanges (bottom, right, top, left), each with its own angle
+    /// (degrees) and height.
+    fn tray_each(rv: &RuleValues, angles: [f64; 4], heights: [f64; 4]) -> (SheetBody, Vec<String>) {
+        let base = rect(Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 90.0), Vec2::new(0.0, 90.0));
+        let t = rv.thickness;
+        let picks = [Vec3::new(60.0, 0.0, t), Vec3::new(120.0, 45.0, t), Vec3::new(60.0, 90.0, t), Vec3::new(0.0, 45.0, t)];
+        let each: Vec<EdgeFlange> = (0..4).map(|i| EdgeFlange { pick: picks[i], height: heights[i], angle: angles[i].to_radians() }).collect();
+        flanges_each(base, rv, &each)
+    }
+
+    /// The material of a base flange bent up, for asking whether a folded point lies in it. Worked
+    /// out from the fold on its own (not through `map3`): the panel through the inverse of its fold,
+    /// the bend from the radius and turn about the bend's axis.
+    struct Material {
+        back: Mat,
+        panel: Vec<Vec2>,
+        axis: (Vec3, Vec3),
+        p: Vec2,
+        d: Vec2,
+        span: (f64, f64),
+        radius: f64,
+        angle: f64,
+        t: f64,
+    }
+
+    impl Material {
+        fn of(s: &SheetBody, i: usize) -> Material {
+            let f = &s.flanges[i];
+            assert!(f.parent.is_none() && f.angle > 0.0);
+            let (o, k, _) = s.bend_axis(f);
+            Material {
+                back: mat_inverse(&s.fold(i)).unwrap(),
+                panel: corners_of(&s.panel(f)),
+                axis: (o, k),
+                p: f.p,
+                d: f.d,
+                span: s.zone_span(f),
+                radius: f.radius,
+                angle: f.angle,
+                t: s.t,
+            }
+        }
+
+        /// How deep (mm) `q` lies inside the flange's panel or bend; None when it is outside both.
+        fn depth(&self, q: Vec3) -> Option<f64> {
+            let flat = apply_point(&self.back, q);
+            let m = self.panel.len();
+            let sides = (0..m).map(|j| {
+                let (a, b) = (self.panel[j], self.panel[(j + 1) % m]);
+                (b - a).cross(Vec2::new(flat.x, flat.y) - a) / (b - a).len()
+            });
+            let in_panel = sides.fold(flat.z.min(self.t - flat.z), f64::min);
+            // The bend turns the sheet under its axis toward the flange: a point's distance from
+            // the axis is its radius, its turn from straight below the axis its place across the bend.
+            let (o, k) = self.axis;
+            let rel = q - o;
+            let perp = rel - k * rel.dot(k);
+            let down = Vec3::Z * -1.0;
+            let (rho, turn) = (perp.len(), perp.dot(k.cross(down)).atan2(perp.dot(down)));
+            let u = (Vec2::new(q.x, q.y) - self.p).dot(self.d);
+            let in_bend = [rho - self.radius, self.radius + self.t - rho, turn * rho, (self.angle - turn) * rho, u - self.span.0, self.span.1 - u]
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+            let depth = in_panel.max(in_bend);
+            (depth > 0.0).then_some(depth)
+        }
+    }
+
+    /// Folded, the two flanges at corner `k` keep out of each other: no point of one's bend or
+    /// panel near the corner (sampled every 0.5 mm or finer, at three heights through the sheet)
+    /// lies in the other's. Each sample is also found inside its own flange, which checks
+    /// [`Material`] against the fold that places the solid's faces.
+    fn flanges_keep_clear(s: &SheetBody, k: &Corner, what: &str) {
+        let (ma, mb) = (Material::of(s, k.a), Material::of(s, k.b));
+        for (i, at_end, own, other) in [(k.a, k.a_end, &ma, &mb), (k.b, k.b_end, &mb, &ma)] {
+            let f = &s.flanges[i];
+            let ba = s.allowance(f);
+            let mut samples = Vec::new();
+            // The bend's 12 mm nearest the corner.
+            let (u0, u1) = s.zone_span(f);
+            for iu in 0..48 {
+                let du = 0.02 + 0.25 * iu as f64;
+                let u = if at_end { u1 - du } else { u0 + du };
+                for is in 0..24 {
+                    samples.push((Piece::Zone(i), f.p + f.d * u + f.n * (ba * (is as f64 + 0.5) / 24.0)));
+                }
+            }
+            // The panel's 25 mm nearest its end, over its whole height.
+            let (q0, q1, inward) = if at_end {
+                let b = f.p + f.n * ba + f.d * (f.len + f.ext.1);
+                (b, b + f.n * f.leg + f.d * (f.slope.1 * f.leg), f.d * -1.0)
+            } else {
+                let a = f.p + f.n * ba - f.d * f.ext.0;
+                (a, a + f.n * f.leg - f.d * (f.slope.0 * f.leg), f.d)
+            };
+            let rows = (f.leg / 0.5).ceil().max(1.0) as usize;
+            for ir in 0..rows {
+                let on_end = q0 + (q1 - q0) * ((ir as f64 + 0.5) / rows as f64);
+                for iu in 0..50 {
+                    samples.push((Piece::Panel(Some(i)), on_end + inward * (0.02 + 0.5 * iu as f64)));
+                }
+            }
+            for (piece, flat) in samples {
+                for z in [0.1 * s.t, 0.5 * s.t, 0.9 * s.t] {
+                    let q = s.map3(piece, flat, z);
+                    assert!(own.depth(q).is_some(), "{what}: flange {i}: its own point {flat:?} at {z} ({piece:?}) is not found in it");
+                    let d = other.depth(q);
+                    assert!(
+                        d.is_none_or(|d| d < 1e-6),
+                        "{what}: flange {i}'s {piece:?} at {flat:?}, height {z}, lies {d:?} mm inside the other flange"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The panel of flange `i` of the tray by hand, in the flat pattern. Take a flange at θ on the
+    /// edge y = 0 and its neighbour at φ on x = 0, T the thickness. A point of the first one's inner
+    /// face, w up its outer face from the virtual sharp, is (x, −w·cosθ + T·sinθ, w·sinθ + T·cosθ);
+    /// the inner faces are the planes y·sinθ + z·cosθ = T and x·sinφ + z·cosφ = T, and the plane
+    /// halving them passes through the corner with normal (sinφ, −sinθ, cosφ − cosθ), of length
+    /// √(2 − 2·cosθ·cosφ). Keeping the inner face gap/2 from it gives the panel's end
+    /// x(w) = ((g/2)·√(2 − 2·cosθ·cosφ) + T·(1 − cosθ·cosφ) − w·sinθ·cosφ) / sinφ for w = s0 … h, at
+    /// flat y = s0 − BA − (w − s0). Each flange is taken in its own frame: the origin at the start
+    /// corner of its edge, u along the edge, v into the base; flange i − 1 is at its start and
+    /// flange i + 1 at its end.
+    fn hand_panel(rv: &RuleValues, angles: [f64; 4], heights: [f64; 4], i: usize) -> Vec<Vec2> {
+        let (t, r, g) = (rv.thickness, rv.bend_radius, rv.gap);
+        let (o, d, v, len) = [
+            (Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0), 120.0),
+            (Vec2::new(120.0, 0.0), Vec2::new(0.0, 1.0), Vec2::new(-1.0, 0.0), 90.0),
+            (Vec2::new(120.0, 90.0), Vec2::new(-1.0, 0.0), Vec2::new(0.0, -1.0), 120.0),
+            (Vec2::new(0.0, 90.0), Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0), 90.0),
+        ][i];
+        let th = angles[i].to_radians();
+        let (s0, ba) = ((r + t) * (th / 2.0).tan(), th * (r + rv.k_factor * t));
+        let x_end = |phi: f64, w: f64| {
+            let c = th.cos() * phi.cos();
+            ((g / 2.0) * (2.0 - 2.0 * c).sqrt() + t * (1.0 - c) - w * th.sin() * phi.cos()) / phi.sin()
+        };
+        let (prev, next) = (angles[(i + 3) % 4].to_radians(), angles[(i + 1) % 4].to_radians());
+        let flat = |u: f64, w: f64| o + d * u + v * (s0 - ba - (w - s0));
+        let h = heights[i];
+        vec![flat(x_end(prev, s0), s0), flat(x_end(prev, h), h), flat(len - x_end(next, h), h), flat(len - x_end(next, s0), s0)]
+    }
+
+    /// The tray's flat area by hand: the base inside the four bend start lines, every bend zone
+    /// (the base's trimmed edge by the bend allowance) and every panel of [`hand_panel`]. With
+    /// s0 = (R + T)·tan(θ/2) a flange's setback and BA = θ·(R + K·T) its bend allowance, the base
+    /// is (120 − s0_left − s0_right) by (90 − s0_bottom − s0_top).
+    fn hand_flat_area(rv: &RuleValues, angles: [f64; 4], heights: [f64; 4]) -> f64 {
+        let s0 = angles.map(|a| (rv.bend_radius + rv.thickness) * (a.to_radians() / 2.0).tan());
+        let ba = angles.map(|a| a.to_radians() * (rv.bend_radius + rv.k_factor * rv.thickness));
+        let (w, h) = (120.0 - s0[3] - s0[1], 90.0 - s0[0] - s0[2]);
+        let panels: f64 = (0..4).map(|i| signed_area(&hand_panel(rv, angles, heights, i)).abs()).sum();
+        w * h + (ba[0] + ba[2]) * w + (ba[1] + ba[3]) * h + panels
+    }
+
+    /// 60°, 90°, 105° and 120° on the tray's bottom, right, top and left edges.
+    const MIXED: [f64; 4] = [60.0, 90.0, 105.0, 120.0];
+
+    #[test]
+    fn flanges_with_their_own_angle_and_height_close_at_their_corners() {
+        // Four angles on a 120 x 90 tray, then four heights as well, in one call: every panel ends
+        // where the hand derivation says, whatever its neighbour's angle and height.
+        let rv = alu();
+        for (heights, what) in [([38.6; 4], "one height"), ([38.6, 30.0, 45.0, 25.0], "four heights")] {
+            let (s, notes) = tray_each(&rv, MIXED, heights);
+            assert!(notes.is_empty(), "{what}: {notes:?}");
+            for i in 0..4 {
+                let (f, th) = (&s.flanges[i], MIXED[i].to_radians());
+                assert!((f.angle - th).abs() < 1e-12, "{what}: flange {i}");
+                assert!((f.leg - (heights[i] - (rv.bend_radius + rv.thickness) * (th / 2.0).tan())).abs() < 1e-9, "{what}: flange {i}");
+                let got = corners_of(&s.panel(f));
+                assert_eq!(got.len(), 4, "{what}: flange {i}");
+                for q in hand_panel(&rv, MIXED, heights, i) {
+                    assert!(got.iter().any(|p| p.dist(q) < 1e-9), "{what}: flange {i}: {q:?} not in {got:?}");
+                }
+            }
+            // The flat pattern is the base, the bend zones and those panels, nothing more or less;
+            // folded it holds the same material (`holds_the_flat_material`), so the volume is this
+            // area times the thickness.
+            let (area, want) = (flat_area(&s), hand_flat_area(&rv, MIXED, heights));
+            assert!((area - want).abs() < 1e-6, "{what}: flat area {area} vs {want}");
+            let corners = s.corners(&[0, 1, 2, 3]);
+            assert_eq!(corners.len(), 4, "{what}");
+            ends_are_gap_apart(&s, &corners, rv.gap, what);
+            for k in &corners {
+                flanges_keep_clear(&s, k, what);
+            }
+            holds_the_flat_material(&s, what);
+        }
+    }
+
+    #[test]
+    fn a_trapezoid_with_unequal_angles_and_heights_closes_at_its_acute_and_obtuse_corners() {
+        // 77.5° and 102.5° base corners; flanges at 60°, 105°, 75° and 120°, each its own height.
+        let pts = [Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(100.0, 90.0), Vec2::new(20.0, 90.0)];
+        let picks = [Vec3::new(60.0, 0.0, 2.0), Vec3::new(110.0, 45.0, 2.0), Vec3::new(60.0, 90.0, 2.0), Vec3::new(10.0, 45.0, 2.0)];
+        let (angles, heights) = ([60.0f64, 105.0, 75.0, 120.0], [38.6, 30.0, 45.0, 25.0]);
+        let each: Vec<EdgeFlange> = (0..4).map(|i| EdgeFlange { pick: picks[i], height: heights[i], angle: angles[i].to_radians() }).collect();
+        let (s, notes) = flanges_each(Region2 { outer: Loop2::polygon(&pts).ccw(), holes: vec![] }, &alu(), &each);
+        assert!(notes.is_empty(), "{notes:?}");
+        for i in 0..4 {
+            let (f, th) = (&s.flanges[i], angles[i].to_radians());
+            assert!((f.angle - th).abs() < 1e-12 && (f.leg - (heights[i] - 3.0 * (th / 2.0).tan())).abs() < 1e-9, "flange {i}: {f:?}");
+        }
+        let corners = s.corners(&[0, 1, 2, 3]);
+        assert_eq!(corners.len(), 4);
+        ends_are_gap_apart(&s, &corners, 0.5, "trapezoid");
+        for k in &corners {
+            flanges_keep_clear(&s, k, "trapezoid");
+        }
+        holds_the_flat_material(&s, "trapezoid");
+    }
+
+    /// The angles of the sweep below.
+    const SWEEP: [f64; 7] = [45.0, 60.0, 75.0, 90.0, 105.0, 120.0, 135.0];
+
+    #[test]
+    fn every_pair_of_angles_closes_at_any_base_corner() {
+        // A parallelogram base (120 and 90 long) with a corner of 60°, 90° or 120° at the origin;
+        // flanges 38.6 high on its two edges there, in one call, at every pair of the angles: 147
+        // corners, each closed with the gap, the flanges clear of each other, the part one valid
+        // shell holding the flat pattern's material.
+        let rv = alu();
+        let mut cases = 0;
+        for alpha in [60.0f64, 90.0, 120.0] {
+            let u = Vec2::new(alpha.to_radians().cos(), alpha.to_radians().sin());
+            let pts = [Vec2::new(0.0, 0.0), Vec2::new(120.0, 0.0), Vec2::new(120.0, 0.0) + u * 90.0, u * 90.0];
+            for a in SWEEP {
+                for b in SWEEP {
+                    let what = format!("corner {alpha}°, flanges {a}° and {b}°");
+                    let each = [
+                        EdgeFlange { pick: Vec3::new(60.0, 0.0, 2.0), height: 38.6, angle: a.to_radians() },
+                        EdgeFlange { pick: Vec3::new(u.x * 45.0, u.y * 45.0, 2.0), height: 38.6, angle: b.to_radians() },
+                    ];
+                    let (s, notes) = flanges_each(Region2 { outer: Loop2::polygon(&pts).ccw(), holes: vec![] }, &rv, &each);
+                    assert!(notes.is_empty(), "{what}: {notes:?}");
+                    assert!((s.flanges[0].angle - a.to_radians()).abs() < 1e-12 && (s.flanges[1].angle - b.to_radians()).abs() < 1e-12, "{what}");
+                    let corners = s.corners(&[0, 1]);
+                    assert_eq!(corners.len(), 1, "{what}");
+                    ends_are_gap_apart(&s, &corners, rv.gap, &what);
+                    flanges_keep_clear(&s, &corners[0], &what);
+                    holds_the_flat_material(&s, &what);
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 147);
     }
 }

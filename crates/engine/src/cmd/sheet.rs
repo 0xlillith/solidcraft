@@ -2,9 +2,9 @@
 //! the flat pattern (outline, bend lines, bend table) and its DXF export.
 
 use serde_json::{Value, json};
-use solidcraft_doc::FeatureKind;
 use solidcraft_doc::expr::Kind;
 use solidcraft_doc::sheet::{SheetBody, SheetRule};
+use solidcraft_doc::{FeatureKind, FlangeEdge};
 use solidcraft_geom::{Vec2, Vec3};
 
 use super::CommandSpec;
@@ -15,7 +15,8 @@ use crate::{EngineError, Result, Session};
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sheet.flange", "Flange", flange).at("SHEET METAL", "CREATE").icon("flange").params(
         "base: sketch + profiles? (rule?, flip?) | contour: sketch + curves (open chain of lines) + distance (rule?, flip?, reverse?) | \
-         edge: edges: [[x,y,z] on top/bottom edges] + height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
+         edge: edges: [[x,y,z] on top/bottom edges, or {point: [x,y,z], angle?, height?} for an edge with its own angle and height] + \
+         height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
          position?: inside|outside|middle, flip?, body?; type?: base|edge|contour (default from the inputs); name?, body_name? (the new body)",
     ),
     CommandSpec::new("sheet.hem", "Hem", hem)
@@ -59,6 +60,39 @@ fn points(p: &Value, k: &str, cmd: &str) -> Result<Vec<Vec3>> {
     a.iter()
         .map(|v| vec3(v).or_else(|| v.get("point").and_then(vec3)).ok_or_else(|| bad(cmd, format!("`{k}` must contain [x, y, z] points"))))
         .collect()
+}
+
+/// The `edges` of an edge flange: points `[x, y, z]` on sheet edges, or `{point, angle?, height?}`
+/// for an edge with its own angle and height (expressions, checked like the feature's).
+fn flange_edges(s: &Session, p: &Value, cmd: &str) -> Result<Vec<FlangeEdge>> {
+    const KEYS: [&str; 3] = ["point", "angle", "height"];
+    let list = "`edges` must list points [x, y, z] on sheet edges, or {point, angle?, height?}";
+    let a = p.get("edges").and_then(Value::as_array).ok_or_else(|| bad(cmd, list))?;
+    if a.is_empty() || a.len() > 1000 {
+        return Err(bad(cmd, "`edges` must list 1…1000 points"));
+    }
+    let mut edges = Vec::with_capacity(a.len());
+    for (i, v) in a.iter().enumerate() {
+        // A bare point, as before: [x, y, z] or {x, y, z}.
+        let Some(o) = v.as_object().filter(|o| KEYS.iter().any(|k| o.contains_key(*k))) else {
+            edges.push(FlangeEdge::at(vec3(v).ok_or_else(|| bad(cmd, format!("edges[{i}]: {list}")))?));
+            continue;
+        };
+        if let Some(k) = o.keys().find(|k| !KEYS.contains(&k.as_str())) {
+            return Err(bad(cmd, format!("edges[{i}]: unknown key `{k}` (an edge takes point, angle and height)")));
+        }
+        let point = o.get("point").and_then(vec3).ok_or_else(|| bad(cmd, format!("edges[{i}]: `point` must be [x, y, z]")))?;
+        let own = |k: &str, kind: Kind| -> Result<Option<String>> {
+            if o.get(k).is_none_or(Value::is_null) {
+                return Ok(None);
+            }
+            let e = expr(v, k).ok_or_else(|| bad(cmd, format!("edges[{i}]: `{k}` must be a number or an expression")))?;
+            check_expr(s, &e, kind, cmd, &format!("edges[{i}].{k}"))?;
+            Ok(Some(e))
+        };
+        edges.push(FlangeEdge { point, angle: own("angle", Kind::Angle)?, height: own("height", Kind::Length)? });
+    }
+    Ok(edges)
 }
 
 fn rule_param(s: &Session, p: &Value, cmd: &str) -> Result<Option<String>> {
@@ -106,7 +140,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
             )
         }
         "edge" => {
-            let edges = points(p, "edges", cmd)?;
+            let edges = flange_edges(s, p, cmd)?;
             let height = req_expr(cmd, p, "height")?;
             check_expr(s, &height, Kind::Length, cmd, "height")?;
             let angle = expr(p, "angle").unwrap_or_else(|| "90 deg".into());

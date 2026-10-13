@@ -24,6 +24,24 @@ opposite ways, ends that would overlap in the flat pattern) stays open, and the 
 reports a warning saying where. A flange added by a later feature leaves the corner as it was:
 the earlier flange keeps its length and the new one ends at its bend.
 
+The flanges of one edge flange feature can each have an angle and a height of their own. An
+entry of `edges` is a point `[x, y, z]`, which takes the feature's `height` and `angle`, or an
+object `{"point": [x, y, z], "angle": "105 deg", "height": "30 mm"}` whose `angle` and `height`
+(either one, or both) replace them for that edge. They are expressions like the feature's own,
+so parameters work, and each is a feature input of its own (`Edge angle`, `Edge height`) after
+`Height` and `Angle`. The corners between such flanges close like those between equal ones:
+the ends run toward each other the rule's gap apart, either side of the plane halfway between
+the two flanges, and a taller flange's end keeps that line up to its own tip. This is how to
+close a corner between flanges at different angles, because flanges of separate features
+don't close toward each other. In the Flange dialog, picking more than one edge shows a row
+per edge with an angle and a height box; an empty box takes the value above.
+
+```json
+{"command":"sheet.flange","params":{"edges":[[60,0,2],{"point":[120,45,2],"angle":"90 deg"},
+ {"point":[60,90,2],"angle":"105 deg","height":"30 mm"},{"point":[0,45,2],"angle":"120 deg","height":"25 mm"}],
+ "height":38.6,"angle":"75 deg"}}
+```
+
 For a shop drawing or spreadsheet, `sheet.export_bend_table` returns CSV by default; choose
 `format: "json"` for structured data. It includes the sheet rule, thickness, bend angles,
 radii, allowances and flat centre-line coordinates. Lengths use millimetres and angles use
@@ -71,3 +89,15 @@ tool with varying depth is refused before changing sheet geometry. Pocket profil
 but a pocket crossing a bend zone cannot yet be refolded. Machining folded bend material,
 tapered sheet cuts and other unsupported 3D sheet Cut/Intersect operations report an error before changing
 the design; they cannot silently restore removed material during a later sheet rebuild.
+
+A sketch can be drawn on a flat face of the sheet: the base or a flange, on either side. Pick
+the face (or give `sketch.create` the point `plane: {face: [x, y, z]}`) and the sketch attaches
+to that panel instead of to a certified source face. It keeps the face's name,
+`sheet:<body>:<panel>:<top|bottom>` (the panel is `base` or the flange's feature tag), and finds
+the face again whenever the sheet is rebuilt: after a parameter change such as the thickness or
+a flange angle, through Unfold / Refold, after the file is reopened and when the body is
+renamed. Sketch coordinates are the flat pattern's, so a point drawn on a flange lies where the
+flat pattern and its DXF have it, and on the bottom face y runs the other way, as seen from
+below. When the face is gone (its flange is suppressed or deleted) the sketch reports a lost
+attachment instead of moving to another face; **Redefine Sketch Plane** attaches it to another
+face. `fixed: true` still freezes the picked plane in space.

@@ -7,7 +7,9 @@
   undo history, selection and camera).
 - **Toolbar.** The workspace switcher (DESIGN) sits on the left. The tabs (SOLID, SURFACE,
   SHEET METAL, PLASTIC, UTILITIES, and SKETCH while you sketch) hold panels of commands. Click a
-  panel's name for all its commands.
+  panel's name for all its commands. Drag a command from the dropdown onto a panel's label
+  or empty space to append it; the insertion line shows its destination. Drop onto an existing
+  button to insert before it. Buttons can also move between panels, and the layout is saved.
 - **Browser** (left). The design as a tree: document settings and units, named views, the
   origin, bodies, sketches, construction planes, canvases, joints and components. The eye shows or
   hides an item, a component's radio button makes it the active component, and right-clicking any
@@ -18,7 +20,8 @@
   trackpad, pinch zooms and two-finger scroll pans (Navigation › Two-finger scroll pans;
   off: scroll zooms like the wheel); mouse wheels zoom and the thumb wheel pans sideways.
   Shift+middle orbits freely
-  in the default and Inventor presets. Shift+right-drag snaps to the nearest standard or
+  in the default and Inventor presets. In every preset, Ctrl+left drag (Cmd on macOS) that starts
+  on empty space orbits; a Ctrl+click still adds to the selection. Shift+right-drag snaps to the nearest standard or
   diagonal view; Shift does not request snapping when the preset already requires it to orbit.
   The axis view shows the world's X/Y/Z directions in SolidCraft's colors. Click a signed
   axis tip to look along that axis; click the aligned tip again to look from the opposite side.

@@ -8,6 +8,19 @@ use crate::{SolveApp, icons};
 
 pub const TABS: &[&str] = &["SOLID", "SURFACE", "MESH", "SHEET METAL", "PLASTIC", "UTILITIES"];
 
+/// The accent stroke colour for a panel's icons: constraint commands use the same red as the
+/// constraint glyphs they draw in the sketch (`glyph_text`), sketch tools otherwise keep
+/// `sketch_accent`, and every other tab keeps the plain `accent`.
+fn panel_accent(t: Tokens, tab: &str, panel: &str) -> Color32 {
+    if panel == "CONSTRAINTS" {
+        t.glyph_text
+    } else if tab == "SKETCH" {
+        t.sketch_accent
+    } else {
+        t.accent
+    }
+}
+
 /// Panels shown on each tab (in order). Commands come from the registry by (tab, panel).
 pub fn panels(tab: &str) -> &'static [&'static str] {
     if let Some(p) = crate::workspace::panels(tab) {
@@ -30,7 +43,6 @@ pub fn promoted(tab: &str, panel: &str) -> usize {
     match (tab, panel) {
         ("SOLID", "CREATE") => 4,
         ("SOLID", "MODIFY") => 4,
-        ("SKETCH", "CREATE") => 6,
         ("SKETCH", "CONSTRAINTS") => 6,
         (_, "FINISH SKETCH") => 1,
         _ => 2,
@@ -573,12 +585,6 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             let free_x = bx + drawn as f32 * 40.0;
             let free = Rect::from_min_size(pos2(free_x, top + 2.0), vec2((px + width - 4.0 - free_x).max(8.0), 38.0));
             let fresp = ui.interact(free, ui.id().with(("panel_free", panel)), if collapsed { Sense::click() } else { Sense::hover() });
-            if fresp.dnd_hover_payload::<ToolbarDrag>().is_some() {
-                painter.line_segment([pos2(free.left(), free.top() + 2.0), pos2(free.left(), free.bottom() - 2.0)], Stroke::new(2.0, t.accent));
-            }
-            if let Some(d) = fresp.dnd_release_payload::<ToolbarDrag>() {
-                drop = Some((d.id, *panel, None));
-            }
             let mut opened = false;
             if collapsed {
                 // One button: the panel's first command's icon over a caret; it opens the
@@ -589,7 +595,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     painter.rect_filled(br, 4.0, t.hover);
                 }
                 if let Some(c) = shown.first().or(cmds.first()) {
-                    let acc = if tab == "SKETCH" { t.sketch_accent } else { t.accent };
+                    let acc = panel_accent(t, &tab, panel);
                     icons::paint(&painter, Rect::from_center_size(br.center() - vec2(0.0, 3.0), vec2(26.0, 26.0)), c.icon, t.icon, t.icon_fill, acc);
                 }
                 caret(&painter, pos2(br.center().x, br.bottom() - 3.0), t.text_dim);
@@ -628,11 +634,8 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 } else if resp.hovered() && info.enabled {
                     painter.rect_filled(br, 4.0, t.hover);
                 }
-                let (ink, fill, acc) = if info.enabled {
-                    (t.icon, t.icon_fill, if tab == "SKETCH" { t.sketch_accent } else { t.accent })
-                } else {
-                    (t.border, t.panel_header, t.border)
-                };
+                let (ink, fill, acc) =
+                    if info.enabled { (t.icon, t.icon_fill, panel_accent(t, &tab, panel)) } else { (t.border, t.panel_header, t.border) };
                 let icon = match c.id {
                     "sketch.finish" => "finish",
                     "config.table" => "configuration_table",
@@ -691,6 +694,20 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             caret(&painter, pos2(gx + gw / 2.0 + 6.0, lr.center().y), lc);
             if lresp.clicked() {
                 ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_panel_open"), popup_id));
+            }
+            // Labels, gaps and margins append; actual buttons keep their insert-before target.
+            // Respect the current layer so a dropdown covering the panel is not a drop target.
+            let panel_rect = Rect::from_min_max(pos2(px, top + 2.0), pos2(px + width, r.bottom()));
+            let over_button = ui
+                .input(|input| input.pointer.hover_pos())
+                .is_some_and(|p| (0..drawn).any(|i| Rect::from_min_size(pos2(bx + i as f32 * 40.0, top + 2.0), vec2(38.0, 38.0)).contains(p)));
+            if !over_button && ui.rect_contains_pointer(panel_rect) && egui::DragAndDrop::payload::<ToolbarDrag>(ui.ctx()).is_some() {
+                painter.line_segment([pos2(px + width - 4.0, top + 4.0), pos2(px + width - 4.0, top + 38.0)], Stroke::new(2.0, t.accent));
+                if ui.input(|input| input.pointer.any_released())
+                    && let Some(d) = egui::DragAndDrop::take_payload::<ToolbarDrag>(ui.ctx())
+                {
+                    drop = Some((d.id, *panel, None));
+                }
             }
             let open = ui.ctx().data(|d| d.get_temp::<egui::Id>(egui::Id::new("sc_panel_open"))) == Some(popup_id);
             if open {
@@ -869,8 +886,14 @@ fn dropdown_row(app: &SolveApp, ui: &mut egui::Ui, c: &'static solidcraft_engine
         p.rect_filled(rect, 3.0, t.hover);
         crate::scenario::publish_handle(&format!("dropdown_hot:{}", c.id), rect.center());
     }
-    let (ink, fill, acc, text) =
-        if info.enabled { (t.icon, t.icon_fill, t.accent, t.text) } else { (t.border, t.panel_header, t.border, t.text_dim) };
+    // Every other row keeps the plain accent it always has; only a constraint command's row
+    // switches to the constraint red, to match its button on the ribbon.
+    let (ink, fill, acc, text) = if info.enabled {
+        let acc = if c.panel == "CONSTRAINTS" { t.glyph_text } else { t.accent };
+        (t.icon, t.icon_fill, acc, t.text)
+    } else {
+        (t.border, t.panel_header, t.border, t.text_dim)
+    };
     let ir = Rect::from_center_size(pos2(rect.left() + 6.0 + 9.0, rect.center().y), vec2(18.0, 18.0));
     icons::paint(p, ir, c.icon, ink, fill, acc);
     p.text(pos2(ir.right() + 8.0, rect.center().y), Align2::LEFT_CENTER, &label, FontId::proportional(13.0), text);
@@ -1318,5 +1341,46 @@ mod dropdown_tests {
         let [(_, at)] = hot.as_slice() else { panic!("one highlighted row: {hot:?}") };
         let menu = crate::scenario::rect_of("toolbar_dropdown").unwrap();
         assert!(menu.contains(*at), "the focused last row is out of view: {at:?} in {menu:?}");
+    }
+}
+
+#[cfg(test)]
+mod panel_drop_tests {
+    use super::*;
+
+    #[test]
+    fn panel_label_gap_and_margins_append_while_buttons_insert_before() {
+        for target in ["label", "gap", "left margin", "right margin", "button"] {
+            let mut h = crate::scenario::Harness::new();
+            h.step(&json!({"click":{"handle":"panel:SOLID:CREATE"}})).unwrap();
+            let label = crate::scenario::handle_at("panel:SOLID:CREATE").unwrap();
+            let destination = match target {
+                "gap" => label - vec2(0.0, 10.0),
+                "left margin" => pos2(label.x - panel_width(4) / 2.0 + 1.0, label.y - 30.0),
+                "right margin" => pos2(label.x + panel_width(4) / 2.0 - 1.0, label.y - 30.0),
+                "button" => crate::scenario::handle_at("button:solid.extrude").unwrap(),
+                _ => label,
+            };
+            h.step(&json!({"drag":[{"handle":"dropdown:solid.cylinder"}, [destination.x,destination.y]],"steps":12})).unwrap();
+            h.step(&json!({"key":"Escape"})).unwrap();
+            let order = if target == "button" {
+                json!(["button:sketch.create", "button:solid.cylinder", "button:solid.extrude", "button:solid.revolve", "button:solid.sweep"])
+            } else {
+                json!(["button:sketch.create", "button:solid.extrude", "button:solid.revolve", "button:solid.sweep", "button:solid.cylinder"])
+            };
+            h.step(&json!({"expect":{"handle_order":order,"tool":null,"dialog":null,"errors":0}})).unwrap();
+            assert!(h.app.session.doc.features.is_empty(), "{target}: pinning must not run the command");
+            h.step(&json!({"restart":"close"})).unwrap();
+            h.step(&json!({"expect":{"handle_order":order}})).unwrap();
+        }
+    }
+
+    #[test]
+    fn panel_label_drop_moves_a_button_between_panels() {
+        let mut h = crate::scenario::Harness::new();
+        h.step(&json!({"drag":[{"handle":"button:solid.extrude"},{"handle":"panel:SOLID:MODIFY"}],"steps":12})).unwrap();
+        h.step(&json!({"expect":{"handle_order":["button:solid.fillet","button:solid.chamfer","button:solid.scale","button:solid.extrude"],"tool":null,"dialog":null,"errors":0}})).unwrap();
+        h.step(&json!({"restart":"close"})).unwrap();
+        h.step(&json!({"expect":{"handle_order":["button:solid.scale","button:solid.extrude"]}})).unwrap();
     }
 }
