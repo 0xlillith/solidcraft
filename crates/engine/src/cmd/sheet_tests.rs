@@ -1333,6 +1333,75 @@ fn inherited_round_hole_survives_flange_and_unfold_in_flipped_frames() {
     }
 }
 
+fn faces(s: &mut Session) -> (u64, u64) {
+    let body = run(s, "inspect.measure", json!({}))["bodies"][0].clone();
+    (body["faces"].as_u64().unwrap(), body["face_types"]["cylinder"].as_u64().unwrap_or(0))
+}
+
+#[test]
+fn elliptic_cut_out_stays_exact_in_the_flat_pattern_and_follows_arcs_when_folded() {
+    use solidcraft_geom::Seg2;
+    let mut s = Session::default();
+    base(&mut s, 100.0, 60.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    let (uncut, blank) = (volume(&mut s), s.model.state().sheets[0].flat_regions().unwrap()[0].area());
+    let (plain_faces, plain_cylinders) = faces(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Cut"}));
+    run(&mut s, "sketch.ellipse", json!({"center": [40, 30], "major": [55, 30], "minor_radius": 8}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Cut", "through_all": true, "operation": "cut", "direction": "symmetric"}));
+    // The ellipse takes π·15·8 of the 2.5 mm sheet (a body's volume is measured on its mesh).
+    let cut = PI * 15.0 * 8.0;
+    let folded = volume(&mut s);
+    assert!((uncut - folded - cut * 2.5).abs() < 0.5, "{}", uncut - folded);
+    // The flat pattern holds the ellipse itself, so its area is the blank less π·15·8.
+    let regions = s.model.state().sheets[0].flat_regions().unwrap();
+    let hole = &regions[0].holes[0];
+    assert!(hole.segs.len() == 4 && hole.segs.iter().all(|x| matches!(x, Seg2::Conic { .. })), "{} segments", hole.segs.len());
+    assert!((regions[0].area() - (blank - cut)).abs() < 1e-9, "{}", regions[0].area());
+    // The flat pattern JSON lists it as those four curves, one `polyline` each, with every
+    // point on the ellipse ((x − 40)/15)² + ((y − 30)/8)² = 1.
+    let shapes = flat(&mut s)["cutout_shapes"].as_array().cloned().unwrap_or_default();
+    let curves: Vec<Vec<Value>> = shapes[0]["segments"].as_array().into_iter().flatten().filter_map(|x| x["polyline"].as_array().cloned()).collect();
+    assert!(shapes.len() == 1 && curves.len() == 4 && shapes[0]["segments"].as_array().is_some_and(|a| a.len() == 4), "{} curves", curves.len());
+    let off = |p: &Value| ((p[0].as_f64().unwrap_or(0.0) - 40.0) / 15.0).powi(2) + ((p[1].as_f64().unwrap_or(0.0) - 30.0) / 8.0).powi(2) - 1.0;
+    assert!(curves.iter().all(|c| c.len() > 2 && c.iter().all(|p| off(p).abs() < 1e-9)));
+    // Folded, the cut-out's wall is cylinders over tangent arcs: fewer than half the 264
+    // chords of 0.001 mm (four quarters of √(2·17/0.008) = 66 each).
+    let (cut_faces, cut_cylinders) = faces(&mut s);
+    let wall = cut_faces - plain_faces;
+    assert!(wall < 132 && cut_cylinders - plain_cylinders + 4 >= wall, "{wall} wall faces, {} cylinders", cut_cylinders - plain_cylinders);
+    // Unfolded, it is the four conic faces of the ellipse.
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - (blank - cut) * 2.5).abs() < 0.5);
+    assert_eq!(faces(&mut s).0, regions[0].outer.segs.len() as u64 + 4 + 2);
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - folded).abs() < 0.1);
+}
+
+#[test]
+fn flipped_base_flange_keeps_its_elliptic_outline() {
+    for flip in [false, true] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Oval"}));
+        run(&mut s, "sketch.ellipse", json!({"center": [0, 0], "major": [25, 0], "minor_radius": 12}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "sheet.flange", json!({"sketch": "Oval", "flip": flip}));
+        let regions = s.model.state().sheets[0].flat_regions().unwrap();
+        let outline = &regions[0].outer.segs;
+        assert!(
+            outline.len() == 4 && outline.iter().all(|x| matches!(x, solidcraft_geom::Seg2::Conic { .. })),
+            "flip {flip}: {} segments",
+            outline.len()
+        );
+        // π·25·12 of the 2.5 mm sheet: exactly in the flat pattern; within 0.5 mm³ in the body,
+        // which follows the outline by arcs and is measured on its mesh (a 64-sided outline
+        // would be 3.8 mm³ short).
+        assert!((regions[0].area() - PI * 300.0).abs() < 1e-9, "flip {flip}: {}", regions[0].area());
+        assert!((volume(&mut s) - PI * 300.0 * 2.5).abs() < 0.5, "flip {flip}: {}", volume(&mut s));
+    }
+}
+
 #[test]
 fn crossing_only_disconnecting_cut_preserves_all_material_states() {
     let mut s = Session::default();

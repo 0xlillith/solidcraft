@@ -18,8 +18,8 @@ use crate::{DocError, Document, IDENTITY, Mat, Result, apply_point, apply_vector
 
 // Bound the aggregate geometry, including sampled curves and intermediate clipping pieces.
 // These are work limits, never geometry truncation: a larger input returns a useful error.
-// Exact lines and arcs count once each (the planar booleans work on them whole); sampled
-// curves count their 0.001 mm chords.
+// Exact lines and arcs count once each (the planar booleans work on them whole); free-form
+// curves (conics, splines, text) count the arcs the planar booleans follow them with.
 const MAX_FLAT_POINTS: usize = 16_384;
 // The 0.001 mm chords of everything, arcs included: what the planar booleans sample (their
 // own limit is the same).
@@ -71,23 +71,57 @@ fn flat_points(polys: &[Vec<Vec2>]) -> Result<usize> {
     Ok(n)
 }
 
+/// A loop as the planar booleans arrange it: free-form segments (conics, splines, text)
+/// followed by tangent arcs within the kernel's fit tolerance.
+fn fitted_loop(lp: &Loop2) -> Result<Loop2> {
+    if lp.is_line_arc() {
+        return Ok(lp.clone());
+    }
+    if lp.segs.len() > MAX_FLAT_POINTS {
+        return Err(flat_budget_error());
+    }
+    lp.fit_arcs(kernel::PLANAR_FIT_TOL).ok_or_else(flat_budget_error)
+}
+
+/// A region of lines and arcs only (see [`fitted_loop`]): what the folded solid is sewn from.
+fn fitted_region(region: &Region2) -> Result<Region2> {
+    Ok(Region2 { outer: fitted_loop(&region.outer)?, holes: region.holes.iter().map(fitted_loop).collect::<Result<_>>()? })
+}
+
+/// A region with every free-form loop as its 0.001 mm chords: the outline a pocket is
+/// machined along. The body booleans take a tool of many small cylinders several times
+/// slower than one of planes.
+fn chorded_region(region: &Region2) -> Result<Region2> {
+    let chorded = |lp: &Loop2| -> Result<Loop2> { if lp.is_line_arc() { Ok(lp.clone()) } else { Ok(Loop2::polygon(&flat_polyline(lp)?)) } };
+    Ok(Region2 {
+        outer: chorded(&region.outer)?.ccw(),
+        holes: region.holes.iter().map(|h| chorded(h).map(|l| l.ccw().reversed())).collect::<Result<_>>()?,
+    })
+}
+
+/// A line or free-form segment with its points mapped by `f`: exact under any affine map (a
+/// conic keeps its weight). An arc is given by angles, not points, and stays as it is.
+pub(crate) fn map_controls(seg: &Seg2, f: impl Fn(Vec2) -> Vec2) -> Seg2 {
+    match *seg {
+        Seg2::Line { a, b } => Seg2::Line { a: f(a), b: f(b) },
+        Seg2::Cubic { p0, p1, p2, p3 } => Seg2::Cubic { p0: f(p0), p1: f(p1), p2: f(p2), p3: f(p3) },
+        Seg2::Conic { a, apex, b, w } => Seg2::Conic { a: f(a), apex: f(apex), b: f(b), w },
+        Seg2::Bezier { n, mut p } => {
+            p.iter_mut().take(usize::from(n) + 1).for_each(|q| *q = f(*q));
+            Seg2::Bezier { n, p }
+        }
+        arc @ Seg2::Arc { .. } => arc,
+    }
+}
+
 fn planar_region(region: &Region2) -> Result<Region2> {
     if region.holes.len() > MAX_FLAT_PIECES {
         return Err(flat_budget_error());
     }
     region_complexity(std::slice::from_ref(region))?;
-    let convert = |lp: &Loop2| -> Result<Loop2> {
-        if lp.segs.iter().all(|s| matches!(s, Seg2::Line { .. } | Seg2::Arc { .. })) {
-            Ok(lp.clone())
-        } else {
-            // Keep free-form profiles through controlled 0.001 mm chord sampling.
-            Ok(Loop2::polygon(&flat_polyline(lp)?))
-        }
-    };
-    Ok(Region2 {
-        outer: convert(&region.outer)?.ccw(),
-        holes: region.holes.iter().map(|h| convert(h).map(|l| l.ccw().reversed())).collect::<Result<_>>()?,
-    })
+    // Free-form loops stay exact: the planar booleans follow them with arcs and hand a loop
+    // they leave whole its exact segments back.
+    Ok(Region2 { outer: region.outer.ccw(), holes: region.holes.iter().map(|h| h.ccw().reversed()).collect() })
 }
 
 fn region_complexity(regions: &[Region2]) -> Result<(usize, usize)> {
@@ -103,13 +137,21 @@ fn regions_complexity<'a>(regions: impl Iterator<Item = &'a Region2>) -> Result<
             return Err(flat_budget_error());
         }
         for lp in std::iter::once(&region.outer).chain(&region.holes) {
+            // A free-form loop costs what the planar booleans work on: its fitted arcs.
+            let fitted;
+            let lp = if lp.is_line_arc() {
+                lp
+            } else {
+                fitted = fitted_loop(lp)?;
+                &fitted
+            };
             edges = edges.saturating_add(lp.segs.len());
             if edges > MAX_FLAT_POINTS {
                 return Err(flat_budget_error());
             }
             for seg in &lp.segs {
                 let chords = seg.polyline(1e-3).len().saturating_sub(1);
-                points = points.saturating_add(if matches!(seg, Seg2::Line { .. } | Seg2::Arc { .. }) { 1 } else { chords });
+                points = points.saturating_add(1);
                 samples = samples.saturating_add(chords);
                 if points > MAX_FLAT_POINTS || samples > MAX_FLAT_SAMPLES {
                     return Err(flat_budget_error());
@@ -843,22 +885,26 @@ impl SheetBody {
         for (i, f) in self.flanges.iter().enumerate() {
             pieces.push((Piece::Zone(i), self.zone(f)));
         }
+        // The folded solid is sewn from lines and arcs: free-form outlines and cut-outs follow
+        // their fitted arcs there (the flat pattern keeps them exact).
         let mut cuts = Vec::new();
         let mut cut_points = 0usize;
         for hole in &self.holes {
-            let region = planar_region(hole)?;
+            let region = fitted_region(&planar_region(hole)?)?;
             cut_points = cut_points.saturating_add(region_complexity(std::slice::from_ref(&region))?.1);
             if cut_points > MAX_FLAT_POINTS {
                 return Err(flat_budget_error());
             }
             cuts.push(region);
         }
-        cuts.extend(self.through_pocket_regions(work)?);
+        for pocket in self.through_pocket_regions(work)? {
+            cuts.push(fitted_region(&pocket)?);
+        }
         let cuts = material_union(cuts, work)?;
         let mut out = Vec::new();
         let mut points = 0usize;
         for (piece, region) in pieces {
-            let panel = planar_region(&region)?;
+            let panel = fitted_region(&planar_region(&region)?)?;
             let material = if cuts.is_empty() { vec![panel] } else { material_boolean(&[panel], &cuts, kernel::BoolOp::Cut, work)? };
             for region in material {
                 points = points.saturating_add(region_complexity(std::slice::from_ref(&region))?.1);
@@ -1050,7 +1096,12 @@ impl SheetBody {
 
     /// The flat pattern as one extrusion (outline with its cut-outs).
     pub fn flat_solid(&self) -> Result<Body> {
-        let regions = self.flat_regions()?;
+        let mut regions = self.flat_regions()?;
+        if !self.pockets.is_empty() {
+            // Pockets are machined by the prism booleans, which read walls of planes and
+            // cylinders: the blank they cut follows its fitted arcs then.
+            regions = regions.iter().map(fitted_region).collect::<Result<_>>()?;
+        }
         let mut local = self.clone();
         local.frame = Plane::XY;
         local.flat = true;
@@ -1128,13 +1179,14 @@ impl SheetBody {
         if self.pockets.len() > 1000 {
             return Err(flat_budget_error());
         }
-        regions_complexity(self.pockets.iter().map(|p| &p.region))?;
+        let outlines = self.pockets.iter().map(|p| chorded_region(&p.region)).collect::<Result<Vec<_>>>()?;
+        regions_complexity(outlines.iter())?;
         let panels = if self.flat {
             vec![(None, self.flat_regions()?)]
         } else {
             self.material_panels(None, work)?.into_iter().map(|(pi, r)| (pi, vec![r])).collect()
         };
-        for pocket in &self.pockets {
+        for (pocket, outline) in self.pockets.iter().zip(&outlines) {
             if !pocket.z0.is_finite() || !pocket.z1.is_finite() || pocket.z0 < 0.0 || pocket.z1 > self.t || pocket.z0 >= pocket.z1 {
                 return Err(DocError::Invalid("invalid sheet pocket depth".into()));
             }
@@ -1148,10 +1200,13 @@ impl SheetBody {
                 }
             }
             for (pi, panel) in &panels {
-                let clipped = material_boolean(panel, std::slice::from_ref(&pocket.region), kernel::BoolOp::Intersect, work)?;
+                let clipped = material_boolean(panel, std::slice::from_ref(outline), kernel::BoolOp::Intersect, work)?;
                 if clipped.is_empty() {
                     continue;
                 }
+                // What the tool takes over from a free-form cut-out of the panel follows its
+                // fitted arcs: walls of planes and cylinders, which the prism booleans take.
+                let clipped = clipped.iter().map(fitted_region).collect::<Result<Vec<_>>>()?;
                 let w = if self.flat { self.frame_mat() } else { self.world(*pi) };
                 let plane = plane_of(&w, Vec3::ZERO, Vec3::X, Vec3::Y)?;
                 // BRep replay is costlier than planar clipping; share the command budget.
@@ -1243,7 +1298,9 @@ impl SheetBody {
 
     /// Actual flat material boundaries after cut-outs. The same panel and cut regions build
     /// the folded solid; planar unions remove panel/bend seams and turn edge-crossing cuts
-    /// into notches. Lines and circular arcs remain exact through clipping and merging.
+    /// into notches. Lines and circular arcs remain exact through clipping and merging; a
+    /// free-form loop that comes out whole is the curve it was drawn as, one that is clipped
+    /// follows it with tangent arcs.
     pub fn flat_regions(&self) -> Result<Vec<Region2>> {
         let regions = self.flat_material()?;
         if regions.is_empty() {
@@ -2995,21 +3052,12 @@ impl SheetBody {
                         Seg2::Arc { center: map(center), radius, start: rot + start, sweep }
                     }
                 }
-                other => Seg2::Line { a: map(other.start()), b: map(other.end()) },
+                // Free-form segments map exactly, through their control points.
+                other => map_controls(&other, map),
             }
         };
-        let map_loop = |lp: &Loop2| -> Result<Loop2> {
-            let curved_other = lp.segs.iter().any(|x| !matches!(x, Seg2::Line { .. } | Seg2::Arc { .. }));
-            if curved_other {
-                Ok(Loop2::polygon(&flat_polyline(lp)?.into_iter().map(map).collect::<Vec<_>>()))
-            } else {
-                Ok(Loop2 { segs: lp.segs.iter().map(seg).collect() })
-            }
-        };
-        Ok(Region2 {
-            outer: map_loop(&r.outer)?.ccw(),
-            holes: r.holes.iter().map(|h| map_loop(h).map(|l| l.ccw().reversed())).collect::<Result<_>>()?,
-        })
+        let map_loop = |lp: &Loop2| Loop2 { segs: lp.segs.iter().map(seg).collect() };
+        Ok(Region2 { outer: map_loop(&r.outer).ccw(), holes: r.holes.iter().map(|h| map_loop(h).ccw().reversed()).collect() })
     }
 
     /// Panels whose plane is parallel to `plane` (world): (panel, region).
@@ -3730,22 +3778,111 @@ mod tests {
     }
 
     #[test]
-    fn freeform_profile_uses_bounded_sampling_with_exact_round_holes() {
+    fn freeform_profile_stays_exact_with_exact_round_holes() {
         let mut s = plate(100.0, 60.0);
+        let cubic =
+            Seg2::Cubic { p0: Vec2::new(100.0, 60.0), p1: Vec2::new(200.0 / 3.0, 80.0), p2: Vec2::new(100.0 / 3.0, 80.0), p3: Vec2::new(0.0, 60.0) };
         s.base.outer.segs = vec![
             Seg2::Line { a: Vec2::ZERO, b: Vec2::new(100.0, 0.0) },
             Seg2::Line { a: Vec2::new(100.0, 0.0), b: Vec2::new(100.0, 60.0) },
-            Seg2::Cubic { p0: Vec2::new(100.0, 60.0), p1: Vec2::new(200.0 / 3.0, 80.0), p2: Vec2::new(100.0 / 3.0, 80.0), p3: Vec2::new(0.0, 60.0) },
+            cubic,
             Seg2::Line { a: Vec2::new(0.0, 60.0), b: Vec2::ZERO },
         ];
         s.holes.push(Region2 { outer: Loop2::circle(Vec2::new(50.0, 30.0), 3.0), holes: vec![] });
         let regions = s.flat_regions().unwrap();
-        assert!(regions[0].outer.segs.iter().all(|s| matches!(s, Seg2::Line { .. })));
+        // The outline the cut leaves whole keeps its exact cubic, the hole its exact arcs.
+        assert_eq!(regions[0].outer.segs.iter().filter(|s| matches!(s, Seg2::Line { .. })).count(), 3);
+        assert!(regions[0].outer.segs.contains(&cubic), "{:?}", regions[0].outer);
         assert!(regions[0].holes[0].segs.iter().all(|s| matches!(s, Seg2::Arc { .. })));
         // The cubic has x=100(1-t), y=60+60t(1-t), hence an exact blank area of 7000.
+        assert!((regions[0].area() - (7000.0 - std::f64::consts::PI * 9.0)).abs() < 1e-9, "{}", regions[0].area());
         let expected = (7000.0 - std::f64::consts::PI * 9.0) * 2.5;
         assert!((vol(&s.solid().unwrap()) - expected).abs() < 0.5);
         assert!((vol(&s.flat_solid().unwrap()) - expected).abs() < 0.5);
+    }
+
+    /// An ellipse about `c` with semi-axes `a` (along x) and `b`, as four exact conics.
+    fn ellipse(c: Vec2, a: f64, b: f64) -> Region2 {
+        let corners = [c + Vec2::new(a, 0.0), c + Vec2::new(0.0, b), c - Vec2::new(a, 0.0), c - Vec2::new(0.0, b)];
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let segs = (0..4).map(|i| Seg2::Conic { a: corners[i], apex: corners[i] + corners[(i + 1) % 4] - c, b: corners[(i + 1) % 4], w }).collect();
+        Region2 { outer: Loop2 { segs }, holes: vec![] }
+    }
+
+    #[test]
+    fn free_form_cut_outs_stay_exact_in_the_flat_pattern_and_follow_arcs_in_the_folded_solid() {
+        let mut s = plate(100.0, 60.0);
+        s.add_flange(Vec3::new(50.0, 0.0, 2.5), 20.0, std::f64::consts::FRAC_PI_2, 2.5, "inside", false).unwrap();
+        let (blank, folded) = (s.flat_regions().unwrap()[0].area(), vol(&s.solid().unwrap()));
+        let hole = ellipse(Vec2::new(40.0, 30.0), 15.0, 8.0);
+        let cut = std::f64::consts::PI * 15.0 * 8.0;
+        s.holes.push(hole.clone());
+        // The flat pattern's cut-out is the ellipse itself (four conics, running as a hole) and
+        // its area is the blank less π·15·8.
+        let regions = s.flat_regions().unwrap();
+        assert_eq!(regions.len(), 1);
+        let h = &regions[0].holes[0];
+        assert!(h.segs.len() == 4 && h.segs.iter().all(|x| hole.outer.segs.contains(&x.reversed())), "{h:?}");
+        assert!((regions[0].area() - (blank - cut)).abs() < 1e-9, "{} vs {}", regions[0].area(), blank - cut);
+        // The folded solid is sewn from lines and arcs within the fit tolerance (times the
+        // perimeter, 74 mm): fewer than half the 264 chords of 0.001 mm.
+        let cells = s.cells_with_work(&mut FlatWork::new()).unwrap();
+        let base = cells.iter().find(|c| c.piece == Piece::Panel(None)).unwrap();
+        assert!(base.holes.len() == 1 && base.holes[0].len() < 132 && base.holes[0].iter().all(Seg2::is_line_or_arc), "{}", base.holes[0].len());
+        assert!((Loop2 { segs: base.holes[0].clone() }.signed_area().abs() - cut).abs() < kernel::PLANAR_FIT_TOL * 74.0);
+        assert!((folded - vol(&s.solid().unwrap()) - cut * 2.5).abs() < 0.5);
+        // The flat solid has the ellipse's wall as four faces.
+        let flat = s.flat_solid().unwrap();
+        assert!((vol(&flat) - (blank - cut) * 2.5).abs() < 0.5);
+        assert_eq!(flat.face_count(), regions[0].outer.segs.len() + 4 + 2);
+    }
+
+    #[test]
+    fn regions_map_into_the_flat_frame_with_their_exact_curves() {
+        let s = plate(100.0, 60.0);
+        let hole = ellipse(Vec2::new(40.0, 30.0), 15.0, 8.0);
+        // Drawn on the sheet's own plane: the region as it is.
+        assert_eq!(s.region_to_flat(None, &Plane::XY, &hole).unwrap(), hole);
+        // Drawn from below (y mirrored) at (40, −30), with a cubic and a quartic lobe on its
+        // right: the same ellipse on the sheet, every curve through its mirrored controls.
+        let below = Plane { origin: Vec3::ZERO, x: Vec3::X, y: Vec3::Y * -1.0 };
+        let mirror = |p: Vec2| Vec2::new(p.x, -p.y);
+        let seen = Region2 { outer: Loop2 { segs: hole.outer.segs.iter().map(|x| map_controls(x, mirror)).collect() }, holes: vec![] };
+        let mapped = s.region_to_flat(None, &below, &seen).unwrap();
+        assert!(mapped.outer.is_ccw() && mapped.outer.segs.len() == 4 && mapped.outer.segs.iter().all(|x| hole.outer.segs.contains(x)), "{mapped:?}");
+        // A cubic and a quartic closed by a line, clockwise in that plane: counter-clockwise on
+        // the sheet, every control point mirrored.
+        let (a, b, c) = (Vec2::new(60.0, -20.0), Vec2::new(60.0, -40.0), Vec2::new(80.0, -30.0));
+        let (cubic, quartic) = (
+            [a, a + Vec2::new(10.0, 4.0), c + Vec2::new(0.0, 8.0), c],
+            [c, c + Vec2::new(0.0, -6.0), c + Vec2::new(-6.0, -12.0), b + Vec2::new(8.0, -2.0), b],
+        );
+        let lobe = |f: fn(Vec2) -> Vec2| Loop2 {
+            segs: vec![
+                solidcraft_geom::bezier(&cubic.map(f)).unwrap(),
+                solidcraft_geom::bezier(&quartic.map(f)).unwrap(),
+                Seg2::Line { a: f(b), b: f(a) },
+            ],
+        };
+        let drawn = lobe(|p| p);
+        let mapped = s.region_to_flat(None, &below, &Region2 { outer: drawn.clone(), holes: vec![] }).unwrap();
+        assert_eq!(mapped.outer, lobe(mirror));
+        assert!(mapped.holes.is_empty() && (mapped.area() + drawn.signed_area()).abs() < 1e-9 && mapped.area() > 100.0, "{}", mapped.area());
+    }
+
+    #[test]
+    fn pockets_with_free_form_outlines_are_machined_beside_free_form_cut_outs() {
+        let mut s = plate(100.0, 60.0);
+        s.holes.push(ellipse(Vec2::new(30.0, 30.0), 15.0, 8.0));
+        let pocket = ellipse(Vec2::new(70.0, 30.0), 10.0, 6.0);
+        s.record_pocket(pocket.clone(), 0.0, 1.0, &mut FlatWork::new()).unwrap();
+        // The plate less the through ellipse (π·15·8 of 2.5 mm) and the pocket (π·10·6 of 1 mm).
+        let expected = (6000.0 - std::f64::consts::PI * 120.0) * 2.5 - std::f64::consts::PI * 60.0;
+        assert!((vol(&s.solid().unwrap()) - expected).abs() < 0.5, "{}", vol(&s.solid().unwrap()));
+        assert!((vol(&s.flat_solid().unwrap()) - expected).abs() < 0.5, "{}", vol(&s.flat_solid().unwrap()));
+        // The machining record keeps the pocket's exact outline.
+        let machined = s.machining().unwrap();
+        assert!(machined.len() == 1 && machined[0].region.outer == pocket.outer, "{} records", machined.len());
     }
 
     #[test]

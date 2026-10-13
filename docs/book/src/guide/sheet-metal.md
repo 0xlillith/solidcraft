@@ -125,10 +125,13 @@ adaptively. The `OUTLINE`, `BEND_UP` and `BEND_DOWN` layers separate cuts from b
 Base-flange profiles keep their interior holes. Through cuts that cross a sheet edge become
 notches in the flat outline; overlapping and repeated cuts remove their combined area once.
 The flat preview, DXF and unfolded solid use the same material boundaries. Lines and circular
-arcs remain exact; other profile curves use a 0.001 mm chord tolerance.
+arcs remain exact. An ellipse, a spline or text stays the curve it was drawn as in the flat
+pattern and the unfolded solid; the folded solid follows it with tangent arcs within 0.001 mm,
+and the DXF and the point lists write it as chords within 0.001 mm.
 Flat-pattern JSON lists each cut-out twice, in the same order: as points (`cutouts`), and
 exactly (`cutout_shapes`): a round hole as `{"circle": {"center", "radius"}}`, any other as its
-`line`, `arc` (centre, radius, start and sweep in degrees) and `polyline` segments.
+`line`, `arc` (centre, radius, start and sweep in degrees) and `polyline` segments (one
+`polyline` for each ellipse quarter, spline or glyph curve).
 
 Cuts can leave separate material pieces, including the centre of a ring cut. These pieces
 remain one logical sheet group through Unfold / Refold and export as separate flat outlines.
