@@ -924,7 +924,14 @@ impl Model {
             let f = if !explicit_emboss && f.face_names.iter().any(|n| !n.is_empty()) {
                 let mut g = f.clone();
                 let mut notes = Vec::new();
-                for (p, n) in g.kind.face_points_mut().into_iter().zip(&f.face_names) {
+                // A hole's position is a place on its face, not a pick of the face: it follows
+                // the face along the hole's axis and never slides sideways to the face's nearest
+                // point when the face no longer reaches it.
+                let hole_axis = match &f.kind {
+                    FeatureKind::Hole { direction, points: None, .. } => direction.normalized(),
+                    _ => None,
+                };
+                for (k, (p, n)) in g.kind.face_points_mut().into_iter().zip(&f.face_names).enumerate() {
                     if n.is_empty() {
                         continue;
                     }
@@ -933,7 +940,18 @@ impl Model {
                             if let Some(note) = hit.note(n) {
                                 notes.push(note);
                             }
-                            *p = hit.point;
+                            match (k, hole_axis) {
+                                (0, Some(axis)) => match hit.along(&state, *p, axis) {
+                                    Some(q) => *p = q,
+                                    // The place still lies on the face (the axis may run along it).
+                                    None if hit.on_point => {}
+                                    None => notes.push(format!(
+                                        "the hole's position [{}, {}, {}] is no longer on face `{n}`: it stays where it was placed",
+                                        p.x, p.y, p.z
+                                    )),
+                                },
+                                _ => *p = hit.point,
+                            }
                         }
                         None => notes.push(format!("face `{n}` no longer exists; using the face at the picked point")),
                     }
