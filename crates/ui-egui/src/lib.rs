@@ -98,6 +98,7 @@ mod sketch_display_ui_tests;
 mod sketch_drag_ui_tests;
 #[cfg(test)]
 mod sketch_edit_tests;
+mod sketch_families;
 pub mod sketch_palette;
 pub(crate) mod sketch_text;
 pub mod sketch_tools;
@@ -227,6 +228,7 @@ pub struct SolveApp {
     pub crashes: crash_ui::CrashUi,
     /// Toolbar buttons the user pinned, removed or reordered.
     pub toolbar_custom: toolbar_custom::ToolbarCustom,
+    pub sketch_choices: sketch_families::Choices,
     /// Preferences kept between runs, and their window.
     pub preferences: prefs::Prefs,
     pub prefs_window: prefs::PrefsWindow,
@@ -300,6 +302,7 @@ impl SolveApp {
             issue_report: issue_report::ReportState::default(),
             crashes: crash_ui::CrashUi::default(),
             toolbar_custom: toolbar_custom::ToolbarCustom::default(),
+            sketch_choices: sketch_families::Choices::default(),
             preferences: prefs::Prefs::default(),
             prefs_window: prefs::PrefsWindow::default(),
             preview: preview::PreviewState::default(),
@@ -464,6 +467,7 @@ impl SolveApp {
             Ok(_) => {
                 self.session.echo(format!("{} done", command_label(id)));
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
+                    self.sketch_choices = sketch_families::Choices::default();
                     dim_view::cancel();
                     self.menu.props = None;
                     sketch_attachment_ui::clear(self);
@@ -534,6 +538,9 @@ impl SolveApp {
         }
         if !sketch_tools::start_hook(self, id) {
             return;
+        }
+        if solidcraft_engine::find_command(id).is_some_and(|c| c.info(&self.session).enabled) {
+            self.sketch_choices.remember(id);
         }
         if id == "parameters.change" {
             params_dialog::open(self);

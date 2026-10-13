@@ -65,6 +65,9 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   `batch`: body changes and created sketch IDs stay, while repeated lists are omitted.
   Both tools retain full replies by default.
 
+- Sketch Create groups drawing variants under Line, Rectangle, Circle, Arc, Slot,
+  Polygon and Spline. Each open part remembers its last interactive choice per family
+  across sketch sessions and document-tab switches; closing the part resets these UI choices.
 - Inscribed, circumscribed and edge polygon tools preview their actual outline before
   placement, including orientation and the selected side count.
 - Construction (X) preserves the active sketch drawing tool, picked anchors and inline
