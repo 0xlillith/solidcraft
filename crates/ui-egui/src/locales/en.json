@@ -858,5 +858,9 @@
   "Double-clicking the middle button in the view: Home (the home view, framing what is shown), Fit (frame what is shown, keeping the orientation) or nothing": "Double-clicking the middle button in the view: Home (the home view, framing what is shown), Fit (frame what is shown, keeping the orientation) or nothing",
   "Select Other: hold the left button still on the model (or right-click › Select Other…) to list everything under the cursor; click again on the same spot to select the next thing there. Double-click the middle button to go Home (Preferences › Navigation).": "Select Other: hold the left button still on the model (or right-click › Select Other…) to list everything under the cursor; click again on the same spot to select the next thing there. Double-click the middle button to go Home (Preferences › Navigation).",
   "cmd.render_backends": "Render Backends",
-  "cmd.view_navigate": "Navigate View"
+  "cmd.view_navigate": "Navigate View",
+  "sketch_text.builtin_font": "{family} (built-in)",
+  "sketch_text.font_search": "Search fonts",
+  "sketch_text.loading_fonts": "Looking for installed fonts…",
+  "sketch_text.use_font_file": "Use the font file {path}"
 }

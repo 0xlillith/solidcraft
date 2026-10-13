@@ -2118,6 +2118,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
 
     // ---- interaction ----
     let add = mods.shift || mods.command || mods.ctrl;
+    crate::sketch_text::set_one_letter(mods.shift);
     if let Some(p) = hover.filter(|_| inside) {
         if app.tool.is_some() {
             crate::tools::on_hover(app, &proj, p);
@@ -2140,7 +2141,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
                     .or_else(|| if on_geometry { None } else { crate::dim_view::hit(p) })
                     .filter(|_| sketching && !off("dimensions"));
                 let on_glyph = crate::sketch_tools::glyph_at(p).filter(|_| sketching && !off("constraints"));
-                if !crate::sketch3d::click(app, &proj, p) {
+                if crate::sketch_text_handles::over(app, &proj, p) {
+                    // A text's resize or rotation handle: the text stays selected.
+                } else if !crate::sketch3d::click(app, &proj, p) {
                     match on_dim.or(on_glyph) {
                         Some(id) => select(app, Some(Sel::SketchConstraint { id }), add),
                         // Clicking again on the same spot selects the next thing under it (not
@@ -2157,6 +2160,16 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         // Double-click a dimension: edit its value in place.
         let dim_edit = resp.double_clicked() && !held && app.tool.is_none() && app.dialog.is_none() && crate::dim_view::double_click(app, p);
+        // Double-click a text (an outline or inside a letter; the first click selected it): edit it.
+        if resp.double_clicked()
+            && !held
+            && !dim_edit
+            && app.tool.is_none()
+            && app.dialog.is_none()
+            && let Some(entity) = crate::sketch_text::selected_entity(app)
+        {
+            crate::sketch_text::open(app, &entity);
+        }
         // Double-click a sketch curve: select the chain joined to it end to end.
         if resp.double_clicked()
             && !held
@@ -2209,9 +2222,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             .drag_started_by(egui::PointerButton::Primary)
             .then(|| ui.input(|i| i.pointer.press_origin()))
             .flatten()
-            .filter(|a| !crate::sketch3d::drag_start(app, &proj, *a))
+            .filter(|a| !crate::sketch_text_handles::drag_start(app, &proj, *a) && !crate::sketch3d::drag_start(app, &proj, *a))
             .map(|a| (a, pick(app, &proj, a).into_iter().next()));
         if let Some((a, hit)) = &grabbed
+            && !crate::sketch_text_handles::dragging(app)
             && let Some(q) = on_plane(app, *a)
         {
             let on_geometry = matches!(hit, Some(Hit::SketchPoint { .. } | Hit::SketchCurve { .. }));
@@ -2223,6 +2237,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         {
             crate::sketch3d::drag_to(app, &proj, p);
         }
+        if crate::sketch_text_handles::dragging(app)
+            && (resp.dragged_by(egui::PointerButton::Primary) || resp.drag_stopped())
+            && let Some(p) = hover
+        {
+            crate::sketch_text_handles::drag_to(app, &proj, p, mods.shift);
+        }
         if crate::dim_view::dragging()
             && (resp.dragged_by(egui::PointerButton::Primary) || resp.drag_stopped())
             && let Some(q) = hover.and_then(|p| on_plane(app, p))
@@ -2233,6 +2253,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         if let Some((a, hit)) = grabbed
             && !crate::dim_view::dragging()
             && !crate::sketch3d::dragging()
+            && !crate::sketch_text_handles::dragging(app)
         {
             let active = app.session.active_sketch;
             match hit {
@@ -2308,6 +2329,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
         if resp.drag_stopped() {
+            crate::sketch_text_handles::drag_end(app);
             if let Some((_, depth, _)) = app.viewport.point_drag.clone() {
                 // Letting go on a point, midpoint or curve adds the matching constraint, then the
                 // whole model follows the drag, all in the drag's undo step.
@@ -2331,6 +2353,9 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         let _ = app.session.execute("sketch.drag_end", &json!({}));
         crate::sketch_text_move::end_drag(app);
     }
+    if crate::sketch_text_handles::dragging(app) && !crate::issue_report::cad_input_blocked() && !ui.input(|i| i.pointer.primary_down()) {
+        crate::sketch_text_handles::drag_end(app);
+    }
     // Box selection: a primary drag on the model when no navigation mode is on.
     if app.tool.is_none()
         && !held
@@ -2339,6 +2364,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         && app.viewport.point_drag.is_none()
         && !crate::dim_view::dragging()
         && !crate::sketch3d::dragging()
+        && !crate::sketch_text_handles::dragging(app)
     {
         let origin = ui.input(|i| i.pointer.press_origin());
         if resp.dragged_by(egui::PointerButton::Primary)
@@ -2360,6 +2386,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::dialogs_assembly::origins(app, &painter, &proj);
     overlays(app, &painter, &proj);
     crate::dim_view::show(app, ui, &painter, &proj);
+    crate::sketch_text_handles::show(app, ui, &painter, &proj, hover);
     crate::sketch3d::show(app, &painter, &proj);
     crate::inference::show(app, &painter, &proj);
     crate::drag_snap::show(app, &painter, &proj);
@@ -2412,7 +2439,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
 pub(crate) fn select(app: &mut SolveApp, sel: Option<Sel>, add: bool) {
     match sel {
         Some(x) => {
-            let items = grouped_selection(&app.session, &x);
+            let items = picked_selection(&app.session, &x);
             if add && items.iter().all(|x| app.session.selection.iter().any(|y| crate::selection::same_item(x, y))) {
                 let rest: Vec<Sel> =
                     app.session.selection.iter().filter(|y| !items.iter().any(|x| crate::selection::same_item(x, y))).cloned().collect();
@@ -2426,6 +2453,18 @@ pub(crate) fn select(app: &mut SolveApp, sel: Option<Sel>, add: bool) {
         }
         None => {}
     }
+}
+
+/// What a click on `sel` picks: its pieces ([`grouped_selection`]), and for a letter of a sketch
+/// text the whole text, unless Shift is held (Shift picks the one letter).
+pub(crate) fn picked_selection(s: &solidcraft_engine::Session, sel: &Sel) -> Vec<Sel> {
+    if let Sel::Profile { sketch, index } = sel
+        && !crate::sketch_text::one_letter()
+        && let Some(letters) = crate::sketch_text::text_profiles(s, *sketch, *index)
+    {
+        return letters.into_iter().map(|index| Sel::Profile { sketch: *sketch, index }).collect();
+    }
+    grouped_selection(s, sel)
 }
 
 /// Expand a visible rim or surface into the kernel pieces a command needs. The original
