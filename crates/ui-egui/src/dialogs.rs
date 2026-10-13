@@ -227,7 +227,7 @@ pub enum Kind {
     },
     /// Delete a feature that others depend on.
     ConfirmDelete {
-        feature: u64,
+        features: Vec<u64>,
         with: Vec<String>,
         fail: Vec<String>,
     },
@@ -248,7 +248,7 @@ pub enum Kind {
     /// Edit Text: a sketch text's content and placement (`sketch_text`).
     Text(crate::sketch_text::Tx),
     TextMove(crate::sketch_text_move::TextMove),
-    /// Sketch-space modify tools: scale, and later offset, fillet, chamfer, the patterns,
+    /// Sketch-space modify tools: scale and offset, and later fillet, chamfer, the patterns,
     /// mirror and move (`sketch_modify_ui`).
     SketchModify(crate::sketch_modify_ui::Mod),
 }
@@ -617,7 +617,11 @@ impl Dialog {
     }
 
     pub fn confirm_delete(feature: u64, with: Vec<String>, fail: Vec<String>) -> Dialog {
-        Dialog::new(Kind::ConfirmDelete { feature, with, fail }, vec![])
+        Dialog::confirm_delete_many(vec![feature], with, fail)
+    }
+
+    pub fn confirm_delete_many(features: Vec<u64>, with: Vec<String>, fail: Vec<String>) -> Dialog {
+        Dialog::new(Kind::ConfirmDelete { features, with, fail }, vec![])
     }
 
     pub fn edit_param(s: &Session, name: &str) -> Dialog {
@@ -916,6 +920,13 @@ pub(crate) fn field(ui: &mut egui::Ui, s: &mut String) -> bool {
     publish_row(&r);
     crate::params_dialog::complete(ui, &r, s);
     r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
+/// A checkbox row. Its row handle (`dialog:<row label>`) lets a scenario click it by the label
+/// beside it, the way `field` already publishes one for a value field.
+pub(crate) fn check(ui: &mut egui::Ui, on: &mut bool) {
+    let r = ui.checkbox(on, "");
+    publish_row(&r);
 }
 
 pub(crate) fn combo(ui: &mut egui::Ui, id: &str, labels: &[&str], sel: &mut usize) {
@@ -3205,7 +3216,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         }
         Kind::EditParam { name, expr } => ("parameters.change", json!({"name": name, "expression": expr})),
         Kind::Rename { feature, name } => ("timeline.rename", json!({"feature": feature, "name": name})),
-        Kind::ConfirmDelete { feature, .. } => ("timeline.delete", json!({ "features": [feature.to_string()] })),
+        Kind::ConfirmDelete { features, .. } => ("timeline.delete", json!({ "features": features })),
         Kind::Sketch | Kind::Params { .. } | Kind::Measure { .. } => return Ok(Vec::new()),
         Kind::Assembly(k) => return crate::dialogs_assembly::commands(app, k, &d.inputs),
         Kind::Sheet(k) => return crate::dialogs_sheet::commands(app, k, &d.inputs, &d.extra),
