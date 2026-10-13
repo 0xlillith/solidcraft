@@ -40,7 +40,7 @@ pub struct Body {
     pub(crate) history: Option<std::sync::Arc<crate::history::History>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FaceSource {
     ExtrudeSide { segment: solidcraft_geom::Seg2, plane: Option<solidcraft_geom::Plane>, coalesced: bool },
     CertifiedExtrudeSide { producer: u64, sketch: u64, curve: String, plane: Option<solidcraft_geom::Plane> },
@@ -67,7 +67,7 @@ impl FaceSource {
 }
 
 /// How a body looks beyond its colour, for export: its opacity and its faces' own colours.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Paint {
     /// 1 = opaque.
     pub opacity: f32,
@@ -75,7 +75,7 @@ pub struct Paint {
 }
 
 /// A face's own colour: the B-rep face index (`face_iter` order), sRGB as 0..1, opacity.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FacePaint {
     pub face: usize,
     pub color: [f32; 3],
