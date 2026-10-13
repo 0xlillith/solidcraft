@@ -119,6 +119,8 @@ const IMG_SIZE: usize = 24;
 
 /// Per-frame parameters.
 pub struct ViewportCallback {
+    /// Product preview uses its own batches, retaining the Design viewport's uploads.
+    pub product: bool,
     pub key: u64,
     pub slot: SceneSlot,
     pub sketch_key: u64,
@@ -232,6 +234,8 @@ struct Resources {
     bind: wgpu::BindGroup,
     linear_out: bool,
     model: Batches,
+    product: Batches,
+    empty: Batches,
     sketch: Batches,
     highlight: Batches,
     preview: Batches,
@@ -845,6 +849,8 @@ impl Resources {
             bind,
             linear_out: t.format.is_srgb(),
             model: Batches::default(),
+            product: Batches::default(),
+            empty: Batches::default(),
             sketch: Batches::default(),
             highlight: Batches::default(),
             preview: Batches::default(),
@@ -910,6 +916,12 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         let Some(res) = resources.get_mut::<Resources>() else { return Vec::new() };
+        if self.product {
+            res.product.take(device, self.key, &self.slot);
+            res.product.sort_glass(queue, self.back);
+            queue.write_buffer(&res.uniform, 0, &uniform_bytes(self, self.size_px[0], self.size_px[1], res.linear_out));
+            return Vec::new();
+        }
         res.model.take(device, self.key, &self.slot);
         res.sketch.take(device, self.sketch_key, &self.sketch_slot);
         res.highlight.take(device, self.hl_key, &self.hl_slot);
@@ -996,7 +1008,8 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
                 pass.draw(0..6, 0..b.count);
             }
         };
-        let (m, sk, h, pv) = (&res.model, &res.sketch, &res.highlight, &res.preview);
+        let (m, sk, h, pv) =
+            if self.product { (&res.product, &res.empty, &res.empty, &res.empty) } else { (&res.model, &res.sketch, &res.highlight, &res.preview) };
         lines(pass, &res.overlay, &m.under);
         lines(pass, &res.overlay, &sk.under);
         pass.set_bind_group(1, &res.access_bind, &[]);
@@ -1021,7 +1034,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
         lines(pass, &res.line_hidden, &h.hidden);
         lines(pass, &res.line, &pv.lines);
         lines(pass, &res.line, &h.lines);
-        for (id, q) in &res.quads {
+        for (id, q) in res.quads.iter().filter(|_| !self.product) {
             if let Some((_, bind)) = res.textures.get(id) {
                 pass.set_pipeline(&res.image);
                 pass.set_bind_group(1, bind, &[]);

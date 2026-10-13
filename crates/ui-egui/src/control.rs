@@ -86,11 +86,23 @@ fn key_from(name: &str) -> Option<egui::Key> {
 }
 
 pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    crate::render_workspace::sync_backend(app);
     let p = &req.params;
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     let f = |k: &str| p.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
     let b = |k: &str| p.get(k).and_then(Value::as_bool).unwrap_or(false);
     match req.method.as_str() {
+        "ui.workspace" => {
+            if let Some(workspace) = s("workspace") {
+                if !matches!(workspace, "design" | "render") {
+                    return err("workspace must be design or render");
+                }
+                if let Err(e) = crate::render_workspace::enter(app, workspace == "render") {
+                    return err(e);
+                }
+            }
+            ok(json!({"workspace":if crate::render_workspace::active(app) {"render"} else {"design"}}))
+        }
         "engine.execute" | "command" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
@@ -194,6 +206,11 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
             }
             match (serde_json::from_value::<crate::UiState>(cur), serde_json::from_value::<solidcraft_engine::Visibility>(vis)) {
                 (Ok(u), Ok(v)) => {
+                    if (u.tab == "RENDER") != crate::render_workspace::active(app)
+                        && let Err(e) = crate::render_workspace::enter(app, u.tab == "RENDER")
+                    {
+                        return err(e);
+                    }
                     app.ui = u;
                     app.session.visibility = v;
                     ok(serde_json::to_value(&app.ui).unwrap_or_default())

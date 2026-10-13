@@ -61,6 +61,21 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- R4a adds bounded CPU product-image jobs, cancellation and atomic PNG export through
+  engine commands, the Render panel, CLI and persistent MCP. Immutable captures and
+  results stay outside persistence/undo; native workers and cooperative browser tasks
+  share the same work protocol. See [jobs, limits and export](docs/render-jobs.md).
+
+- R3 adds the integrated Render workspace, an overlay-free product scene with existing
+  world placements/appearances, runtime GPU viewport capabilities and named camera/background
+  controls. Raster transparency remains an approximation; HDRI/PBR and optional
+  engines are later phases. See [the workspace contract](docs/render-workspace.md).
+
+- R2 adds bounded named render setups, versioned persistence and `render.settings.get/set`.
+  Proven render-only changes preserve evaluated/stale geometry and prepared world data,
+  including undo/redo and checkpoint restore. No render workspace or new image output is
+  enabled; see [settings and refresh policy](docs/render-settings.md).
+
 - R1 adds renderer-independent backend/profile metadata, strict request resolution and
   bounded image/scratch admission checks, exposed by the read-only `render.backends`
   command. It describes the current CPU raster snapshot path without evaluating the model.
