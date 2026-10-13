@@ -221,6 +221,10 @@ pub struct Session {
     /// What is hidden or shown in the view (`browser.visibility`): saved with the design, not an
     /// undo step. A design brings its saved visibility when it opens (`Session::new`).
     pub visibility: Visibility,
+    /// The camera `view.apply` asked the view to use (view state, not saved). The desktop app
+    /// moves its viewport there and takes it; headless renders keep using it until a standard
+    /// view is chosen.
+    pub camera: Option<render::Camera>,
     /// The visibility the design file holds (what `is_dirty` compares with).
     saved_visibility: Visibility,
     /// States to go back to (`edit.checkpoint`, `edit.restore_checkpoint`): how batches of
@@ -316,6 +320,7 @@ impl Session {
             next_checkpoint: 1,
             saved_visibility: visibility.clone(),
             visibility,
+            camera: None,
             #[cfg(test)]
             evaluations: 0,
             crash_journal: false,
@@ -670,6 +675,7 @@ impl Session {
             checkpoints: Vec::new(),
             next_checkpoint: 1,
             visibility: self.visibility.clone(),
+            camera: self.camera,
             saved_visibility: self.saved_visibility.clone(),
             #[cfg(test)]
             evaluations: 0,
