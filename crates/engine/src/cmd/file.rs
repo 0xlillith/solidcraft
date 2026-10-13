@@ -27,11 +27,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("save")
         .key("Ctrl+S")
         .noundo()
-        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); preview?: bool (experimental saved picture, default: false)"),
+        .params("path? (default: current file); format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); cache?: bool (warm native geometry, default: true); preview?: bool (saved display meshes, default: false)"),
     CommandSpec::new("file.save_as", "Save As", save_as)
         .icon("save")
         .noundo()
-        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); preview?: bool (experimental saved picture, default: false)"),
+        .params("path; format?: container|json (default: json for .json, otherwise container); compression?: fast|compact (default: fast); cache?: bool (warm native geometry, default: true); preview?: bool (saved display meshes, default: false)"),
     CommandSpec::new("doc.recovery_list", "Recoverable Designs", recovery_list)
         .noundo()
         .params("dir? (default: the recovery folder) → designs autosaved by apps that crashed or closed with unsaved changes"),
@@ -131,27 +131,21 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
         let errors = s.model.results.iter().filter(|r| r.error.is_some()).count();
         return Ok(json!({"path": path, "features": s.doc.features.len(), "errors": errors, "bodies": r["bodies"], "warnings": r["warnings"]}));
     }
-    let bytes = solidcraft_io::vfs::read(path, solidcraft_io::MAX_DESIGN_BYTES).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
-    let doc = solidcraft_io::read_design(&bytes)?;
-    if let Some(notify) = s.open_preview.take()
-        && let Some(preview) = solidcraft_io::read_design_preview(&bytes)
-    {
-        notify(preview);
-    }
+    let doc = solidcraft_io::read_design_file(path, s.open_preview.take()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
     *s = Session::new(doc);
     s.path = Some(path.to_string());
     let errors = s.model.results.iter().filter(|r| r.error.is_some()).count();
     Ok(json!({"path": path, "features": s.doc.features.len(), "errors": errors}))
 }
 
-fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: bool) -> Result<Value> {
+fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: bool, cache: bool) -> Result<Value> {
     let compression = match compression {
         "fast" => solidcraft_io::DesignCompression::Fast,
         "compact" => solidcraft_io::DesignCompression::Compact,
         _ => return Err(bad("file.save", "compression must be fast or compact")),
     };
     let bytes = match format {
-        "container" => solidcraft_io::write_design_container_with_preview(&s.doc, compression, preview.then(|| saved_preview(s)).flatten().as_ref())?,
+        "container" => s.design_container(compression, preview, cache)?,
         "json" => solidcraft_io::write_design(&s.doc),
         _ => return Err(bad("file.save", "format must be container or json")),
     };
@@ -160,6 +154,28 @@ fn write(s: &mut Session, path: &str, format: &str, compression: &str, preview: 
     s.path = Some(path.to_string());
     s.mark_saved();
     Ok(json!({"path": path, "bytes": bytes.len()}))
+}
+
+impl Session {
+    /// Container bytes for desktop and browser saves. Only already evaluated bodies
+    /// and warm meshes are eligible; saving never forces evaluation or tessellation.
+    pub fn design_container(&self, compression: solidcraft_io::DesignCompression, preview: bool, cache: bool) -> solidcraft_io::Result<Vec<u8>> {
+        let geometry = cache.then(|| saved_geometry(self)).flatten();
+        let preview = preview.then(|| saved_preview(self)).flatten();
+        solidcraft_io::write_design_container_with_cache(&self.doc, compression, preview.as_ref(), geometry.as_deref())
+    }
+}
+
+fn saved_geometry(s: &Session) -> Option<Vec<solidcraft_io::DesignGeometry>> {
+    if s.active_sketch.is_some() || !s.pending_moves.is_empty() || s.model.results.iter().any(|r| r.error.is_some()) {
+        return None;
+    }
+    let world = s.cached_world_state()?;
+    if world.bodies.is_empty() || world.bodies.len() > 4096 {
+        return None;
+    }
+    let painted = s.doc.painted(&world);
+    Some(painted.bodies.iter().map(|b| solidcraft_io::DesignGeometry { name: b.name.clone(), body: b.body.clone() }).collect())
 }
 
 /// Cache only warm display geometry. A save never waits for an unevaluated mesh.
@@ -203,6 +219,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         str_(p, "format").unwrap_or(default_design_format(&path)),
         str_(p, "compression").unwrap_or("fast"),
         bool_(p, "preview").unwrap_or(false),
+        bool_(p, "cache").unwrap_or(true),
     )
 }
 
@@ -218,6 +235,7 @@ fn save_as(s: &mut Session, p: &Value) -> Result<Value> {
         str_(p, "format").unwrap_or(default_design_format(&path)),
         str_(p, "compression").unwrap_or("fast"),
         bool_(p, "preview").unwrap_or(false),
+        bool_(p, "cache").unwrap_or(true),
     )
 }
 
@@ -313,7 +331,7 @@ mod tests {
             for index in if round % 2 == 0 { [0, 1] } else { [1, 0] } {
                 let path = target.join(if index == 0 { "issue303-warm.json" } else { "issue303-warm.solidcraft" });
                 let began = std::time::Instant::now();
-                session.execute("file.save", &json!({"path":path,"preview":true})).unwrap();
+                session.execute("file.save", &json!({"path":path,"preview":true,"cache":false})).unwrap();
                 samples[index].push(began.elapsed().as_secs_f64() * 1000.0);
             }
         }
@@ -350,7 +368,9 @@ mod tests {
         }
         let save_path = std::env::temp_dir().join(format!("solidcraft-preview-save-{}.solidcraft", std::process::id()));
         s.execute("file.save", &json!({"path":save_path})).unwrap();
-        assert!(solidcraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_none(), "ordinary saves omit redundant display data");
+        let saved = std::fs::read(&save_path).unwrap();
+        assert!(solidcraft_io::read_design_geometry(&saved).is_some());
+        assert!(!saved.windows(b"cache/preview.bin".len()).any(|s| s == b"cache/preview.bin"), "ordinary saves omit redundant display meshes");
         s.execute("file.save", &json!({"path":save_path,"preview":true})).unwrap();
         assert!(solidcraft_io::read_design_preview(&std::fs::read(&save_path).unwrap()).is_some());
         let _ = std::fs::remove_file(&save_path);
@@ -393,6 +413,7 @@ mod tests {
         }
         *s.world_cache.lock().unwrap() = None;
         assert!(saved_preview(&s).is_none());
+        assert!(saved_geometry(&s).is_none());
         assert!(s.world_cache.lock().unwrap().is_none(), "saving must not prepare cold placements");
         for body in &s.world_state().bodies {
             body.mesh();
@@ -404,6 +425,7 @@ mod tests {
         }
         assert!(!s.pending_moves.is_empty());
         assert!(saved_preview(&s).is_none(), "uncaptured positions are not in the saved document");
+        assert!(saved_geometry(&s).is_none());
         s.execute("component.capture_position", &json!({})).unwrap();
         for body in &s.world_state().bodies {
             body.mesh();
@@ -418,6 +440,101 @@ mod tests {
         }
         assert!(editing.active_sketch.is_some());
         assert!(saved_preview(&editing).is_none());
+        assert!(saved_geometry(&editing).is_none());
+    }
+
+    #[test]
+    fn native_cache_does_not_force_meshes_or_supply_editing_state() {
+        let mut session = Session::default();
+        session.execute("solid.box", &json!({"length":10,"width":20,"height":30})).unwrap();
+        let world = session.world_state();
+        assert!(world.bodies.iter().all(|b| b.cached_mesh().is_none()));
+        let mut cached = saved_geometry(&session).unwrap();
+        let bytes = session.design_container(solidcraft_io::DesignCompression::Fast, false, true).unwrap();
+        assert!(world.bodies.iter().all(|b| b.cached_mesh().is_none()), "saving native geometry must not triangulate");
+        assert!(solidcraft_io::read_design_geometry(&bytes).is_some());
+        assert!(
+            solidcraft_io::read_design_geometry(&session.design_container(solidcraft_io::DesignCompression::Fast, false, false).unwrap()).is_none()
+        );
+        cached[0].body = solidcraft_kernel::box_solid(solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::new(100., 100., 100.)).unwrap();
+        let bytes =
+            solidcraft_io::write_design_container_with_cache(&session.doc, solidcraft_io::DesignCompression::Fast, None, Some(&cached)).unwrap();
+        let path = std::env::temp_dir().join(format!("solidcraft-native-forged-{}.solidcraft", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_seen = seen.clone();
+        let mut reopened = Session {
+            open_preview: Some(Box::new(move |p| {
+                callback_seen.store(!p.meshes.is_empty(), std::sync::atomic::Ordering::Relaxed);
+            })),
+            ..Session::default()
+        };
+        reopened.execute("doc.open", &json!({"path":path})).unwrap();
+        assert!(seen.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(reopened.doc, session.doc);
+        let measured = reopened.execute("inspect.measure", &json!({})).unwrap();
+        assert!((measured["bodies"][0]["volume_mm3"].as_f64().unwrap() - 6000.).abs() < 1e-6);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual native cache save benchmark; generate issue303-step.json first"]
+    fn benchmark_native_cache_save() {
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let input = std::env::var_os("SOLIDCRAFT_BENCH_FILE").map(std::path::PathBuf::from).unwrap_or_else(|| target.join("issue303-step.json"));
+        let mut session = Session::new(solidcraft_io::read_design(&std::fs::read(input).unwrap()).unwrap());
+        for body in &session.world_state().bodies {
+            body.mesh();
+        }
+        let modes = [("json", false, "fast"), ("container", false, "fast"), ("container", true, "fast"), ("container", true, "compact")];
+        let mut samples = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+        for round in 0..9 {
+            for i in if round % 2 == 0 { [0, 1, 2, 3] } else { [3, 2, 1, 0] } {
+                let (format, cache, compression) = modes[i];
+                let path = target.join(format!("issue303-native-{i}.solidcraft"));
+                let start = std::time::Instant::now();
+                session.execute("file.save", &json!({"path":path,"format":format,"cache":cache,"compression":compression})).unwrap();
+                samples[i].push(start.elapsed().as_secs_f64() * 1000.);
+            }
+        }
+        for (i, times) in samples.iter_mut().enumerate() {
+            times.sort_by(f64::total_cmp);
+            let bytes = std::fs::read(target.join(format!("issue303-native-{i}.solidcraft"))).unwrap();
+            assert_eq!(solidcraft_io::read_design(&bytes).unwrap(), *session.doc);
+            assert_eq!(solidcraft_io::read_design_geometry(&bytes).is_some(), modes[i].1);
+            eprintln!("native_save mode={i} median_ms={:.3} bytes={}", times[4], bytes.len());
+        }
+    }
+
+    #[test]
+    #[ignore = "manual fresh-process opening benchmark; one encoding per process"]
+    fn benchmark_native_cache_open() {
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let mode = std::env::var("SOLIDCRAFT_BENCH_ENCODING").unwrap_or_else(|_| "2".into());
+        let path = target.join(format!("issue303-native-{mode}.solidcraft"));
+        let display = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let notify = display.clone();
+        let start = std::time::Instant::now();
+        let mut session = Session {
+            open_preview: Some(Box::new(move |_| {
+                *notify.lock().unwrap() = Some(start.elapsed().as_secs_f64() * 1000.);
+            })),
+            ..Session::default()
+        };
+        let result = session.execute("doc.open", &json!({"path":path})).unwrap();
+        assert_eq!(result["errors"], 0);
+        let reconstructed = start.elapsed().as_secs_f64() * 1000.;
+        let mut triangles = 0;
+        let world = session.world_state();
+        for body in &world.bodies {
+            triangles += body.mesh().triangles.len();
+        }
+        let ready = start.elapsed().as_secs_f64() * 1000.;
+        eprintln!(
+            "native_open mode={mode} provisional_ms={:?} rebuilt_ms={reconstructed:.3} meshes_ready_ms={ready:.3} bodies={} triangles={triangles}",
+            *display.lock().unwrap(),
+            world.bodies.len()
+        );
     }
 
     #[test]
