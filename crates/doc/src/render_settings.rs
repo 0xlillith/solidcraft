@@ -174,8 +174,10 @@ mod tests {
         let mut loaded = Document::from_json(&json.to_string()).unwrap();
         assert!(loaded.render.is_empty());
         assert_eq!(loaded.format, crate::format::format_string(crate::format::FORMAT));
-        // Upstream owns format 17 for face/rim names. Its documents also migrate to 18.
+        // Upstream owns 17 for face/rim names and 18 for surface operations. Both migrate to 19.
         json["format"] = serde_json::json!("solidcraft/17");
+        assert_eq!(Document::from_json(&json.to_string()).unwrap(), loaded);
+        json["format"] = serde_json::json!("solidcraft/18");
         assert_eq!(Document::from_json(&json.to_string()).unwrap(), loaded);
         let before = loaded.clone();
         let setup = RenderSetup {

@@ -46,11 +46,11 @@ has at most 32 setups. Validation also runs during document deserialization.
 
 ## Persistence and evaluation
 
-Document format 18 adds `render: {setups: {name: setup}}`. Older designs migrate with
+Document format 19 adds `render: {setups: {name: setup}}`. Older designs migrate with
 an empty map; empty render state is omitted when saved. Existing geometry, appearances,
 opacity and physical materials are untouched. Plain JSON, design containers and crash
 journal replay use the same document/command representation. Older builds reject format
-18 instead of silently losing setups. No runtime capability, job, texture or device is saved.
+19 instead of silently losing setups. No runtime capability, job, texture or device is saved.
 
 The engine avoids geometry evaluation only after proving that the document differs
 solely in validated render settings, with unchanged active sketch and pending moves.
