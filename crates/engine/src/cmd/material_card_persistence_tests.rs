@@ -42,6 +42,7 @@ fn card_edits_preserve_mass_optics_and_geometry_and_survive_undo_reopen() {
     assert!(Arc::ptr_eq(&scene.meshes[0].mesh, &after.meshes[0].mesh));
     assert_eq!(scene.meshes[0].surface, after.meshes[0].surface);
     let saved = s.doc.to_json();
+    assert_eq!(serde_json::from_str::<Value>(&saved).unwrap()["format"], "solidcraft/20");
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.doc.user_materials[0].physical_card.is_none());
     s.execute("edit.redo", &json!({})).unwrap();
@@ -137,12 +138,12 @@ fn configurations_rename_and_paste_new_keep_design_owned_material_semantics() {
 }
 
 #[test]
-fn old_materials_upgrade_with_unknown_card_and_optical_look_unchanged() {
+fn format20_materials_without_cards_keep_their_optical_look() {
     let s = fixture();
     let mut saved = serde_json::to_value(&*s.doc).unwrap();
-    saved["format"] = json!("solidcraft/21");
+    saved["format"] = json!("solidcraft/20");
     let loaded = Document::from_json(&saved.to_string()).unwrap();
     assert_eq!(loaded.user_materials, s.doc.user_materials);
     assert!(loaded.user_materials[0].physical_card.is_none());
-    assert_eq!(loaded.format, "solidcraft/22");
+    assert_eq!(loaded.format, "solidcraft/20");
 }

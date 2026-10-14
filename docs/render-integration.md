@@ -8,9 +8,9 @@ PR has merged. Maintainers can choose the combined or individual merge path.
 The refreshed stack incorporates upstream `b5efde94`, including the merged physical
 card validator (#934), shared STEP text/import progress and GPU buffer chunking (#925).
 Physical cards are candidate engineering records, independent of assigned mass
-density and rendered looks; format 22 persists them. Upstream owns document
+density and rendered looks; format 20 persists them. Upstream owns document
 format 19 for editable associative offset dimensions. Saved render setups were added
-in format 20; format 21 adds opt-in opaque optical parameters without reinterpreting
+in format 20, alongside opt-in opaque optical parameters without reinterpreting
 legacy scalar looks. The Design viewport retains upstream GPU
 tessellation; the separate product scene continues to upload its prepared CPU meshes.
 The already-merged HDR input contribution is retained through its original ancestry.

@@ -109,7 +109,7 @@ These deliberately invented constants demonstrate validation, not a real grade:
 The result has G = 4.8e9 Pa, K = 8e9 Pa, unspecified conditions and source review
 still required. No assigned mass, saved material or appearance changes.
 
-## Design-owned persistence (format 22)
+## Design-owned persistence (format 20)
 
 `material.create` accepts optional `physical_card`; omission or null means unknown.
 `material.edit` retains the current card when omitted, replaces it after validation
@@ -126,7 +126,7 @@ only compares numbers: conditions and source applicability may still differ.
 It never chooses a measurement or changes the density used for mass. Card-only
 edits preserve geometry and optical response. Missing data remains unknown.
 
-Format 22 saves cards; format-21 and earlier materials upgrade with absent cards.
+Format 20 saves cards alongside render setups and opt-in PBR looks. Released format-19 materials upgrade with absent cards; version-20 materials without cards also remain unknown. Unreleased experimental version-21/22 files are future formats and are refused.
 Saved cards use the same admission as commands, including direct deserialization.
 Only the exact root `user_materials[].physical_card` field uses physical SI limits;
 geometric numeric/depth limits elsewhere remain unchanged. This is necessary for

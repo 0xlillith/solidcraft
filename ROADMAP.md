@@ -63,7 +63,7 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 - Design-owned engineering cards (#1048) can be validated and saved through existing
   material create/edit/list commands, with source/condition records, atomic refusal,
-  undo/reopen and explicit density comparison. Format 22 retains cards independently
+  undo/reopen and explicit density comparison. Format 20 retains cards independently
   of assigned mass density and optical looks. Scalar catalog v1 refuses data loss;
   rich catalog transport follows below; property-authoring UI remains separate.
 
@@ -96,7 +96,7 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 ## Render foundation
 
 - Opt-in opaque PBR surfaces (#1004) connect existing saved looks and assignment
-  commands to the integrated GPU product viewport and CPU PNG jobs. Format 21 retains
+  commands to the integrated GPU product viewport and CPU PNG jobs. Format 20 retains
   optical parameters; legacy looks keep their scalar response. Fixed direct lighting,
   explicit admission, unchanged mass/geometry and scoped GPU/CPU color parity are
   covered. HDRI, transmission, textures and rich catalog export remain separate gates.
@@ -209,6 +209,13 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   Crash Reports…) with a reviewed issue draft; agents read them through
   `diagnostics.crash_reports`, the MCP `crash_reports` tool or the CLI. Nothing is sent
   anywhere. See [crash reports](docs/crash-reports.md).
+- Command scripts from designs (#886): `timeline.export_script` (CLI `solidcraft-cli script`)
+  writes a design's history as a script that `eval` and `run` replay into the same design —
+  user parameters, units, sheet metal and plastic rules and materials as their own commands,
+  then each feature through `timeline.add` with its ids, names and dimension parameters kept,
+  so every feature kind replays exactly and a failing feature fails the same way. Trimming the
+  script after a step gives the design at that step. Appearances, folders, views and
+  configurations are listed as left out; components and joints are not supported yet.
 
 ## 0.2.0 release batch
 
