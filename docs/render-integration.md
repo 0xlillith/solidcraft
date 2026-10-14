@@ -1,76 +1,94 @@
-# Phased render and local-library integration
+# Phased render and material integration
 
-Tracked in #842; the parent render design remains #620. Contributions retain their
-original ancestry and are validated together on a pinned upstream revision. The
-integration PR is a reviewable combined tree; it does not assert that any constituent
-PR has merged. Maintainers can choose the combined or individual merge path.
+Tracked in #842, with parent render design #620 and physical/visual material roadmap
+#922. The combined integration keeps contribution ancestry; it is an alternative
+review path, not evidence that the individual PRs have merged. Each result in GitHub
+is pinned to its tested source revision. Do not reuse an older green result for a new
+merge or describe compiled wasm as verified browser interaction.
 
-The refreshed stack incorporates upstream `01f2c78c`, including the merged physical
-card validator (#934), shared STEP text/import progress and GPU buffer chunking (#925).
-The physical cards remain read-only candidates, independent of catalog definitions
-and rendered looks. Upstream owns document
-format 19 for editable associative offset dimensions. Saved render setups were added
-in format 20, alongside opt-in opaque optical parameters without reinterpreting
-legacy scalar looks. The Design viewport retains upstream GPU
-tessellation; the separate product scene continues to upload its prepared CPU meshes.
-The already-merged HDR input contribution is retained through its original ancestry.
+## Delivery phases
 
-| Phase | Existing contribution / deliverable | Completion gate |
+| Phase | Contribution / deliverable | Acceptance gate |
 |---|---|---|
-| 1 | R2 #667, R3 #706, R4a #800: saved setups, integrated product workspace and bounded CPU PNG jobs | Setup save/reopen/undo, document isolation, strict capabilities, cancellation, native exports and full repository gate |
-| 2 | HDR input #837: cooperative Radiance preparation alongside the existing job host | Codec/host tests together, canvas format guard, unchanged CPU output/capabilities, native and wasm gates |
-| 3 | First local scalar library #846, building on #785/#786 and proposal #792 | Portable catalog round trips, bounded hostile input, explicit revisions/conflicts, copied definitions, undo/cold reopen and actual UI evidence |
-| 4 | Opaque PBR consumer #1004: saved optical parameters, existing assignment/editor, integrated GPU and CPU image paths | Atomic admission, unchanged mass/geometry, undo/copy/reopen, GPU/CPU color parity and original native evidence |
-| Follow-up | Texture sets, wood grain/mapping, richer catalogs and HDRI (#813) | Actual lighting/texture interpretation, resource admission and separate native/browser visual evidence |
+| 1 | R2 #667, R3 #706, R4a #800: document-owned setups, product viewport, bounded CPU PNG jobs | Setup migration/save/reopen/undo, document and job isolation, strict capabilities, cancellation, native evidence and repository gates |
+| 2 | Merged HDR input #837 and surface reference #1019 | Bounded codec/BRDF tests; unchanged existing CPU capabilities until actual consumers exist |
+| 3 | Opaque product PBR #1046; engineering-card persistence #1060 | Explicit supported optical fields, source/condition preservation, one-step undo, cold reopening, unchanged geometry and independent assigned density |
+| 4 | Merged scalar catalogs #863; richer transport #1086; inspector/import #1094 | Exact selected revisions, copied definitions, hostile-input bounds, no lossy downgrade, scoped file access, reviewed import and actual native evidence |
+| 5 | Environment consumer #813, then texture/wood mapping #1004/#786 using resource admission #909 | Actual linear/sRGB interpretation and lighting, persistent object-local frames, cancellation/memory bounds, transformed instances, separate native/browser evidence |
+| 6 | Family-specific optical/data quality under #922 | Wood L/R/T and moisture/grade conditions; polymer grade/process/temperature/rate; glass thickness/IOR/absorption; metal alloy/temper/conductor response and brushed anisotropy; source/license review before shipping data |
 
-## Current capability boundary
+The released document format is 19; unreleased persisted additions share format 20.
+Saved render setups migrate from 17/18/19 with older-reader refusal. The Design
+viewport retains upstream display-plan tessellation; Render uses its separate
+prepared product meshes. Neither runtime jobs nor device handles are persisted.
+See the versioned contracts rather than reserving another format independently.
 
-The GPU host provides the product **viewport**. The CPU product executor provides
-bounded preview **PNG images**, with opt-in opaque PBR and approximate sorted
-transparency for legacy transparent looks. The [fixed studio consumer](render-opaque-pbr.md)
-has no HDRI, transmission or cast shadows. The Radiance
-utility prepares linear RGB values in their source colour space; it is not a lighting
-implementation. Adding its codec never adds rendering capabilities; the opaque
-consumer independently installs PBR in the actual product executors. HDRI/refraction/
-final/EXR remain unsupported. Refused image requests preserve the last valid
-image and CAD state. See [backend contracts](render-backends.md),
-[settings](render-settings.md), [workspace](render-workspace.md),
-[jobs](render-jobs.md) and [HDR input](render-hdr-input.md).
+## Current foundation boundary
 
-## Local-library first slice
+The GPU host provides a product **viewport**. The CPU product executor provides
+bounded preview **PNG images**, with opt-in opaque PBR and approximate sorted transparency.
+The [fixed studio consumer](render-opaque-pbr.md) provides direct lighting only;
+it has no HDRI, cast shadows, transmission or indirect bounces. The Radiance
+utility prepares linear RGB in the source colour space; it is not lighting. The
+numerical opaque surface contract is not proof that a host renders those properties.
+Imported resources or saved intent never silently add HDRI/refraction/final/EXR
+support. Unsupported requests fail and preserve the last valid image and CAD state.
+See [backends](render-backends.md), [settings](render-settings.md),
+[workspace](render-workspace.md), [jobs](render-jobs.md),
+[HDR input](render-hdr-input.md) and [surface reference](render-surface.md).
 
-Reuse existing `Look`, design-local physical materials and assignment commands.
-Physical density, visual colour/opacity and render environments remain distinct.
-The first catalog handles scalar appearance and density/look definitions only; it
-contains no texture files, PBR parameters or environment descriptors. Selected values
-are copied into the existing document representation so reopening does not need the
-catalog. Catalog provenance/revisions remain in the catalog; this first slice adds
-no persistent catalog-update link or new document-format version. It does not claim
-the complete resource/provenance embedding proposed in #792.
+Both atomic PNG publication modes check the existing caller file scope. The
+control-channel regression rejects outside folders and traversal and permits a
+valid destination, including explicit overwrite. This guard and document-adoption
+regression now belong to standalone R4a, so its safety does not depend on this
+combined integration. Render engine and scene production code match that foundation. The combined UI
+additionally consumes the async picker candidate described below; it does not add
+a second renderer or file-access service.
 
-Catalog inspection/export and application must use engine commands. Programmatic
-calls never open a picker. An exact selected revision is required for application;
-changed files and conflicting material names cannot silently alter a selection.
-Applying an appearance must not change density/mass. Physical-material definitions
-reuse existing creation/assignment behavior and have explicit conflict handling.
-The source design and library draft/file are separate: exporting a reusable snapshot
-does not edit the CAD design, and applying a definition is one undoable design edit.
+## Picker integration before release
 
-## Validation and publishing
+#1114 replaces blocking native pickers to fix a macOS abort and keeps the response
+bound to the requesting document. This combined branch integrates its candidate
+head `c8c1b122` with original ancestry and adapts Render; this is not a claim that
+#1114 has merged upstream. The merged scalar library #863 is also adapted here, with delayed-answer editor
+identity and overwrite-consent checks. Other open richer material/library consumers
+still need the adaptation when refreshed. For PNG export, capture the explicit completed job ID
+and overwrite choice before requesting the dialog. Do not substitute a newer image
+when its answer arrives; a closed document drops the answer and an evicted result
+fails explicitly. Verify delayed answers, cancel, tab switching/close and result
+replacement. The Render consumer has dedicated delayed-answer regressions for these
+cases. Keep the upstream dependency visible; the synchronous picker must not
+be described as safe on macOS merely because the clicked test harness passes.
 
-Run `cargo xtask ci` before each integration/code arc is committed. Record actual
-counts, platform, pinned upstream and any failure in the PR, separately from remote
-checks. The earlier Windows geometry failures #796/#878 were resolved by the now-merged
-#906; render work neither suppressed them nor weakened their baselines. Historical
-interrupted test binaries remain incomplete evidence, not passes. Current local CI
-still stops at the independently tracked Windows MCP lint #907. The PR records
-completed focused checks and actual remote results separately; no full local green
-gate is inferred from them.
-Native compilation, wasm compilation and actual browser interaction are separate
-claims. Use original small examples and actual app/PNG evidence for visible changes;
-do not commit generated review media or commercial reference assets.
+## Material, appearance and resource ownership
 
-Private `plan/` documents are not present in this checkout. The public contracts and
-current repository instructions govern the available work; no missing contents are
-invented. Renderer/resource representations are proposed in reviewable phases in #813, open to
-maintainer and contributor feedback. No unpublished descriptor is assumed.
+Physical properties, assigned density, visual appearances and environment lighting
+are distinct. A card-only edit does not replace assigned density or visual style;
+applying an appearance does not change mass. Missing engineering values stay unknown,
+with per-property sources and measurement conditions. Numerical consistency is not
+certification or a structural solver. Mechanical axes are not inferred from a texture.
+
+The first scalar catalog remains usable without optical/engineering extensions.
+Richer transport must preserve copied PBR/card records and reject lossy downgrade;
+reopening a design must not require the source catalog. Keep source revisions,
+conflicts and applicability explicit. All inspection/application uses existing engine
+commands; programmatic calls never open pickers. Library export edits the reusable
+file rather than the CAD design. Applying a definition is one undoable design edit.
+
+Use original synthetic fixtures first. A licence string in imported data is a source
+claim, not redistribution permission. Any shipped dataset or texture needs actual
+source/license review and attribution. Commercial reference artwork is not copied.
+No second renderer, certified material database or simulation solver is implied.
+
+## Verification and collaboration
+
+Run `cargo xtask ci` before each committed arc. Record local/remote results, pinned
+upstream, actual platform and failures separately. Do not weaken geometry baselines,
+mask warnings or infer whole-app performance from cached capture/cancellation times.
+Attach actual app/PNG evidence for visible behavior; label older evidence with its
+source revision instead of relabeling it as current. Use scoped original examples.
+
+The private `plan/` documents are unavailable in this checkout; no content is
+invented. Public contracts and current instructions govern this work. Propose bounded
+interfaces in GitHub where a handoff is missing, invite feedback, and check existing
+claims/PRs before implementing. Keep independent contributor branches untouched.

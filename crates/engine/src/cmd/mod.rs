@@ -256,6 +256,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(materials::COMMANDS.iter());
     v.extend(libraries::COMMANDS.iter());
     v.extend(material_properties::COMMANDS.iter());
+    v.extend(libraries::COMMANDS.iter());
     v.extend(section::COMMANDS.iter());
     v.extend(view_navigation::COMMANDS.iter());
     v.extend(diagnostics::COMMANDS.iter());

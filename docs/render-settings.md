@@ -30,7 +30,7 @@ it returns `{setups, defaults}`. Reads do not evaluate the model or change histo
 | Field | Default | Saved contract |
 |---|---|---|
 | `backend` | `builtin` | Valid R1 backend ID, at most 64 ASCII bytes; unavailable IDs survive reopen |
-| `mode` | `preview` | R1 `quick` / `preview` / `final` mode; availability checked by a render request |
+| `mode` | `preview` | R1 `preview` / `final` mode; availability checked by a future render request |
 | `camera` | Existing `Camera::default()` | Snapshot of target, yaw, pitch, roll, distance, fov and up; mm/radians, existing Z-up default |
 | `width`, `height` | 1024, 768 | Positive, each at most 4096; product at most 4,194,304 pixels |
 | `format` | `png` | R1 output format (`png` / `exr`); saving EXR does not add an encoder |
@@ -47,11 +47,12 @@ has at most 32 setups. Validation also runs during document deserialization.
 
 ## Persistence and evaluation
 
-Document format 20 adds `render: {setups: {name: setup}}`. Older designs migrate with
+Document format 20 adds `render: {setups: {name: setup}}`. Released format-19 and older designs migrate with
 an empty map; empty render state is omitted when saved. Existing geometry, appearances,
 opacity and physical materials are untouched. Plain JSON, design containers and crash
 journal replay use the same document/command representation. Older builds reject format
-20 instead of silently losing setups. No runtime capability, job, texture or device is saved.
+20 instead of silently losing setups. All unreleased persisted additions share version 20;
+this slice adds only render intent. No runtime capability, job, texture or device is saved.
 
 The engine avoids geometry evaluation only after proving that the document differs
 solely in validated render settings, with unchanged active sketch and pending moves.

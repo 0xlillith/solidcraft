@@ -24,6 +24,14 @@ unless **Replace existing library file** is explicitly selected. Export is a sna
 the design definitions, not an automatic merge with entries in an existing catalog.
 Editing a copied look/material uses the normal commands and does not edit its source.
 
+The combined render integration adapts these pickers to #1114's asynchronous service.
+A response remains bound to the requesting design; overwrite consent is captured
+before the picker opens. Export snapshots that design when `library.export` runs
+after choosing the destination, so intervening programmatic edits can be included.
+Closing the Appearance editor and opening another does not let an old picker replace
+the new editor's draft. Cancellation does not read or write the selected library.
+The upstream #1114 dependency remains explicit until merged.
+
 The desktop panel applies appearances. Physical-material import/assignment is available
 through `library.apply`; imported definitions also appear in the existing material list.
 The browser can export a library through the existing download service. Interactive local
@@ -120,6 +128,11 @@ relative-resource resolution, executable recipe or plugin is introduced.
 Failed application preserves the document and undo/redo history. The source file is read
 and checked before copying; a stale selected revision needs an explicit reload/reselection.
 The copied design remains independent after successful assignment, undo/redo and cold
-reopening. Existing saved render setups, runtime jobs and strict backend capabilities are
-unchanged. User-visible evidence and actual native/wasm results are recorded in the PR;
+reopening. This library has no dependency on the pending render stack and does not change
+the document format. User-visible evidence and actual native/wasm results are recorded in the PR;
 geometry/robustness checks remain separate and no reference baseline is weakened.
+
+The opaque PBR consumer makes v1 export fail explicitly when any body, component,
+face or material-default appearance contains PBR parameters. Neither overwrite consent
+nor an existing output file permits a lossy downgrade; use the richer transport
+when available. Scalar catalog imports still select the scalar response explicitly.
