@@ -16,7 +16,9 @@ mod pbr;
 pub const PBR_SIZE: usize = pbr::VERTEX_SIZE;
 /// Line instance: a, b (3 × f32 each), colour (4 × u8), width in pixels (f32).
 pub const LINE_SIZE: usize = 32;
-const UNIFORM_SIZE: u64 = 208;
+/// The shader's `U`: the view-projection matrix, 9 `vec4`s, the 8 analysis colours and their
+/// flags (`uniform_bytes`).
+const UNIFORM_SIZE: u64 = 352;
 
 /// A body drawn from its display plan, evaluated on the GPU: the plan, and a colour per face
 /// (the plan's face numbering; faces past the end take the last colour).
@@ -56,6 +58,49 @@ pub struct GpuScene {
     pub under: Vec<u8>,
     /// Opaque bodies drawn from their plans on the GPU, like `tris`.
     pub planned: Vec<PlannedBody>,
+    /// The model's bodies, a few at a time, drawn before the loose geometry above (`tris`,
+    /// `trans`, `lines` and `hidden` of each block, in order, then the scene's own). A block
+    /// that comes back unchanged keeps its buffers: a design changing one body at a time (an
+    /// agent adding bodies over MCP) uploads only the blocks that changed, not the whole model.
+    pub blocks: Vec<SceneBlock>,
+}
+
+#[cfg(test)]
+impl GpuScene {
+    /// The blocks' geometry moved into the scene's own lists, in drawing order (for tests that
+    /// count what the scene holds).
+    pub fn merged(mut self) -> GpuScene {
+        let mut out = GpuScene { glass: std::mem::take(&mut self.glass), ..Default::default() };
+        for block in std::mem::take(&mut self.blocks) {
+            out.tris.extend_from_slice(&block.bytes.tris);
+            out.trans.extend_from_slice(&block.bytes.trans);
+            out.lines.extend_from_slice(&block.bytes.lines);
+            out.hidden.extend_from_slice(&block.bytes.hidden);
+        }
+        out.tris.append(&mut self.tris);
+        out.trans.append(&mut self.trans);
+        out.lines.append(&mut self.lines);
+        out.hidden.append(&mut self.hidden);
+        GpuScene { tris: out.tris, trans: out.trans, glass: out.glass, lines: out.lines, hidden: out.hidden, ..self }
+    }
+}
+
+/// A run of the model's bodies in the scene: their triangles and edges, and a key that names
+/// exactly this content (the viewport keeps the bytes while the key comes back).
+#[derive(Clone)]
+pub struct SceneBlock {
+    pub key: u64,
+    pub bytes: Arc<BlockBytes>,
+}
+
+/// A block's geometry, laid out as in [`GpuScene`].
+#[derive(Default)]
+pub struct BlockBytes {
+    pub tris: Vec<u8>,
+    pub trans: Vec<u8>,
+    pub glass: Vec<u8>,
+    pub lines: Vec<u8>,
+    pub hidden: Vec<u8>,
 }
 
 impl GpuScene {
@@ -170,6 +215,8 @@ pub struct ViewportCallback {
     /// Surface analysis: (mode: 0 none, 1 zebra, 2 draft, 3 curvature, 4 environment,
     /// 5 accessibility; parameter; scale; size) and the pull / access direction.
     pub analysis: [f32; 8],
+    /// The analysis colours and the stripe flag ([`analysis_colors`]).
+    pub analysis_colors: [f32; 36],
     /// Accessibility: the depth map seen from the access direction.
     pub access: Option<AccessMap>,
     /// Draw silhouette outlines around the model (visual styles with edges).
@@ -208,8 +255,28 @@ struct PlannedDraw {
     colors: wgpu::Buffer,
 }
 
+/// A scene block on the GPU, with the bytes it was uploaded from.
+struct BlockGpu {
+    bytes: Arc<BlockBytes>,
+    tris: Option<Batch>,
+    trans: Option<Batch>,
+    lines: Option<Batch>,
+    hidden: Option<Batch>,
+}
+
+/// The blocks' buffers, then the scene's own, as one batch (the blocks' buffers are shared,
+/// not copied).
+fn joined<'a>(blocks: impl Iterator<Item = &'a Option<Batch>>, own: Option<Batch>) -> Option<Batch> {
+    let mut parts: Vec<(wgpu::Buffer, u32)> = blocks.flatten().flat_map(|b| b.parts.iter().cloned()).collect();
+    let chunk = own.as_ref().map(|b| b.chunk).unwrap_or(0);
+    parts.extend(own.into_iter().flat_map(|b| b.parts));
+    (!parts.is_empty()).then_some(Batch { parts, chunk })
+}
+
 #[derive(Default)]
 struct Batches {
+    /// The scene blocks on the GPU, by key.
+    blocks: std::collections::HashMap<u64, BlockGpu>,
     key: Option<u64>,
     tris: Option<Batch>,
     pbr: Option<Batch>,
@@ -242,14 +309,34 @@ impl Batches {
                 Some((tess, encoder)) => self.planned(device, tess, encoder, &sc.planned),
                 None => Vec::new(),
             };
-            self.tris = upload(device, "sc_tris", &sc.tris, TRI_SIZE);
+            let mut kept = std::mem::take(&mut self.blocks);
+            let mut blocks: Vec<&BlockGpu> = Vec::with_capacity(sc.blocks.len());
+            for block in &sc.blocks {
+                let gpu = match kept.remove(&block.key).filter(|g| Arc::ptr_eq(&g.bytes, &block.bytes)) {
+                    Some(g) => g,
+                    None => BlockGpu {
+                        bytes: block.bytes.clone(),
+                        tris: upload(device, "sc_tris", &block.bytes.tris, TRI_SIZE),
+                        trans: upload(device, "sc_trans", &block.bytes.trans, TRI_SIZE),
+                        lines: upload(device, "sc_lines", &block.bytes.lines, LINE_SIZE),
+                        hidden: upload(device, "sc_hidden", &block.bytes.hidden, LINE_SIZE),
+                    },
+                };
+                self.blocks.insert(block.key, gpu);
+            }
+            for block in &sc.blocks {
+                if let Some(g) = self.blocks.get(&block.key) {
+                    blocks.push(g);
+                }
+            }
+            self.tris = joined(blocks.iter().map(|b| &b.tris), upload(device, "sc_tris", &sc.tris, TRI_SIZE));
             self.pbr = upload(device, "sc_pbr", &sc.pbr, PBR_SIZE);
-            self.trans = upload(device, "sc_trans", &sc.trans, TRI_SIZE);
+            self.trans = joined(blocks.iter().map(|b| &b.trans), upload(device, "sc_trans", &sc.trans, TRI_SIZE));
             self.glass = upload_with(device, "sc_glass", &sc.glass, TRI_SIZE, wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST);
             self.glass_cpu = sc.glass;
             self.glass_sorted_for = None;
-            self.lines = upload(device, "sc_lines", &sc.lines, LINE_SIZE);
-            self.hidden = upload(device, "sc_hidden", &sc.hidden, LINE_SIZE);
+            self.lines = joined(blocks.iter().map(|b| &b.lines), upload(device, "sc_lines", &sc.lines, LINE_SIZE));
+            self.hidden = joined(blocks.iter().map(|b| &b.hidden), upload(device, "sc_hidden", &sc.hidden, LINE_SIZE));
             self.overlays = upload(device, "sc_overlay", &sc.overlay, LINE_SIZE);
             self.ghost = upload(device, "sc_ghost", &sc.ghost, TRI_SIZE);
             self.xray = upload(device, "sc_xray", &sc.xray, TRI_SIZE);
@@ -764,14 +851,42 @@ impl Batches {
     }
 }
 
+/// The tessellation pipeline (`shader`: its source), where display plans are evaluated: on a
+/// device that runs compute shaders with the storage buffers the evaluation binds (not WebGL2)
+/// and builds the pipeline. Elsewhere `None`, and bodies are built on the CPU: a device whose
+/// shader compiler rejects the shader (D3D12's FXC once did) only loses GPU evaluation.
+fn tessellation(adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Queue, shader: &str) -> Option<solidcraft_gpu::TessGpu> {
+    let compute = adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && device.limits().max_storage_buffers_per_shader_stage >= 4;
+    if !compute {
+        return None;
+    }
+    let info = adapter.get_info();
+    if hangs_on_gpu_tessellation(info.backend, &info.name) || std::env::var_os("SOLIDCRAFT_CPU_TESS").is_some() {
+        log::warn!("bodies are built on the CPU on {} ({:?})", info.name, info.backend);
+        return None;
+    }
+    match solidcraft_gpu::TessGpu::with_shader(info.name.clone(), device.clone(), queue.clone(), shader) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            log::warn!("bodies are built on the CPU on {} ({:?}): {e}", info.name, info.backend);
+            None
+        }
+    }
+}
+
+/// A device whose driver hangs on the evaluation shader, so bodies are built on the CPU there:
+/// the AMD FirePro D300/D500/D700 (Mac Pro 2013, Tahiti) under Metal, where macOS resets the GPU
+/// and the whole desktop freezes. `SOLIDCRAFT_CPU_TESS=1` forces CPU evaluation on any device.
+fn hangs_on_gpu_tessellation(backend: wgpu::Backend, name: &str) -> bool {
+    backend == wgpu::Backend::Metal && name.contains("FirePro")
+}
+
 /// Create the pipelines. Call once with the app's render state and its depth/stencil/MSAA
-/// settings. Without a stencil the section cap does not hide the inside of cut bodies.
-pub fn install(rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32) -> GpuTarget {
-    // Display plans are evaluated where the device runs compute shaders with the storage
-    // buffers the evaluation binds (not WebGL2): elsewhere bodies are built on the CPU.
-    let compute = rs.adapter.get_downlevel_capabilities().flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
-        && rs.device.limits().max_storage_buffers_per_shader_stage >= 4;
-    let tess = compute.then(|| solidcraft_gpu::TessGpu::new(rs.adapter.get_info().name, rs.device.clone(), rs.queue.clone()));
+/// settings. Without a stencil the section cap does not hide the inside of cut bodies. Without
+/// `gpu_meshing` (safe mode) bodies are meshed on the CPU.
+pub fn install(rs: &egui_wgpu::RenderState, depth_bits: u8, stencil_bits: u8, samples: u32, gpu_meshing: bool) -> GpuTarget {
+    let tess = if gpu_meshing { tessellation(&rs.adapter, &rs.device, &rs.queue, solidcraft_gpu::SHADER) } else { None };
     let t = GpuTarget { format: rs.target_format, depth: egui_wgpu::depth_format_from_bits(depth_bits, stencil_bits), samples, tess: tess.is_some() };
     let res = Resources::new(&rs.device, t, tess);
     rs.renderer.write().callback_resources.insert(res);
@@ -946,11 +1061,36 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
     }
 }
 
+/// A device of its own for an offscreen render or check (`None` without a GPU adapter).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn offscreen_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+        ..Default::default()
+    }))
+    .ok()?;
+    Some((adapter, device, queue))
+}
+
+/// Whether [`install`] would evaluate plans on the GPU with `shader`, on an offscreen device
+/// (`None` without a GPU adapter).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn offscreen_tessellates(shader: &str) -> Option<bool> {
+    let (adapter, device, queue) = offscreen_device()?;
+    Some(tessellation(&adapter, &device, &queue, shader).is_some())
+}
+
 /// Render `scene` offscreen on a device of its own, through the viewport's real resources and
 /// frame callback (`prepare`, then `paint`), and read the pixels back: straight RGBA, `size` ×
-/// `size`. `None` without a GPU adapter. With `tess`, planned bodies are evaluated on the GPU.
-/// `highlight` is drawn as the viewport's highlight scene (hover and selection).
+/// `size`. `None` without a GPU adapter. With `tess` (the tessellation shader), planned bodies
+/// are evaluated on the GPU where the device builds that pipeline, as [`install`] sets it up.
+/// `highlight` is drawn as the viewport's highlight scene (hover and selection). `analysis` is the
+/// surface analysis uniform (`viewport::analysis_uniform`; zeros for none) and `colors` its
+/// colours (`analysis_colors`).
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_offscreen(
     scene: GpuScene,
     highlight: Option<GpuScene>,
@@ -958,9 +1098,11 @@ pub(crate) fn render_offscreen(
     back: [f32; 3],
     eye: [f32; 4],
     size: u32,
-    tess: bool,
+    tess: Option<&str>,
+    analysis: [f32; 8],
+    colors: [f32; 36],
 ) -> Option<Vec<u8>> {
-    offscreen(scene, highlight, view_proj, back, eye, size, Offscreen { tess, product: false, srgb: false })
+    offscreen(scene, highlight, view_proj, back, eye, size, Offscreen { tess, product: false, srgb: false, analysis, analysis_colors: colors })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -972,14 +1114,16 @@ pub(crate) fn render_product_offscreen(
     size: u32,
     srgb: bool,
 ) -> Option<Vec<u8>> {
-    offscreen(scene, None, view_proj, back, eye, size, Offscreen { tess: false, product: true, srgb })
+    offscreen(scene, None, view_proj, back, eye, size, Offscreen { tess: None, product: true, srgb, analysis: [0.0; 8], analysis_colors: [0.0; 36] })
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-struct Offscreen {
-    tess: bool,
+struct Offscreen<'a> {
+    tess: Option<&'a str>,
     product: bool,
     srgb: bool,
+    analysis: [f32; 8],
+    analysis_colors: [f32; 36],
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -990,21 +1134,15 @@ fn offscreen(
     back: [f32; 3],
     eye: [f32; 4],
     size: u32,
-    options: Offscreen,
+    options: Offscreen<'_>,
 ) -> Option<Vec<u8>> {
-    let Offscreen { tess, product, srgb } = options;
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter = pollster::block_on(instance.request_adapter(&Default::default())).ok()?;
+    let Offscreen { tess, product, srgb, analysis, analysis_colors } = options;
+    let (adapter, device, queue) = offscreen_device()?;
     eprintln!("offscreen adapter: {:?}", adapter.get_info().backend);
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-        ..Default::default()
-    }))
-    .ok()?;
     let format = if srgb { wgpu::TextureFormat::Rgba8UnormSrgb } else { wgpu::TextureFormat::Rgba8Unorm };
     let depth = wgpu::TextureFormat::Depth24PlusStencil8;
-    let target = GpuTarget { format, depth: Some(depth), samples: 1, tess };
-    let compute = tess.then(|| solidcraft_gpu::TessGpu::new(adapter.get_info().name, device.clone(), queue.clone()));
+    let compute = tess.and_then(|shader| tessellation(&adapter, &device, &queue, shader));
+    let target = GpuTarget { format, depth: Some(depth), samples: 1, tess: compute.is_some() };
     let mut resources = egui_wgpu::CallbackResources::default();
     resources.insert(Resources::new(&device, target, compute));
     let none = || Arc::new(Mutex::new(None));
@@ -1024,7 +1162,8 @@ fn offscreen(
         clip: [0.0; 4],
         cap: [0.0; 4],
         images: Vec::new(),
-        analysis: [0.0; 8],
+        analysis,
+        analysis_colors,
         access: None,
         outline: false,
         eye,
@@ -1109,12 +1248,37 @@ pub fn uniform_bytes(cb: &ViewportCallback, w: f32, h: f32, linear: bool) -> Vec
         None => v.extend([0.0; 8]),
     }
     v.extend(cb.eye);
+    v.extend(cb.analysis_colors);
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// The shader's analysis colours (`ana_c`: draft positive, between, negative; reachable,
+/// blocked; curvature flat, middle, tight; alpha 1) and flags (`ana_f.x`: 1 to stripe the bad
+/// faces).
+pub fn analysis_colors(c: &crate::theme::AnalysisColors) -> [f32; 36] {
+    let mut v = [0.0; 36];
+    let colors = c.draft.iter().chain(&c.access).chain(&c.curvature).flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 1.0]);
+    for (slot, x) in v.iter_mut().zip(colors) {
+        *slot = x;
+    }
+    v[32] = if c.hatch { 1.0 } else { 0.0 };
+    v
 }
 
 #[cfg(test)]
 mod tests {
-    use egui_wgpu::wgpu::naga;
+    use egui_wgpu::wgpu::{self, naga};
+
+    /// Only the FirePro under Metal skips GPU evaluation; the same card under another backend
+    /// and other Metal GPUs keep it.
+    #[test]
+    fn firepro_under_metal_builds_bodies_on_the_cpu() {
+        assert!(super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "AMD FirePro D500"));
+        assert!(super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "AMD FirePro D700"));
+        assert!(!super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "Apple M2"));
+        assert!(!super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "AMD Radeon Pro 560X"));
+        assert!(!super::hangs_on_gpu_tessellation(wgpu::Backend::Vulkan, "AMD FirePro W5100"));
+    }
 
     /// The viewport shader parses and validates (a bad shader would only fail at run time).
     #[test]

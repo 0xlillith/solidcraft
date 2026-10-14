@@ -120,6 +120,12 @@ fn open_close_and_host_replacement_cancel_work_and_reject_old_ids() {
     assert!(s.render_job_host().unwrap().same_host(&host));
     let id = start(&mut s);
     let handle = s.render_job_handle(id).unwrap();
+    s.replace_design(Session::default());
+    assert_eq!(handle.status().unwrap().progress.phase, solidcraft_render::job::Phase::Cancelled);
+    assert!(s.execute("render.status", &json!({"job":id})).is_err());
+    assert!(s.render_job_host().unwrap().same_host(&host));
+    let id = start(&mut s);
+    let handle = s.render_job_handle(id).unwrap();
     let replacement = CpuHost::cooperative();
     s.set_render_job_host(Some(replacement.clone())).unwrap();
     assert_eq!(handle.status().unwrap().progress.phase, solidcraft_render::job::Phase::Cancelled);

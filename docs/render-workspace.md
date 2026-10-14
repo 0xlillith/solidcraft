@@ -81,7 +81,7 @@ Transparency uses the existing raster far/near alpha-blending approximation, wit
 refraction or HDR illumination. Opaque PBR uses a separate surface batch in the
 same installed renderer. R3 itself added no export job; R4a supplies CPU product
 PNG jobs. There is no result gallery or Bevy dependency. Saved setups were added
-in format 20, alongside opt-in optical parameters on existing looks.
+in format 21, alongside opt-in optical parameters on existing looks.
 `ui.render` remains the existing Design CPU snapshot API; `ui.screenshot` captures
 the actual integrated Render workspace. Product-image export uses `render.start`
 and `render.export`, rather than the Design snapshot API.
