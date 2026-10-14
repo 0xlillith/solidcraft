@@ -78,8 +78,8 @@ render-job or cancellation protocol; those ownership mechanisms belong to R4.
 
 Transparency uses the existing raster far/near alpha-blending approximation, without
 refraction, physically based materials or HDR illumination. R3 adds no HDRI assets,
-export job, result gallery or Bevy dependency. Render persistence uses format 18 because
-upstream assigned format 17 to qualified face/rim names while R2 was pending.
+export job, result gallery or Bevy dependency. Render persistence uses format 20 because upstream assigned format 19 to editable
+associative offset-distance dimensions while R2 was pending.
 `ui.render` remains the existing Design CPU snapshot API; `ui.screenshot` captures
 the actual integrated Render workspace. No product-image export is implied.
 

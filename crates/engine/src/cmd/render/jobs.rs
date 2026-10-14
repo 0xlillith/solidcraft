@@ -117,6 +117,9 @@ pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
     if input.path.len() > 4096 || input.path.chars().any(char::is_control) || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")) {
         return Err(bad("render.export", "a bounded PNG destination path is required"));
     }
+    // Atomic native writers are also used for the app's own files and do not
+    // apply a request's path scope. Check the caller's destination explicitly.
+    solidcraft_io::vfs::check(&input.path).map_err(|e| bad("render.export", e.to_string()))?;
     let frame = s.render_jobs.frame(input.job).map_err(job_error)?;
     // Replace atomically without reading an arbitrarily large previous target into memory.
     // Design saves retain their independent backup policy.
