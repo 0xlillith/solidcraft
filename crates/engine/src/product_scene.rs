@@ -169,7 +169,9 @@ mod tests {
         )
         .unwrap();
         let mut document = crate::doc::Document::default();
-        document.add_feature(crate::doc::FeatureKind::Import { file: "original-generated.step".into(), step, components: Vec::new() }, None).unwrap();
+        document
+            .add_feature(crate::doc::FeatureKind::Import { file: "original-generated.step".into(), step: step.into(), components: Vec::new() }, None)
+            .unwrap();
         let mut s = Session::new(document);
         let first = extract(&s).unwrap();
         assert_eq!(first.meshes[0].color, [51, 153, 204]);
