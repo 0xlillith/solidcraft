@@ -146,7 +146,12 @@ fn scalar_export_refuses_pbr_in_every_design_owned_appearance_location() {
                 strict_name: false,
                 certificate: None,
             }),
-            _ => doc.user_materials.push(UserMaterial { name: "Original material".into(), density: 1.2, appearance: Some(look.clone()) }),
+            _ => doc.user_materials.push(UserMaterial {
+                name: "Original material".into(),
+                density: 1.2,
+                appearance: Some(look.clone()),
+                physical_card: None,
+            }),
         }
         let before = doc.clone();
         let error = Catalog::from_document(&doc, "user.test", "Test", Provenance::default()).unwrap_err();
