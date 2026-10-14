@@ -270,8 +270,12 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   Sweeps along 3D sketch curves follow their polyline (smooth walls when the path is smooth).
 - Extend intersects exact ellipses and rational/high-degree splines without moving the line or
   circular support. Associative free-form offsets have a whole-span 0.002 mm normal-distance
-  certificate and refine within bounded node limits while retaining existing IDs. Singular,
-  self-intersecting and ambiguous curves refuse atomically; mixed junctions and nonsmooth
+  certificate and refine within bounded node limits while retaining existing IDs.
+  At the node limit, geometric certificate subdivisions accommodate unequal spline parameter
+  speeds without changing stored nodes or relaxing the distance tolerance (#971).
+  Associated offset fit nodes stay hidden from display, picking and snapping; dragging the
+  editable source updates the derived boundary live. Break Association restores point editing.
+  Singular, self-intersecting and ambiguous curves refuse atomically; mixed junctions and nonsmooth
   closed natural-spline seams remain limitations. New explicitly closed fit splines and closed
   offset outputs use periodic C2 interpolation, supporting repeated certified offsets; older
   natural splines are preserved. Clicking the starting fit point deliberately closes a new loop.
