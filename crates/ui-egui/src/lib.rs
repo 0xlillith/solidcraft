@@ -36,9 +36,13 @@ pub mod gizmo;
 pub mod gpu;
 pub mod help;
 #[cfg(test)]
+mod hole_direction_ui_tests;
+#[cfg(test)]
 mod hole_placement_ui_tests;
 pub mod home;
 pub mod i18n;
+#[cfg(test)]
+mod i18n_menu_tests;
 #[cfg(test)]
 mod i18n_ui_tests;
 pub mod icons;
@@ -47,6 +51,8 @@ pub mod issue_report;
 pub mod keymap;
 #[cfg(test)]
 mod menu_tests;
+#[cfg(test)]
+mod surface_clamp_tests;
 #[cfg(test)]
 mod status_tests {
     #[test]
@@ -108,11 +114,14 @@ mod sketch_drag_ui_tests;
 #[cfg(test)]
 mod sketch_edit_tests;
 mod sketch_families;
+#[cfg(test)]
+mod sketch_guidance_ui_tests;
 pub mod sketch_modify_ui;
 #[cfg(test)]
 mod sketch_modify_ui_tests;
 pub mod sketch_palette;
 pub(crate) mod sketch_text;
+mod sketch_text_handles;
 mod sketch_text_move;
 pub mod sketch_tools;
 pub mod stand_up;
@@ -293,6 +302,9 @@ pub struct SolveApp {
     pub file_load: file_load::FileLoad,
     /// The other open designs (tabs).
     pub docs: documents::Documents,
+    /// The language the installed font fallback chain is ordered for (`fonts::fallback_order`);
+    /// changing `preferences.language` re-installs the fonts on the next frame.
+    applied_fonts_language: String,
 }
 
 impl SolveApp {
@@ -361,6 +373,7 @@ impl SolveApp {
             home: home::HomeState::default(),
             file_load: file_load::FileLoad::default(),
             docs: documents::Documents::default(),
+            applied_fonts_language: "en".into(),
         }
     }
 
@@ -516,7 +529,13 @@ impl SolveApp {
         }
         match &r {
             Ok(_) => {
-                self.session.echo(format!("{} done", command_label(id)));
+                // Programmatic callers (the control channel, scripts) run outside a render
+                // language scope, so resolve the echo from the saved preference instead of the
+                // thread-local scope. The command's own label is translated too, so the echo
+                // reads the same way the toolbar button it came from does.
+                let language = i18n::Locale::for_language(&self.preferences.language);
+                let label = language.label(command_label(id));
+                self.session.echo(language.format("ui.command_done", &[("command", label)]));
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
                     render_workspace::reset_document(self);
                     self.sketch_choices = sketch_families::Choices::default();
@@ -1099,6 +1118,10 @@ impl SolveApp {
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         expression_complete::begin_frame(ui.ctx());
         let t0 = now_ms();
+        if self.preferences.language != self.applied_fonts_language {
+            self.applied_fonts_language.clone_from(&self.preferences.language);
+            crate::fonts::setup_fonts_for(ui.ctx(), &self.preferences.language);
+        }
         let _language = crate::i18n::scope(&self.preferences.language);
         let mut report_input = None;
         issue_report::CadInput::block(self, ui, &mut report_input);
@@ -1189,7 +1212,7 @@ impl SolveApp {
             let Some(req) = held.or_else(|| rx.try_recv().ok()) else { break };
             // A file is loading: commands that change the design wait for it (the window,
             // inspection and screenshots still answer).
-            if self.file_load.busy() && matches!(req.method.as_str(), "engine.execute" | "command" | "engine.script") {
+            if self.file_load.busy() && matches!(req.method.as_str(), "engine.execute" | "command" | "engine.script" | "engine.batch") {
                 if self.control_held.len() < MAX_HELD {
                     self.control_held.push_back(req);
                 } else {

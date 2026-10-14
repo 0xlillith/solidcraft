@@ -27,6 +27,11 @@ repository under `/solidcraft/`. Do not add a separate owner-site publisher or p
 old-name Pages/Flatpak aliases. GitHub repository redirects are separate from Pages hosting;
 verify the new project URLs after deployment.
 
+The browser app keeps itself for offline use (`apps/solidcraft-web/sw.js`). Browsers keep that
+service worker after the code that registered it is gone, so to switch it off deploy
+`apps/solidcraft-web/sw.js` unbuilt (as `trunk serve` builds do): it deletes what it kept and
+unregisters. A site without `build.json` is also safe: launches then go to the network.
+
 ## Nightly prereleases
 
 `release.yml` also runs at midnight in `America/New_York` (Eastern time, following daylight
@@ -97,6 +102,12 @@ asset set. Existing release notes are preserved on rebuild; refresh their change
 new commits were added. An existing tag or published release is never overwritten. Use a new
 version after publication. Do not push the version tag yourself: publishing the draft creates
 it at the draft's target commit.
+
+## Notes for the next release
+
+Items to carry into the next release's notes (step 3 below), then remove from here:
+
+- None yet.
 
 ## Verify and publish
 

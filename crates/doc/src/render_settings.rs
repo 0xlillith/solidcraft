@@ -174,9 +174,11 @@ mod tests {
         let mut loaded = Document::from_json(&json.to_string()).unwrap();
         assert!(loaded.render.is_empty());
         assert_eq!(loaded.format, crate::format::format_string(crate::format::FORMAT));
-        // Upstream owns format 17 for face/rim names. Its documents also migrate to 18.
-        json["format"] = serde_json::json!("solidcraft/17");
-        assert_eq!(Document::from_json(&json.to_string()).unwrap(), loaded);
+        // Upstream owns 19 for editable offsets; saved render intent needs 20.
+        for version in [17, 18, 19] {
+            json["format"] = serde_json::json!(crate::format::format_string(version));
+            assert_eq!(Document::from_json(&json.to_string()).unwrap(), loaded);
+        }
         let before = loaded.clone();
         let setup = RenderSetup {
             backend: serde_json::from_value(serde_json::json!("future-backend")).unwrap(),

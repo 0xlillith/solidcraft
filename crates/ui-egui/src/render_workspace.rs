@@ -173,9 +173,9 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         .frame(egui::Frame::NONE.fill(Tokens::get().panel).inner_margin(10))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Render Settings");
-                ui.label("Integrated preview");
-                ui.small("Raster shading and blended transparency. Refraction, HDRI and final rendering are not available yet.");
+                ui.heading(app.tr("cmd.render_settings_get"));
+                ui.label(app.tr("render.preview"));
+                ui.small(app.tr("render.preview_help"));
                 ui.separator();
                 let names: Vec<_> = app.session.doc.render.setups.keys().cloned().collect();
                 let old_name = app.render_workspace.view.name.clone();
@@ -184,36 +184,36 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                         ui.selectable_value(&mut app.render_workspace.view.name, name.clone(), name);
                     }
                 });
-                ui.label("Setup name");
+                ui.label(app.tr("render.setup_name"));
                 ui.add(egui::TextEdit::singleline(&mut app.render_workspace.view.name).char_limit(128));
                 if app.render_workspace.view.name != old_name {
                     app.render_workspace.view.draft = app.session.doc.render.setups.get(&app.render_workspace.view.name).cloned().unwrap_or_default();
                     app.render_workspace.view.dirty = false;
                 }
                 ui.separator();
-                ui.label("Scene background");
+                ui.label(app.tr("render.background"));
                 if ui.color_edit_button_srgb(&mut app.render_workspace.view.draft.background).changed() {
                     app.render_workspace.view.dirty = true;
                 }
                 let mut perspective = app.cam.fov > 0.0;
-                if ui.checkbox(&mut perspective, "Perspective camera").changed() {
+                if ui.checkbox(&mut perspective, app.tr("render.perspective")).changed() {
                     app.cam.fov = if perspective { std::f64::consts::FRAC_PI_4 } else { 0.0 };
                     app.render_workspace.view.dirty = true;
                 }
-                if ui.button("Fit Product").clicked() {
+                if ui.button(app.tr("render.fit")).clicked() {
                     match solidcraft_engine::product_scene::extract(&app.session) {
                         Ok(scene) if !scene.bounds.is_empty() => app.cam.fit(&scene.bounds),
                         Err(e) => app.set_status(e.to_string(), true),
                         _ => {}
                     }
                 }
-                if ui.button("Restore Saved Camera").clicked() {
+                if ui.button(app.tr("render.restore_camera")).clicked() {
                     let name = app.render_workspace.view.name.clone();
                     if app.run("render.settings.apply", json!({"name":name})).is_ok() {
                         app.follow_view_request(false);
                     }
                 }
-                if ui.button("Save Setup").clicked() {
+                if ui.button(app.tr("render.save_setup")).clicked() {
                     let name = app.render_workspace.view.name.clone();
                     let setup = RenderSetup { camera: app.cam, ..app.render_workspace.view.draft.clone() };
                     if app.run("render.settings.set", json!({"name":name,"set":setup})).is_ok() {
@@ -221,15 +221,15 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                     }
                 }
                 if app.render_workspace.view.dirty {
-                    ui.label("Unsaved preview changes");
+                    ui.label(app.tr("render.unsaved"));
                 }
-                if ui.button("Reload Saved Settings").clicked() {
+                if ui.button(app.tr("render.reload_settings")).clicked() {
                     app.render_workspace.view.dirty = false;
                     app.render_workspace.revision = u64::MAX;
                 }
                 if app.render_workspace.view.draft.backend.as_str() != "builtin" || app.render_workspace.view.draft.mode != RenderMode::Preview {
-                    ui.label("This setup requests an unavailable preview profile.");
-                    if ui.button("Use Integrated Preview").clicked() {
+                    ui.label(app.tr("render.unavailable_preview"));
+                    if ui.button(app.tr("render.use_preview")).clicked() {
                         app.render_workspace.view.draft.backend = solidcraft_engine::render::builtin_backend().id;
                         app.render_workspace.view.draft.mode = RenderMode::Preview;
                         app.render_workspace.view.dirty = true;
@@ -238,8 +238,8 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ui.separator();
                 image_controls(app, ui);
                 ui.separator();
-                ui.small("Drag to orbit; middle-drag to pan; scroll to zoom. Save Setup records the current camera.");
-                if ui.button("Return to Design").clicked()
+                ui.small(app.tr("render.navigation_help"));
+                if ui.button(app.tr("render.return_design")).clicked()
                     && let Err(e) = enter(app, false)
                 {
                     app.set_status(e, true);
@@ -249,23 +249,24 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
-    ui.heading("Render Image");
-    ui.small("CPU preview image · PNG · approximate transparency");
+    ui.heading(app.tr("render.image_title"));
+    ui.small(app.tr("render.image_help"));
     ui.horizontal(|ui| {
-        ui.label("Width");
+        ui.label(app.tr("render.image_width"));
         if ui.add(egui::DragValue::new(&mut app.render_workspace.view.draft.width).range(1..=4096)).changed() {
             app.render_workspace.view.dirty = true;
         }
-        ui.label("Height");
+        ui.label(app.tr("render.image_height"));
         if ui.add(egui::DragValue::new(&mut app.render_workspace.view.draft.height).range(1..=4096)).changed() {
             app.render_workspace.view.dirty = true;
         }
     });
-    ui.checkbox(&mut app.render_workspace.view.transparent, "Transparent background");
-    if ui.button("Check Render Request").clicked() {
+    let transparent_label = app.tr("render.image_transparent").to_string();
+    ui.checkbox(&mut app.render_workspace.view.transparent, transparent_label);
+    if ui.button(app.tr("render.image_check")).clicked() {
         let settings = RenderSetup { camera: app.cam, ..app.render_workspace.view.draft.clone() };
         if app.run("render.preflight", json!({"settings":settings,"transparent_background":app.render_workspace.view.transparent})).is_ok() {
-            app.set_status("Render request is supported; the queue and memory pool are checked again at start.", false);
+            app.set_status(app.tr("render.image_supported").to_string(), false);
         }
     }
     let mut busy = false;
@@ -275,15 +276,15 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 let phase = status["progress"]["phase"].as_str().unwrap_or("unknown");
                 busy = matches!(phase, "queued" | "preparing" | "running" | "encoding" | "cancelling");
                 ui.label(match phase {
-                    "queued" => "Waiting to render",
-                    "preparing" => "Preparing image",
-                    "running" => "Rendering image",
-                    "encoding" => "Encoding PNG",
-                    "cancelling" => "Cancelling",
-                    "cancelled" => "Render cancelled",
-                    "completed" => "Image ready to export",
-                    "failed" => "Render failed",
-                    _ => "Render status unavailable",
+                    "queued" => app.tr("render.image_queued"),
+                    "preparing" => app.tr("render.image_preparing"),
+                    "running" => app.tr("render.image_running"),
+                    "encoding" => app.tr("render.image_encoding"),
+                    "cancelling" => app.tr("render.image_cancelling"),
+                    "cancelled" => app.tr("render.image_cancelled"),
+                    "completed" => app.tr("render.image_completed"),
+                    "failed" => app.tr("render.image_failed"),
+                    _ => app.tr("render.image_unknown"),
                 });
                 if phase == "completed" {
                     app.render_workspace.view.completed = Some(job);
@@ -291,7 +292,7 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 if let Some(message) = status["error"]["message"].as_str() {
                     ui.label(message);
                     if status["error"]["code"] == "limit_exceeded" {
-                        ui.small("Try a smaller image or simpler scene.");
+                        ui.small(app.tr("render.image_reduce"));
                     }
                 }
                 if busy {
@@ -299,14 +300,14 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let total = status["progress"]["total"].as_u64().unwrap_or(1).max(1);
                     ui.add(egui::ProgressBar::new((done as f64 / total as f64).clamp(0.0, 1.0) as f32));
                     ui.ctx().request_repaint();
-                    if ui.button("Cancel Render").clicked() {
+                    if ui.button(app.tr("render.image_cancel")).clicked() {
                         let _ = app.run("render.cancel", json!({"job":job}));
                     }
                 }
                 if let Some(revision) = status["scene_generation"].as_u64()
                     && revision != app.session.revision
                 {
-                    ui.small("This image uses the scene captured before subsequent changes.");
+                    ui.small(app.tr("render.image_stale"));
                 }
             }
             Err(e) => {
@@ -314,15 +315,16 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
     }
-    if ui.add_enabled(!busy, egui::Button::new("Start Render")).clicked() {
+    if ui.add_enabled(!busy, egui::Button::new(app.tr("render.image_start"))).clicked() {
         let settings = RenderSetup { camera: app.cam, ..app.render_workspace.view.draft.clone() };
         if let Ok(reply) = app.run("render.start", json!({"settings":settings,"transparent_background":app.render_workspace.view.transparent})) {
             app.render_workspace.view.job = serde_json::from_value(reply["job"].clone()).ok();
             ui.ctx().request_repaint();
         }
     }
-    ui.checkbox(&mut app.render_workspace.view.overwrite, "Replace existing file");
-    if ui.add_enabled(app.render_workspace.view.completed.is_some(), egui::Button::new("Export PNG")).clicked()
+    let overwrite_label = app.tr("render.image_overwrite").to_string();
+    ui.checkbox(&mut app.render_workspace.view.overwrite, overwrite_label);
+    if ui.add_enabled(app.render_workspace.view.completed.is_some(), egui::Button::new(app.tr("render.image_export"))).clicked()
         && let Some(job) = app.render_workspace.view.completed
         && let Some(path) = app.services.pick_save.as_ref().and_then(|pick| pick("render.png", &["png"]))
     {
