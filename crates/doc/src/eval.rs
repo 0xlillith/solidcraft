@@ -28,8 +28,8 @@ pub struct ModelBody {
     // Timeline snapshots are cloned before meshes are requested. Share the cell itself so
     // meshing any snapshot also warms every unchanged copy of this body.
     mesh: Arc<OnceLock<Arc<Mesh>>>,
-    /// The display plan the mesh is evaluated from (none when the body has no plan: a mesh
-    /// body, or one the planner refuses), shared like the mesh. A GPU viewport draws it.
+    /// The display plan (none when the body has no plan: a mesh body, or one the planner
+    /// refuses), shared like the mesh. A GPU viewport draws it.
     plan: Arc<OnceLock<Option<Arc<TessPlan>>>>,
     /// Identity of this body's content for the evaluation cache: the key of the evaluation
     /// that produced it (kept while later features pass it through unchanged).
@@ -75,19 +75,17 @@ impl ModelBody {
     /// curved face or edge turning more than [`kernel::DISPLAY_ANGLE`], so that a bend or a
     /// hole that is small beside the body is still drawn round.
     pub fn mesh(&self) -> Arc<Mesh> {
+        // From the reference mesher, not the display plan: the model reads this mesh (holes
+        // finding their surface, picks naming their face, sketch planes), and a different
+        // triangulation moved those and changed what designs build. A GPU viewport draws the
+        // plan ([`ModelBody::display_plan`]).
         self.mesh
-            .get_or_init(|| {
-                let mesh = match self.display_plan() {
-                    Some(plan) => self.body.display_mesh_of(&plan),
-                    None => self.body.reference_display_mesh_angular(self.display_tol(), kernel::DISPLAY_ANGLE),
-                };
-                Arc::new(mesh.unwrap_or_default())
-            })
+            .get_or_init(|| Arc::new(self.body.reference_display_mesh_angular(self.display_tol(), kernel::DISPLAY_ANGLE).unwrap_or_default()))
             .clone()
     }
 
-    /// The display plan behind [`ModelBody::mesh`] (same tolerance and angle), made once; `None`
-    /// when the body has no plan and its mesh comes from the reference mesher.
+    /// The display plan of this body (the same tolerance and angle as [`ModelBody::mesh`]), made
+    /// once; `None` when the body has no plan (a mesh body, or one the planner refuses).
     pub fn display_plan(&self) -> Option<Arc<TessPlan>> {
         self.plan
             .get_or_init(|| match self.body.display_plan_angular(self.display_tol(), kernel::DISPLAY_ANGLE) {
@@ -880,6 +878,7 @@ fn cache_key(f: &Feature, chain_fp: u64, local: u64, ctx: u64, state: &ModelStat
 fn placement_digest(doc: &Document, f: &Feature) -> u64 {
     let path = match &f.kind {
         FeatureKind::Sweep { path_sketch, .. }
+        | FeatureKind::SurfaceSweep { path_sketch, .. }
         | FeatureKind::Pipe { path_sketch, .. }
         | FeatureKind::Pattern { pattern: crate::PatternKind::Path { path_sketch, .. }, .. } => Some(*path_sketch),
         _ => None,
@@ -892,7 +891,7 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         for frame in [doc.component_transform(f.component), doc.component_transform(owner)] {
             frame.iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
         }
-        if let FeatureKind::Sweep { sketch, .. } = &f.kind {
+        if let FeatureKind::Sweep { sketch, .. } | FeatureKind::SurfaceSweep { sketch, .. } = &f.kind {
             let owner = doc.feature(*sketch).map(|feature| feature.component).unwrap_or(0);
             doc.component_transform(owner).iter().flatten().for_each(|value| value.to_bits().hash(&mut hash));
         }
@@ -1789,6 +1788,82 @@ fn hole_on_surface(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
     best.unwrap_or(p)
 }
 
+/// The faces of the model near `p`: for each, how far `p` is from it, the outward normal there
+/// (the surface's own normal for planes, cylinders and spheres, turned the way the face looks out
+/// of its body; the nearest mesh facet's otherwise) and, for a plane, how far `p` is from the
+/// plane itself. Only faces within `reach` of `p`, nearest first.
+fn faces_through(st: &ModelState, p: Vec3, reach: f64) -> Vec<(f64, Vec3, Option<f64>)> {
+    let mut out: Vec<(f64, Vec3, Option<f64>)> = Vec::new();
+    for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
+        let m = b.mesh();
+        // The nearest facet of each face of this body.
+        let mut near: BTreeMap<u32, (f64, Vec3)> = BTreeMap::new();
+        for (t, f) in m.triangles.iter().zip(&m.tri_face) {
+            let Some([a, bb, c]) = m.tri(t) else { continue };
+            let d = crate::appearance::closest_on_triangle(p, a, bb, c).dist(p);
+            let Some(n) = (bb - a).cross(c - a).normalized() else { continue };
+            if d <= reach && near.get(f).is_none_or(|(x, _)| d < *x) {
+                near.insert(*f, (d, n));
+            }
+        }
+        for (f, (d, facet)) in near {
+            let (exact, off) = match kernel::face_surface(&b.body, f as usize) {
+                Some(kernel::FaceSurface::Plane { normal, point }) => (Some(normal), Some((p - point).dot(normal).abs())),
+                Some(kernel::FaceSurface::Cylinder { origin, axis, .. }) => {
+                    let v = p - origin;
+                    ((v - axis * v.dot(axis)).normalized(), None)
+                }
+                Some(kernel::FaceSurface::Sphere { center, .. }) => ((p - center).normalized(), None),
+                _ => (None, None),
+            };
+            let n = match exact {
+                Some(n) if n.dot(facet) < 0.0 => -n,
+                Some(n) => n,
+                None => facet,
+            };
+            out.push((d, n, off));
+        }
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out
+}
+
+/// The way a hole placed at `p` drills: into the material, against the outward normal of the
+/// face `p` lies on. A point on no face (a planar face's centroid outside it, say) takes the
+/// nearest planar face whose plane it lies in, else the face nearest it within its body's pick
+/// tolerance. None when no face is near.
+pub fn hole_direction_at(st: &ModelState, p: Vec3) -> Option<Vec3> {
+    let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
+    let faces = faces_through(st, p, f64::INFINITY);
+    if let Some((d, n, _)) = faces.first()
+        && *d <= size * 1e-4
+    {
+        return Some(-*n);
+    }
+    if let Some((_, n, _)) = faces.iter().find(|(_, _, off)| off.is_some_and(|o| o <= size * 1e-4)) {
+        return Some(-*n);
+    }
+    let reach = st.bodies.iter().map(crate::appearance::pick_tolerance).fold(0.0, f64::max);
+    faces.first().filter(|(d, _, _)| *d <= reach).map(|(_, n, _)| -*n)
+}
+
+/// A hole placed on a face drills into the material: when its direction leaves every face it
+/// starts on (as designs saved before format 18 can say: their direction was taken from any face
+/// whose plane passed near the point, such as the other side of a thin plate or a face of another
+/// body at the same height), it is mirrored in the face it starts on, so it goes in at the same
+/// angle. A direction that enters a face there, or a spot on no face, is kept.
+fn hole_dir_into_face(st: &ModelState, p: Vec3, dir: Vec3) -> Vec3 {
+    let size = st.bodies.iter().map(|b| b.body.size()).fold(1.0, f64::max);
+    let faces = faces_through(st, p, size * 1e-5);
+    if faces.is_empty() || faces.iter().any(|(_, n, _)| n.dot(dir) < -1e-9) {
+        return dir;
+    }
+    match faces.iter().map(|(_, n, _)| *n).max_by(|a, b| a.dot(dir).total_cmp(&b.dot(dir))) {
+        Some(n) if n.dot(dir) > 1e-9 => (dir - n * (2.0 * n.dot(dir))).normalized().unwrap_or(dir),
+        _ => dir,
+    }
+}
+
 /// Where a picked edge sat in its body: its direction (zero for curved edges) and the body's
 /// bounding box at the time.
 #[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
@@ -1975,6 +2050,16 @@ fn hole_reaches(st: &ModelState, p: Vec3, d: Vec3, ahead: bool) -> bool {
 /// from the plane's normal) if any spot touches material that way, else `+n` if any spot touches
 /// material that way. With no touching on either side it goes by the nearest body ahead: `-n` if
 /// any spot has a body ahead that way, else `+n` if any has, else `-n`.
+/// The way holes at these points of a sketch drill (see [`sketch_hole_dir`]), flipped or not.
+/// None when the sketch or a point is not there.
+pub fn sketch_hole_direction(st: &ModelState, sketch: u64, ids: &[String], flip: bool) -> Option<Vec3> {
+    let ss = st.sketch(sketch)?;
+    let spots: Vec<Vec3> =
+        ids.iter().map(|id| ss.sketch.points.iter().find(|p| &p.id == id).map(|p| ss.plane.to_world(p.pos))).collect::<Option<_>>()?;
+    let dir = sketch_hole_dir(st, &spots, ss.plane.normal());
+    Some(if flip { -dir } else { dir })
+}
+
 fn sketch_hole_dir(st: &ModelState, spots: &[Vec3], n: Vec3) -> Vec3 {
     let down = -n;
     let any = |d: Vec3, ahead: bool| spots.iter().any(|p| hole_reaches(st, *p, d, ahead));
@@ -2002,9 +2087,15 @@ fn hole_spots(st: &ModelState, f: &Feature) -> Result<(Vec<Vec3>, Vec3)> {
                 v.push(ss.plane.to_world(p.pos));
             }
             let dir = sketch_hole_dir(st, &v, ss.plane.normal());
+            let dir = if sp.flip { -dir } else { dir };
             (v, dir)
         }
-        None => (vec![*position], direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?),
+        None => {
+            let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
+            let at = hole_on_surface(st, *position, dir);
+            let dir = hole_dir_into_face(st, at, dir);
+            return Ok((vec![hole_on_surface(st, at, dir)], dir));
+        }
     };
     if spots.is_empty() || spots.len() > 10_000 {
         return Err(DocError::Invalid("a hole needs 1…10000 points".into()));
@@ -2043,9 +2134,13 @@ fn hole_spots_raw(st: &ModelState, f: &Feature) -> Result<(Vec<Vec3>, Vec3)> {
             let v: Vec<Vec3> =
                 sp.ids.iter().filter_map(|id| ss.sketch.points.iter().find(|p| &p.id == id)).map(|p| ss.plane.to_world(p.pos)).take(10_000).collect();
             let dir = sketch_hole_dir(st, &v, ss.plane.normal());
+            let dir = if sp.flip { -dir } else { dir };
             Ok((v, dir))
         }
-        None => Ok((vec![*position], direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?)),
+        None => {
+            let dir = direction.normalized().ok_or_else(|| DocError::Invalid("hole direction".into()))?;
+            Ok((vec![*position], hole_dir_into_face(st, hole_on_surface(st, *position, dir), dir)))
+        }
     }
 }
 
@@ -2079,8 +2174,20 @@ fn sheet_hole_cut(st: &mut ModelState, f: &Feature, tools: &[(Traced, Option<mor
     for (tool, prism) in tools {
         let tool = &tool.body;
         let done = match prism {
-            Some(prism) => more::sheet_primitive_cut(f, st, tool, *prism, Operation::Cut, true)?,
+            Some(prism) => match more::sheet_primitive_cut(f, st, tool, *prism, Operation::Cut, true) {
+                Ok(done) => done,
+                // Drilled along a panel (into a rim) the hole is no flat cut-out: a bore of
+                // that panel, when it stays inside it.
+                Err(e) => match more::sheet_bore_cut(f, st, *prism)? {
+                    Some(done) => done,
+                    None => return Err(e),
+                },
+            },
             None => Vec::new(),
+        };
+        let done = match (done.is_empty(), prism) {
+            (true, Some(prism)) => more::sheet_bore_cut(f, st, *prism)?.unwrap_or_default(),
+            _ => done,
         };
         if done.is_empty() {
             let mut meets = false;
@@ -3634,7 +3741,11 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
         | FeatureKind::SurfaceExtend { .. }
         | FeatureKind::SurfaceExtrude { .. }
         | FeatureKind::Unstitch { .. }
-        | FeatureKind::ReverseNormal { .. } => surface::eval(doc, vals, f, st),
+        | FeatureKind::ReverseNormal { .. }
+        | FeatureKind::SurfaceRevolve { .. }
+        | FeatureKind::SurfaceSweep { .. }
+        | FeatureKind::SurfaceLoft { .. }
+        | FeatureKind::SurfaceOffset { .. } => surface::eval(doc, vals, f, st),
         FeatureKind::Emboss { .. }
         | FeatureKind::Rib { .. }
         | FeatureKind::ReplaceFace { .. }
