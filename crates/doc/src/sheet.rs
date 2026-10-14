@@ -37,6 +37,9 @@ const MAX_FLAT_WORK: usize = 500_000_000;
 const FOLD_TABS_REJOIN: &str = "not supported yet: folding tabs that join again beyond the bend";
 pub const FOLD_FIXED_OFF_SHEET: &str = "the fold's fixed point is not on the sheet";
 
+/// The most bores one sheet keeps.
+const MAX_BORES: usize = 1000;
+
 fn flat_budget_error() -> DocError {
     DocError::Invalid("sheet metal flat geometry exceeds the bounded processing budget".into())
 }
@@ -474,6 +477,11 @@ pub struct SheetBody {
     /// Derived from feature history; these records are not a document schema change.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pockets: Vec<SheetPocket>,
+    /// Straight bores drilled into a panel along its plane (a hole into a rim), in flat
+    /// coordinates, each kept inside its own panel's material so the folded part and its flat
+    /// pattern both carry it (#560). Derived from feature history, like `pockets`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bores: Vec<SheetBore>,
     /// Unfolded.
     pub flat: bool,
     /// Gap between flanges that meet at a corner.
@@ -488,6 +496,17 @@ pub struct SheetBody {
     /// The base sketch's lines (id, ends in flat coordinates), naming the base panel's edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub base_curves: Vec<(String, Vec2, Vec2)>,
+}
+
+/// A straight round bore of one panel (None = the base), in flat coordinates: a cylinder from
+/// `base` along the unit `axis` for `height`, cut only from that panel's material.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct SheetBore {
+    pub panel: Option<usize>,
+    pub base: Vec3,
+    pub axis: Vec3,
+    pub radius: f64,
+    pub height: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1200,6 +1219,7 @@ impl SheetBody {
         local.frame = Plane::XY;
         let body = kernel::sew(&local.faces(&cells, 0.0, self.t, &mut work)?)?;
         let body = local.machine_pockets(body, &mut work)?;
+        let body = local.machine_bores(body, &mut work)?;
         self.place_local_solid(body)
     }
 
@@ -1215,7 +1235,9 @@ impl SheetBody {
         local.frame = Plane::XY;
         local.flat = true;
         let body = kernel::extrude_planar_regions(&Plane::XY, &regions, 0.0, self.t)?;
-        let body = local.machine_pockets(body, &mut FlatWork::new())?;
+        let mut work = FlatWork::new();
+        let body = local.machine_pockets(body, &mut work)?;
+        let body = local.machine_bores(body, &mut work)?;
         self.place_local_solid(body)
     }
 
@@ -1284,6 +1306,119 @@ impl SheetBody {
     }
 
     /// Replay exact planar machining after forming the full-thickness material.
+    /// Cut the bores (see [`SheetBore`]) from a solid built in the sheet's local frame.
+    fn machine_bores(&self, mut body: Body, work: &mut FlatWork) -> Result<Body> {
+        if self.bores.is_empty() {
+            return Ok(body);
+        }
+        if self.bores.len() > MAX_BORES {
+            return Err(flat_budget_error());
+        }
+        let panels = self.material_panels(None, work)?;
+        for bore in &self.bores {
+            let cells = panels.iter().filter(|(pi, _)| *pi == bore.panel).map(|(_, r)| fitted_region(r)).collect::<Result<Vec<_>>>()?;
+            if cells.is_empty() {
+                continue;
+            }
+            // BRep replay is costlier than planar clipping; share the command budget.
+            work.charge(100_000)?;
+            // The bore's own panel, flat: the bore never reaches a bend or another panel, in
+            // the folded part or in its flat pattern.
+            let slab = kernel::extrude_planar_regions(&Plane::XY, &cells, 0.0, self.t)?;
+            let drill = kernel::cylinder(bore.base, bore.axis, bore.radius, bore.height)?;
+            let Some(inside) = kernel::boolean(&drill, &slab, kernel::BoolOp::Intersect)? else { continue };
+            // Cut with the drill clipped to the panel. Where its ends, flush with the panel's
+            // rims, leave coincident faces the cut can't resolve, cut with the drill as long as
+            // the panel's material along it and a hair past it instead (the same material).
+            let place = |tool: Body| if self.flat { Ok(tool) } else { kernel::transform_matrix(&tool, self.world(bore.panel)) };
+            let mut last = None;
+            for longer in [false, true] {
+                let tool = if longer {
+                    let axis = bore.axis.normalized().ok_or_else(|| DocError::Invalid("invalid sheet bore".into()))?;
+                    let mesh = inside.tessellate((bore.radius * 0.1).max(1e-4))?;
+                    let (lo, hi) =
+                        mesh.positions.iter().map(|p| (*p - bore.base).dot(axis)).fold((f64::MAX, f64::MIN), |(lo, hi), d| (lo.min(d), hi.max(d)));
+                    if !(lo <= hi) {
+                        break;
+                    }
+                    let past = (bore.radius * 0.05).max(1e-3);
+                    kernel::cylinder(bore.base + axis * (lo - past), axis, bore.radius, hi - lo + 2.0 * past)?
+                } else {
+                    inside.clone()
+                };
+                match kernel::boolean(&body, &place(tool)?, kernel::BoolOp::Cut) {
+                    Ok(Some(cut)) => {
+                        body = cut;
+                        last = None;
+                        break;
+                    }
+                    Ok(None) => last = Some(DocError::Invalid("a sheet bore removes all sheet material".into())),
+                    Err(e) => last = Some(e.into()),
+                }
+            }
+            if let Some(e) = last {
+                return Err(e);
+            }
+        }
+        Ok(body)
+    }
+
+    /// Record a round bore drilled along the sheet (a hole into a rim): the world cylinder from
+    /// `base` along `axis`, one record per panel whose material it meets. Ok(false) when it
+    /// meets no material; an error when it meets a bend, or crosses a panel other than along
+    /// its plane (that machining has no exact place in the flat pattern).
+    pub(crate) fn add_bore(&mut self, base: Vec3, axis: Vec3, radius: f64, height: f64) -> Result<bool> {
+        let axis = axis.normalized().ok_or_else(|| DocError::Invalid("bore axis".into()))?;
+        if ![base.x, base.y, base.z, radius, height].iter().all(|v| v.is_finite()) || !(radius > 0.0) || height == 0.0 {
+            return Err(DocError::Invalid("invalid sheet bore".into()));
+        }
+        if self.bores.len() >= MAX_BORES {
+            return Err(flat_budget_error());
+        }
+        let mut work = FlatWork::new();
+        let drill = kernel::cylinder(base, axis, radius, height)?;
+        let mut found = Vec::new();
+        for cell in self.cells_with_work(&mut work)? {
+            work.charge(100_000)?;
+            let solid = if self.flat {
+                let region = fitted_region(&Region2 {
+                    outer: Loop2 { segs: cell.outer.clone() },
+                    holes: cell.holes.iter().map(|h| Loop2 { segs: h.clone() }).collect(),
+                })?;
+                kernel::extrude_planar_regions(&self.frame, &[region], 0.0, self.t)?
+            } else {
+                kernel::sew(&self.faces(std::slice::from_ref(&cell), 0.0, self.t, &mut work)?)?
+            };
+            if kernel::boolean(&solid, &drill, kernel::BoolOp::Intersect)?.is_none() {
+                continue;
+            }
+            let Piece::Panel(pi) = cell.piece else {
+                return Err(DocError::Invalid(
+                    "this hole runs into a bend; drill it into a flat panel, or unfold the sheet before machining that material".into(),
+                ));
+            };
+            let w = self.world(if self.flat { None } else { pi });
+            if apply_vector(&w, Vec3::Z).dot(axis).abs() > 1e-6 {
+                return Err(DocError::Invalid(
+                    "this hole crosses a sheet panel at an angle; drill it square to the panel, or along it into a rim".into(),
+                ));
+            }
+            let inv = mat_inverse(&w).ok_or_else(|| DocError::Invalid("invalid sheet panel frame".into()))?;
+            let bore = SheetBore { panel: pi, base: apply_point(&inv, base), axis: apply_vector(&inv, axis), radius, height };
+            if !found.contains(&bore) {
+                found.push(bore);
+            }
+        }
+        if found.is_empty() {
+            return Ok(false);
+        }
+        if self.bores.len().saturating_add(found.len()) > MAX_BORES {
+            return Err(flat_budget_error());
+        }
+        self.bores.extend(found);
+        Ok(true)
+    }
+
     fn machine_pockets(&self, mut body: Body, work: &mut FlatWork) -> Result<Body> {
         if self.pockets.len() > 1000 {
             return Err(flat_budget_error());
@@ -3671,6 +3806,7 @@ pub fn base_flange(body: &str, rule: &str, rv: &RuleValues, plane: Plane, region
         flanges: Vec::new(),
         holes,
         pockets: Vec::new(),
+        bores: Vec::new(),
         flat: false,
         gap: rv.gap,
         relief: rv.corner_relief_shape,
@@ -3726,6 +3862,7 @@ pub fn contour_flange(body: &str, rule: &str, rv: &RuleValues, plane: &Plane, pt
         flanges: Vec::new(),
         holes: Vec::new(),
         pockets: Vec::new(),
+        bores: Vec::new(),
         flat: false,
         gap: rv.gap,
         relief: rv.corner_relief_shape,

@@ -3618,6 +3618,85 @@ fn every_flat_face_of_a_sheet_takes_an_attached_sketch() {
     assert_eq!(f["cutouts"].as_array().map(Vec::len), Some(1), "{f}");
 }
 
+/// A 60 x 40 base with a 30 mm flange up its far long edge (y = 40); its thickness.
+fn l_bracket(s: &mut Session) -> f64 {
+    base(s, 60.0, 40.0);
+    run(s, "sheet.flange", json!({"type": "edge", "edges": [[30, 40, 0]], "height": 30}));
+    flat(s)["thickness"].as_f64().unwrap()
+}
+
+#[test]
+fn a_hole_drilled_into_a_rim_is_a_bore_the_sheet_keeps_when_it_unfolds() {
+    let mut s = Session::default();
+    let t = l_bracket(&mut s);
+    let before = volume(&mut s);
+    let flat_before = unfolded_volume(&mut s);
+    let (d, y) = (t * 0.6, 20.0);
+    // Into the base's end rim (x = 60) along the base, through all: out at x = 0.
+    run(&mut s, "solid.hole", json!({"position": [60, y, t / 2.0], "direction": [-1, 0, 0], "diameter": d}));
+    let removed = PI * (d / 2.0).powi(2) * 60.0;
+    let folded = volume(&mut s);
+    assert!(rel(before - folded, removed) < 0.02, "removed {} of {removed}", before - folded);
+    let f = flat(&mut s);
+    assert_eq!(f["bores"].as_array().map(Vec::len), Some(1), "{f}");
+    assert_eq!(f["cutouts"], json!([]));
+    let inside = |s: &Session, p: [f64; 3]| s.model.state().bodies[0].body.contains(solidcraft_geom::Vec3::new(p[0], p[1], p[2]));
+    // The flat pattern loses the same bore (the bends unroll to their own length).
+    let flat_after = unfolded_volume(&mut s);
+    assert!(rel(flat_before - flat_after, removed) < 0.02, "flat: removed {} of {removed}", flat_before - flat_after);
+    assert!(rel(volume(&mut s), folded) < 1e-6);
+    // Folded again: the bore is where it was drilled, the material beside it stays.
+    assert!(!inside(&s, [30.0, y, t / 2.0]));
+    assert!(inside(&s, [30.0, y + d, t / 2.0]));
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!(rel(volume(&mut reopened), folded) < 1e-3);
+    assert!(rel(unfolded_volume(&mut reopened), flat_after) < 1e-6);
+}
+
+/// The volume of the sheet unfolded; it is folded back after.
+fn unfolded_volume(s: &mut Session) -> f64 {
+    run(s, "sheet.unfold", json!({}));
+    let v = volume(s);
+    run(s, "sheet.refold", json!({}));
+    v
+}
+
+#[test]
+fn a_rim_hole_in_a_flange_follows_it_into_the_flat_pattern() {
+    let mut s = Session::default();
+    let t = l_bracket(&mut s);
+    let before = volume(&mut s);
+    let flat_before = unfolded_volume(&mut s);
+    let inside = |s: &Session, p: [f64; 3]| s.model.state().bodies[0].body.contains(solidcraft_geom::Vec3::new(p[0], p[1], p[2]));
+    // Halfway up the flange, in the middle of its thickness (whichever way the rule put it).
+    let mid = [[40.0 - t / 2.0, 15.0], [40.0 - t / 2.0, -15.0], [40.0 + t / 2.0, 15.0], [40.0 + t / 2.0, -15.0]]
+        .into_iter()
+        .find(|[y, z]| inside(&s, [30.0, *y, *z]))
+        .expect("the flange's material");
+    let d = t * 0.5;
+    // Into the flange's end rim (x = 60), through all.
+    run(&mut s, "solid.hole", json!({"position": [60.0, mid[0], mid[1]], "direction": [-1, 0, 0], "diameter": d}));
+    let folded = volume(&mut s);
+    assert!(rel(before - folded, PI * (d / 2.0).powi(2) * 60.0) < 0.02, "{before} -> {folded}");
+    assert!(!inside(&s, [30.0, mid[0], mid[1]]));
+    let flat_after = unfolded_volume(&mut s);
+    assert!(rel(flat_before - flat_after, before - folded) < 0.02, "flat: {flat_before} -> {flat_after}");
+    assert!(rel(volume(&mut s), folded) < 1e-6);
+    assert!(!inside(&s, [30.0, mid[0], mid[1]]));
+}
+
+#[test]
+fn a_rim_hole_that_would_run_into_a_bend_is_refused_and_changes_nothing() {
+    let mut s = Session::default();
+    let t = l_bracket(&mut s);
+    let before = volume(&mut s);
+    // Into the near rim (y = 0) toward the bend at y = 40.
+    let r = s.execute("solid.hole", &json!({"position": [30, 0, t / 2.0], "direction": [0, 1, 0], "diameter": t * 0.6}));
+    assert!(r.is_err(), "{r:?}");
+    assert!(rel(volume(&mut s), before) < 1e-9);
+    assert!(flat(&mut s).get("bores").is_none());
+}
+
 /// #732: a perforated panel. A 400 x 470 x 0.8 sheet with Ø1 holes on a 1.5 mm 60° staggered grid (DIN 24041
 /// Rv 1.0-1.5), cut in two sketches of 500 holes; 0.8.0 refuses the second cut ("sheet metal flat geometry exceeds
 /// the bounded processing budget"). A real mesh panel needs ~94 000 such holes; 1000 is the first step.
