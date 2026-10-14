@@ -94,6 +94,10 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   and prepared world data through undo/redo and checkpoint restore. This slice does
   not add a Render workspace, PBR, environments or image jobs; see
   [settings and refresh policy](docs/render-settings.md).
+- Bounded PNG/JPEG texture admission (#900) validates in-memory sources and returns
+  completed RGBA8 pixels with explicit color/data roles. It is an input utility only:
+  ICC/16-bit normalization, local wood mapping, resource persistence and the renderer
+  consumer remain separate work. See [limits and licensed-file probes](docs/render-texture-input.md).
 
 - The initial opaque surface numerical contract for #1004 provides bounded linear
   color/metallic/roughness/IOR admission and an original tested direct-light BRDF.
