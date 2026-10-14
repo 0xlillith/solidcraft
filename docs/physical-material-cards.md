@@ -109,7 +109,7 @@ These deliberately invented constants demonstrate validation, not a real grade:
 The result has G = 4.8e9 Pa, K = 8e9 Pa, unspecified conditions and source review
 still required. No assigned mass, saved material or appearance changes.
 
-## Design-owned persistence (format 22)
+## Design-owned persistence (format 20)
 
 `material.create` accepts optional `physical_card`; omission or null means unknown.
 `material.edit` retains the current card when omitted, replaces it after validation
@@ -126,7 +126,7 @@ only compares numbers: conditions and source applicability may still differ.
 It never chooses a measurement or changes the density used for mass. Card-only
 edits preserve geometry and optical response. Missing data remains unknown.
 
-Format 22 saves cards; format-21 and earlier materials upgrade with absent cards.
+Format 20 saves cards alongside render setups and opt-in PBR looks. Released format-19 materials upgrade with absent cards; version-20 materials without cards also remain unknown. Unreleased experimental version-21/22 files are future formats and are refused.
 Saved cards use the same admission as commands, including direct deserialization.
 Only the exact root `user_materials[].physical_card` field uses physical SI limits;
 geometric numeric/depth limits elsewhere remain unchanged. This is necessary for
@@ -162,3 +162,37 @@ specimen properties and graded design values. No handbook data/table is bundled.
 The [Khronos PBR material model](https://www.khronos.org/gltf/pbr) is a reference for
 the separate optical track. No third-party code, engineering dataset or asset is
 added by this implementation.
+
+## Directional elasticity query
+
+`material.properties.directional {card, direction: [x,y,z]}` reports Young's modulus
+in Pa for a uniaxial, small-strain constitutive test along a material-local direction.
+It returns the safely normalized direction, declared axes (`null` for isotropy), and
+the full validation/source/condition report. It neither assigns axes to a body nor
+predicts a part's displacement, failure, strength or safety factor. No solver or
+render capability is enabled. Missing elasticity refuses instead of inventing data.
+
+For orthotropy, let n=(x,y,z) be the unit direction. With engineering shear
+compliance 1/G and the reciprocal Poisson convention above:
+
+```
+1/E(n) = x^4/E1 + y^4/E2 + z^4/E3
+       + x²y²(1/G12 - 2 nu12/E1)
+       + y²z²(1/G23 - 2 nu23/E2)
+       + z²x²(1/G31 - 2 nu31/E3).
+```
+
+This follows by applying stress sigma = n tensor n, computing strain with the
+symmetric compliance, then contracting n with strain and n. The implementation
+uses a Cholesky sum of squares for the normal contribution, avoiding cancellation
+between the positive diagonal and negative coupling terms. Shear contributions
+are also nonnegative. Isotropy returns E directly, independent of orientation.
+
+Input directions must contain exactly three finite numbers and be nonzero; arbitrary
+magnitude is allowed. Max-component scaling avoids overflow or underflow while
+normalizing very large or tiny vectors. Unrepresentable compliance/modulus refuses;
+this finite-precision check does not establish a condition-number certificate.
+The card's test conditions still apply; changing direction does not extrapolate
+temperature, moisture, process, rate, damage or nonlinear behavior. Synthetic analytic
+tests cover principal axes, the isotropic limit and off-axis shear/coupling terms.
+No physical dataset or external implementation is included.

@@ -63,7 +63,7 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 - Design-owned engineering cards (#1048) can be validated and saved through existing
   material create/edit/list commands, with source/condition records, atomic refusal,
-  undo/reopen and explicit density comparison. Format 22 retains cards independently
+  undo/reopen and explicit density comparison. Format 20 retains cards independently
   of assigned mass density and optical looks. Scalar catalog v1 refuses data loss;
   rich catalog transport and property-authoring UI remain separate phases.
 
@@ -72,6 +72,10 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   checks through read-only `material.properties.validate`. The validator alone does
   not assign/persist properties; neither path provides a solver or enables rendering; see
   [the contract and staged follow-ups](docs/physical-material-cards.md).
+
+- Directional elasticity (#994) queries the validated card in material-local axes
+  through read-only `material.properties.directional`, with source/condition review.
+  It does not assign body frames, predict structural behavior or enable a solver.
 
 ## Library foundations (#785, #786, #787)
 
@@ -86,7 +90,7 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 ## Render foundation
 
 - Opt-in opaque PBR surfaces (#1004) connect existing saved looks and assignment
-  commands to the integrated GPU product viewport and CPU PNG jobs. Format 21 retains
+  commands to the integrated GPU product viewport and CPU PNG jobs. Format 20 retains
   optical parameters; legacy looks keep their scalar response. Fixed direct lighting,
   explicit admission, unchanged mass/geometry and scoped GPU/CPU color parity are
   covered. HDRI, transmission, textures and rich catalog export remain separate gates.

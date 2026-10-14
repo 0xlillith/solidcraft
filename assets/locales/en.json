@@ -980,5 +980,6 @@
   "appearance.dielectric_ior": "Dielectric IOR",
   "appearance.pbr_help": "View this surface in Render or a product PNG. No refraction or transmission.",
   "render.opaque_preview_help": "Opaque PBR and simple colors; blended transparency. Refraction, HDRI and final rendering are not available yet.",
-  "render.opaque_image_summary": "Preview PNG · opaque PBR · blended transparency"
+  "render.opaque_image_summary": "Preview PNG · opaque PBR · blended transparency",
+  "cmd.material_properties_directional":"Directional Elastic Modulus"
 }
