@@ -22,6 +22,7 @@ mod open_documents;
 mod space_mouse;
 
 use solidcraft_engine::{Session, io};
+use solidcraft_ui_egui::file_dialog::{FileDialogAnswer, FileDialogRequest};
 use solidcraft_ui_egui::{Services, SolveApp};
 
 struct App {
@@ -54,8 +55,9 @@ impl eframe::App for App {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.solve.raw_input_hook(raw);
     }
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.solve.ui(ui);
+        self.solve.poll_file_dialog(ui.ctx(), |request| show_file_dialog(request, frame));
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         storage.set_string(solidcraft_ui_egui::prefs::STORAGE_KEY, self.solve.prefs());
@@ -66,10 +68,14 @@ impl eframe::App for App {
     }
 }
 
-fn services() -> Services {
-    Services {
-        pick_open: Some(Box::new(|| {
-            rfd::FileDialog::new()
+/// Shows an Open or Save dialog without blocking the event loop: rfd's async dialog is a sheet
+/// on the window on macOS, and the app polls its answer every frame (`poll_file_dialog`).
+fn show_file_dialog(request: FileDialogRequest, parent: &eframe::Frame) -> FileDialogAnswer {
+    let dialog = rfd::AsyncFileDialog::new().set_parent(parent);
+    let path = |file: rfd::FileHandle| file.path().to_string_lossy().to_string();
+    match request {
+        FileDialogRequest::Open => {
+            let picked = dialog
                 .add_filter(
                     "Designs, STEP, IGES and meshes",
                     &[
@@ -96,11 +102,12 @@ fn services() -> Services {
                 .add_filter("Mesh (3MF, STL)", &["3mf", "3MF", "stl", "STL"])
                 .add_filter("Sketch drawings (DXF, SVG)", &["dxf", "DXF", "svg", "SVG"])
                 .add_filter("All files", &["*"])
-                .pick_file()
-                .map(|p| p.to_string_lossy().to_string())
-        })),
-        pick_save: Some(Box::new(|name: &str, exts: &[&str]| {
-            let dialog = rfd::FileDialog::new().set_file_name(name);
+                .pick_file();
+            Box::pin(async move { picked.await.map(path) })
+        }
+        FileDialogRequest::Save { name, extensions } => {
+            let dialog = dialog.set_file_name(&name);
+            let exts: Vec<&str> = extensions.iter().map(String::as_str).collect();
             let dialog = if exts == [io::DESIGN_EXT, "json"] {
                 if name.ends_with(".json") {
                     dialog.add_filter("Plain JSON design", &["json"]).add_filter("SolidCraft container", &[io::DESIGN_EXT])
@@ -108,10 +115,16 @@ fn services() -> Services {
                     dialog.add_filter("SolidCraft container", &[io::DESIGN_EXT]).add_filter("Plain JSON design", &["json"])
                 }
             } else {
-                dialog.add_filter("File", exts)
+                dialog.add_filter("File", &exts)
             };
-            dialog.save_file().map(|p| p.to_string_lossy().to_string())
-        })),
+            let picked = dialog.save_file();
+            Box::pin(async move { picked.await.map(path) })
+        }
+    }
+}
+
+fn services() -> Services {
+    Services {
         graphics_path: graphics_path().map(|p| p.to_string_lossy().to_string()),
         show_in_folder: Some(Box::new(|path| {
             let folder = std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."));

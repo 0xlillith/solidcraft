@@ -15,6 +15,7 @@ mod web {
 
     use solidcraft_engine::Session;
     use solidcraft_engine::io::vfs;
+    use solidcraft_ui_egui::file_dialog::{FileDialogAnswer, FileDialogRequest};
     use solidcraft_ui_egui::{Services, SolveApp};
     use wasm_bindgen::JsCast as _;
 
@@ -30,6 +31,23 @@ mod web {
     thread_local! {
         /// An open design has unsaved changes: leaving the page asks first.
         static UNSAVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// The browser has no file dialog: Open shows its files panel (and the computer's, from there)
+    /// and answers nothing; Save answers at once, designs into the browser's storage and
+    /// everything else as a download.
+    fn show_file_dialog(request: FileDialogRequest, files: &Files) -> FileDialogAnswer {
+        let answer = match request {
+            FileDialogRequest::Open => {
+                files.panel.set(true);
+                None
+            }
+            FileDialogRequest::Save { name, extensions } => {
+                let design = extensions.iter().any(|e| e == solidcraft_engine::io::DESIGN_EXT);
+                Some(format!("{}{name}", if design { files::OPFS } else { files::DOWNLOADS }))
+            }
+        };
+        Box::pin(std::future::ready(answer))
     }
 
     /// The browser's "leave site? changes you made may not be saved" prompt while a design has
@@ -374,6 +392,7 @@ mod web {
         }
         fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
             self.app.ui(ui);
+            self.app.poll_file_dialog(ui.ctx(), |request| show_file_dialog(request, &self.files));
             let ctx = ui.ctx().clone();
             self.file_panel(&ctx);
             self.recovery_prompt(&ctx);
@@ -429,21 +448,7 @@ mod web {
                         solidcraft_ui_egui::fonts::setup_fonts(&cc.egui_ctx);
                         let files = Rc::new(Files::default());
                         files::start(&files);
-                        let panel = files.clone();
-                        let services = Services {
-                            // Open shows the browser's files (and the computer's, from there).
-                            pick_open: Some(Box::new(move || {
-                                panel.panel.set(true);
-                                None
-                            })),
-                            // Designs are kept in the browser; everything else is downloaded.
-                            pick_save: Some(Box::new(|name: &str, exts: &[&str]| {
-                                let design = exts.contains(&solidcraft_engine::io::DESIGN_EXT);
-                                Some(format!("{}{name}", if design { files::OPFS } else { files::DOWNLOADS }))
-                            })),
-                            ..Default::default()
-                        };
-                        let mut app = SolveApp::new(Session::default(), services);
+                        let mut app = SolveApp::new(Session::default(), Services::default());
                         if let Some(p) = cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k))) {
                             app.load_prefs(&p);
                         }

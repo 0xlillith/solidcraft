@@ -40,9 +40,12 @@ impl DocSlot {
 }
 
 /// The open designs: one slot per tab; the active tab's slot is empty (its design is in the app).
-#[derive(Default)]
 pub struct Documents {
     slots: Vec<Option<DocSlot>>,
+    /// A stable id per tab, in step with `slots`; `implicit` is the one tab while `slots` is empty.
+    ids: Vec<u64>,
+    implicit: u64,
+    next_id: u64,
     pub active: usize,
     /// A tab waiting for the answer to "save changes?".
     pub closing: Option<usize>,
@@ -52,7 +55,32 @@ pub struct Documents {
     pub choice: Answer,
 }
 
+impl Default for Documents {
+    fn default() -> Self {
+        Documents { slots: Vec::new(), ids: Vec::new(), implicit: 0, next_id: 1, active: 0, closing: None, quitting: None, choice: Answer::default() }
+    }
+}
+
 impl Documents {
+    /// Forget every tab: one fresh implicit tab remains (its id is new).
+    fn reset(&mut self) {
+        *self = Documents { implicit: self.next_id, next_id: self.next_id + 1, ..Documents::default() };
+    }
+
+    fn fresh_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id - 1
+    }
+
+    /// The id of the active tab.
+    pub(crate) fn active_id(&self) -> u64 {
+        self.ids.get(self.active).copied().unwrap_or(self.implicit)
+    }
+
+    pub(crate) fn index_of(&self, id: u64) -> Option<usize> {
+        if self.ids.is_empty() { (id == self.implicit).then_some(0) } else { self.ids.iter().position(|x| *x == id) }
+    }
+
     /// Number of open designs (at least the active one).
     pub fn count(&self) -> usize {
         self.slots.len().max(1)
@@ -128,13 +156,16 @@ pub fn switch(app: &mut SolveApp, i: usize) {
 pub fn open_tab(app: &mut SolveApp, session: Session) -> Result<(), String> {
     if app.docs.slots.is_empty() {
         app.docs.slots.push(None);
+        app.docs.ids.push(app.docs.implicit);
         app.docs.active = 0;
     }
     if app.docs.slots.len() >= MAX_OPEN {
         return Err(format!("at most {MAX_OPEN} designs can be open"));
     }
     let at = app.docs.active + 1;
+    let id = app.docs.fresh_id();
     app.docs.slots.insert(at, Some(DocSlot::new(session)));
+    app.docs.ids.insert(at, id);
     switch(app, at);
     app.fit_view();
     Ok(())
@@ -208,7 +239,7 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
         app.cam = Camera::default();
         app.fit_view();
         put_view(app, DocView::default());
-        app.docs = Documents::default();
+        app.docs.reset();
         app.home.open = true;
         return;
     }
@@ -218,6 +249,7 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
         switch(app, next);
     }
     app.docs.slots.remove(i);
+    app.docs.ids.remove(i);
     if app.docs.active > i {
         app.docs.active -= 1;
     }
@@ -227,6 +259,9 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
 /// design with unsaved changes, then sets `app.quit_requested` for the host to close the window.
 /// Cancel, or a Save that didn't save, stays open.
 pub fn request_quit(app: &mut SolveApp) {
+    if app.file_dialog_open() {
+        return;
+    }
     if app.docs.quitting.is_none() {
         app.docs.quitting = Some(Vec::new());
     }
@@ -236,7 +271,7 @@ pub fn request_quit(app: &mut SolveApp) {
 /// Ask about the next design with unsaved changes, or quit when none is left.
 fn quit_step(app: &mut SolveApp) {
     let Some(skip) = app.docs.quitting.clone() else { return };
-    if app.docs.closing.is_some() {
+    if app.docs.closing.is_some() || app.file_dialog_open() {
         return;
     }
     match (0..app.docs.count()).find(|i| !skip.contains(i) && dirty(app, *i)) {
@@ -532,23 +567,34 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// After Save: close the tab, or quit once it is saved; a cancelled picker or a failed save stays open.
+fn finish_save(app: &mut SolveApp) {
+    let saved = !app.session.is_dirty();
+    if app.docs.quitting.is_some() {
+        if !saved {
+            app.docs.quitting = None;
+        }
+    } else if saved {
+        close(app, app.docs.active, true);
+    }
+    quit_step(app);
+}
+
 /// Act on the "save changes?" answer (also the control channel's `ui.documents {answer}`).
 pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
     let Some(i) = app.docs.closing else { return };
     app.docs.choice = Answer::Save;
     match answer {
         Answer::Save => {
+            if app.refuse_if_file_dialog_open() {
+                return;
+            }
             switch(app, i);
-            crate::toolbar::save(app);
-            let saved = !app.session.is_dirty();
             app.docs.closing = None;
-            if app.docs.quitting.is_some() {
-                // Quit only once it is saved; a cancelled picker or a failed save stays open.
-                if !saved {
-                    app.docs.quitting = None;
-                }
-            } else if saved {
-                close(app, app.docs.active, true);
+            crate::toolbar::save(app);
+            // A never-saved design asks for a path first: carry on once it is answered.
+            if !app.after_file_dialog(finish_save) {
+                finish_save(app);
             }
         }
         Answer::DontSave => {
@@ -658,9 +704,11 @@ mod tests {
     }
 
     /// Cancel, Esc's answer, or a Save that saves nothing (a never-saved design whose Save As
-    /// picker is cancelled) stay open with the changes.
+    /// picker is cancelled) stay open with the changes. A Save As picker is answered later: the
+    /// app does not quit before the answer, and a picked path saves, then quits.
     #[test]
     fn quit_cancelled_or_unsaved_stays_open() {
+        let ctx = egui::Context::default();
         let mut a = app();
         a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
         request_quit(&mut a);
@@ -669,20 +717,49 @@ mod tests {
         assert!(!a.quit_requested && a.docs.closing.is_none() && a.docs.quitting.is_none());
         assert!(a.session.is_dirty(), "the changes are still there");
 
-        // No Save As picker answer (the default services have none): not saved, so no quit.
+        // Save As is asked for and waits: no quit, no prompt, before the answer.
         request_quit(&mut a);
         answer_prompt(&mut a, Answer::Save);
-        assert!(!a.quit_requested && a.docs.quitting.is_none() && a.session.is_dirty());
+        assert!(a.file_dialog_open(), "Save As is shown");
+        assert!(!a.quit_requested && a.docs.closing.is_none() && a.docs.quitting.is_some());
+        prompt(&mut a, &ctx);
+        assert!(a.docs.closing.is_none(), "the prompt stays away while the picker is open");
+        // Quitting again while it is open does nothing.
+        request_quit(&mut a);
+        assert!(!a.quit_requested);
+        a.poll_file_dialog(&ctx, |_| Box::pin(std::future::ready(None)));
+        assert!(!a.quit_requested && a.docs.quitting.is_none() && a.session.is_dirty(), "Cancel in the picker stays open");
 
         // A picked file: saved, then quit.
         let file = std::env::temp_dir().join(format!("solidcraft-quit-saveas-{}.solidcraft", std::process::id()));
         let _ = std::fs::remove_file(&file);
         let to = file.to_string_lossy().to_string();
-        a.services.pick_save = Some(Box::new(move |_: &str, _: &[&str]| Some(to.clone())));
         request_quit(&mut a);
         answer_prompt(&mut a, Answer::Save);
+        assert!(!a.quit_requested, "not before the answer");
+        a.poll_file_dialog(&ctx, |_| Box::pin(std::future::ready(Some(to))));
         assert!(a.quit_requested && file.exists());
         let _ = std::fs::remove_file(&file);
+    }
+
+    /// Save in the prompt while another file dialog is shown: it says so and keeps the prompt,
+    /// and does not attach itself to that dialog.
+    #[test]
+    fn save_in_the_prompt_waits_for_a_shown_dialog() {
+        let ctx = egui::Context::default();
+        let mut a = app();
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        let slot = crate::file_dialog::test_support::Slot::default();
+        a.pick_open(|_, _| {});
+        a.poll_file_dialog(&ctx, |_| crate::file_dialog::test_support::manual(&slot));
+        close(&mut a, 0, false);
+        answer_prompt(&mut a, Answer::Save);
+        assert!(matches!(&a.status, Some((m, _, true)) if m == crate::file_dialog::ALREADY_OPEN));
+        assert_eq!(a.docs.closing, Some(0), "the prompt stays");
+        *slot.borrow_mut() = Some(None);
+        a.poll_file_dialog(&ctx, |_| crate::file_dialog::test_support::manual(&slot));
+        assert!(!a.file_dialog_open(), "the other dialog ended");
+        assert!(a.session.is_dirty() && a.docs.closing == Some(0), "its end did not close the tab");
     }
 
     /// #680: "Project face edges into new sketches" is a preference: it holds in new tabs, in

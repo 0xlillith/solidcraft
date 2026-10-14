@@ -30,6 +30,7 @@ pub mod dim_view;
 mod dimension_create_ui_tests;
 pub mod documents;
 pub mod drag_snap;
+pub mod file_dialog;
 pub mod fonts;
 pub mod frame;
 pub mod gizmo;
@@ -204,11 +205,9 @@ impl Default for UiState {
     }
 }
 
-/// Host services (file pickers) injected by the app so this crate stays portable.
+/// Host services injected by the app so this crate stays portable.
 #[derive(Default)]
 pub struct Services {
-    pub pick_open: Option<Box<dyn Fn() -> Option<String>>>,
-    pub pick_save: Option<Box<dyn Fn(&str, &[&str]) -> Option<String>>>,
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
     /// Where the host reads the anti-aliasing preference at start (a small JSON file).
     pub graphics_path: Option<String>,
@@ -298,6 +297,8 @@ pub struct SolveApp {
     /// The start page.
     pub home: home::HomeState,
     pub file_load: file_load::FileLoad,
+    /// The file dialog shown or waiting to be shown.
+    file_dialog: Option<file_dialog::Pending>,
     /// The other open designs (tabs).
     pub docs: documents::Documents,
     /// The language the installed font fallback chain is ordered for (`fonts::fallback_order`);
@@ -360,6 +361,7 @@ impl SolveApp {
             pending_fit: None,
             home: home::HomeState::default(),
             file_load: file_load::FileLoad::default(),
+            file_dialog: None,
             docs: documents::Documents::default(),
             applied_fonts_language: "en".into(),
         }
@@ -585,15 +587,12 @@ impl SolveApp {
         self.tool = None;
         self.home.open = false;
         if matches!(id, "sketch.insert_dxf" | "sketch.insert_svg") {
-            if let Some(path) = self.services.pick_open.as_ref().and_then(|f| f()) {
-                let _ = self.run(id, json!({"path": path}));
-            }
+            let id = id.to_string();
+            self.pick_open(move |app, path| drop(app.run(&id, json!({"path": path}))));
             return;
         }
         if matches!(id, "file.insert_step" | "file.insert_mesh") {
-            if let Some(p) = self.services.pick_open.as_ref().and_then(|f| f()) {
-                self.insert_path_async(&p);
-            }
+            self.pick_open(|app, p| app.insert_path_async(&p));
             return;
         }
         if !sketch_tools::start_hook(self, id) {
