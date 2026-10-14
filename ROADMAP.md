@@ -59,6 +59,18 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 | M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Ordered typed configuration rules, atomic validation and structured rule editing: done. Component appearance and certified semantic face style columns, atomic preview/apply and independent-copy remapping: done. Exact constructed sketch-side and immutable imported-face lineage now preserve legacy names and reject retargeting. Left: ambiguous shifted/two-sided caps | in progress | 4 |
 | M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solidcraft/12"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solidcraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
 
+## Physical material data
+
+- Physical material card validation (#923/#922) provides typed SI mechanical and
+  thermal data, per-property sources/conditions and isotropic/orthotropic stability
+  checks through read-only `material.properties.validate`. It does not assign or
+  persist properties, provide a solver or enable rendering; see
+  [the contract and staged follow-ups](docs/physical-material-cards.md).
+
+- Directional elasticity (#994) queries the validated card in material-local axes
+  through read-only `material.properties.directional`, with source/condition review.
+  It does not assign body frames, predict structural behavior or enable a solver.
+
 ## Library foundations (#785, #786, #787)
 
 - Proposed phases cover offline bundled/project/user packs, physical materials and
@@ -71,24 +83,32 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
-- Combined integration is tracked in #842, with the first local scalar library in
-  #846. See [phase boundaries and validation gates](docs/render-integration.md).
-  Texture mapping and HDRI/PBR remain coordinated renderer follow-ups.
+- Combined integration is tracked in #842, with independent scalar libraries in
+  #863 and richer PBR/material-card transport in #1086. See [phase boundaries and validation gates](docs/render-integration.md).
+  Async file-dialog integration (#1114), material-card UI (#1094), texture mapping
+  and HDRI lighting remain explicit follow-ups.
 
 - R4a adds bounded CPU product-image jobs, cancellation and atomic PNG export through
   engine commands, the Render panel, CLI and persistent MCP. Immutable captures and
   results stay outside persistence/undo; native workers and cooperative browser tasks
   share the same work protocol. See [jobs, limits and export](docs/render-jobs.md).
 
-- R3 adds the integrated Render workspace, an overlay-free product scene with existing
-  world placements/appearances, runtime GPU viewport capabilities and named camera/background
-  controls. Raster transparency remains an approximation; HDRI/PBR and optional
-  engines are later phases. See [the workspace contract](docs/render-workspace.md).
+- R3 adds an overlay-free product scene and the integrated Render workspace, with
+  runtime GPU host capabilities, per-document drafts and named camera/background
+  controls. Design keeps its camera and drawing policy. Raster transparency remains
+  approximate; PBR and environments are later slices. See
+  [workspace and scene contracts](docs/render-workspace.md).
 
-- R2 adds bounded named render setups, versioned persistence and `render.settings.get/set`.
-  Proven render-only changes preserve evaluated/stale geometry and prepared world data,
-  including undo/redo and checkpoint restore. No render workspace or new image output is
-  enabled; see [settings and refresh policy](docs/render-settings.md).
+- R2 adds bounded named render setups in document format 20 and the read/save
+  `render.settings.get/set` commands. Proven render-only changes preserve geometry
+  and prepared world data through undo/redo and checkpoint restore. This slice does
+  not add a Render workspace, PBR, environments or image jobs; see
+  [settings and refresh policy](docs/render-settings.md).
+
+- The initial opaque surface numerical contract for #1004 provides bounded linear
+  color/metallic/roughness/IOR admission and an original tested direct-light BRDF.
+  It does not enable PBR rendering or change stored appearances. See
+  [the model, evidence and remaining consumer gates](docs/render-surface.md).
 
 - A bounded cooperative Radiance RGBE input utility is available in L1 render;
   it does not yet enable HDRI/PBR rendering or a document import command. See
@@ -166,6 +186,13 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   Crash Reports…) with a reviewed issue draft; agents read them through
   `diagnostics.crash_reports`, the MCP `crash_reports` tool or the CLI. Nothing is sent
   anywhere. See [crash reports](docs/crash-reports.md).
+- Command scripts from designs (#886): `timeline.export_script` (CLI `solidcraft-cli script`)
+  writes a design's history as a script that `eval` and `run` replay into the same design —
+  user parameters, units, sheet metal and plastic rules and materials as their own commands,
+  then each feature through `timeline.add` with its ids, names and dimension parameters kept,
+  so every feature kind replays exactly and a failing feature fails the same way. Trimming the
+  script after a step gives the design at that step. Appearances, folders, views and
+  configurations are listed as left out; components and joints are not supported yet.
 
 ## 0.2.0 release batch
 
@@ -289,8 +316,12 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   Sweeps along 3D sketch curves follow their polyline (smooth walls when the path is smooth).
 - Extend intersects exact ellipses and rational/high-degree splines without moving the line or
   circular support. Associative free-form offsets have a whole-span 0.002 mm normal-distance
-  certificate and refine within bounded node limits while retaining existing IDs. Singular,
-  self-intersecting and ambiguous curves refuse atomically; mixed junctions and nonsmooth
+  certificate and refine within bounded node limits while retaining existing IDs.
+  At the node limit, geometric certificate subdivisions accommodate unequal spline parameter
+  speeds without changing stored nodes or relaxing the distance tolerance (#971).
+  Associated offset fit nodes stay hidden from display, picking and snapping; dragging the
+  editable source updates the derived boundary live. Break Association restores point editing.
+  Singular, self-intersecting and ambiguous curves refuse atomically; mixed junctions and nonsmooth
   closed natural-spline seams remain limitations. New explicitly closed fit splines and closed
   offset outputs use periodic C2 interpolation, supporting repeated certified offsets; older
   natural splines are preserved. Clicking the starting fit point deliberately closes a new loop.

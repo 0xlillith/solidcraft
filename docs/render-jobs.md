@@ -34,7 +34,9 @@ camera changes and tab switches do not mutate the snapshot. An image continues t
 describe that captured scene; the UI labels a revision mismatch conservatively (view
 cache invalidation can also advance a revision). Runtime state is outside the document,
 undo, checkpoints and the design format. Closing/replacing a session cancels its work;
-the worker cannot publish a cancelled frame. `replace: true` cancels retained active
+the worker cannot publish a cancelled frame. Direct host-side document replacement
+preserves the installed image service while allocating fresh job ownership; old IDs
+and completed images never cross into the new document. `replace: true` cancels retained active
 and pending jobs before submitting the new request. A cancelled generation cannot
 publish late. A successful older generation never replaces a newer successful result.
 
@@ -77,7 +79,9 @@ render dependency. No external render engine or third-party art is introduced.
 ## Export and automation
 
 `render.export` takes `job`, `path` ending in `.png`, and `overwrite` (default false).
-Native no-clobber export writes/syncs a temporary beside the target and publishes it
+The destination is checked against the caller's existing file-access scope before
+reading the retained frame or calling either native writer. Disallowed folders and
+traversal are refused in both overwrite modes. Native no-clobber export writes/syncs a temporary beside the target and publishes it
 with an atomic hard link; an existing destination wins even in a race. Filesystems
 without that operation return an error. Explicit overwrite uses the existing atomic
 writer without reading or backing up the previous target. Failed writes preserve the completed
@@ -86,7 +90,9 @@ no filesystem paths or base64 payloads are persisted in the design.
 
 The Render panel provides Check Render Request, Start Render, phase progress,
 Cancel Render and Export PNG. Replace existing file is an explicit opt-in. A failed or
-cancelled new render leaves the previous successful export available.
+cancelled new render leaves the previous successful export available. Image controls
+and phase messages use stable offline catalog IDs in English, Japanese, Chinese,
+German and Korean; command IDs and scenario handles remain unchanged.
 
 ```sh
 solidcraft-cli render examples/render-studio.json --out product.png --width 800 --height 600
