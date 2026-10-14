@@ -14,6 +14,7 @@ mod parallel;
 mod split;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::Arc;
 
 use mt::EuclideanSpace as _;
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,9 @@ const MAX_BODIES: usize = 10_000;
 /// Most product occurrences and mapped representations visited (a shared sub-assembly used
 /// twice at every level would otherwise grow exponentially).
 const MAX_VISITS: usize = 100_000;
+/// Most representation entries walked while deciding which items are converted exactly once. A
+/// larger file keeps every conversion instead of paying for the walk.
+const MAX_CLOSURE_WORK: usize = 1 << 16;
 
 /// A body read from a STEP file.
 #[derive(Clone, Debug)]
@@ -216,6 +220,10 @@ fn rigid_inverse(m: &mt::Matrix4) -> mt::Matrix4 {
     m.invert().unwrap_or_else(mt::Matrix4::identity)
 }
 
+/// One converted representation item: the truck solid, whether its shells are closed, the
+/// faces the file had, and the file face of each kernel face (band faces split into two).
+type SolidEntry = (mt::Solid, bool, usize, Vec<u64>);
+
 struct Reader<'a> {
     ex: &'a Exchange,
     units: HashMap<u64, Units>,
@@ -234,8 +242,12 @@ struct Reader<'a> {
     colors: HashMap<u64, [f32; 3]>,
     /// Opacity of styled items with a transparency (1 = opaque).
     opacity: HashMap<u64, f32>,
-    /// Converted items (brep id → solid, or the error).
-    solids: HashMap<u64, std::result::Result<(mt::Solid, bool, usize, Vec<u64>), String>>,
+    /// Converted items (brep id → entry, or the error). Held behind `Arc` so the conversion is
+    /// handed on without copying wherever the file cannot ask for the item a second time.
+    solids: HashMap<u64, std::result::Result<Arc<SolidEntry>, String>>,
+    /// Items the file converts exactly once (see `index`): keeping their solids would hold a
+    /// second copy of the whole import for nothing.
+    once: HashSet<u64>,
     used_items: HashSet<u64>,
     /// Items already instanced for the product being read.
     node_items: HashSet<u64>,
@@ -245,6 +257,12 @@ struct Reader<'a> {
     unmeshed_checked: HashSet<u64>,
     bodies: Vec<ImportedBody>,
     workers: usize,
+    /// Whoever waits for the import (progress, Cancel).
+    watch: Option<Arc<dyn crate::watch::Watch>>,
+    /// Solid items in the file, the measure of the conversion's progress.
+    solid_items: usize,
+    /// The watch cancelled the import: the walk stops and the import fails.
+    cancelled: bool,
 }
 
 impl<'a> Reader<'a> {
@@ -261,13 +279,32 @@ impl<'a> Reader<'a> {
             colors: HashMap::new(),
             opacity: HashMap::new(),
             solids: HashMap::new(),
+            once: HashSet::new(),
             used_items: HashSet::new(),
             node_items: HashSet::new(),
             visits: 0,
             unmeshed_checked: HashSet::new(),
             bodies: Vec::new(),
             workers,
+            watch: None,
+            solid_items: 0,
+            cancelled: false,
         }
+    }
+
+    /// Report progress; true once the import is cancelled (the walk then unwinds).
+    fn stop(&mut self) -> bool {
+        if self.cancelled {
+            return true;
+        }
+        if let Some(w) = &self.watch {
+            if w.cancelled() {
+                self.cancelled = true;
+                return true;
+            }
+            w.progress("converting", self.bodies.len().min(self.solid_items), self.solid_items);
+        }
+        false
     }
 
     fn warn(&mut self, msg: impl Into<String>) {
@@ -280,11 +317,22 @@ impl<'a> Reader<'a> {
         let mut sdrs: Vec<(u64, u64)> = Vec::new(); // (PDS, rep)
         let mut cdsrs: Vec<(u64, u64)> = Vec::new(); // (relationship, PDS)
         let mut nauos: Vec<(u64, u64, u64)> = Vec::new(); // (id, parent, child)
+        // Item → how many shape representations list it, and the one representation the item
+        // comes from, to tell items the file converts exactly once (see `once`).
+        let mut item_reps: HashMap<u64, usize> = HashMap::new();
+        let mut item_rep: HashMap<u64, u64> = HashMap::new();
+        // True as soon as the file can walk a product definition twice: every occurrence of a
+        // component makes the reader convert the component's items again.
+        let mut repeated = false;
         let mut ids: Vec<&u64> = ex.entities.keys().collect();
         ids.sort();
         for &id in ids {
             let Some(e) = ex.get(id) else { continue };
             if let Some(r) = representation(e) {
+                for item in &r.0 {
+                    *item_reps.entry(*item).or_default() += 1;
+                    item_rep.entry(*item).or_insert(id);
+                }
                 self.reps.insert(id, r);
             }
             let p = e.params();
@@ -301,11 +349,13 @@ impl<'a> Reader<'a> {
                     }
                 }
                 "CONTEXT_DEPENDENT_SHAPE_REPRESENTATION" => {
+                    repeated = true;
                     if let (Some(r), Some(d)) = (rf(0), rf(1)) {
                         cdsrs.push((r, d));
                     }
                 }
                 "NEXT_ASSEMBLY_USAGE_OCCURRENCE" | "ASSEMBLY_COMPONENT_USAGE" | "SPECIFIED_HIGHER_USAGE_OCCURRENCE" => {
+                    repeated = true;
                     if let (Some(a), Some(b)) = (rf(3), rf(4)) {
                         nauos.push((id, a, b));
                     }
@@ -342,6 +392,52 @@ impl<'a> Reader<'a> {
         for (id, parent, child) in nauos {
             if parent != child {
                 self.children.entry(parent).or_default().push(id);
+            }
+        }
+        // A file without component occurrences walks each product definition once, so a
+        // representation reached from exactly one of them is walked once too. The walk follows
+        // MAPPED_ITEM targets as the reader does: a mapping in one product can walk a
+        // representation a second time from another product's node. An item that only one such
+        // walk lists is converted exactly once and needs no cache entry; anything else keeps
+        // every conversion, as before. A file too large to walk cheaply keeps every conversion
+        // as well.
+        if !repeated {
+            let mut entries: HashMap<u64, usize> = HashMap::new();
+            let mut seen: HashSet<u64> = HashSet::new();
+            let mut queue: Vec<u64> = Vec::new();
+            let mut work = 0usize;
+            let mut within_budget = true;
+            'pds: for reps in self.pd_reps.values() {
+                seen.clear();
+                queue.clear();
+                queue.extend(self.rep_closure(reps));
+                while let Some(r) = queue.pop() {
+                    if !seen.insert(r) {
+                        continue;
+                    }
+                    work += 1;
+                    if work > MAX_CLOSURE_WORK {
+                        within_budget = false;
+                        break 'pds;
+                    }
+                    *entries.entry(r).or_default() += 1;
+                    for item in self.reps.get(&r).map(|x| &x.0).into_iter().flatten() {
+                        queue.extend(self.mapped_targets(*item));
+                    }
+                }
+            }
+            if within_budget {
+                let mut once = HashSet::new();
+                for (&item, &n) in &item_reps {
+                    if n != 1 {
+                        continue;
+                    }
+                    let Some(rep) = item_rep.get(&item) else { continue };
+                    if entries.get(rep).copied() == Some(1) {
+                        once.insert(item);
+                    }
+                }
+                self.once = once;
             }
         }
     }
@@ -448,7 +544,20 @@ impl<'a> Reader<'a> {
         seen
     }
 
-    fn item_solid(&mut self, item: u64, u: Units) -> Option<(mt::Solid, bool, usize, Vec<u64>)> {
+    /// Representations a MAPPED_ITEM walks (empty for any other item).
+    fn mapped_targets(&self, item: u64) -> Vec<u64> {
+        let Some(e) = self.ex.get(item).filter(|e| e.name() == "MAPPED_ITEM") else { return Vec::new() };
+        let mapped = e
+            .params()
+            .get(1)
+            .and_then(Param::as_ref_id)
+            .and_then(|map| self.ex.get(map))
+            .and_then(|map| map.params().get(1))
+            .and_then(Param::as_ref_id);
+        mapped.map(|rep| self.rep_closure(&[rep])).unwrap_or_default()
+    }
+
+    fn item_solid(&mut self, item: u64, u: Units) -> Option<Arc<SolidEntry>> {
         if let Some(r) = self.solids.get(&item) {
             return r.as_ref().ok().cloned();
         }
@@ -471,8 +580,13 @@ impl<'a> Reader<'a> {
                 Err(msg)
             }
         };
-        self.solids.insert(item, r.clone());
-        r.ok()
+        let entry = r.map(Arc::new);
+        // An item the file converts exactly once hands its only reference on and keeps no copy;
+        // anything it may ask for again keeps its conversion.
+        if !self.once.contains(&item) {
+            self.solids.insert(item, entry.clone());
+        }
+        entry.ok()
     }
 
     fn label(&self, item: u64) -> String {
@@ -494,6 +608,9 @@ impl<'a> Reader<'a> {
         let u = self.units_of(rep);
         let mut items = self.reps.get(&rep).map(|r| r.0.clone()).unwrap_or_default().into_iter().peekable();
         while let Some(item) = items.next() {
+            if self.stop() {
+                return;
+            }
             let Some(e) = self.ex.get(item) else { continue };
             match e.name() {
                 "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS" | "FACETED_BREP" | "SHELL_BASED_SURFACE_MODEL" => {
@@ -523,7 +640,14 @@ impl<'a> Reader<'a> {
                             self.warn(format!("more than {MAX_BODIES} bodies: the rest are left out"));
                             return;
                         }
-                        let Some((solid, closed, file_faces, face_origin)) = self.item_solid(item, u) else { continue };
+                        let Some(entry) = self.item_solid(item, u) else { continue };
+                        // A one-use item is the only reference to its entry, so the solid moves
+                        // out; an item whose conversion is cached for a later instance needs its
+                        // own copy.
+                        let (solid, closed, file_faces, face_origin) = match Arc::try_unwrap(entry) {
+                            Ok(entry) => entry,
+                            Err(shared) => (*shared).clone(),
+                        };
                         sources.push((item, closed, file_faces, face_origin));
                         solids.push(parallel::Job { solid, check_mesh: !self.unmeshed_checked.contains(&item) });
                     }
@@ -652,6 +776,9 @@ impl<'a> Reader<'a> {
     fn node(&mut self, pd: u64, local: mt::Matrix4, world: mt::Matrix4, path: &[String], depth: usize, stack: &mut Vec<u64>) -> StepNode {
         let name = self.product_name(pd);
         let mut node = StepNode { name: name.clone(), transform: to_array(&local), bodies: Vec::new(), children: Vec::new() };
+        if self.stop() {
+            return node;
+        }
         if depth > MAX_ASSEMBLY_DEPTH || stack.contains(&pd) {
             self.warn("assembly nested too deeply or recursive: some components were left out");
             return node;
@@ -836,30 +963,51 @@ pub fn step_validate(text: &str) -> std::result::Result<usize, String> {
     Ok(n)
 }
 
+/// A recent import: held weakly, so it lives only as long as someone uses it (the command that
+/// read the file, until the timeline has evaluated it), and strongly only when it is small.
+struct Recent {
+    key: (u64, usize),
+    import: std::sync::Weak<StepImport>,
+    /// Keeps a small import alive (never read).
+    _small: Option<Arc<StepImport>>,
+}
+
 /// Recent imports, so a file read for a command and then evaluated in the timeline is only
 /// read once.
-static RECENT: std::sync::Mutex<Vec<(u64, usize, std::sync::Arc<StepImport>)>> = std::sync::Mutex::new(Vec::new());
+static RECENT: std::sync::Mutex<Vec<Recent>> = std::sync::Mutex::new(Vec::new());
 
-/// [`step_import`] through a small cache of recent results (keyed by the text).
+/// Files up to this size stay cached after their last user is gone (a few cheap re-reads
+/// saved); a larger import is freed with the design that holds it.
+const KEEP_SMALL_BYTES: usize = 1 << 20;
+
+/// [`step_import`] through a small cache of recent results (keyed by the text). Keep the result
+/// while the same text is still to be read elsewhere (in the timeline): that read reuses it.
 pub fn step_import_shared(text: &str) -> Result<std::sync::Arc<StepImport>> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
     let key = (h.finish(), text.len());
     if let Ok(cache) = RECENT.lock()
-        && let Some((_, _, imp)) = cache.iter().find(|(k, n, _)| (*k, *n) == key)
+        && let Some(imp) = cache.iter().filter(|r| r.key == key).find_map(|r| r.import.upgrade())
     {
-        return Ok(imp.clone());
+        return Ok(imp);
     }
     let imp = std::sync::Arc::new(step_import(text)?);
     if let Ok(mut cache) = RECENT.lock() {
-        cache.retain(|(k, n, _)| (*k, *n) != key);
-        cache.push((key.0, key.1, imp.clone()));
-        if cache.len() > 4 {
+        cache.retain(|r| r.key != key && r.import.strong_count() > 0);
+        let small = (text.len() <= KEEP_SMALL_BYTES).then(|| imp.clone());
+        cache.push(Recent { key, import: Arc::downgrade(&imp), _small: small });
+        while cache.len() > 4 {
             cache.remove(0);
         }
     }
     Ok(imp)
+}
+
+/// Imports the cache still holds alive, and how many STEP bytes they came from (tests and
+/// diagnostics: a closed design must not leave its import behind).
+pub fn step_cache_alive() -> (usize, usize) {
+    RECENT.lock().map(|c| c.iter().filter(|r| r.import.strong_count() > 0).fold((0, 0), |(n, b), r| (n + 1, b + r.key.1))).unwrap_or((0, 0))
 }
 
 /// Read a STEP file: its solids (as bodies, placed by the assembly structure) and the tree.
@@ -868,8 +1016,20 @@ pub fn step_import(text: &str) -> Result<StepImport> {
 }
 
 fn step_import_with_workers(text: &str, workers: usize) -> Result<StepImport> {
-    let ex = p21::parse(text).map_err(KernelError::Invalid)?;
+    let watch = crate::watch::current();
+    let cancelled = || watch.as_ref().is_some_and(|w| w.cancelled());
+    let ex = match p21::parse(text) {
+        Ok(ex) => ex,
+        Err(_) if cancelled() => return Err(crate::watch::cancelled_error("STEP import")),
+        Err(e) => return Err(KernelError::Invalid(e)),
+    };
     let mut rd = Reader::new(&ex, workers);
+    rd.solid_items = ex
+        .entities
+        .values()
+        .filter(|e| matches!(e.name(), "MANIFOLD_SOLID_BREP" | "BREP_WITH_VOIDS" | "FACETED_BREP" | "SHELL_BASED_SURFACE_MODEL"))
+        .count();
+    rd.watch = watch.clone();
     rd.index();
     // Roots: product definitions that are nobody's component.
     let child_pds: HashSet<u64> =
@@ -908,6 +1068,10 @@ fn step_import_with_workers(text: &str, workers: usize) -> Result<StepImport> {
         if !bodies.is_empty() {
             tree.push(StepNode { name: "Import".into(), transform: to_array(&identity), bodies, children: Vec::new() });
         }
+    }
+    // Cancelled: what was read so far is dropped here, not cached.
+    if rd.cancelled || cancelled() {
+        return Err(crate::watch::cancelled_error("STEP import"));
     }
     if let Some(first) = ex.duplicates.first() {
         rd.warn(format!("{} entity ids are defined twice (first #{first}); the first definitions were used", ex.duplicates.len()));

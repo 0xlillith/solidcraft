@@ -147,3 +147,105 @@ fn inch_live_lengths_use_design_units_and_typed_four_digits_commit_in_inches() {
     let sk = &st.sketch(h.app.session.active_sketch.unwrap()).unwrap().sketch;
     assert!(sk.constraints.iter().any(|c| c.kind.value().is_some_and(|v| (v - 31.3563).abs() < 1e-6)));
 }
+
+/// A conic's fullness is a typed value as well as a drag. The Rho box takes the keyboard once
+/// the chord is down, shows the parabola the command would otherwise default to, and the value
+/// typed into it reaches the command when the apex is placed.
+#[test]
+fn a_typed_rho_shapes_the_conic_whose_apex_is_placed_next() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.step(&json!({"start": "sketch.conic"})).unwrap();
+    h.step(&json!({"click": {"world": [0, 0, 0]}})).unwrap();
+    h.step(&json!({"move": {"world": [40, 0, 0]}})).unwrap();
+    // One point down is a chord with one end: there is no shape to put a number on yet.
+    assert!(h.app.tool.as_ref().unwrap().dims.is_empty());
+    h.step(&json!({"click": {"world": [40, 0, 0]}})).unwrap();
+    h.step(&json!({"move": {"world": [20, 20, 0]}})).unwrap();
+    assert_focus(&h, 0);
+    let dims = &h.app.tool.as_ref().unwrap().dims;
+    assert_eq!(dims.iter().map(|d| d.label).collect::<Vec<_>>(), ["Rho"]);
+    assert_eq!(dims[0].value, "0.5", "the live box reads as a ratio, not as a rounded count");
+    assert!(!dims[0].locked);
+
+    type_value(&mut h, "0.8");
+    assert!(h.app.tool.as_ref().unwrap().dims[0].locked);
+    h.step(&json!({"key": "Enter"})).unwrap();
+
+    let state = h.app.session.world_state();
+    let sketch = &state.sketch(h.app.session.active_sketch.unwrap()).unwrap().sketch;
+    let (apex, rho) = sketch
+        .curves
+        .iter()
+        .find_map(|curve| match curve.kind {
+            solidcraft_engine::sketch::CurveKind::Conic { apex, rho, .. } => Some((apex, rho)),
+            _ => None,
+        })
+        .expect("the typed value placed a conic");
+    assert!((rho - 0.8).abs() < 1e-9, "typed rho reached the command: {rho}");
+    // The apex lands where the cursor was, within the pixel the cursor was converted through.
+    assert!(sketch.point(apex).unwrap().dist(solidcraft_engine::geom::Vec2::new(20.0, 20.0)) < 0.5, "{:?}", sketch.point(apex));
+}
+
+/// A rho the command would refuse stays in its box to be corrected, and places nothing.
+#[test]
+fn a_rho_outside_zero_to_one_is_refused_before_it_reaches_the_command() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.step(&json!({"start": "sketch.conic"})).unwrap();
+    h.step(&json!({"click": {"world": [0, 0, 0]}})).unwrap();
+    h.step(&json!({"click": {"world": [40, 0, 0]}})).unwrap();
+    h.step(&json!({"move": {"world": [20, 20, 0]}})).unwrap();
+    type_value(&mut h, "5");
+    h.step(&json!({"key": "Enter"})).unwrap();
+
+    let state = h.app.session.world_state();
+    let sketch = &state.sketch(h.app.session.active_sketch.unwrap()).unwrap().sketch;
+    assert!(sketch.curves.is_empty(), "a refused rho must place nothing");
+    let tool = h.app.tool.as_ref().expect("the tool stays active for a correction");
+    assert_eq!(tool.pts.len(), 2, "the chord stays down");
+    assert_eq!(tool.dims.iter().map(|d| d.value.as_str()).collect::<Vec<_>>(), ["5"], "the refused value stays in its box");
+    assert!(h.app.status.as_ref().is_some_and(|(_, _, error)| *error), "the refusal is reported");
+}
+
+/// Rounded Rectangle (#891): typed width, height and corner radius make one profile whose
+/// size is the typed overall size; the radius stays its own parameter.
+#[test]
+fn rounded_rectangle_takes_typed_width_height_and_radius() {
+    let mut h = drawing("sketch.rectangle.rounded");
+    assert_eq!(h.app.tool.as_ref().unwrap().dims.iter().map(|d| d.label).collect::<Vec<_>>(), ["Width", "Height", "Radius"]);
+    type_value(&mut h, "30");
+    tab(&mut h, false);
+    type_value(&mut h, "16");
+    tab(&mut h, false);
+    assert_focus(&h, 2);
+    type_value(&mut h, "4");
+    let undo = h.app.session.undo.len();
+    h.step(&json!({"key": "Enter"})).unwrap();
+    let state = h.app.session.world_state();
+    let sketch = state.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+    let kinds: Vec<_> = sketch.sketch.curves.iter().map(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Arc { .. })).collect();
+    assert_eq!(kinds.iter().filter(|arc| **arc).count(), 4, "four corner arcs");
+    assert_eq!(kinds.len(), 8);
+    assert_eq!(sketch.profiles.len(), 1);
+    let want = 30.0 * 16.0 - (4.0 - std::f64::consts::PI) * 16.0;
+    assert!((sketch.profiles[0].area - want).abs() < 1e-6, "area {} want {want}", sketch.profiles[0].area);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "one undo step");
+}
+
+/// Without a typed radius the corners get a fifth of the shorter side.
+#[test]
+fn rounded_rectangle_clicks_use_a_default_radius() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.step(&json!({"start": "sketch.rectangle.rounded"})).unwrap();
+    h.step(&json!({"click": {"sketch": [0, 0]}})).unwrap();
+    h.step(&json!({"click": {"sketch": [40, 20]}})).unwrap();
+    let state = h.app.session.world_state();
+    let sketch = state.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+    assert_eq!(sketch.profiles.len(), 1, "{:?}", h.app.status);
+    let (w, hh) = (40.0, 20.0);
+    let r: f64 = 0.2 * 20.0;
+    let want = w * hh - (4.0 - std::f64::consts::PI) * r * r;
+    assert!((sketch.profiles[0].area - want).abs() < 0.05 * want, "area {} want about {want}", sketch.profiles[0].area);
+}

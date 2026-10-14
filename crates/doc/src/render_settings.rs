@@ -174,6 +174,11 @@ mod tests {
         let mut loaded = Document::from_json(&json.to_string()).unwrap();
         assert!(loaded.render.is_empty());
         assert_eq!(loaded.format, crate::format::format_string(crate::format::FORMAT));
+        // Upstream owns 19 for editable offsets; saved render intent needs 20.
+        for version in [17, 18, 19] {
+            json["format"] = serde_json::json!(crate::format::format_string(version));
+            assert_eq!(Document::from_json(&json.to_string()).unwrap(), loaded);
+        }
         let before = loaded.clone();
         let setup = RenderSetup {
             backend: serde_json::from_value(serde_json::json!("future-backend")).unwrap(),
@@ -186,6 +191,9 @@ mod tests {
         Arc::make_mut(&mut loaded.render).setups.insert("Studio".into(), setup);
         assert!(loaded.differs_only_in_render(&before));
         assert_eq!(Document::from_json(&loaded.to_json()).unwrap(), loaded);
+        let mut previous_draft = serde_json::to_value(&loaded).unwrap();
+        previous_draft["format"] = serde_json::json!("solidcraft/17");
+        assert_eq!(Document::from_json(&previous_draft.to_string()).unwrap(), loaded);
         loaded.units = "in".into();
         assert!(!loaded.differs_only_in_render(&before));
     }

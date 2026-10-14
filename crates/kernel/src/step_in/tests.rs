@@ -461,8 +461,9 @@ fn hand_written_part_in_inches_with_colour() {
     assert_eq!(imp.tree[0].name, "Widget");
 }
 
-#[test]
-fn hand_written_assembly() {
+/// A cube part (in cm) placed twice in a millimetre assembly: the file asks one brep item for
+/// two bodies.
+fn two_instance_assembly() -> String {
     let mut t = String::from(HEAD);
     t += "#8=PRODUCT_DEFINITION_CONTEXT('part definition',#9,'design');\n#9=APPLICATION_CONTEXT('');\n";
     t += &cube_entities();
@@ -489,6 +490,12 @@ fn hand_written_assembly() {
         t += &format!("#{}=CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{},#{});\n", n + 4, n + 3, n + 1);
     }
     t += TAIL;
+    t
+}
+
+#[test]
+fn hand_written_assembly() {
+    let t = two_instance_assembly();
     let imp = step_import(&t).unwrap();
     assert_same_import(&step_import_with_workers(&t, 1).unwrap(), &step_import_with_workers(&t, 8).unwrap());
     let expanded = t.replace("(#101,#65)", "(#101,#2000,#2001,#2002,#2003,#65)");
@@ -514,6 +521,43 @@ fn hand_written_assembly() {
     assert!(root.children.iter().all(|c| c.name == "Block" && c.bodies.len() == 1));
     assert_eq!(imp.bodies[1].path, vec!["Assembly".to_string(), "Block".to_string()]);
     assert!((root.children[1].transform[3][0] - 100.0).abs() < 1e-9);
+}
+
+/// The import keeps a conversion only where the file can ask for the item again. A flat file of
+/// separate solids converts each item exactly once (no second copy of the whole import is held);
+/// an assembly that instances one item keeps it, and each instance still gets geometry of its
+/// own. Both files import to the same bodies either way.
+#[test]
+fn repeated_items_are_shared_and_one_use_items_are_not() {
+    let a = box_solid(Vec3::ZERO, Vec3::new(10.0, 10.0, 10.0)).unwrap();
+    let b = box_solid(Vec3::new(20.0, 0.0, 0.0), Vec3::new(30.0, 10.0, 10.0)).unwrap();
+    let flat = step_export(&[&a, &b], "test").unwrap();
+    let ex = p21::parse(&flat).unwrap();
+    let mut rd = Reader::new(&ex, 1);
+    rd.index();
+    assert_eq!(rd.once.len(), 2, "each solid of a flat file is converted once");
+    let imp = step_import(&flat).unwrap();
+    assert_eq!(imp.bodies.len(), 2);
+    assert!(imp.bodies.iter().all(|b| b.closed));
+    let vol: f64 = imp.bodies.iter().map(|b| measure(&b.body).unwrap().volume).sum();
+    assert!(rel(vol, 2000.0) < 1e-6, "{vol}");
+
+    let assembly = two_instance_assembly();
+    let ex = p21::parse(&assembly).unwrap();
+    let mut rd = Reader::new(&ex, 1);
+    rd.index();
+    assert!(rd.once.is_empty(), "an assembly may convert an item again for the second instance");
+    let imp = step_import(&assembly).unwrap();
+    assert_eq!(imp.bodies.len(), 2);
+    assert!(imp.bodies.iter().all(|b| b.name == "Cube" && b.closed));
+    let boxes: Vec<_> = imp.bodies.iter().map(|b| measure(&b.body).unwrap()).collect();
+    for m in &boxes {
+        assert!(rel(m.volume, 1000.0) < 1e-9, "{}", m.volume);
+    }
+    // Each instance owns its placed geometry: the two bodies are not one shared solid.
+    assert!(!imp.bodies[0].body.same(&imp.bodies[1].body));
+    // The two instances sit at their own placements, so the second conversion was not skipped.
+    assert!(boxes[1].bbox.min.dist(Vec3::new(90.0, 0.0, 0.0)) < 1e-6, "{:?}", boxes[1].bbox);
 }
 
 #[test]
@@ -870,4 +914,120 @@ fn faces_with_too_many_bounds_are_refused() {
     let imp = step_import(&text).unwrap();
     assert!(imp.warnings.iter().any(|w| w.contains("boundary loops")), "{:?}", imp.warnings);
     assert!(start.elapsed() < std::time::Duration::from_secs(10), "took {:?}", start.elapsed());
+}
+
+/// A board-like assembly for issue #883: `SOLIDCRAFT_STEP_PCB_FIXTURE=path` writes it (with
+/// `SOLIDCRAFT_STEP_PCB_COMPONENTS` and `SOLIDCRAFT_STEP_PCB_PINS`; 600 and 15 give 52 MB). Every component is
+/// its own product with a package body and its own pins (nothing shared), the worst case for
+/// a large import.
+#[test]
+#[ignore = "manual fixture generator for large STEP imports"]
+fn generate_board_assembly_fixture() {
+    use crate::step_out::{ExportBody, ExportProduct, StepHeader, step_export_products};
+    let count: usize = solidcraft_geom::env::var("STEP_PCB_COMPONENTS").map(|s| s.parse().unwrap()).unwrap_or(500);
+    let pins: usize = solidcraft_geom::env::var("STEP_PCB_PINS").map(|s| s.parse().unwrap()).unwrap_or(16);
+    let mut owned: Vec<Vec<Body>> = Vec::new();
+    for c in 0..count {
+        let w = 4.0 + (c % 7) as f64 * 0.37;
+        let d = 3.0 + (c % 5) as f64 * 0.29;
+        let mut bodies = vec![fillet_box(w, d, 1.2 + (c % 3) as f64 * 0.1)];
+        for p in 0..pins {
+            let side = if p % 2 == 0 { -0.6 } else { d + 0.6 };
+            let x = 0.3 + (p / 2) as f64 * (w - 0.6) / (pins / 2).max(1) as f64 + c as f64 * 1e-4;
+            bodies.push(cylinder(Vec3::new(x, side, -1.5), Vec3::Z, 0.25, 2.0 + (p % 3) as f64 * 0.01).unwrap());
+        }
+        owned.push(bodies);
+    }
+    let mut products: Vec<ExportProduct> = owned
+        .iter()
+        .enumerate()
+        .map(|(c, bodies)| ExportProduct {
+            name: format!("U{c}"),
+            bodies: bodies.iter().enumerate().map(|(k, b)| ExportBody { name: format!("U{c}_{k}"), body: b, color: Some([0.2, 0.2, 0.2]) }).collect(),
+            children: Vec::new(),
+        })
+        .collect();
+    let side = (count as f64).sqrt().ceil() as usize;
+    let children = (0..count)
+        .map(|c| {
+            let (x, y) = ((c % side) as f64 * 12.0, (c / side) as f64 * 10.0);
+            (c, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [x, y, 1.6, 1.0]], format!("U{c}"))
+        })
+        .collect();
+    products.push(ExportProduct { name: "Board".into(), bodies: Vec::new(), children });
+    let root = products.len() - 1;
+    let text = step_export_products(&products, root, &StepHeader { file_name: "board.step".into(), ..Default::default() }).unwrap();
+    let path = solidcraft_geom::env::var("STEP_PCB_FIXTURE").unwrap_or_else(|| "board.step".into());
+    std::fs::write(&path, &text).unwrap();
+    println!("wrote {path}: {} bytes, {} components", text.len(), count);
+}
+
+fn fillet_box(w: f64, d: f64, h: f64) -> Body {
+    let b = box_solid(Vec3::ZERO, Vec3::new(w, d, h)).unwrap();
+    let vertical = [Vec3::new(0.0, 0.0, h / 2.0), Vec3::new(w, 0.0, h / 2.0), Vec3::new(w, d, h / 2.0), Vec3::new(0.0, d, h / 2.0)];
+    let top = [Vec3::new(w / 2.0, 0.0, h), Vec3::new(w, d / 2.0, h), Vec3::new(w / 2.0, d, h), Vec3::new(0.0, d / 2.0, h)];
+    let b = fillet(&b, &vertical, 0.3).unwrap_or(b);
+    fillet(&b, &top, 0.1).unwrap_or(b)
+}
+
+/// Independent boxes as one STEP file (about 3 KB a box).
+fn boxes_step(count: usize, name: &str) -> String {
+    let bodies: Vec<_> = (0..count)
+        .map(|i| {
+            let at = Vec3::new((i % 32) as f64 * 12.0, (i / 32) as f64 * 12.0, 0.0);
+            box_solid(at, at + Vec3::new(10.0, 10.0, 10.0)).unwrap()
+        })
+        .collect();
+    step_export(&bodies.iter().collect::<Vec<_>>(), name).unwrap()
+}
+
+struct TestWatch {
+    cancel_after: usize,
+    reports: std::sync::atomic::AtomicUsize,
+    last: std::sync::Mutex<(&'static str, usize, usize)>,
+}
+
+impl crate::watch::Watch for TestWatch {
+    fn cancelled(&self) -> bool {
+        self.reports.load(std::sync::atomic::Ordering::Relaxed) >= self.cancel_after
+    }
+    fn progress(&self, stage: &'static str, done: usize, total: usize) {
+        self.reports.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *self.last.lock().unwrap() = (stage, done, total);
+    }
+}
+
+#[test]
+fn watched_import_reports_progress_and_stops_on_cancel_without_caching() {
+    let text = boxes_step(40, "watched import");
+    let watch = Arc::new(TestWatch { cancel_after: usize::MAX, reports: Default::default(), last: std::sync::Mutex::new(("", 0, 0)) });
+    let imp = crate::watch::watching(watch.clone(), || step_import(&text)).unwrap();
+    assert_eq!(imp.bodies.len(), 40);
+    let (stage, done, total) = *watch.last.lock().unwrap();
+    assert_eq!((stage, total), ("converting", 40));
+    assert!(done <= total && watch.reports.load(std::sync::atomic::Ordering::Relaxed) > 1);
+
+    // Cancelled part way: an error, no partial result, and nothing cached for the text.
+    let text = boxes_step(41, "cancelled import");
+    let watch = Arc::new(TestWatch { cancel_after: 3, reports: Default::default(), last: std::sync::Mutex::new(("", 0, 0)) });
+    let err = crate::watch::watching(watch.clone(), || step_import_shared(&text).map(|_| ())).unwrap_err();
+    assert!(err.to_string().contains("cancelled"), "{err}");
+    let (_, done, _) = *watch.last.lock().unwrap();
+    assert!(done < 41, "stopped before converting everything ({done})");
+    // Unwatched, the same text imports in full (no cached failure or partial import).
+    assert_eq!(step_import_shared(&text).unwrap().bodies.len(), 41);
+    // Without a watch nothing is reported or stopped.
+    assert_eq!(step_import(&boxes_step(2, "unwatched")).unwrap().bodies.len(), 2);
+}
+
+#[test]
+fn large_imports_are_freed_with_their_last_user() {
+    let text = boxes_step(400, "large shared import");
+    assert!(text.len() > KEEP_SMALL_BYTES, "{} bytes", text.len());
+    let first = step_import_shared(&text).unwrap();
+    let again = step_import_shared(&text).unwrap();
+    assert!(Arc::ptr_eq(&first, &again), "read once while it is in use");
+    let weak = Arc::downgrade(&first);
+    drop((first, again));
+    assert!(weak.upgrade().is_none(), "the cache must not keep a large import alive after its design is gone");
 }

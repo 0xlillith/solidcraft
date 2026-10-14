@@ -34,11 +34,17 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sheet.convert", "Convert to Sheet Metal", convert)
         .at("SHEET METAL", "CREATE")
         .icon("convert_sheet")
-        .params("body; face: [x,y,z] on its large flat face (a plate of even thickness); rule?"),
+        .params(
+            "body; face: [x,y,z] on its large flat face (a plate of even thickness); rule?; \
+             bends?: [[x,y,z] on sharp edges] (a solid or a shelled body: `face` is the fixed face and the flat faces reached from it \
+             across these edges become the sheet; a shell keeps its thickness, a solid takes the rule's inward; \
+             edges between two of those faces that are no bends are cut open with the rule's gap)",
+        ),
     CommandSpec::new("sheet.manage_rules", "Sheet Metal Rules", rules).at("SHEET METAL", "MODIFY").icon("sheet_rules").params(
         "name (new or existing); thickness?, k_factor?, bend_radius?, relief_width?, relief_depth?, corner_relief?, hem_gap?, gap? (expressions; `Thickness` is the rule's; \
          gap: between flanges that meet at a corner, whose ends are closed toward each other at any angle); \
-         corner_relief_shape?: notch|round|rectangular (what is cut where two bends meet at a corner of the base, `corner_relief` across; default notch); \
+         corner_relief_shape?: notch|round|rectangular|tear (what is cut where two bends meet at a corner of the base: round and rectangular a relief \
+         `corner_relief` across; tear none, each bend's end is cut straight from the corner to its flange's end; default notch); \
          active?: bool; delete?: bool",
     ),
     CommandSpec::new("sheet.rules", "List Sheet Metal Rules", list_rules).noundo().doc_only().params("→ rules with their expressions and values, and the active one"),
@@ -272,8 +278,17 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, format!("no body `{body}`")));
     }
     let face = p.get("face").and_then(vec3).ok_or_else(|| bad(cmd, "`face` must be a point [x, y, z] on the plate's face"))?;
+    // With bend edges, a solid or shelled body; without, a plate.
+    let bends = match p.get("bends") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(_) => points(p, "bends", cmd)?,
+    };
+    // Such a sheet's values are its rule's (a plate's thickness is the plate's own).
+    if let Some(key) = RULE_ONLY.iter().find(|k| !bends.is_empty() && p.get(**k).is_some()) {
+        return Err(bad(cmd, format!("`{key}` is not a sheet.convert parameter: the sheet metal rule sets it. Pass a rule's name as `rule`")));
+    }
     let rule = rule_param(s, p, cmd)?;
-    add_feature(s, p, FeatureKind::SheetConvert { body, face, rule })
+    add_feature(s, p, FeatureKind::SheetConvert { body, face, rule, bends })
 }
 
 fn rules(s: &mut Session, p: &Value) -> Result<Value> {
@@ -309,7 +324,7 @@ fn rules(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(shape) = p.get("corner_relief_shape").filter(|v| !v.is_null()) {
         let shape = shape.as_str().and_then(solidcraft_doc::sheet::ReliefShape::parse);
-        rule.corner_relief_shape = shape.ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round or rectangular"))?.name().into();
+        rule.corner_relief_shape = shape.ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular or tear"))?.name().into();
     }
     let (vals, _) = s.doc.param_values();
     let values = s.doc.rule_values(&vals, &rule).map_err(|e| bad(cmd, e.to_string()))?;
@@ -421,9 +436,17 @@ fn flat_json(sh: &SheetBody) -> Result<Value> {
             "side": side, "depth_mm": p.z1-p.z0, "z0_mm": p.z0, "z1_mm": p.z1})
         })
         .collect();
-    Ok(
-        json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "cutout_shapes": hole_shapes, "pockets": pockets, "bends": bends, "unfolded": sh.flat}),
-    )
+    // Holes drilled along a panel into its rim: drilled after cutting, not in the outline.
+    let bores: Vec<Value> = sh
+        .bores
+        .iter()
+        .map(|b| json!({"start": [b.base.x, b.base.y, b.base.z], "axis": [b.axis.x, b.axis.y, b.axis.z], "diameter": b.radius * 2.0, "length": b.height.abs()}))
+        .collect();
+    let mut out = json!({"body": sh.body, "rule": sh.rule, "thickness": sh.t, "k_factor": sh.k, "flat_size_mm": [w, h, sh.t], "outline": outline, "cutouts": holes, "cutout_shapes": hole_shapes, "pockets": pockets, "bends": bends, "unfolded": sh.flat});
+    if !bores.is_empty() {
+        out["bores"] = Value::Array(bores);
+    }
+    Ok(out)
 }
 
 fn flat_pattern(s: &mut Session, p: &Value) -> Result<Value> {
@@ -599,3 +622,7 @@ fn export_bend_table(s: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(test)]
 #[path = "sheet_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "sheet_convert_tests.rs"]
+mod convert_tests;

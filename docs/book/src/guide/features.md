@@ -18,6 +18,11 @@ Extruding into existing material selects **Cut**. In an empty component it selec
 choose **New Body** explicitly to keep an addition separate. Changing the default does not alter
 operations already saved in a design.
 
+A taper slopes the sides of any profile, sketch text included: lines, arcs and spline or conic
+curves move in or out together, and a flat tip shorter than the taper closes to a point. A
+taper steeper than the profile's details (a stroke, a curve or a gap narrower than it) is
+refused with that reason; a smaller taper or distance builds.
+
 Editing an extrusion retains its signed distances, From/To Object inputs, taper expressions
 and explicit body targets. Revolve edits retain world, sketch and explicit-line axes, both
 angle expressions and To Object targets. An unchanged **All profiles** selection continues
@@ -52,9 +57,31 @@ unsupported. A new Emboss without an explicit face infers a unique eligible supp
 select the face when the target is ambiguous. Older saved features without a face retain their
 planar placement.
 
+A **Hole** with **Single** placement drills where you pick a planar face. A pick on or near a
+point of a shown sketch that lies on that face, such as a circle's centre, places the hole
+exactly at that point, as **Multiple** placement picks it; **Select Other** (press and hold) also
+offers the face where you clicked. The corners of text outlines don't count, nor do projected
+points while the sketch hides projected geometry. The hole keeps that place on the face; to have
+holes follow later edits of the sketch, place them with **Multiple**.
+
 Fillets and chamfers handle straight edges between planar faces, whole smooth loops, runs of
 neighbouring edges with mitred or spherical corners, and closed chains of curved edges (a rolling
 ball). See the roadmap's known limitations for the rest.
+
+**Curvature (G2)** in the Fillet dialog's **Radius Type** blends straight edges between two
+planar faces with an exact quintic section. The tangent plane and curvature match each side
+face: curvature goes to zero at both contact rails, unlike a circular G1 fillet. Each end
+must meet one planar face perpendicular to the edge. Curved edges/faces, sloped or multi-face
+ends, and intersecting corner blends are not supported; they return an error, not a G1 fallback.
+**Equivalent Radius** sets the same contact setback as a circular fillet (for a right angle,
+setback equals the entered value); it is not a constant curvature radius. Reduce/Taper to Fit
+are unavailable for this type.
+
+Scripts and MCP use the same command, for example on a 20 mm box:
+```json
+{"command": "solid.fillet", "params": {"edges": [[20, 0, 10]], "radius": 2, "type": "curvature"}}
+```
+`type: "g2"` is an alias. Existing fillets still default to circular, constant-radius G1 blends.
 
 Feature references to faces and edges are stored by name, so an upstream edit that moves geometry
 keeps them on the right face (see [Persistent naming](../dev/naming.md)). When a reference can't

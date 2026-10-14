@@ -10,11 +10,31 @@ use std::sync::{
 };
 
 /// Shared between the worker evaluating a design and the window showing its progress.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Progress {
     cancelled: AtomicBool,
     done: AtomicUsize,
     total: AtomicUsize,
+    /// The feature the evaluation waits at until cancelled ([`Progress::hold_at`]).
+    hold: AtomicUsize,
+    /// Long work inside one feature (reading a large STEP file): its step and how far it is.
+    work_stage: std::sync::Mutex<&'static str>,
+    work_done: AtomicUsize,
+    work_total: AtomicUsize,
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Progress {
+            cancelled: AtomicBool::new(false),
+            done: AtomicUsize::new(0),
+            total: AtomicUsize::new(0),
+            hold: AtomicUsize::new(usize::MAX),
+            work_stage: std::sync::Mutex::new(""),
+            work_done: AtomicUsize::new(0),
+            work_total: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl Progress {
@@ -25,9 +45,37 @@ impl Progress {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
     }
+    /// Make the watched evaluation wait before feature `index` until it is cancelled: tests
+    /// use it to act while a load is certainly still running, whatever the machine's speed.
+    pub fn hold_at(&self, index: usize) {
+        self.hold.store(index, Ordering::Relaxed);
+    }
     /// Features evaluated so far and the timeline's length (0 before evaluation starts).
     pub fn features(&self) -> (usize, usize) {
         (self.done.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed))
+    }
+    /// Long work inside a feature, such as reading a large STEP file: (step, done, total);
+    /// `None` while there is none to show.
+    pub fn work(&self) -> Option<(&'static str, usize, usize)> {
+        let total = self.work_total.load(Ordering::Relaxed);
+        let stage = self.work_stage.lock().map(|s| *s).unwrap_or("");
+        (total > 0 && !stage.is_empty()).then(|| (stage, self.work_done.load(Ordering::Relaxed).min(total), total))
+    }
+}
+
+/// The kernel's long work (STEP import) reports to the same progress and stops on Cancel.
+struct KernelWatch(Arc<Progress>);
+
+impl solidcraft_kernel::watch::Watch for KernelWatch {
+    fn cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+    fn progress(&self, stage: &'static str, done: usize, total: usize) {
+        if let Ok(mut s) = self.0.work_stage.lock() {
+            *s = stage;
+        }
+        self.0.work_total.store(total, Ordering::Relaxed);
+        self.0.work_done.store(done, Ordering::Relaxed);
     }
 }
 
@@ -43,6 +91,7 @@ thread_local! {
 
 /// Run `f` with `progress` watching every evaluation it makes on this thread.
 pub fn watch<R>(progress: Arc<Progress>, f: impl FnOnce() -> R) -> R {
+    let kernel = Arc::new(KernelWatch(progress.clone()));
     let previous = CURRENT.with(|c| c.replace(Some(Current { progress, depth: 0 })));
     struct Restore(Option<Option<Current>>);
     impl Drop for Restore {
@@ -53,7 +102,7 @@ pub fn watch<R>(progress: Arc<Progress>, f: impl FnOnce() -> R) -> R {
         }
     }
     let _restore = Restore(Some(previous));
-    f()
+    solidcraft_kernel::watch::watching(kernel, f)
 }
 
 /// Entered at the start of an evaluation; the guard leaves it.
@@ -85,6 +134,12 @@ impl Evaluation {
             let Some(cur) = c.as_ref() else { return false };
             if self.outer {
                 cur.progress.done.store(index, Ordering::Relaxed);
+                while index == cur.progress.hold.load(Ordering::Relaxed) && !cur.progress.is_cancelled() {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    #[cfg(target_arch = "wasm32")]
+                    std::hint::spin_loop();
+                }
             }
             cur.progress.is_cancelled()
         })

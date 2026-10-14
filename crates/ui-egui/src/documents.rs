@@ -48,6 +48,8 @@ pub struct Documents {
     pub closing: Option<usize>,
     /// Quitting: the tabs answered so far with Don't Save (`None`: not quitting).
     pub quitting: Option<Vec<usize>>,
+    /// The "save changes?" button the arrow keys have picked; Enter gives it.
+    pub choice: Answer,
 }
 
 impl Documents {
@@ -78,6 +80,7 @@ fn put_view(app: &mut SolveApp, v: DocView) {
 /// Put `slot` into the app and return what was there.
 fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     // Whatever was going on in the design leaves with it.
+    crate::sketch_text_move::cancel_drag(app);
     crate::dialogs::cancel(app);
     crate::dim_view::cancel();
     app.tool = None;
@@ -98,6 +101,8 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
         view: take_view(app),
     };
     put_view(app, slot.view);
+    // Preferences the session holds go with the user, not the tab (#680).
+    app.session.auto_project = out.session.auto_project;
     // Views cache by revision: the incoming design must not look unchanged.
     app.session.invalidate_view(out_rev);
     app.ui.tab = if app.session.active_sketch.is_some() { "SKETCH".into() } else { "SOLID".into() };
@@ -150,7 +155,7 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
         app.tool = None;
         app.menu.props = None;
         crate::sketch_attachment_ui::clear(app);
-        app.session = session;
+        app.session.replace_design(session);
         app.sketch_choices = crate::sketch_families::Choices::default();
         app.session.invalidate_view(rev);
         app.cam = Camera::default();
@@ -194,10 +199,11 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
     app.docs.closing = None;
     if n <= 1 {
         // The last design: a blank one takes its place.
+        crate::sketch_text_move::cancel_drag(app);
         let rev = app.session.revision;
         crate::dialogs::cancel(app);
         app.tool = None;
-        app.session = Session::default();
+        app.session.replace_design(Session::default());
         app.session.revision = rev + 1;
         app.cam = Camera::default();
         app.fit_view();
@@ -392,7 +398,7 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         }
         ui.painter().text(mr.center(), egui::Align2::CENTER_CENTER, format!("»{}", n - shown), FontId::proportional(12.0), t.app_bar_text);
         let id = egui::Id::new("sc_doc_more");
-        if mresp.clone().on_hover_text("All open designs").clicked() {
+        if mresp.clone().on_hover_text(crate::i18n::tr_label("All open designs")).clicked() {
             ui.ctx().data_mut(|d| d.insert_temp(id, !d.get_temp::<bool>(id).unwrap_or(false)));
         }
         if ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false)) {
@@ -458,8 +464,9 @@ pub fn layout(n: usize, active: usize, room: f32) -> (usize, usize, f32) {
 }
 
 /// What "save changes?" was answered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Answer {
+    #[default]
     Save,
     DontSave,
     Cancel,
@@ -473,6 +480,28 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     let name = tabs_info(app).get(i).map(|x| x.0.clone()).unwrap_or_default();
     let name_display = if name == "Untitled" { crate::i18n::tr("ui.untitled") } else { &name };
     let mut answer: Option<Answer> = None;
+    // Left and Right move between the buttons (Save is picked first); Enter gives the picked one.
+    let order = [Answer::Save, Answer::DontSave, Answer::Cancel];
+    let (left, right, enter) = ctx.input_mut(|x| {
+        (
+            x.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
+            x.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight),
+            x.consume_key(egui::Modifiers::NONE, egui::Key::Enter),
+        )
+    });
+    let at = order.iter().position(|a| *a == app.docs.choice).unwrap_or(0);
+    let at = if left {
+        at.saturating_sub(1)
+    } else if right {
+        (at + 1).min(order.len() - 1)
+    } else {
+        at
+    };
+    let choice = order.get(at).copied().unwrap_or_default();
+    app.docs.choice = choice;
+    if enter {
+        answer = Some(choice);
+    }
     let title = crate::i18n::format("document.save_changes", &[("name", name_display)]);
     crate::frame::window(ctx, title, crate::frame::Width::Normal)
         .id(egui::Id::new("sc_close_prompt"))
@@ -483,13 +512,13 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
             ui.label(crate::i18n::format("document.unsaved_changes", &[("name", name_display)]));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(crate::i18n::tr("ui.save")).clicked() {
+                if ui.add(egui::Button::new(crate::i18n::tr("ui.save")).selected(choice == Answer::Save)).clicked() {
                     answer = Some(Answer::Save);
                 }
-                if ui.button(crate::i18n::tr("ui.don_t_save")).clicked() {
+                if ui.add(egui::Button::new(crate::i18n::tr("ui.don_t_save")).selected(choice == Answer::DontSave)).clicked() {
                     answer = Some(Answer::DontSave);
                 }
-                if ui.button(crate::i18n::tr("ui.cancel")).clicked() {
+                if ui.add(egui::Button::new(crate::i18n::tr("ui.cancel")).selected(choice == Answer::Cancel)).clicked() {
                     answer = Some(Answer::Cancel);
                 }
             });
@@ -506,6 +535,7 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
 /// Act on the "save changes?" answer (also the control channel's `ui.documents {answer}`).
 pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
     let Some(i) = app.docs.closing else { return };
+    app.docs.choice = Answer::Save;
     match answer {
         Answer::Save => {
             switch(app, i);
@@ -653,6 +683,34 @@ mod tests {
         answer_prompt(&mut a, Answer::Save);
         assert!(a.quit_requested && file.exists());
         let _ = std::fs::remove_file(&file);
+    }
+
+    /// #680: "Project face edges into new sketches" is a preference: it holds in new tabs, in
+    /// the tab switched to, in a design adopted over a blank one and after the last tab closes,
+    /// and it is what the preferences file keeps.
+    #[test]
+    fn auto_project_follows_the_user_across_tabs() {
+        let mut a = app();
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        a.run("sketch.auto_project", json!({"value": false})).unwrap();
+        new_design(&mut a);
+        assert_eq!(a.docs.count(), 2);
+        assert!(!a.session.auto_project, "a new tab");
+        a.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+        a.run("sketch.auto_project", json!({"value": true})).unwrap();
+        switch(&mut a, 0);
+        assert!(a.session.auto_project, "the tab switched to");
+        a.run("sketch.auto_project", json!({"value": false})).unwrap();
+        switch(&mut a, 1);
+        assert!(!a.session.auto_project);
+        let prefs: Value = serde_json::from_str(&a.prefs()).unwrap();
+        assert_eq!(prefs["auto_project"], false);
+        close(&mut a, 1, true);
+        close(&mut a, 0, true);
+        assert!(active_is_blank(&a) && !a.session.auto_project, "after the last tab closes");
+        adopt(&mut a, Session::default());
+        assert_eq!(a.docs.count(), 1);
+        assert!(!a.session.auto_project, "a design adopted over a blank one");
     }
 
     /// A design built elsewhere replaces a blank one and gets a tab otherwise.

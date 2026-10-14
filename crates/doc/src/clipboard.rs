@@ -47,19 +47,22 @@ impl FeatureKind {
                 }
             }
             FeatureKind::Extrude { sketch, .. }
+            | FeatureKind::SurfaceExtrude { sketch, .. }
+            | FeatureKind::SurfaceRevolve { sketch, .. }
             | FeatureKind::Revolve { sketch, .. }
             | FeatureKind::Emboss { sketch, .. }
             | FeatureKind::SheetBase { sketch, .. }
             | FeatureKind::SheetContour { sketch, .. }
             | FeatureKind::Rib { sketch, .. } => sk(sketch),
             FeatureKind::Patch { sketch: Some(s), .. } => sk(s),
-            FeatureKind::Sweep { sketch, path_sketch, .. } => {
+            FeatureKind::Sweep { sketch, path_sketch, .. } | FeatureKind::SurfaceSweep { sketch, path_sketch, .. } => {
                 sk(sketch);
                 sk(path_sketch);
             }
             FeatureKind::Pipe { path_sketch, .. } => sk(path_sketch),
             FeatureKind::SheetFold { sketch: Some(s), .. } => sk(s),
             FeatureKind::Loft { sections, .. } => sections.iter_mut().for_each(|s| sk(&mut s.sketch)),
+            FeatureKind::SurfaceLoft { sections } => sections.iter_mut().for_each(|s| sk(&mut s.sketch)),
             FeatureKind::Hole { points: Some(p), .. } => sk(&mut p.sketch),
             FeatureKind::Pattern { features, pattern, .. } => {
                 feats(features);
@@ -243,6 +246,92 @@ fn remap_link(
     }
 }
 
+impl FeatureKind {
+    /// Point the body names a feature acts on (targets, tools, the body it rounds…) at the
+    /// copies in `bodies`; names not in the map stay as they are.
+    pub fn remap_bodies(&mut self, bodies: &BTreeMap<String, String>) {
+        use FeatureKind as K;
+        match self {
+            K::Emboss { face: Some(face), .. } => mapped_name(&mut face.body, bodies),
+            K::Split { tool: Some(tool), .. } | K::SplitFace { tool: Some(tool), .. } | K::SurfaceTrim { tool: Some(tool), .. } => {
+                mapped_name(&mut tool.body, bodies)
+            }
+            _ => {}
+        }
+        match self {
+            K::Extrude { targets, .. }
+            | K::Revolve { targets, .. }
+            | K::Loft { targets, .. }
+            | K::Sweep { targets, .. }
+            | K::Pipe { targets, .. }
+            | K::Emboss { targets, .. } => {
+                for n in targets {
+                    mapped_name(n, bodies);
+                }
+            }
+            K::Combine { target, tools, .. } => {
+                mapped_name(target, bodies);
+                for n in tools {
+                    mapped_name(n, bodies);
+                }
+            }
+            K::Pattern { bodies: list, .. }
+            | K::Mirror { bodies: list, .. }
+            | K::Scale { bodies: list, .. }
+            | K::BoundingSolid { bodies: list, .. }
+            | K::Align { bodies: list, .. }
+            | K::Remove { bodies: list }
+            | K::Stitch { bodies: list, .. }
+            | K::Move { bodies: list, .. }
+            | K::BodyTransfer { bodies: list, .. } => {
+                for n in list {
+                    mapped_name(n, bodies);
+                }
+            }
+            K::Thicken { bodies: list, targets, .. } => {
+                for n in list.iter_mut().chain(targets) {
+                    mapped_name(n, bodies);
+                }
+            }
+            K::BoundaryFill { tools, .. } => {
+                for n in tools {
+                    mapped_name(n, bodies);
+                }
+            }
+            K::Fillet { body, .. }
+            | K::Chamfer { body, .. }
+            | K::Shell { body, .. }
+            | K::Draft { body, .. }
+            | K::SplitFace { body, .. }
+            | K::OffsetFace { body, .. }
+            | K::DeleteFace { body, .. }
+            | K::SurfaceOffset { body, .. }
+            | K::ReplaceFace { body, .. }
+            | K::SheetFlange { body, .. }
+            | K::SheetHem { body, .. }
+            | K::SheetFold { body, .. }
+            | K::SheetUnfold { body, .. }
+            | K::Boss { body, .. }
+            | K::Lip { body, .. }
+            | K::SnapFit { body, .. }
+            | K::Rest { body, .. }
+            | K::Patch { body, .. } => {
+                if let Some(n) = body {
+                    mapped_name(n, bodies);
+                }
+            }
+            K::Split { body, .. }
+            | K::SheetConvert { body, .. }
+            | K::SurfaceExtend { body, .. }
+            | K::SurfaceTrim { body, .. }
+            | K::Unstitch { body, .. }
+            | K::ReverseNormal { body, .. }
+            | K::MeshConvert { body, .. } => mapped_name(body, bodies),
+            _ => {}
+        }
+    }
+}
+
 impl crate::Feature {
     /// Clone identities through typed reference fields. Sketch-local entity IDs stay local.
     pub fn remap_clone(
@@ -298,81 +387,7 @@ impl crate::Feature {
         for e in self.kind.point_expr_mut().into_iter().flatten() {
             *e = clone_expression(e, parameters);
         }
-        match &mut self.kind {
-            K::Emboss { face: Some(face), .. } => mapped_name(&mut face.body, bodies),
-            K::Split { tool: Some(tool), .. } | K::SplitFace { tool: Some(tool), .. } | K::SurfaceTrim { tool: Some(tool), .. } => {
-                mapped_name(&mut tool.body, bodies)
-            }
-            _ => {}
-        }
-        match &mut self.kind {
-            K::Extrude { targets, .. }
-            | K::Revolve { targets, .. }
-            | K::Loft { targets, .. }
-            | K::Sweep { targets, .. }
-            | K::Pipe { targets, .. }
-            | K::Emboss { targets, .. } => {
-                for n in targets {
-                    mapped_name(n, bodies);
-                }
-            }
-            K::Combine { target, tools, .. } => {
-                mapped_name(target, bodies);
-                for n in tools {
-                    mapped_name(n, bodies);
-                }
-            }
-            K::Pattern { bodies: list, .. }
-            | K::Mirror { bodies: list, .. }
-            | K::Scale { bodies: list, .. }
-            | K::BoundingSolid { bodies: list, .. }
-            | K::Align { bodies: list, .. }
-            | K::Remove { bodies: list }
-            | K::Stitch { bodies: list, .. }
-            | K::Move { bodies: list, .. }
-            | K::BodyTransfer { bodies: list, .. } => {
-                for n in list {
-                    mapped_name(n, bodies);
-                }
-            }
-            K::Thicken { bodies: list, targets, .. } => {
-                for n in list.iter_mut().chain(targets) {
-                    mapped_name(n, bodies);
-                }
-            }
-            K::BoundaryFill { tools, .. } => {
-                for n in tools {
-                    mapped_name(n, bodies);
-                }
-            }
-            K::Fillet { body, .. }
-            | K::Chamfer { body, .. }
-            | K::Shell { body, .. }
-            | K::Draft { body, .. }
-            | K::SplitFace { body, .. }
-            | K::OffsetFace { body, .. }
-            | K::DeleteFace { body, .. }
-            | K::ReplaceFace { body, .. }
-            | K::SheetFlange { body, .. }
-            | K::SheetHem { body, .. }
-            | K::SheetFold { body, .. }
-            | K::SheetUnfold { body, .. }
-            | K::Boss { body, .. }
-            | K::Lip { body, .. }
-            | K::SnapFit { body, .. }
-            | K::Rest { body, .. }
-            | K::Patch { body, .. } => {
-                if let Some(n) = body {
-                    mapped_name(n, bodies);
-                }
-            }
-            K::Split { body, .. }
-            | K::SheetConvert { body, .. }
-            | K::SurfaceExtend { body, .. }
-            | K::SurfaceTrim { body, .. }
-            | K::MeshConvert { body, .. } => mapped_name(body, bodies),
-            _ => {}
-        }
+        self.kind.remap_bodies(bodies);
         match &mut self.kind {
             K::Sketch { plane, sketch } => {
                 remap_plane(plane, ids, names, bodies, 0)?;
@@ -383,7 +398,7 @@ impl crate::Feature {
                 }
                 for link in &mut sketch.links {
                     remap_link(&mut link.source, ids, names, bodies, 0);
-                    if let Some(n) = &mut link.face_name {
+                    for n in link.face_name.iter_mut().chain(&mut link.edge_name) {
                         *n = remap_topology(n, ids, bodies);
                     }
                 }
