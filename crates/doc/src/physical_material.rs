@@ -17,6 +17,29 @@ pub struct MaterialCard {
     pub properties: Vec<Property>,
 }
 
+/// Design-owned candidate data. Private storage prevents bypassing admission;
+/// validation does not certify sources, applicability or analysis capability.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ValidatedCard(MaterialCard);
+
+impl ValidatedCard {
+    pub fn from_value(value: &Value) -> Result<Self> {
+        Ok(Self(parse_card(value)?))
+    }
+
+    pub fn card(&self) -> &MaterialCard {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ValidatedCard {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Self::from_value(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Family {
@@ -305,6 +328,10 @@ impl MaterialCard {
 /// Bound JSON traversal before cloning/deserializing it. Metadata and numeric
 /// bounds are admission limits, not claims about a real material's valid range.
 pub fn validate_card(value: &Value) -> Result<Validation> {
+    parse_card(value)?.validate()
+}
+
+fn parse_card(value: &Value) -> Result<MaterialCard> {
     let mut pending = vec![(value, 0usize)];
     let (mut nodes, mut bytes) = (0usize, 0usize);
     while let Some((value, depth)) = pending.pop() {
@@ -345,7 +372,8 @@ pub fn validate_card(value: &Value) -> Result<Validation> {
         }
     }
     let card: MaterialCard = serde_json::from_value(value.clone()).map_err(|e| invalid(format!("material card: {e}")))?;
-    card.validate()
+    card.validate()?;
+    Ok(card)
 }
 
 #[cfg(test)]

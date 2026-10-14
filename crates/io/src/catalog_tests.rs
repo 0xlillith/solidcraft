@@ -115,7 +115,7 @@ fn design_export_deduplicates_exact_looks_and_keeps_physical_properties_distinct
     let look = ScalarLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8 }.to_look();
     doc.appearances.bodies.insert("Body1".into(), look.clone());
     doc.appearances.bodies.insert("Body2".into(), look.clone());
-    doc.user_materials.push(UserMaterial { name: "Timber density".into(), density: 0.7, appearance: Some(look) });
+    doc.user_materials.push(UserMaterial { name: "Timber density".into(), density: 0.7, appearance: Some(look), physical_card: None });
     let library = Catalog::from_document(&doc, "user.test", "Test", Provenance::default()).unwrap();
     assert_eq!(library.entries.len(), 2);
     assert!(library.entries.iter().any(|e| matches!(&e.definition,Definition::Material(m) if m.density_g_cm3==0.7)));
