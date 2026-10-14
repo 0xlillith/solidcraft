@@ -3,6 +3,61 @@ use crate::scenario::Harness;
 use solidcraft_engine::Session;
 
 #[test]
+fn control_render_export_respects_upstream_file_scope() {
+    let mut h = Harness::new();
+    let root = h.dir.join("allowed");
+    let outside = h.dir.join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let roots = json!([root.to_string_lossy()]);
+    let response = h.call("ui.workspace", json!({"workspace":"render","allow_paths":roots}));
+    assert_eq!(response["ok"], true, "{response}");
+    let response = h.call("engine.execute", json!({"command":"render.start","params":{"settings":{"width":16,"height":16}},"allow_paths":roots}));
+    assert_eq!(response["ok"], true, "{response}");
+    let job = response["result"]["job"].clone();
+    for _ in 0..50 {
+        h.frames(1);
+    }
+    assert_eq!(h.app.session.execute("render.status", &json!({"job":job})).unwrap()["progress"]["phase"], "completed");
+    for path in [outside.join("denied.png"), root.join("../outside/traversal.png")] {
+        for overwrite in [false, true] {
+            let response = h.call(
+                "engine.execute",
+                json!({"command":"render.export","params":{"job":job,"path":path,"overwrite":overwrite},"allow_paths":roots}),
+            );
+            assert_eq!(response["ok"], false, "{response}");
+            assert!(response.to_string().contains("outside the folders this agent may use"), "{response}");
+        }
+    }
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    let path = root.join("allowed.png");
+    let response = h.call("engine.execute", json!({"command":"render.export","params":{"job":job,"path":path},"allow_paths":roots}));
+    assert_eq!(response["ok"], true, "{response}");
+    assert!(path.is_file());
+    let original = std::fs::read(&path).unwrap();
+    let response = h.call("engine.execute", json!({"command":"render.export","params":{"job":job,"path":path,"overwrite":true},"allow_paths":roots}));
+    assert_eq!(response["ok"], true, "{response}");
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+#[test]
+fn adopting_into_blank_document_resets_render_draft_and_preserves_hosts() {
+    let mut h = Harness::new();
+    h.app.render_workspace.host = Some(host_executor(2048, true, 4).unwrap());
+    sync_backend(&mut h.app);
+    h.app.render_workspace.view.name = "Old draft".into();
+    enter(&mut h.app, true).unwrap();
+    let mut incoming = Session::default();
+    incoming.execute("solid.box", &json!({"length":10,"width":10,"height":10})).unwrap();
+    crate::documents::adopt(&mut h.app, incoming);
+    assert!(!active(&h.app));
+    assert_eq!(h.app.render_workspace.view.name, "Studio");
+    assert_eq!(h.app.session.render_backend().executors.len(), 3);
+    assert!(h.app.session.render_job_host().is_some());
+    assert_eq!(h.app.session.model.state().bodies.len(), 1);
+}
+
+#[test]
 fn clicked_image_controls_complete_cancel_and_export_without_dirtying_the_design() {
     for language in ["en", "de", "ko"] {
         let mut h = Harness::new();

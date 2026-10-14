@@ -79,7 +79,9 @@ render dependency. No external render engine or third-party art is introduced.
 ## Export and automation
 
 `render.export` takes `job`, `path` ending in `.png`, and `overwrite` (default false).
-Native no-clobber export writes/syncs a temporary beside the target and publishes it
+The destination is checked against the caller's existing file-access scope before
+reading the retained frame or calling either native writer. Disallowed folders and
+traversal are refused in both overwrite modes. Native no-clobber export writes/syncs a temporary beside the target and publishes it
 with an atomic hard link; an existing destination wins even in a race. Filesystems
 without that operation return an error. Explicit overwrite uses the existing atomic
 writer without reading or backing up the previous target. Failed writes preserve the completed
