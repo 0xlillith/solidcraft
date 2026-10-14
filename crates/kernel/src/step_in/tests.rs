@@ -863,6 +863,66 @@ fn glued_halves_export_as_whole_faces() {
     assert_eq!(imp.bodies[0].file_faces, 8);
 }
 
+/// A slot plate with a round on its top outline (issue #612): the extruded arc ends and the
+/// rounds along the straight edges are lone B-spline sheets, written as cylinders bounded by
+/// their faces. The rounds' sheets reach far past their edges, and a reader bounding the part by
+/// its surfaces saw a 60 mm part as 130 mm long.
+#[test]
+fn rounded_slot_exports_cylinders() {
+    use solidcraft_geom::Seg2;
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let outer = Loop2 {
+        segs: vec![
+            Seg2::Line { a: Vec2::new(10.0, -10.0), b: Vec2::new(50.0, -10.0) },
+            Seg2::Arc { center: Vec2::new(50.0, 0.0), radius: 10.0, start: -FRAC_PI_2, sweep: PI },
+            Seg2::Line { a: Vec2::new(50.0, 10.0), b: Vec2::new(10.0, 10.0) },
+            Seg2::Arc { center: Vec2::new(10.0, 0.0), radius: 10.0, start: FRAC_PI_2, sweep: PI },
+        ],
+    };
+    let plate = extrude(&Plane::XY, &[Region2 { outer, holes: vec![] }], 0.0, 4.0).unwrap().pop().unwrap();
+    let edges = [Vec3::new(30.0, -10.0, 4.0), Vec3::new(30.0, 10.0, 4.0), Vec3::new(0.0, 0.0, 4.0), Vec3::new(60.0, 0.0, 4.0)];
+    let b = fillet(&plate, &edges, 1.0).unwrap();
+    let text = step_export(&[&b], "t").unwrap();
+    assert!(!text.contains("B_SPLINE_SURFACE"), "{text}");
+    assert_eq!(text.matches("CYLINDRICAL_SURFACE(").count(), 4);
+    assert_eq!(text.matches("TOROIDAL_SURFACE(").count(), 2);
+    // No point of the file (surface placements included) lies outside the part.
+    let imp = round_trip(&b);
+    for line in text.lines().filter(|l| l.contains("CARTESIAN_POINT")) {
+        let Some(xyz) = line.split("((").nth(1).and_then(|r| r.split("))").next()) else { continue };
+        let x: f64 = xyz.split(',').next().unwrap().trim().parse().unwrap();
+        assert!((-1e-6..=60.0 + 1e-6).contains(&x), "{line}");
+    }
+    // The volume analytically: the plate less the round's corner section swept along the edges
+    // (Pappus: the section's centroid runs 0.2234 r inside the edge round the arcs).
+    let section = 1.0 - PI / 4.0;
+    let centroid = (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI));
+    let want = (800.0 + PI * 100.0) * 4.0 - section * (80.0 + std::f64::consts::TAU * (10.0 - centroid));
+    assert!(rel(measure(&imp.bodies[0].body).unwrap().volume, want) < 1e-3);
+}
+
+/// A countersink cut into a plate (issue #612): the cone is a tapered extrusion of a disc, a
+/// B-spline sheet per half, written as one CONICAL_SURFACE face (the sheets reached below the
+/// plate).
+#[test]
+fn countersink_exports_one_cone() {
+    use std::f64::consts::FRAC_PI_4;
+    let plate = box_solid(Vec3::new(-10.0, -10.0, 0.0), Vec3::new(10.0, 10.0, 4.0)).unwrap();
+    // A 90° countersink, radius 4 at the top face, down from 1 mm above it to radius 1.8, and the
+    // 2 mm drill through.
+    let disc = Region2 { outer: Loop2::circle(Vec2::ZERO, 5.0), holes: vec![] };
+    let cone = crate::extrude_tapered(&Plane::XY.offset(5.0), &disc, 3.2, -1.0, -FRAC_PI_4).unwrap();
+    let drill = cylinder(Vec3::new(0.0, 0.0, -1.0), Vec3::Z, 2.0, 6.0).unwrap();
+    let b = boolean(&boolean(&plate, &cone, BoolOp::Cut).unwrap().unwrap(), &drill, BoolOp::Cut).unwrap().unwrap();
+    let text = step_export(&[&b], "t").unwrap();
+    assert!(!text.contains("B_SPLINE_SURFACE"), "{text}");
+    assert_eq!(text.matches("CONICAL_SURFACE(").count(), 1, "{text}");
+    assert_eq!(text.matches("CYLINDRICAL_SURFACE(").count(), 1, "{text}");
+    let imp = round_trip(&b);
+    // Six box faces, the countersink and the drill.
+    assert_eq!(imp.bodies[0].file_faces, 8);
+}
+
 /// Knot multiplicities are expanded into one value each before the knot count is compared with
 /// the control points, so the sum has to be checked first: 1,000,000 knots of multiplicity 64
 /// against two control points asked for a 500 MB vector (20,000,000 for 10 GB) only to reject
@@ -914,4 +974,120 @@ fn faces_with_too_many_bounds_are_refused() {
     let imp = step_import(&text).unwrap();
     assert!(imp.warnings.iter().any(|w| w.contains("boundary loops")), "{:?}", imp.warnings);
     assert!(start.elapsed() < std::time::Duration::from_secs(10), "took {:?}", start.elapsed());
+}
+
+/// A board-like assembly for issue #883: `SOLIDCRAFT_STEP_PCB_FIXTURE=path` writes it (with
+/// `SOLIDCRAFT_STEP_PCB_COMPONENTS` and `SOLIDCRAFT_STEP_PCB_PINS`; 600 and 15 give 52 MB). Every component is
+/// its own product with a package body and its own pins (nothing shared), the worst case for
+/// a large import.
+#[test]
+#[ignore = "manual fixture generator for large STEP imports"]
+fn generate_board_assembly_fixture() {
+    use crate::step_out::{ExportBody, ExportProduct, StepHeader, step_export_products};
+    let count: usize = solidcraft_geom::env::var("STEP_PCB_COMPONENTS").map(|s| s.parse().unwrap()).unwrap_or(500);
+    let pins: usize = solidcraft_geom::env::var("STEP_PCB_PINS").map(|s| s.parse().unwrap()).unwrap_or(16);
+    let mut owned: Vec<Vec<Body>> = Vec::new();
+    for c in 0..count {
+        let w = 4.0 + (c % 7) as f64 * 0.37;
+        let d = 3.0 + (c % 5) as f64 * 0.29;
+        let mut bodies = vec![fillet_box(w, d, 1.2 + (c % 3) as f64 * 0.1)];
+        for p in 0..pins {
+            let side = if p % 2 == 0 { -0.6 } else { d + 0.6 };
+            let x = 0.3 + (p / 2) as f64 * (w - 0.6) / (pins / 2).max(1) as f64 + c as f64 * 1e-4;
+            bodies.push(cylinder(Vec3::new(x, side, -1.5), Vec3::Z, 0.25, 2.0 + (p % 3) as f64 * 0.01).unwrap());
+        }
+        owned.push(bodies);
+    }
+    let mut products: Vec<ExportProduct> = owned
+        .iter()
+        .enumerate()
+        .map(|(c, bodies)| ExportProduct {
+            name: format!("U{c}"),
+            bodies: bodies.iter().enumerate().map(|(k, b)| ExportBody { name: format!("U{c}_{k}"), body: b, color: Some([0.2, 0.2, 0.2]) }).collect(),
+            children: Vec::new(),
+        })
+        .collect();
+    let side = (count as f64).sqrt().ceil() as usize;
+    let children = (0..count)
+        .map(|c| {
+            let (x, y) = ((c % side) as f64 * 12.0, (c / side) as f64 * 10.0);
+            (c, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [x, y, 1.6, 1.0]], format!("U{c}"))
+        })
+        .collect();
+    products.push(ExportProduct { name: "Board".into(), bodies: Vec::new(), children });
+    let root = products.len() - 1;
+    let text = step_export_products(&products, root, &StepHeader { file_name: "board.step".into(), ..Default::default() }).unwrap();
+    let path = solidcraft_geom::env::var("STEP_PCB_FIXTURE").unwrap_or_else(|| "board.step".into());
+    std::fs::write(&path, &text).unwrap();
+    println!("wrote {path}: {} bytes, {} components", text.len(), count);
+}
+
+fn fillet_box(w: f64, d: f64, h: f64) -> Body {
+    let b = box_solid(Vec3::ZERO, Vec3::new(w, d, h)).unwrap();
+    let vertical = [Vec3::new(0.0, 0.0, h / 2.0), Vec3::new(w, 0.0, h / 2.0), Vec3::new(w, d, h / 2.0), Vec3::new(0.0, d, h / 2.0)];
+    let top = [Vec3::new(w / 2.0, 0.0, h), Vec3::new(w, d / 2.0, h), Vec3::new(w / 2.0, d, h), Vec3::new(0.0, d / 2.0, h)];
+    let b = fillet(&b, &vertical, 0.3).unwrap_or(b);
+    fillet(&b, &top, 0.1).unwrap_or(b)
+}
+
+/// Independent boxes as one STEP file (about 3 KB a box).
+fn boxes_step(count: usize, name: &str) -> String {
+    let bodies: Vec<_> = (0..count)
+        .map(|i| {
+            let at = Vec3::new((i % 32) as f64 * 12.0, (i / 32) as f64 * 12.0, 0.0);
+            box_solid(at, at + Vec3::new(10.0, 10.0, 10.0)).unwrap()
+        })
+        .collect();
+    step_export(&bodies.iter().collect::<Vec<_>>(), name).unwrap()
+}
+
+struct TestWatch {
+    cancel_after: usize,
+    reports: std::sync::atomic::AtomicUsize,
+    last: std::sync::Mutex<(&'static str, usize, usize)>,
+}
+
+impl crate::watch::Watch for TestWatch {
+    fn cancelled(&self) -> bool {
+        self.reports.load(std::sync::atomic::Ordering::Relaxed) >= self.cancel_after
+    }
+    fn progress(&self, stage: &'static str, done: usize, total: usize) {
+        self.reports.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *self.last.lock().unwrap() = (stage, done, total);
+    }
+}
+
+#[test]
+fn watched_import_reports_progress_and_stops_on_cancel_without_caching() {
+    let text = boxes_step(40, "watched import");
+    let watch = Arc::new(TestWatch { cancel_after: usize::MAX, reports: Default::default(), last: std::sync::Mutex::new(("", 0, 0)) });
+    let imp = crate::watch::watching(watch.clone(), || step_import(&text)).unwrap();
+    assert_eq!(imp.bodies.len(), 40);
+    let (stage, done, total) = *watch.last.lock().unwrap();
+    assert_eq!((stage, total), ("converting", 40));
+    assert!(done <= total && watch.reports.load(std::sync::atomic::Ordering::Relaxed) > 1);
+
+    // Cancelled part way: an error, no partial result, and nothing cached for the text.
+    let text = boxes_step(41, "cancelled import");
+    let watch = Arc::new(TestWatch { cancel_after: 3, reports: Default::default(), last: std::sync::Mutex::new(("", 0, 0)) });
+    let err = crate::watch::watching(watch.clone(), || step_import_shared(&text).map(|_| ())).unwrap_err();
+    assert!(err.to_string().contains("cancelled"), "{err}");
+    let (_, done, _) = *watch.last.lock().unwrap();
+    assert!(done < 41, "stopped before converting everything ({done})");
+    // Unwatched, the same text imports in full (no cached failure or partial import).
+    assert_eq!(step_import_shared(&text).unwrap().bodies.len(), 41);
+    // Without a watch nothing is reported or stopped.
+    assert_eq!(step_import(&boxes_step(2, "unwatched")).unwrap().bodies.len(), 2);
+}
+
+#[test]
+fn large_imports_are_freed_with_their_last_user() {
+    let text = boxes_step(400, "large shared import");
+    assert!(text.len() > KEEP_SMALL_BYTES, "{} bytes", text.len());
+    let first = step_import_shared(&text).unwrap();
+    let again = step_import_shared(&text).unwrap();
+    assert!(Arc::ptr_eq(&first, &again), "read once while it is in use");
+    let weak = Arc::downgrade(&first);
+    drop((first, again));
+    assert!(weak.upgrade().is_none(), "the cache must not keep a large import alive after its design is gone");
 }

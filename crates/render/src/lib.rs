@@ -9,6 +9,7 @@ mod camera;
 mod curve_display;
 pub mod lighting;
 mod raster;
+pub mod surface;
 pub mod texture_input;
 
 pub use backend::{

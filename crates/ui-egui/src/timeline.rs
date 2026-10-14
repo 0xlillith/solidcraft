@@ -1,6 +1,7 @@
 //! The timeline (bottom): features in order, the rollback marker, errors and warnings.
 
-use egui::{Color32, Rect, Sense, Stroke, UiBuilder, pos2, vec2};
+pub(crate) use crate::icons::glyphs::transport_glyph;
+use egui::{Rect, Sense, Stroke, UiBuilder, pos2, vec2};
 use serde_json::json;
 use solidcraft_engine::doc::FeatureKind;
 
@@ -14,6 +15,10 @@ pub(crate) fn icon_of(k: &FeatureKind) -> &'static str {
         FeatureKind::SurfaceExtrude { .. } => "surface_extrude",
         FeatureKind::Unstitch { .. } => "unstitch",
         FeatureKind::ReverseNormal { .. } => "reverse_normal",
+        FeatureKind::SurfaceRevolve { .. } => "surface_revolve",
+        FeatureKind::SurfaceSweep { .. } => "surface_sweep",
+        FeatureKind::SurfaceLoft { .. } => "surface_loft",
+        FeatureKind::SurfaceOffset { .. } => "surface_offset",
         FeatureKind::Revolve { .. } => "revolve",
         FeatureKind::Fillet { .. } => "fillet",
         FeatureKind::Chamfer { .. } => "chamfer",
@@ -77,6 +82,51 @@ pub(crate) fn delete_features(app: &mut SolveApp, ids: Vec<u64>) {
         let _ = app.run("timeline.delete", json!({ "features": ids }));
     } else {
         app.dialog = Some(crate::dialogs::Dialog::confirm_delete_many(ids, with.into_iter().collect(), fail.into_iter().collect()));
+    }
+}
+
+/// The selected timeline features, in timeline order.
+pub(crate) fn selected_feature_ids(app: &SolveApp) -> Vec<u64> {
+    app.session
+        .doc
+        .features
+        .iter()
+        .filter(|feature| {
+            app.session.selection.iter().any(|selection| matches!(selection, solidcraft_engine::Sel::Feature { id } if *id == feature.id))
+        })
+        .map(|feature| feature.id)
+        .collect()
+}
+
+/// What Copy in a feature's menu copies: the selected features when the right-clicked one is
+/// among them, else that feature alone.
+pub(crate) fn copy_targets(app: &SolveApp, id: u64) -> Vec<u64> {
+    let selected = selected_feature_ids(app);
+    if selected.contains(&id) { selected } else { vec![id] }
+}
+
+/// Copy and Paste in a feature's timeline menu. Paste puts the copies at the history marker.
+pub(crate) fn clipboard_buttons(app: &mut SolveApp, ui: &mut egui::Ui, id: u64) {
+    if ui.button(crate::i18n::tr_label("Copy")).clicked() {
+        let features = copy_targets(app, id);
+        let _ = app.run("timeline.copy", json!({ "features": features }));
+        ui.close();
+    }
+    if ui.add_enabled(!app.session.clipboard.is_empty(), egui::Button::new(crate::i18n::tr_label("Paste"))).clicked() {
+        let _ = app.run("timeline.paste", json!({}));
+        ui.close();
+    }
+}
+
+/// Ctrl+click on a feature: add it to the selection, or take it out.
+fn toggle_feature(app: &mut SolveApp, id: u64) {
+    let selected = selected_feature_ids(app);
+    if selected.contains(&id) {
+        let rest: Vec<_> =
+            app.session.selection.iter().filter(|s| !matches!(s, solidcraft_engine::Sel::Feature { id: f } if *f == id)).cloned().collect();
+        let _ = app.run("select.set", json!({ "items": rest }));
+    } else {
+        let _ = app.run("select.set", json!({ "items": [{"type": "feature", "id": id}], "add": true }));
     }
 }
 
@@ -225,6 +275,8 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 d.pick(&app.session, solidcraft_engine::Sel::Feature { id: *id });
                                 app.dialog = Some(d);
                             }
+                        } else if ui.input(|i| i.modifiers.command || i.modifiers.ctrl) {
+                            toggle_feature(app, *id);
                         } else {
                             let _ = app.run("select.set", json!({"items": [{"type": "feature", "id": id}]}));
                         }
@@ -265,6 +317,8 @@ pub fn timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
                             find_in_browser(app, *id);
                             ui.close();
                         }
+                        ui.separator();
+                        clipboard_buttons(app, ui, *id);
                         ui.separator();
                         if ui.button("Delete").clicked() {
                             delete_feature(app, *id);
@@ -343,23 +397,67 @@ fn find_in_browser(app: &mut SolveApp, id: u64) {
     let _ = app.run("select.set", json!({ "items": items }));
 }
 
-/// Transport buttons drawn as shapes (the UI font has no media glyphs).
-pub(crate) fn transport_glyph(p: &egui::Painter, c: egui::Pos2, what: &str, col: Color32) {
-    let tri = |dir: f32, dx: f32| {
-        let pts = vec![pos2(c.x + dx - 4.0 * dir, c.y - 5.0), pos2(c.x + dx + 4.0 * dir, c.y), pos2(c.x + dx - 4.0 * dir, c.y + 5.0)];
-        p.add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
-    };
-    let bar = |dx: f32| p.line_segment([pos2(c.x + dx, c.y - 5.0), pos2(c.x + dx, c.y + 5.0)], Stroke::new(1.6, col));
-    match what {
-        "first" => {
-            bar(-5.0);
-            tri(-1.0, 1.0);
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::scenario::Harness;
+
+    fn two_boxes(left: bool) -> Harness {
+        let mut h = Harness::new();
+        h.app.preferences.timeline_left = left;
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10, "name": "First", "body_name": "One"})).unwrap();
+        h.app
+            .run(
+                "solid.box",
+                json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "operation": "new_body", "name": "Second", "body_name": "Two"}),
+            )
+            .unwrap();
+        h.app.run("select.clear", json!({})).unwrap();
+        h.frames(4);
+        h
+    }
+
+    fn copied(h: &Harness) -> Vec<String> {
+        h.app.session.clipboard.iter().map(|f| f.name.clone()).collect()
+    }
+
+    /// Ctrl+click picks two features; Copy in the menu copies both; Paste puts copies of both at
+    /// the marker. In the bottom timeline and in the history beside the browser.
+    #[test]
+    fn the_feature_menu_copies_the_selected_features_and_pastes_them() {
+        for left in [false, true] {
+            let mut h = two_boxes(left);
+            h.step(&json!({"click": {"handle": "timeline:First"}})).unwrap();
+            h.step(&json!({"click": {"handle": "timeline:Second"}, "ctrl": true})).unwrap();
+            let first = h.app.session.doc.find_feature("First").map(|f| f.id).unwrap();
+            let second = h.app.session.doc.find_feature("Second").map(|f| f.id).unwrap();
+            assert_eq!(super::selected_feature_ids(&h.app), [first, second], "left: {left}");
+
+            h.step(&json!({"click": {"handle": "timeline:Second"}, "button": "right"})).unwrap();
+            h.step(&json!({"widget": "Copy"})).unwrap();
+            assert_eq!(copied(&h), ["First", "Second"], "left: {left}");
+
+            h.step(&json!({"click": {"handle": "timeline:Second"}, "button": "right"})).unwrap();
+            h.step(&json!({"widget": "Paste"})).unwrap();
+            assert_eq!(h.app.session.doc.features.len(), 4, "left: {left}");
+            let bodies: Vec<String> = h.app.session.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+            assert_eq!(bodies, ["One", "Two", "One (copy)", "Two (copy)"], "left: {left}");
         }
-        "back" => tri(-1.0, 0.0),
-        "forward" => tri(1.0, 0.0),
-        _ => {
-            tri(1.0, -1.0);
-            bar(5.0);
-        }
+    }
+
+    /// Copy on a feature outside the selection copies that feature alone.
+    #[test]
+    fn copy_on_an_unselected_feature_copies_only_it() {
+        let mut h = two_boxes(false);
+        h.step(&json!({"click": {"handle": "timeline:First"}})).unwrap();
+        h.step(&json!({"click": {"handle": "timeline:Second"}, "button": "right"})).unwrap();
+        h.step(&json!({"widget": "Copy"})).unwrap();
+        assert_eq!(copied(&h), ["Second"]);
+        // Ctrl+click again takes a feature back out of the selection.
+        h.step(&json!({"click": {"handle": "timeline:Second"}, "ctrl": true})).unwrap();
+        h.step(&json!({"click": {"handle": "timeline:Second"}, "ctrl": true})).unwrap();
+        let first = h.app.session.doc.find_feature("First").map(|f| f.id).unwrap();
+        assert_eq!(super::selected_feature_ids(&h.app), [first]);
     }
 }

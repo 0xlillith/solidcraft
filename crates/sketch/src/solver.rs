@@ -400,6 +400,16 @@ fn line_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 fn residuals(s: &State, k: &ConstraintKind, out: &mut Vec<f64>) {
     use ConstraintKind::*;
     match *k {
+        PatternPoint { p, q, center, angle, offset } => {
+            let c = center.map(|c| s.p(c)).unwrap_or(Vec2::ZERO);
+            let d = s.p(p) - c;
+            let (sin, cos) = angle.sin_cos();
+            let delta = s.p(q) - c - Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos) - offset;
+            out.extend([delta.x, delta.y]);
+        }
+        PatternRadius { a, b } => out.push(s.radius_of(a) - s.radius_of(b)),
+        // Offset distances drive derived geometry in refresh_offsets, never source DOFs.
+        OffsetDistance { .. } => {}
         Coincident { p, q } => {
             let d = s.p(p) - s.p(q);
             out.extend([d.x, d.y]);
@@ -765,6 +775,8 @@ fn block_refs(sk: &Sketch, b: &Block) -> Vec<Ref> {
         Block::Closure { a, b } => vec![P(*a), P(*b)],
         Block::Arc { c, a, b } => vec![P(*c), P(*a), P(*b)],
         Block::User(_, k) => match **k {
+            PatternPoint { p, q, center, .. } => vec![P(p), P(q)].into_iter().chain(center.map(P)).collect(),
+            PatternRadius { a, b } => vec![C(a), C(b)],
             Coincident { p, q }
             | HorizontalPoints { p, q }
             | VerticalPoints { p, q }
@@ -782,7 +794,7 @@ fn block_refs(sk: &Sketch, b: &Block) -> Vec<Ref> {
             Tangent { a, b } => tangent(a, b).to_vec(),
             Smooth { a, b } => vec![C(a), C(b)],
             Symmetric { p, q, l } => vec![P(p), P(q), L(l)],
-            Fix { .. } => vec![],
+            Fix { .. } | OffsetDistance { .. } => vec![],
         },
         Block::TangentAt(_, k, p) => match **k {
             ConstraintKind::Tangent { a, b } if freeform(a) || freeform(b) => vec![P(*p), C(a), C(b)],
@@ -1343,7 +1355,7 @@ fn build_blocks<'a>(sk: &'a Sketch, lay: &Layout, on_curve: &[(usize, usize)]) -
         }
     }
     for (i, c) in sk.constraints.iter().enumerate() {
-        if c.driven {
+        if c.driven || matches!(c.kind, ConstraintKind::OffsetDistance { .. }) {
             continue;
         }
         raw.push(match touch_point(sk, &c.kind, on_curve) {
@@ -1770,6 +1782,8 @@ fn solve_inner(
     old_values: Option<&[Option<f64>]>,
     budget: &mut Budget,
 ) -> SolveReport {
+    sk.prune_patterns();
+    sk.refresh_pattern_shapes();
     let mut orientation_before = Vec::new();
     for constraint in &sk.constraints {
         if !constraint.driven

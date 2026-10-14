@@ -46,7 +46,9 @@ circle and update the outline when the inline **Sides** value changes.
 `sketch.edit_text` take a `font`, the family or full name of an installed font ("DejaVu Sans") or the path
 of a `.ttf` / `.otf` file, and the **Edit Text** dialog has a **Font** field for it. An unknown font is an
 error, and the font is kept with the text in the design, so the text stays editable in it. `SOLIDCRAFT_FONT_DIRS`
-adds folders to the ones searched for installed fonts.
+adds folders to the ones searched for installed fonts. The same two commands refuse a `text` that is not a
+string, an `at` that is not two numbers, and a `height` or `angle` that is not a number (or a `height` that is not
+positive) with a message, instead of drawing the text with a default; left out, they keep their defaults.
 
 Right-click a letter's filled interior or outline and choose **Edit Text**. You can also
 start **Edit Text** first and click the letter. All outlines belonging to that text are
@@ -54,6 +56,11 @@ highlighted while the dialog is open. A profile bounded by multiple text sources
 geometry cannot identify one text: use **Select Other** to choose its outline instead.
 Change the text, font, baseline X/Y, height or angle, then confirm with **OK**; **Cancel**
 keeps the original text. Position and height use the document's units.
+
+A text can follow a curve of its sketch (its **Path**). That curve becomes construction: the
+letters stand on it and their descenders cross it, so as a normal curve it would cut them into
+pieces, and picking the text would pick those pieces. Taking the text off the curve leaves it
+construction; **Normal/Construction** turns it back.
 
 Drag a text outline to move all its letters together. Let go to finish in one undo step,
 or press **Esc** during the drag to restore the original text. The text stays editable.
@@ -226,3 +233,33 @@ remain valid in an inch design. Angular dimensions keep their angular units. Del
 retain trailing zeros. Component/canvas distance controls and inspection, parts-library
 and flat-pattern measurements follow design units too; parameter expressions and metric
 standard names retain their explicit authored units.
+
+### Reviewing mirror, pattern, and offset results
+
+Mirror, rectangular/circular Pattern, and Offset show the active selection step in their
+shared tool window. Click an input to change it; click a selected object again or Ctrl/Cmd-click
+it to remove it. Each input has its own Clear button. Source inputs show a count, and single
+references identify the chosen mirror line, direction, or centre. Box selection also works
+while the window is open. Sketch modify tools take geometry from the sketch being edited.
+
+Proposed sketch geometry appears **green** before confirmation. Change the inputs or values to
+update the preview, then press **OK**. **Cancel** discards the preview. A circular pattern centre
+can be an existing point or a position clicked in empty sketch space.
+
+Sketch patterns keep each instance related to the seed geometry: moving the seed updates the
+copies, and a copy cannot deform independently. Circle and ellipse radii follow the seed too.
+Choose a circle's centre point to keep a circular pattern centred on that circle. A centre
+placed in empty space becomes a sketch point that can be dimensioned or made coincident.
+Double-click the pattern badge (at the circular centre or beside the rectangular seed), or
+right-click a seed or copy and choose **Edit Sketch Pattern**, to change quantity, spacing,
+direction or total angle. Confirmed edits preserve surviving instance ids; Cancel discards
+the preview. Pattern settings survive save/reopen and undo/redo. Deleting a seed, copy or
+pattern relation breaks that association and leaves the remaining geometry independent.
+Patterns saved by older versions remain independent copies; recreate them to add associations.
+
+Offset distances are editable driving dimensions: double-click a dimension or change its model
+parameter to resize the offset without moving its source curves. The selected side, distance,
+and association survive save/reopen and undo/redo. Symmetric offsets share one driving distance;
+Two Sides has an independent distance for each side. Disconnected selected curves or chains are
+all offset. Breaking an association retains its current geometry and removes that association's
+driver. Older offsets retain their saved fixed distances.

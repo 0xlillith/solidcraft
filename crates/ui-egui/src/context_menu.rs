@@ -33,6 +33,10 @@ pub enum Target {
     Sketch {
         id: u64,
     },
+    /// A construction plane (its feature id).
+    Plane {
+        id: u64,
+    },
     Component {
         id: u64,
     },
@@ -68,6 +72,8 @@ pub enum Target {
     Canvas {
         id: u64,
     },
+    /// The Section Analysis in the browser's Analysis folder.
+    Section,
     /// A component's Bodies, Sketches or Construction folder.
     Folder {
         component: u64,
@@ -252,6 +258,7 @@ pub fn target_bodies(app: &SolveApp, target: &Target) -> Vec<String> {
         Target::Occurrence { path } => app.session.occurrence_bodies(path, true).unwrap_or_default(),
         Target::Group { id } => crate::browser::group_bodies(app, *id),
         Target::Sketch { .. }
+        | Target::Plane { .. }
         | Target::Folder { .. }
         | Target::Canvas { .. }
         | Target::Origin
@@ -261,7 +268,8 @@ pub fn target_bodies(app: &SolveApp, target: &Target) -> Vec<String> {
         | Target::Toolbar
         | Target::Workspace
         | Target::NamedViews
-        | Target::NamedView { .. } => Vec::new(),
+        | Target::NamedView { .. }
+        | Target::Section => Vec::new(),
     }
 }
 
@@ -308,6 +316,7 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Viewport => viewport_items(app),
         Target::Body { name } => body_items(app, std::slice::from_ref(name), true),
         Target::Sketch { id } => sketch_items(app, *id),
+        Target::Plane { id } => plane_items(app, *id),
         Target::Component { id } => component_items(app, *id),
         Target::Occurrence { path } => occurrence_items(app, path),
         Target::Group { id } => crate::browser::group_items(app, *id),
@@ -315,6 +324,7 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Canvas { id } => crate::browser::canvas_items(app, *id),
         Target::Origin => crate::browser::origin_items(app),
         Target::NamedViews => vec![act("ui.newView", "New Named View", "perspective")],
+        Target::Section => crate::browser::section_items(app),
         Target::Joint { id } => joint_items(app, *id),
         Target::ToolbarCommand { id } => crate::toolbar_custom::command_items(app, id),
         Target::Toolbar => crate::toolbar_custom::toolbar_items(app),
@@ -520,6 +530,22 @@ fn sketch_items(app: &SolveApp, id: u64) -> Vec<Item> {
     ]
 }
 
+/// A construction plane's row in the browser: edit, delete, rename, show or hide.
+fn plane_items(app: &SolveApp, id: u64) -> Vec<Item> {
+    let Some(f) = app.session.doc.feature(id) else { return Vec::new() };
+    let visible = !app.session.visibility.hidden_origin.contains(&f.name);
+    vec![
+        act("ui.editFeature", "Edit Feature", "plane").with(json!({ "feature": id })),
+        Item::sep(),
+        act("ui.delete", "Delete", "delete").key("Del").with(json!({ "items": [{"type": "feature", "id": id}] })),
+        act("ui.rename", "Rename", "").with(json!({ "feature": id })),
+        Item::sep(),
+        act("ui.originPart", "Show/Hide", "eye").key("V").with(json!({ "keys": [f.name], "show": !visible })),
+        Item::sep(),
+        act("ui.findTimeline", "Find in Timeline", "").with(json!({ "feature": id })),
+    ]
+}
+
 /// An assembly joint: edit, drive, suppress, delete.
 fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
     let Some(j) = app.session.doc.assembly.joints.iter().find(|j| j.id == id) else { return Vec::new() };
@@ -679,6 +705,13 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         return v;
     }
     let ents: Vec<String> = curves.iter().chain(points.iter()).cloned().collect();
+    for pattern in &ss.sketch.patterns {
+        if ents.iter().any(|id| pattern.contains(id))
+            || app.session.selection.iter().filter_map(|sel| crate::sketch_modify_ui::point_id(&app.session, sel)).any(|id| pattern.contains(id))
+        {
+            v.push(act("ui.editSketchPattern", "Edit Sketch Pattern", "sketch_circ_pattern").with(json!({"pattern":pattern.id})));
+        }
+    }
     if crate::sketch_text::selected_entity(app).is_some() {
         v.push(cmd(app, "sketch.edit_text", "Edit Text"));
     }
@@ -765,6 +798,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.delete" if item.params.is_some() => crate::delete::request(app, p),
         "ui.delete" => delete(app),
         "ui.finishSketch" => app.finish_sketch(),
+        "ui.editSketchPattern" => {
+            if let Some(id) = p.get("pattern").and_then(Value::as_str) {
+                crate::sketch_modify_ui::edit_pattern(app, id);
+            }
+        }
         "ui.hide" => {
             for b in bodies {
                 if !app.session.visibility.hidden_bodies.contains(&b) {
@@ -836,10 +874,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         }
         "ui.export" => {
             let name = bodies.first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
-            if let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&format!("{name}.step"), &["step", "stp", "igs", "stl", "3mf", "obj"]))
-            {
-                let _ = app.run("file.export", json!({ "path": path, "bodies": bodies }));
-            }
+            app.pick_save_command(&format!("{name}.step"), &["step", "stp", "igs", "stl", "3mf", "obj"], "file.export", json!({"bodies": bodies}));
         }
         "ui.findBrowser" => {
             if let Some(b) = p.get("body").and_then(Value::as_str) {
@@ -858,7 +893,12 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.tangentChain" => tangent_chain(app),
         "ui.origin" => app.ui.show_origin = !app.ui.show_origin,
         "ui.clear" => drop(app.run("select.clear", json!({}))),
-        "ui.unsection" => drop(app.run("inspect.section", json!({"clear": true}))),
+        "ui.unsection" => {
+            app.tree.hidden_section = None;
+            drop(app.run("inspect.section", json!({"clear": true})));
+        }
+        "ui.editSection" => app.start("inspect.section"),
+        "ui.sectionVisible" => crate::browser::set_section_visible(app, p.get("visible").and_then(Value::as_bool).unwrap_or(true)),
         "ui.fit" => app.animate_view("fit"),
         "ui.home" => app.animate_view("home"),
         // One command for the whole selection: all fixed unless all already are.
@@ -1002,16 +1042,12 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         }
         "ui.saveMesh" => {
             let name = bodies.first().cloned().unwrap_or_else(|| app.session.doc.name.clone());
-            if let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&format!("{name}.stl"), &["stl"])) {
-                let _ = app.run("file.save_mesh", json!({ "path": path, "bodies": bodies }));
-            }
+            app.pick_save_command(&format!("{name}.stl"), &["stl"], "file.save_mesh", json!({"bodies": bodies}));
         }
         "ui.exportDxf" => {
             if let Some(id) = id_of(&p, "sketch") {
                 let name = app.session.doc.feature(id).map(|f| f.name.clone()).unwrap_or_default();
-                if let Some(path) = app.services.pick_save.as_ref().and_then(|f| f(&format!("{name}.dxf"), &["dxf"])) {
-                    let _ = app.run("sketch.export_dxf", json!({ "sketch": id, "path": path }));
-                }
+                app.pick_save_command(&format!("{name}.dxf"), &["dxf"], "sketch.export_dxf", json!({"sketch": id}));
             }
         }
         "ui.extrudeSketch" => {
@@ -1430,16 +1466,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             let painter = ui.painter_at(r.expand(4.0));
             let font = FontId::proportional(13.0);
             // Centre: a ring with a pointer toward the hot direction.
-            painter.circle(c, 15.0, t.panel.gamma_multiply(0.92), Stroke::new(1.0, t.border));
-            if let (Some(k), Some(p)) = (hot, pointer) {
-                let d = (p - c).normalized();
-                painter.line_segment(
-                    [c + d * 6.0, c + d * 15.0],
-                    Stroke::new(3.0, if radial.get(k).is_some_and(|i| i.enabled) { t.accent } else { t.border }),
-                );
-            } else {
-                painter.circle_filled(c, 3.0, t.text_dim);
-            }
+            let direction = hot.zip(pointer).map(|(k, p)| ((p - c).normalized(), radial.get(k).is_some_and(|i| i.enabled)));
+            crate::icons::glyphs::radial_centre(&painter, c, direction, t);
             for (k, item) in radial.iter().enumerate() {
                 let display_label = crate::i18n::tr_label(&item.label);
                 let galley = painter.layout_no_wrap(display_label.to_string(), font.clone(), if item.enabled { t.text } else { t.text_dim });

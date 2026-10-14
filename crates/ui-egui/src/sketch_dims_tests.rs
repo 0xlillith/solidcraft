@@ -207,3 +207,112 @@ fn a_rho_outside_zero_to_one_is_refused_before_it_reaches_the_command() {
     assert_eq!(tool.dims.iter().map(|d| d.value.as_str()).collect::<Vec<_>>(), ["5"], "the refused value stays in its box");
     assert!(h.app.status.as_ref().is_some_and(|(_, _, error)| *error), "the refusal is reported");
 }
+
+/// Rounded Rectangle (#891): typed width, height and corner radius make one profile whose
+/// size is the typed overall size; the radius stays its own parameter.
+#[test]
+fn rounded_rectangle_takes_typed_width_height_and_radius() {
+    let mut h = drawing("sketch.rectangle.rounded");
+    assert_eq!(h.app.tool.as_ref().unwrap().dims.iter().map(|d| d.label).collect::<Vec<_>>(), ["Width", "Height", "Radius"]);
+    type_value(&mut h, "30");
+    tab(&mut h, false);
+    type_value(&mut h, "16");
+    tab(&mut h, false);
+    assert_focus(&h, 2);
+    type_value(&mut h, "4");
+    let undo = h.app.session.undo.len();
+    h.step(&json!({"key": "Enter"})).unwrap();
+    let state = h.app.session.world_state();
+    let sketch = state.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+    let kinds: Vec<_> = sketch.sketch.curves.iter().map(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Arc { .. })).collect();
+    assert_eq!(kinds.iter().filter(|arc| **arc).count(), 4, "four corner arcs");
+    assert_eq!(kinds.len(), 8);
+    assert_eq!(sketch.profiles.len(), 1);
+    let want = 30.0 * 16.0 - (4.0 - std::f64::consts::PI) * 16.0;
+    assert!((sketch.profiles[0].area - want).abs() < 1e-6, "area {} want {want}", sketch.profiles[0].area);
+    assert_eq!(h.app.session.undo.len(), undo + 1, "one undo step");
+}
+
+/// Without a typed radius the corners get a fifth of the shorter side.
+#[test]
+fn rounded_rectangle_clicks_use_a_default_radius() {
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.step(&json!({"start": "sketch.rectangle.rounded"})).unwrap();
+    h.step(&json!({"click": {"sketch": [0, 0]}})).unwrap();
+    h.step(&json!({"click": {"sketch": [40, 20]}})).unwrap();
+    let state = h.app.session.world_state();
+    let sketch = state.sketch(h.app.session.active_sketch.unwrap()).unwrap();
+    assert_eq!(sketch.profiles.len(), 1, "{:?}", h.app.status);
+    let (w, hh) = (40.0, 20.0);
+    let r: f64 = 0.2 * 20.0;
+    let want = w * hh - (4.0 - std::f64::consts::PI) * r * r;
+    assert!((sketch.profiles[0].area - want).abs() < 0.05 * want, "area {} want about {want}", sketch.profiles[0].area);
+}
+
+/// A line from a circle's centre to the circle, ending a little off the quadrant: the preview
+/// snaps to horizontal or vertical, so the click must place exactly that line, on the circle.
+#[test]
+fn a_line_end_on_a_circle_within_the_axis_snap_lands_on_the_quadrant_the_preview_shows() {
+    use solidcraft_engine::geom::Vec2;
+    use solidcraft_engine::sketch::{ConstraintKind, CurveKind};
+    let r = 30.0_f64;
+    for (deg, end, horizontal) in [(-1.5_f64, Vec2::new(r, 0.0), true), (91.8, Vec2::new(0.0, r), false), (178.0, Vec2::new(-r, 0.0), true)] {
+        let mut h = Harness::new();
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": r})).unwrap();
+        h.settle();
+        let sid = h.app.session.active_sketch.unwrap();
+        h.step(&json!({"start": "sketch.line"})).unwrap();
+        h.step(&json!({"click": {"world": [0, 0, 0]}})).unwrap();
+        let at = Vec2::from_angle(deg.to_radians()) * r;
+        h.step(&json!({"move": {"world": [at.x, at.y, 0]}})).unwrap();
+        let tool = h.app.tool.as_ref().unwrap();
+        let hover = tool.hover.clone().unwrap();
+        assert!(hover.1.as_deref().is_some_and(|s| s.starts_with("on:")), "{deg}: {hover:?}");
+        let shown = crate::sketch_dims::shown(&h.app, tool, &hover);
+        assert!(shown.dist(end) < 1e-9, "{deg}: preview at {shown:?}");
+        h.step(&json!({"click": {"world": [at.x, at.y, 0]}})).unwrap();
+        let st = h.app.session.world_state();
+        let sk = &st.sketch(sid).unwrap().sketch;
+        let (line, a, b) = sk
+            .curves
+            .iter()
+            .enumerate()
+            .find_map(|(i, c)| if let CurveKind::Line { a, b } = c.kind { Some((i, a, b)) } else { None })
+            .unwrap_or_else(|| panic!("{deg}: no line, {:?}", h.app.status));
+        assert!(sk.point(a).unwrap().dist(Vec2::ZERO) < 1e-9, "{deg}");
+        assert!(sk.point(b).unwrap().dist(end) < 1e-9, "{deg}: placed at {:?}", sk.point(b));
+        assert!(sk.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::PointOnCurve { p, c: 0 } if p == b)), "{deg}: end not on the circle");
+        let axis = |k: &ConstraintKind| {
+            if horizontal {
+                matches!(k, ConstraintKind::Horizontal { l } if *l == line)
+            } else {
+                matches!(k, ConstraintKind::Vertical { l } if *l == line)
+            }
+        };
+        assert!(sk.constraints.iter().any(|c| axis(&c.kind)), "{deg}: axis constraint missing");
+    }
+}
+
+/// Outside the axis snap a line end on a circle stays where the cursor meets the circle.
+#[test]
+fn a_line_end_on_a_circle_outside_the_axis_snap_stays_at_the_cursor() {
+    use solidcraft_engine::geom::Vec2;
+    use solidcraft_engine::sketch::CurveKind;
+    let mut h = Harness::new();
+    h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+    h.app.run("sketch.circle.center", json!({"center": [0, 0], "radius": 30})).unwrap();
+    h.settle();
+    let sid = h.app.session.active_sketch.unwrap();
+    h.step(&json!({"start": "sketch.line"})).unwrap();
+    h.step(&json!({"click": {"world": [0, 0, 0]}})).unwrap();
+    let at = Vec2::from_angle(20f64.to_radians()) * 30.0;
+    h.step(&json!({"move": {"world": [at.x, at.y, 0]}})).unwrap();
+    h.step(&json!({"click": {"world": [at.x, at.y, 0]}})).unwrap();
+    let st = h.app.session.world_state();
+    let sk = &st.sketch(sid).unwrap().sketch;
+    let b = sk.curves.iter().find_map(|c| if let CurveKind::Line { b, .. } = c.kind { Some(b) } else { None }).unwrap();
+    let end = sk.point(b).unwrap();
+    assert!((end.len() - 30.0).abs() < 1e-9 && end.dist(at) < 0.5, "{end:?}");
+}

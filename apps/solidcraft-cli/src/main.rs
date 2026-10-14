@@ -3,7 +3,9 @@
 //! ```text
 //! solidcraft-cli run <script.json|design.solidcraft|part.step|mesh.3mf> [--in design|part.step|mesh.3mf] [--out FILE]... [--save FILE] [--quiet] [--allow-errors]
 //! solidcraft-cli eval <script.json|design.solidcraft|part.step> (alias: inspect) measurements as JSON
+//! solidcraft-cli script <design.solidcraft> [--out script.json]     the design's history as a command script
 //! solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only] loading timings as JSON lines
+//! solidcraft-cli bench-agent [--scale F] [--save F] [--script-out F] a ~1,300-body design built command by command, timed
 //! solidcraft-cli snapshot <script|design> --out shot.png [--width W] [--height H] [--view iso|front|top|…]
 //! solidcraft-cli exec <command> [json-params]                 run one command on an empty design
 //! solidcraft-cli commands                                     the command registry as JSON
@@ -17,6 +19,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod bench_agent;
 mod crashes;
 mod fuzz;
 mod oracle;
@@ -26,7 +29,7 @@ mod spatial;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
-#[path = "../../app_icon.rs"]
+#[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
 
 use solidcraft_engine::Session;
@@ -37,7 +40,10 @@ const USAGE: &str = "usage:
   solidcraft-cli run --in <design.solidcraft|part.step> [--out FILE]...
       (a timeline feature that fails fails the run and nothing is written; --allow-errors writes anyway)
   solidcraft-cli eval <script.json|design.solidcraft|part.step>     (alias: inspect; or --in FILE)
+  solidcraft-cli script <design.solidcraft|script.json> [--out script.json]
+      (the design's history as a command script that eval and run replay)
   solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only]
+  solidcraft-cli bench-agent [--scale F] [--save design.solidcraft] [--script-out script.json]
   solidcraft-cli snapshot <script|design> --out shot.png [--width W] [--height H] [--view iso|front|back|top|bottom|left|right]
   solidcraft-cli exec <command> [json-params]
   solidcraft-cli commands
@@ -55,6 +61,7 @@ fn main() -> ExitCode {
     let r = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
         Some("eval" | "inspect") => cmd_eval(&args[1..]),
+        Some("script") => cmd_script(&args[1..]),
         Some("snapshot") => cmd_snapshot(&args[1..]),
         Some("exec") => cmd_exec(&args[1..]),
         Some("commands") => {
@@ -91,6 +98,8 @@ fn main() -> ExitCode {
         // Hidden: time recomputes after parameter edits (docs/perf.md).
         Some("bench-edit") => cmd_bench_edit(&args[1..]),
         Some("bench-open") => cmd_bench_open(&args[1..]),
+        // A ~1,300-body design built command by command, as an agent builds one over MCP.
+        Some("bench-agent") => bench_agent::run(&args[1..]),
         Some("--version" | "-V") => {
             println!("solidcraft-cli {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -239,6 +248,23 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
         "sketches": d["sketches"],
     });
     println!("{}", pretty(&out));
+    Ok(())
+}
+
+/// A design's history as a command script (`timeline.export_script`): printed, or written to
+/// `--out`; what the script leaves out goes to stderr.
+fn cmd_script(args: &[String]) -> Result<(), String> {
+    let path = positional(args).ok_or_else(|| USAGE.to_string())?;
+    let s = &mut load(path)?;
+    let out = flag(args, "--out");
+    let r = s.execute("timeline.export_script", &json!({"path": out})).map_err(|e| e.to_string())?;
+    for what in r["omitted"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        eprintln!("note: the script leaves out {what}");
+    }
+    match out {
+        Some(out) => eprintln!("{out}: {} steps", r["steps"]),
+        None => println!("{}", pretty(&r["script"])),
+    }
     Ok(())
 }
 
@@ -401,7 +427,7 @@ fn cmd_bench_edit(args: &[String]) -> Result<(), String> {
 }
 
 /// Separate file reading, JSON decoding/repair, timeline evaluation and display meshing.
-fn cmd_bench_open(args: &[String]) -> Result<(), String> {
+pub(crate) fn cmd_bench_open(args: &[String]) -> Result<(), String> {
     let path = args.first().ok_or("usage: solidcraft-cli bench-open <design.solidcraft | part.step> [--parse-only]")?;
     let t = std::time::Instant::now();
     let step = solidcraft_engine::io::is_step_path(path);
@@ -410,10 +436,13 @@ fn cmd_bench_open(args: &[String]) -> Result<(), String> {
     let read_ms = t.elapsed().as_secs_f64() * 1000.0;
     println!("{}", json!({"step": "read", "ms": read_ms, "bytes": bytes.len()}));
     let t = std::time::Instant::now();
+    // The file as read, held until the timeline has evaluated it (as the import command does).
+    let mut read = None;
     let doc = if step {
         let imported = solidcraft_engine::io::step_import_feature(&bytes, path).map_err(|e| e.to_string())?;
         let mut doc = solidcraft_engine::doc::Document::new(&imported.name);
         doc.add_feature(imported.kind, Some(&imported.name)).map_err(|e| e.to_string())?;
+        read = Some(imported.import);
         doc
     } else {
         solidcraft_engine::io::read_design(&bytes).map_err(|e| e.to_string())?
@@ -425,12 +454,15 @@ fn cmd_bench_open(args: &[String]) -> Result<(), String> {
     }
     let t = std::time::Instant::now();
     let s = Session::new(doc);
+    drop(read);
     println!("{}", json!({"step": "evaluate", "ms": t.elapsed().as_secs_f64() * 1000.0}));
     for r in &s.model.results {
         println!("{}", json!({"step": "feature", "id": r.id, "name": r.name, "ms": r.ms, "error": r.error}));
     }
     let t = std::time::Instant::now();
     let st = s.world_state();
+    // As the desktop app prepares a design it opened.
+    st.warm_meshes(|| true);
     let triangles: usize = st.bodies.iter().map(|b| b.mesh().triangles.len()).sum();
     println!("{}", json!({"step": "mesh", "ms": t.elapsed().as_secs_f64() * 1000.0, "bodies": st.bodies.len(), "triangles": triangles}));
     Ok(())

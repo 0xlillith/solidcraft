@@ -10,7 +10,7 @@ pub const MAX_CONSTRAINTS: usize = 40_000;
 pub const MAX_CURVES: usize = MAX_POINTS;
 
 /// Largest coordinate or dimension value (mm) a sketch accepts.
-pub(crate) const MAX_COORD: f64 = 1e9;
+pub const MAX_COORD: f64 = 1e9;
 
 /// A position a sketch accepts: finite and within [`MAX_COORD`].
 pub(crate) fn in_range(p: Vec2) -> bool {
@@ -176,6 +176,20 @@ pub struct Curve {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConstraintKind {
+    /// A pattern instance point is a rigid transform of its seed. Angles are radians;
+    /// a circular pattern keeps its centre as a point, rather than a sampled position.
+    PatternPoint {
+        p: usize,
+        q: usize,
+        center: Option<usize>,
+        angle: f64,
+        offset: Vec2,
+    },
+    /// The independent radius of a patterned circle or ellipse follows its seed.
+    PatternRadius {
+        a: usize,
+        b: usize,
+    },
     Coincident {
         p: usize,
         q: usize,
@@ -310,6 +324,15 @@ pub enum ConstraintKind {
         l: usize,
         value: f64,
     },
+    /// Normal distance of an associative offset. Its output id remains stable
+    /// when a curved boundary retires a corner; refresh_offsets drives the geometry.
+    OffsetDistance {
+        output: String,
+        value: f64,
+        /// Keep the chosen side when the positive driving length is edited.
+        #[serde(default)]
+        reverse: bool,
+    },
 }
 
 impl ConstraintKind {
@@ -331,6 +354,7 @@ impl ConstraintKind {
             | Diameter { value, .. }
             | ArcLength { value, .. }
             | LinearDiameter { value, .. }
+            | OffsetDistance { value, .. }
             | Angle { value, .. } => Some(value),
             _ => None,
         }
@@ -350,6 +374,7 @@ impl ConstraintKind {
             | Diameter { value, .. }
             | ArcLength { value, .. }
             | LinearDiameter { value, .. }
+            | OffsetDistance { value, .. }
             | Angle { value, .. } => *value = v,
             _ => {}
         }
@@ -361,6 +386,7 @@ impl ConstraintKind {
     pub fn name(&self) -> &'static str {
         use ConstraintKind::*;
         match self {
+            PatternPoint { .. } | PatternRadius { .. } => "Pattern",
             Coincident { .. } | PointOnCurve { .. } => "Coincident",
             Horizontal { .. } | HorizontalPoints { .. } => "Horizontal",
             Vertical { .. } | VerticalPoints { .. } => "Vertical",
@@ -381,6 +407,7 @@ impl ConstraintKind {
             Smooth { .. } => "Smooth",
             ArcLength { .. } => "ArcLengthDimension",
             LinearDiameter { .. } => "LinearDiameterDimension",
+            OffsetDistance { .. } => "OffsetDimension",
         }
     }
     /// Does the constraint refer to point `p` (by index)?
@@ -391,6 +418,8 @@ impl ConstraintKind {
     pub fn indices(&self) -> (Vec<usize>, Vec<usize>) {
         use ConstraintKind::*;
         match *self {
+            PatternPoint { p, q, center, .. } => (vec![p, q].into_iter().chain(center).collect(), vec![]),
+            PatternRadius { a, b } => (vec![], vec![a, b]),
             Coincident { p, q } | HorizontalPoints { p, q } | VerticalPoints { p, q } => (vec![p, q], vec![]),
             Distance { p, q, .. } | DistanceX { p, q, .. } | DistanceY { p, q, .. } => (vec![p, q], vec![]),
             PointOnCurve { p, c } => (vec![p], vec![c]),
@@ -406,6 +435,7 @@ impl ConstraintKind {
             Smooth { a, b } => (vec![], vec![a, b]),
             ArcLength { c, .. } => (vec![], vec![c]),
             LinearDiameter { p, l, .. } => (vec![p], vec![l]),
+            OffsetDistance { .. } => (vec![], vec![]),
         }
     }
     pub(crate) fn remap(&mut self, pmap: &dyn Fn(usize) -> Option<usize>, cmap: &dyn Fn(usize) -> Option<usize>) -> bool {
@@ -421,6 +451,17 @@ impl ConstraintKind {
             None => ok2 = false,
         };
         match self {
+            PatternPoint { p, q, center, .. } => {
+                fp(p);
+                fp(q);
+                if let Some(c) = center {
+                    fp(c);
+                }
+            }
+            PatternRadius { a, b } => {
+                fc(a);
+                fc(b);
+            }
             Coincident { p, q } | HorizontalPoints { p, q } | VerticalPoints { p, q } => {
                 fp(p);
                 fp(q);
@@ -462,6 +503,7 @@ impl ConstraintKind {
                 fp(p);
                 fc(l);
             }
+            OffsetDistance { .. } => {}
         }
         ok && ok2
     }
@@ -523,6 +565,9 @@ pub struct Sketch {
     pub points: Vec<SPoint>,
     pub curves: Vec<Curve>,
     pub constraints: Vec<Constraint>,
+    /// Editable sketch patterns; their relations are ordinary solver constraints.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<crate::pattern::SketchPattern>,
     /// Links to geometry outside the sketch (projections, intersections, includes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<crate::link::Link>,
@@ -558,6 +603,7 @@ impl Sketch {
             points: vec![SPoint { id: "origin".into(), pos: Vec2::ZERO, fixed: true, link: None }],
             curves: Vec::new(),
             constraints: Vec::new(),
+            patterns: Vec::new(),
             links: Vec::new(),
             offsets: Vec::new(),
             freeform_offsets: Vec::new(),
@@ -581,6 +627,7 @@ impl Sketch {
             .len()
             .saturating_add(self.curves.len())
             .saturating_add(self.constraints.len())
+            .saturating_add(self.patterns.len())
             .saturating_add(self.links.len())
             .saturating_add(self.wires.len())
             .saturating_add(
@@ -596,6 +643,7 @@ impl Sketch {
             .map(|p| p.id.as_str())
             .chain(self.curves.iter().map(|c| c.id.as_str()))
             .chain(self.constraints.iter().map(|c| c.id.as_str()))
+            .chain(self.patterns.iter().map(|p| p.id.as_str()))
             .chain(self.links.iter().map(|l| l.id.as_str()))
             .chain(self.wires.iter().map(|w| w.id.as_str()))
             .collect();
@@ -617,6 +665,7 @@ impl Sketch {
         self.points.iter().any(|p| p.id == id)
             || self.curves.iter().any(|c| c.id == id)
             || self.constraints.iter().any(|c| c.id == id)
+            || self.patterns.iter().any(|p| p.id == id)
             || self.links.iter().any(|l| l.id == id)
             || self.wires.iter().any(|w| w.id == id)
             || self.offsets.iter().filter_map(|r| r.topology.as_ref()).any(|r| r.id == id || r.roles.iter().any(|role| role.output == id))
@@ -789,6 +838,25 @@ impl Sketch {
         let need_line = |i: usize| if is_line(i) { Ok(()) } else { Err(SketchError::WrongKind(name(i), "needs a line".into())) };
         let need_round = |i: usize| if is_round(i) { Ok(()) } else { Err(SketchError::WrongKind(name(i), "needs a circle or arc".into())) };
         match *k {
+            PatternPoint { p, q, angle, offset, .. } => {
+                if p == q
+                    || !angle.is_finite()
+                    || angle.abs() > std::f64::consts::TAU
+                    || !offset.x.is_finite()
+                    || !offset.y.is_finite()
+                    || offset.x.abs() > MAX_COORD
+                    || offset.y.abs() > MAX_COORD
+                {
+                    return Err(SketchError::Invalid("invalid pattern transform".into()));
+                }
+            }
+            PatternRadius { a, b } => {
+                let independent_radius =
+                    |c: usize| matches!(self.curves.get(c).map(|c| &c.kind), Some(CurveKind::Circle { .. } | CurveKind::Ellipse { .. }));
+                if a == b || !independent_radius(a) || !independent_radius(b) {
+                    return Err(SketchError::Invalid("pattern radius needs two circles or ellipses".into()));
+                }
+            }
             Horizontal { l }
             | Vertical { l }
             | Length { l, .. }
@@ -867,6 +935,11 @@ impl Sketch {
             && (!v.is_finite() || v.abs() > MAX_COORD || (v < 0.0 && !k.is_angle()))
         {
             return Err(SketchError::Invalid(format!("dimension value {v}")));
+        }
+        if let OffsetDistance { output, value, .. } = k
+            && (*value <= 1e-9 || output.len() > 512 || self.offset_distance(output).is_none())
+        {
+            return Err(SketchError::Invalid("offset dimension needs a nonzero distance and an existing association".into()));
         }
         if let ArcSweep { value, .. } = *k
             && !(value.abs() > 1e-9 && value.abs() < std::f64::consts::TAU - 1e-9)
@@ -1272,6 +1345,7 @@ impl Sketch {
         orphans.dedup();
         self.remove_points(&orphans);
         self.prune_links();
+        self.prune_patterns();
     }
 
     fn point_used_by_curve(&self, p: usize) -> bool {
@@ -1357,6 +1431,7 @@ impl Sketch {
             k
         });
         self.prune_links();
+        self.prune_patterns();
     }
 
     /// Resolve a point reference: a point id (`origin`, `l1.end`, `p3`) or `<curve>.start|end|center`.

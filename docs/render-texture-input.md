@@ -34,7 +34,9 @@ Initial limits and exclusions:
 - Third-party decoding/conversion panics are contained and partial buffers never escape.
   GPU allocation, browser scheduling and document/session generations remain host concerns.
 
-The actual renderer contract is still being requested from the maintainer in #813.
+The numerical opaque-surface contract is available in `surface`; its product consumer
+is being integrated separately in #1046 under #1004. The texture/environment adapter
+and its resource ownership are still separate work coordinated in #813.
 Wood repeat size/rotation, definition-local grain frames, durable resource identity,
 source/license receipts, document packaging and setup-owned HDR rotation/exposure must
 use that agreed consumer representation. This input utility does not reserve any of

@@ -650,7 +650,7 @@ fn merging_adjacent_regions() {
 /// outlines.
 fn text_sketch(text: &str, at: Vec2, height: f64) -> Sketch {
     let mut sk = Sketch::new();
-    let source = LinkSource::Text { text: text.into(), at, height, angle: 0.0, font: None };
+    let source = LinkSource::Text { text: text.into(), at, height, angle: 0.0, font: None, style: Default::default() };
     sk.add_link(LinkKind::Text, source, &text_geometry(text, at, height, 0.0).unwrap()).unwrap();
     sk
 }
@@ -882,4 +882,42 @@ fn exact_profiles_for_high_degree_and_cut_free_form_curves() {
     sk.curves.pop();
     let uncut: f64 = find_profiles(&sk).iter().map(|p| p.area).sum();
     assert!((whole - uncut).abs() < 1e-6 * uncut, "{whole} vs {uncut}");
+}
+
+/// A face boundary saved with stations along its straight edges (#1049: booleans used to leave
+/// vertices nothing else used) keeps its saved pieces when the face comes back with each
+/// straight edge whole: the same region, and features that name the pieces still find them.
+#[test]
+fn projected_boundary_keeps_its_pieces_when_only_stations_go() {
+    use crate::{LinkGeom, LinkKind, LinkSource};
+    let mut sk = Sketch::new();
+    let v = Vec2::new;
+    let split = vec![
+        LinkGeom::Line(v(0.0, 0.0), v(5.0, 0.0)),
+        LinkGeom::Line(v(5.0, 0.0), v(10.0, 0.0)),
+        LinkGeom::Line(v(10.0, 0.0), v(10.0, 4.0)),
+        LinkGeom::Line(v(10.0, 4.0), v(10.0, 10.0)),
+        LinkGeom::Line(v(10.0, 10.0), v(0.0, 10.0)),
+        LinkGeom::Line(v(0.0, 10.0), v(0.0, 0.0)),
+    ];
+    let j = sk.add_link(LinkKind::Project, LinkSource::Origin, &split).unwrap();
+    let ids: Vec<String> = sk.link_curves(&j).iter().map(|c| sk.curves[*c].id.clone()).collect();
+    let whole = vec![
+        LinkGeom::Line(v(0.0, 0.0), v(10.0, 0.0)),
+        LinkGeom::Line(v(10.0, 0.0), v(10.0, 10.0)),
+        LinkGeom::Line(v(10.0, 10.0), v(0.0, 10.0)),
+        LinkGeom::Line(v(0.0, 10.0), v(0.0, 0.0)),
+    ];
+    assert!(!sk.update_link(&j, &whole).unwrap(), "only the stations went: the pieces stay");
+    let kept: Vec<String> = sk.link_curves(&j).iter().map(|c| sk.curves[*c].id.clone()).collect();
+    assert_eq!(ids, kept);
+    // A boundary that really changed is rebuilt.
+    let smaller = vec![
+        LinkGeom::Line(v(0.0, 0.0), v(8.0, 0.0)),
+        LinkGeom::Line(v(8.0, 0.0), v(8.0, 10.0)),
+        LinkGeom::Line(v(8.0, 10.0), v(0.0, 10.0)),
+        LinkGeom::Line(v(0.0, 10.0), v(0.0, 0.0)),
+    ];
+    assert!(sk.update_link(&j, &smaller).unwrap());
+    assert_eq!(sk.link_curves(&j).len(), 4);
 }

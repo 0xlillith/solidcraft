@@ -73,6 +73,12 @@ mod web {
             if self.files.ctx.borrow().is_none() {
                 *self.files.ctx.borrow_mut() = Some(ctx.clone());
             }
+            // A ready picker answer is consumed in app.logic later in this frame. Keep
+            // incoming files queued until then so they cannot replace its target design.
+            if self.app.file_picker_busy() {
+                ctx.request_repaint();
+                return;
+            }
             files::flush(&self.files);
             for (text, error) in self.files.messages.borrow_mut().drain(..) {
                 self.app.set_status(text, error);
@@ -331,21 +337,33 @@ mod web {
                 };
                 if installed {
                     log::info!("loaded web CJK font from {JAPANESE_FONT_PATH}");
-                } else {
+                } else if solidcraft_ui_egui::fonts::needs_cjk_font(&self.app.preferences.language) {
                     log::warn!("CJK font unavailable; showing English for this session");
                 }
                 self.font.finished(installed, &mut self.app.preferences.language);
                 ctx.request_repaint();
             }
             if self.font.tick(&mut self.app.preferences.language) {
-                let slot = self.font_result.clone();
-                let ctx = ctx.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let res = fetch_font_bytes(JAPANESE_FONT_PATH).await;
-                    *slot.borrow_mut() = Some(res);
-                    ctx.request_repaint();
-                });
+                self.fetch_font(ctx);
             }
+        }
+
+        /// CJK text on screen with no CJK font yet (an English UI showing a Japanese name):
+        /// fetch the font, so the text does not stay tofu (#720).
+        fn watch_text_for_font(&mut self, ctx: &egui::Context) {
+            if self.font.watching_text() && solidcraft_ui_egui::fonts::painted_cjk(ctx) && self.font.text_needs_font() {
+                self.fetch_font(ctx);
+            }
+        }
+
+        fn fetch_font(&self, ctx: &egui::Context) {
+            let slot = self.font_result.clone();
+            let ctx = ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let res = fetch_font_bytes(JAPANESE_FONT_PATH).await;
+                *slot.borrow_mut() = Some(res);
+                ctx.request_repaint();
+            });
         }
     }
 
@@ -365,6 +383,7 @@ mod web {
             let ctx = ui.ctx().clone();
             self.file_panel(&ctx);
             self.recovery_prompt(&ctx);
+            self.watch_text_for_font(&ctx);
         }
         fn save(&mut self, storage: &mut dyn eframe::Storage) {
             // Persist the user's own language, not a session-only English fallback.
@@ -421,12 +440,12 @@ mod web {
                             // Open shows the browser's files (and the computer's, from there).
                             pick_open: Some(Box::new(move || {
                                 panel.panel.set(true);
-                                None
+                                Box::pin(std::future::ready(None))
                             })),
                             // Designs are kept in the browser; everything else is downloaded.
                             pick_save: Some(Box::new(|name: &str, exts: &[&str]| {
                                 let design = exts.contains(&solidcraft_engine::io::DESIGN_EXT);
-                                Some(format!("{}{name}", if design { files::OPFS } else { files::DOWNLOADS }))
+                                Box::pin(std::future::ready(Some(format!("{}{name}", if design { files::OPFS } else { files::DOWNLOADS }))))
                             })),
                             ..Default::default()
                         };

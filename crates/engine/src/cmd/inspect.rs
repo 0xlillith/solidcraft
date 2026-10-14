@@ -66,7 +66,12 @@ fn measure(s: &mut Session, p: &Value) -> Result<Value> {
     let want = string_list(p, "bodies");
     let st = s.world_state();
     let selected: Vec<_> = st.bodies.iter().filter(|b| want.is_empty() || want.contains(&b.name)).collect();
-    let mut bodies: Vec<Value> = selected.iter().map(|b| measure_json(b)).collect();
+    // Each body is measured on its own: on all cores, in body order.
+    let mut bodies: Vec<Value> = solidcraft_kernel::map_on_threads(&selected, 16, |b| measure_json(b))
+        .into_iter()
+        .zip(&selected)
+        .map(|(m, b)| m.unwrap_or_else(|| json!({"name": b.name, "error": "measuring this body failed"})))
+        .collect();
     // Mass from each body's material.
     for (b, body) in bodies.iter_mut().zip(selected) {
         if let Some(v) = b["volume_mm3"].as_f64() {
@@ -90,6 +95,23 @@ fn measure(s: &mut Session, p: &Value) -> Result<Value> {
                 b[k] = json!(b["kernel"][k].as_i64().unwrap_or(0) + d);
             }
             b["sheet_metal"] = json!(true);
+            // A perforation field (#732) is not cut into the B-rep: take its open area out of the volume, the mass
+            // and the area (both faces minus the holes, plus the bores).
+            let open = sh.perforated_area();
+            if open > 0.0 {
+                let v = b["volume_mm3"].as_f64().unwrap_or(0.0);
+                let nv = v - open * sh.t;
+                if let Some(m) = b["mass_g"].as_f64().filter(|_| v > 0.0) {
+                    b["mass_g"] = json!(m * nv / v);
+                }
+                b["volume_mm3"] = json!(nv);
+                let bores: f64 = sh
+                    .perforations
+                    .iter()
+                    .map(|p| sh.perforation_holes(p).map_or(0.0, |h| h.len() as f64) * std::f64::consts::PI * p.diameter * sh.t)
+                    .sum();
+                b["area_mm2"] = json!(b["area_mm2"].as_f64().unwrap_or(0.0) - 2.0 * open + bores);
+            }
         }
     }
     let tv: f64 = bodies.iter().filter_map(|b| b["volume_mm3"].as_f64()).sum();

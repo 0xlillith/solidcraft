@@ -17,6 +17,37 @@ use solidcraft_geom::Vec3;
 use solidcraft_geom::tess::{EvalCurve, EvalSurface, TessPlan};
 use wgpu::util::DeviceExt;
 
+/// The tessellation compute shader (WGSL).
+pub const SHADER: &str = include_str!("tess.wgsl");
+
+/// The error a popped error scope caught. Native devices answer at once; a browser's answer
+/// comes later, and is not waited for (no error is assumed).
+fn popped(f: impl std::future::Future<Output = Option<wgpu::Error>>) -> Option<wgpu::Error> {
+    let mut f = std::pin::pin!(f);
+    match f.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())) {
+        std::task::Poll::Ready(e) => e,
+        std::task::Poll::Pending => None,
+    }
+}
+
+/// An adapter and device without a window (native only). The environment may pick the backend
+/// and the D3D12 shader compiler (`WGPU_BACKEND`, `WGPU_DX12_COMPILER`).
+#[cfg(not(target_arch = "wasm32"))]
+fn open_headless() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = pollster::block_on(
+        instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
+    )
+    .map_err(|_| GpuError::NoAdapter)?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("solidcraft compute"),
+        required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+        ..Default::default()
+    }))
+    .map_err(|e| GpuError::Device(e.to_string()))?;
+    Ok((adapter, device, queue))
+}
+
 /// Most vertices evaluated in one dispatch (bounds the buffers; larger plans go in batches).
 pub const MAX_BATCH: usize = 1 << 20;
 const WORKGROUP: u32 = 64;
@@ -29,6 +60,8 @@ pub enum GpuError {
     Device(String),
     #[error("the GPU evaluation failed: {0}")]
     Failed(String),
+    #[error("the GPU tessellation pipeline could not be created: {0}")]
+    Pipeline(String),
     #[error("not supported yet: {0}")]
     Unsupported(String),
 }
@@ -50,11 +83,20 @@ pub struct GpuMesh {
     pub indices: wgpu::Buffer,
     pub index_count: u32,
     pub vertex_count: u32,
-    /// Each vertex's face (the plan's face numbering), for colouring by face.
+    /// Each vertex's face (its plan's face numbering), for colouring by face.
     pub vertex_face: Vec<u32>,
+    /// Per plan (in the order given), its vertices and indices.
+    pub parts: Vec<Part>,
     bind: wgpu::BindGroup,
     // The inputs, kept until the evaluation has run.
     _inputs: [wgpu::Buffer; 4],
+}
+
+/// One plan's share of a [`GpuMesh`]: its vertices and its entries in the index buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Part {
+    pub vertices: std::ops::Range<u32>,
+    pub indices: std::ops::Range<u32>,
 }
 
 /// The compute pipeline, ready to evaluate plans on one device.
@@ -69,11 +111,47 @@ pub struct TessGpu {
 }
 
 impl TessGpu {
-    /// The pipeline on an existing device (`adapter`: its name, for reports).
-    pub fn new(adapter: impl Into<String>, device: wgpu::Device, queue: wgpu::Queue) -> Self {
+    /// The pipeline on an existing device (`adapter`: its name, for reports). An error (never
+    /// a panic) when the device cannot build it, for example where the D3D12 driver's older shader
+    /// compiler (FXC) rejects the shader: the caller then builds bodies on the CPU.
+    pub fn new(adapter: impl Into<String>, device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
+        Self::with_shader(adapter, device, queue, SHADER)
+    }
+
+    /// [`TessGpu::new`] with another shader source: tests use it to make pipeline creation fail
+    /// as it does on a device whose compiler rejects the real shader.
+    #[doc(hidden)]
+    pub fn with_shader(adapter: impl Into<String>, device: wgpu::Device, queue: wgpu::Queue, shader: &str) -> Result<Self> {
+        // Errors here would go to the device's uncaptured-error handler, which panics by default:
+        // capture them, so a device that cannot run the shader only loses GPU tessellation.
+        let scopes = [wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal, wgpu::ErrorFilter::Validation].map(|f| device.push_error_scope(f));
+        let (pipeline, layout) = Self::build(&device, shader);
+        let mut failed = None;
+        for scope in scopes.into_iter().rev() {
+            if let Some(e) = popped(scope.pop()) {
+                failed.get_or_insert(e.to_string());
+            }
+        }
+        if let Some(e) = failed {
+            return Err(GpuError::Pipeline(e));
+        }
+        // A viewport records the evaluation into its own frame (see `TessGpu::record`).
+        #[cfg(target_arch = "wasm32")]
+        let _ = queue;
+        Ok(TessGpu {
+            adapter: adapter.into(),
+            device,
+            #[cfg(not(target_arch = "wasm32"))]
+            queue,
+            pipeline,
+            layout,
+        })
+    }
+
+    fn build(device: &wgpu::Device, shader: &str) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("solidcraft tessellation"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("tess.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader.into()),
         });
         let entry = |binding: u32, ty: wgpu::BufferBindingType| wgpu::BindGroupLayoutEntry {
             binding,
@@ -105,34 +183,14 @@ impl TessGpu {
             compilation_options: Default::default(),
             cache: None,
         });
-        // A viewport records the evaluation into its own frame (see `TessGpu::record`).
-        #[cfg(target_arch = "wasm32")]
-        let _ = queue;
-        TessGpu {
-            adapter: adapter.into(),
-            device,
-            #[cfg(not(target_arch = "wasm32"))]
-            queue,
-            pipeline,
-            layout,
-        }
+        (pipeline, layout)
     }
 
     /// A device of its own, without a window (native only).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn headless() -> Result<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }),
-        )
-        .map_err(|_| GpuError::NoAdapter)?;
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("solidcraft compute"),
-            required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            ..Default::default()
-        }))
-        .map_err(|e| GpuError::Device(e.to_string()))?;
-        Ok(Self::new(adapter.get_info().name, device, queue))
+        let (adapter, device, queue) = open_headless()?;
+        Self::new(adapter.get_info().name, device, queue)
     }
 
     /// The adapter's name, for reports.
@@ -144,7 +202,7 @@ impl TessGpu {
     /// and normals in f32, fixed edge nodes exact). Blocks until the GPU is done (native).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn evaluate(&self, plan: &TessPlan) -> Result<Mesh> {
-        let packed = pack(plan)?;
+        let packed = pack(&[plan])?;
         let mut mesh = Mesh::default();
         let mut base = 0usize;
         for chunk in packed.vertices.chunks(MAX_BATCH * VERTEX_WORDS) {
@@ -186,9 +244,16 @@ impl TessGpu {
     /// [`TessGpu::record`]. Refused (so the caller draws its CPU mesh) for a plan with more than
     /// [`MAX_BATCH`] vertices or a face without an evaluable surface.
     pub fn prepare(&self, plan: &TessPlan) -> Result<GpuMesh> {
-        let packed = pack(plan)?;
+        self.prepare_many(&[plan])
+    }
+
+    /// Like [`TessGpu::prepare`] for several plans at once: one upload, one buffer and one
+    /// dispatch for all of them (a viewport's whole scene), each plan's vertices and triangles in
+    /// [`GpuMesh::parts`]. Refused past [`MAX_BATCH`] vertices in all.
+    pub fn prepare_many(&self, plans: &[&TessPlan]) -> Result<GpuMesh> {
+        let packed = pack(plans)?;
         if packed.count > MAX_BATCH {
-            return Err(GpuError::Unsupported(format!("a plan of {} vertices on the GPU", packed.count)));
+            return Err(GpuError::Unsupported(format!("{} vertices in one dispatch", packed.count)));
         }
         let d = &self.device;
         let count = word(packed.count)?;
@@ -211,14 +276,19 @@ impl TessGpu {
         });
         let mut tri: Vec<u32> = Vec::new();
         let mut vertex_face = Vec::with_capacity(packed.count);
+        let mut parts = Vec::with_capacity(plans.len());
         let mut offset = 0u32;
-        for f in &plan.faces {
-            let n = word(f.uv.len())?;
-            for t in f.triangles.iter().filter(|t| t.iter().all(|&i| i < n)) {
-                tri.extend([offset + t[0], offset + t[1], offset + t[2]]);
+        for plan in plans {
+            let (v0, i0) = (offset, word(tri.len())?);
+            for f in &plan.faces {
+                let n = word(f.uv.len())?;
+                for t in f.triangles.iter().filter(|t| t.iter().all(|&i| i < n)) {
+                    tri.extend([offset + t[0], offset + t[1], offset + t[2]]);
+                }
+                vertex_face.extend(std::iter::repeat_n(f.face, f.uv.len()));
+                offset += n;
             }
-            vertex_face.extend(std::iter::repeat_n(f.face, f.uv.len()));
-            offset += n;
+            parts.push(Part { vertices: v0..offset, indices: i0..word(tri.len())? });
         }
         let indices = init("tess mesh indices", &words(&tri), wgpu::BufferUsages::INDEX);
         let bind = d.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -238,6 +308,7 @@ impl TessGpu {
             index_count: word(tri.len())?,
             vertex_count: count,
             vertex_face,
+            parts,
             bind,
             _inputs: [params, surfaces, data, verts],
         })
@@ -348,10 +419,12 @@ fn push_curve(data: &mut Vec<f32>, c: &EvalCurve) -> Result<(u32, u32)> {
     Ok((knots, ctrl))
 }
 
-fn pack(plan: &TessPlan) -> Result<Packed> {
-    let mut surfaces = Vec::with_capacity(plan.surfaces.len() * SURFACE_WORDS);
+/// Several plans as one: their surfaces one after another, each face's surface index offset by
+/// the surfaces of the plans before it.
+fn pack(plans: &[&TessPlan]) -> Result<Packed> {
+    let mut surfaces = Vec::with_capacity(plans.iter().map(|p| p.surfaces.len()).sum::<usize>() * SURFACE_WORDS);
     let mut data: Vec<f32> = Vec::new();
-    for s in &plan.surfaces {
+    for s in plans.iter().flat_map(|p| &p.surfaces) {
         let mut head = [0u32; SURFACE_WORDS];
         match s {
             EvalSurface::Plane { origin, du, dv } => {
@@ -394,39 +467,44 @@ fn pack(plan: &TessPlan) -> Result<Packed> {
         }
         surfaces.extend(head);
     }
-    let mut vertices = Vec::with_capacity(plan.vertex_count() * VERTEX_WORDS);
+    let mut vertices = Vec::with_capacity(plans.iter().map(|p| p.vertex_count()).sum::<usize>() * VERTEX_WORDS);
     #[cfg(not(target_arch = "wasm32"))]
     let mut fixed = Vec::new();
     let mut count = 0usize;
-    for f in &plan.faces {
-        let Some(surface) = f.surface else {
-            return Err(GpuError::Unsupported("a face without an evaluable surface".into()));
-        };
-        if surface as usize >= plan.surfaces.len() {
-            return Err(GpuError::Failed("surface index out of range".into()));
-        }
-        for (k, uv) in f.uv.iter().enumerate() {
-            let pinned = f.fixed.get(k).copied();
-            let flags = u32::from(f.flip) | if pinned.is_some() { 2 } else { 0 };
-            let p = pinned.unwrap_or(Vec3::ZERO);
-            vertices.extend([
-                (uv[0] as f32).to_bits(),
-                (uv[1] as f32).to_bits(),
-                surface,
-                flags,
-                (p.x as f32).to_bits(),
-                (p.y as f32).to_bits(),
-                (p.z as f32).to_bits(),
-                0,
-            ]);
-            if let Some(p) = pinned {
-                #[cfg(not(target_arch = "wasm32"))]
-                fixed.push((count, p));
-                #[cfg(target_arch = "wasm32")]
-                let _ = p;
+    let mut base = 0u32;
+    for plan in plans {
+        for f in &plan.faces {
+            let Some(surface) = f.surface else {
+                return Err(GpuError::Unsupported("a face without an evaluable surface".into()));
+            };
+            if surface as usize >= plan.surfaces.len() {
+                return Err(GpuError::Failed("surface index out of range".into()));
             }
-            count += 1;
+            let surface = base + surface;
+            for (k, uv) in f.uv.iter().enumerate() {
+                let pinned = f.fixed.get(k).copied();
+                let flags = u32::from(f.flip) | if pinned.is_some() { 2 } else { 0 };
+                let p = pinned.unwrap_or(Vec3::ZERO);
+                vertices.extend([
+                    (uv[0] as f32).to_bits(),
+                    (uv[1] as f32).to_bits(),
+                    surface,
+                    flags,
+                    (p.x as f32).to_bits(),
+                    (p.y as f32).to_bits(),
+                    (p.z as f32).to_bits(),
+                    0,
+                ]);
+                if let Some(p) = pinned {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    fixed.push((count, p));
+                    #[cfg(target_arch = "wasm32")]
+                    let _ = p;
+                }
+                count += 1;
+            }
         }
+        base += word(plan.surfaces.len())?;
     }
     Ok(Packed {
         surfaces,

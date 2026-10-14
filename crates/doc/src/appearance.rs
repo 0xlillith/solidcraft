@@ -103,28 +103,9 @@ impl Appearances {
 }
 
 /// The built-in appearance library: (name, colour, opacity).
-pub const LIBRARY: [(&str, [u8; 3], f64); 20] = [
-    ("Aluminum - Satin", [204, 208, 214], 1.0),
-    ("Aluminum - Anodized Black", [44, 46, 50], 1.0),
-    ("Aluminum - Anodized Blue", [52, 92, 160], 1.0),
-    ("Steel - Satin", [158, 164, 172], 1.0),
-    ("Stainless Steel - Brushed", [186, 191, 198], 1.0),
-    ("Cast Iron", [104, 104, 110], 1.0),
-    ("Brass - Polished", [208, 172, 88], 1.0),
-    ("Copper", [204, 122, 80], 1.0),
-    ("Titanium", [150, 148, 158], 1.0),
-    ("ABS - White", [236, 236, 230], 1.0),
-    ("ABS - Black", [36, 36, 38], 1.0),
-    ("ABS - Red", [196, 40, 40], 1.0),
-    ("ABS - Blue", [40, 90, 186], 1.0),
-    ("ABS - Yellow", [236, 196, 40], 1.0),
-    ("ABS - Green", [52, 150, 80], 1.0),
-    ("Rubber - Black", [28, 28, 28], 1.0),
-    ("Glass - Clear", [190, 220, 228], 0.25),
-    ("Glass - Smoked", [90, 96, 104], 0.45),
-    ("Wood - Oak", [190, 146, 92], 1.0),
-    ("Paint - Gloss White", [246, 246, 244], 1.0),
-];
+#[path = "../../../assets/appearances/library.rs"]
+mod defaults;
+pub use defaults::LIBRARY;
 
 /// A library appearance by name (case-insensitive).
 pub fn library(name: &str) -> Option<Look> {
@@ -181,12 +162,12 @@ impl Document {
     pub fn face_colors(&self, b: &crate::ModelBody) -> Vec<(usize, Look)> {
         // Face colours the body was imported with, under the design's own.
         let to8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
-        let names = crate::naming::face_names(b);
         let mut out: Vec<(usize, Look)> = match b.body.paint() {
             Some(p) => p.faces.iter().map(|f| (f.face, Look::custom(f.color.map(to8), f.opacity as f64))).collect(),
-            // Carried from an earlier version of the body: by face name.
+            // Carried from an earlier version of the body: by face name (worked out only here:
+            // the viewport asks every body for its face colours on every change).
             None => match &b.imported {
-                Some(imp) => names
+                Some(imp) => crate::naming::face_names(b)
                     .iter()
                     .enumerate()
                     .filter_map(|(i, n)| imp.faces.get(crate::naming::strip_piece(n)).map(|(c, o)| (i, Look::custom(c.map(to8), *o as f64))))
@@ -263,7 +244,7 @@ pub fn pick_tolerance(b: &crate::ModelBody) -> f64 {
 }
 
 /// The point of triangle abc nearest p.
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
     if d1 <= 0.0 && d2 <= 0.0 {

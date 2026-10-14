@@ -38,6 +38,7 @@ pub fn boxes_for(cmd: &str, n: usize) -> Vec<DimBox> {
     match (cmd, n) {
         ("sketch.line", n) if n >= 1 => vec![b("Length", Length), b("Angle", Angle)],
         ("sketch.rectangle.two_point" | "sketch.rectangle.center", 1) => vec![b("Width", Length), b("Height", Length)],
+        ("sketch.rectangle.rounded", 1) => vec![b("Width", Length), b("Height", Length), b("Radius", Length)],
         ("sketch.circle.center", 1) => vec![b("Diameter", Length)],
         ("sketch.arc.center_point", 1) => vec![b("Radius", Length)],
         ("sketch.arc.center_point", 2) => vec![b("Sweep", Angle)],
@@ -74,7 +75,7 @@ pub fn effective(app: &SolveApp, t: &Tool, h: Vec2) -> Vec2 {
             let ang = lk("Angle").unwrap_or_else(|| snap_axis(v.angle()));
             a + Vec2::from_angle(ang) * len
         }
-        ("sketch.rectangle.two_point", 1) => {
+        ("sketch.rectangle.two_point" | "sketch.rectangle.rounded", 1) => {
             let d = h - a;
             Vec2::new(a.x + lk("Width").map_or(d.x, |w| w * sign(d.x)), a.y + lk("Height").map_or(d.y, |hh| hh * sign(d.y)))
         }
@@ -104,6 +105,54 @@ pub fn effective(app: &SolveApp, t: &Tool, h: Vec2) -> Vec2 {
         },
         _ => h,
     }
+}
+
+/// The point a click places for the hover `p` (the preview draws this one): typed values win
+/// over the cursor and drop its snap; a line's free end snaps to horizontal/vertical, one on
+/// sketch geometry stays there, and one on a curve slides along it to where the axis crosses.
+pub fn placed(app: &SolveApp, t: &Tool, p: &(Vec2, Option<String>)) -> (Vec2, Option<String>) {
+    let line = t.cmd == "sketch.line";
+    if t.dims.iter().any(|b| b.locked) || (line && p.1.is_none()) {
+        return (effective(app, t, p.0), None);
+    }
+    if line && let Some(q) = on_curve_axis(app, t, p) {
+        return q;
+    }
+    p.clone()
+}
+
+/// Where the preview and the value boxes put the tool's next point for the hover `p`: for a
+/// line, exactly what a click places.
+pub fn shown(app: &SolveApp, t: &Tool, p: &(Vec2, Option<String>)) -> Vec2 {
+    if t.cmd == "sketch.line" { placed(app, t, p).0 } else { effective(app, t, p.0) }
+}
+
+/// A line end snapped onto a curve (`on:<curve>:x,y`) within the axis snap: the point where the
+/// horizontal/vertical line from the start crosses that curve near the cursor (from a circle's
+/// centre, its quadrant point), still on the curve. None: no axis snap there, or the axis misses
+/// the curve close by (the curve snap wins as it is).
+fn on_curve_axis(app: &SolveApp, t: &Tool, p: &(Vec2, Option<String>)) -> Option<(Vec2, Option<String>)> {
+    let a = t.pts.last()?.0;
+    let (curve, _) = p.1.as_deref()?.strip_prefix("on:")?.rsplit_once(':')?;
+    let v = p.0 - a;
+    let ang = snap_axis(v.angle());
+    if ang == v.angle() {
+        return None;
+    }
+    let st = app.session.world_state();
+    let sk = &st.sketch(app.session.active_sketch?)?.sketch;
+    let shape = sk.shape(sk.curve_index(curve)?)?;
+    let dir = Vec2::from_angle(ang);
+    let horizontal = dir.y.abs() < dir.x.abs();
+    let axis = solidcraft_engine::sketch::Shape::Line { a, b: a + dir };
+    let tol = 1e-9 * (1.0 + v.len());
+    let q = solidcraft_engine::sketch::intersections(&axis, &shape)
+        .into_iter()
+        // Exactly on the axis, so the command infers the horizontal/vertical constraint.
+        .map(|q| if horizontal { Vec2::new(q.x, a.y) } else { Vec2::new(a.x, q.y) })
+        .filter(|q| (*q - a).dot(dir) > tol && shape.dist(*q) <= tol && q.dist(p.0) <= v.len() * 0.1)
+        .min_by(|x, y| x.dist(p.0).total_cmp(&y.dist(p.0)))?;
+    Some((q, Some(format!("on:{curve}:{},{}", q.x, q.y))))
 }
 
 /// Angles within a few degrees of horizontal or vertical snap to it (the line is drawn
@@ -148,6 +197,16 @@ fn live(app: &SolveApp, t: &Tool, e: Vec2, px: f64) -> Vec<(f64, Vec2)> {
             vec![
                 ((e.x - a.x).abs(), Vec2::new((a.x + e.x) * 0.5, a.y - sy * off)),
                 ((e.y - a.y).abs(), Vec2::new(e.x + sx * 2.0 * off, (a.y + e.y) * 0.5)),
+            ]
+        }
+        ("sketch.rectangle.rounded", 1) => {
+            let (sx, sy) = (sign(e.x - a.x), sign(e.y - a.y));
+            let r = rounded_radius(app, t, a, e);
+            vec![
+                ((e.x - a.x).abs(), Vec2::new((a.x + e.x) * 0.5, a.y - sy * off)),
+                ((e.y - a.y).abs(), Vec2::new(e.x + sx * 2.0 * off, (a.y + e.y) * 0.5)),
+                // Outside the first corner, away from the cursor (a box there would take the click).
+                (r, Vec2::new(a.x - sx * 2.0 * off, a.y - sy * off)),
             ]
         }
         ("sketch.rectangle.center", 1) => {
@@ -230,7 +289,10 @@ pub fn dimensions(t: &Tool) -> Value {
         .dim_history
         .iter()
         .chain(&t.dims)
-        .filter(|dimension| dimension.locked && !matches!(dimension.label, "Sides" | "Rho"))
+        // A rounded rectangle's radius is its own parameter (sent with the shape), not a dimension.
+        .filter(|dimension| {
+            dimension.locked && !matches!(dimension.label, "Sides" | "Rho") && !(t.cmd == "sketch.rectangle.rounded" && dimension.label == "Radius")
+        })
         .map(|dimension| (dimension.label.to_ascii_lowercase(), json!(dimension.value)))
         .collect::<serde_json::Map<_, _>>();
     Value::Object(values)
@@ -267,6 +329,21 @@ pub fn validate(app: &SolveApp, t: &Tool) -> Result<(), String> {
     Ok(())
 }
 
+/// The corner radius a rounded rectangle from `a` to `b` gets: the typed Radius, or a fifth of
+/// the shorter side.
+pub fn rounded_radius(app: &SolveApp, t: &Tool, a: Vec2, b: Vec2) -> f64 {
+    locked(app, t, "Radius").unwrap_or_else(|| 0.2 * (b.x - a.x).abs().min((b.y - a.y).abs()))
+}
+
+/// The radius to send with the rounded rectangle: the typed expression (it becomes the radius
+/// parameter as written, "d1 / 2" included), or the default as a number.
+pub fn rounded_radius_value(app: &SolveApp, t: &Tool, a: Vec2, b: Vec2) -> Value {
+    match t.dims.iter().chain(&t.dim_history).find(|d| d.label == "Radius" && d.locked) {
+        Some(d) => json!(d.value),
+        None => json!(rounded_radius(app, t, a, b)),
+    }
+}
+
 /// A locked box value by label (for the polygon side count).
 pub fn locked_value(app: &SolveApp, t: &Tool, label: &str) -> Option<f64> {
     locked(app, t, label)
@@ -296,8 +373,7 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
     let sid = app.session.active_sketch?;
     let st = app.session.world_state();
     let plane = st.sketch(sid)?.plane;
-    let h = t.hover.as_ref().map(|x| x.0)?;
-    let e = effective(app, t, h);
+    let e = shown(app, t, t.hover.as_ref()?);
     let px = 2.0 * app.cam.half_height() / f64::from(proj.rect.height().max(1.0));
     let lv = live(app, t, e, px);
     let focus = std::mem::take(&mut t.dims_focus);
