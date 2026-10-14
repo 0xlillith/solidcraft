@@ -1,11 +1,7 @@
 //! The first local appearance-library consumer, inside the existing Appearance panel.
-use crate::{
-    SolveApp,
-    dialogs::row_label,
-    dialogs_appearance::{Ap, selected_params},
-    selection::SelInput,
-    theme::Tokens,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::dialogs_appearance::selected_params;
+use crate::{SolveApp, dialogs::row_label, dialogs_appearance::Ap, selection::SelInput, theme::Tokens};
 use egui::RichText;
 use serde_json::json;
 use solidcraft_engine::io::catalog::Catalog;

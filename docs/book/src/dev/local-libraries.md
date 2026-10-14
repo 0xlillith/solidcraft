@@ -112,7 +112,8 @@ values fail. Export inspects at most 100,000 source references, deduplicating in
 
 Native reads are bounded regular-file reads; browser reads check VFS size before cloning.
 Native no-clobber writes reuse atomic new-file publication; explicit replacement is atomic
-without reading/backing up an arbitrarily large old target. Browser VFS publication is
+without reading/backing up an arbitrarily large old target. All library command paths
+obey the active MCP/control file scope before reading or publishing, including overwrite. Browser VFS publication is
 synchronous and reuses the host's download service. No automatic discovery, asset fetch,
 relative-resource resolution, executable recipe or plugin is introduced.
 
@@ -121,4 +122,4 @@ and checked before copying; a stale selected revision needs an explicit reload/r
 The copied design remains independent after successful assignment, undo/redo and cold
 reopening. Existing saved render setups, runtime jobs and strict backend capabilities are
 unchanged. User-visible evidence and actual native/wasm results are recorded in the PR;
-the unrelated Windows kernel #796 failure is not suppressed by this library work.
+geometry/robustness checks remain separate and no reference baseline is weakened.

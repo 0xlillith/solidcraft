@@ -88,7 +88,7 @@ fn path(cmd: &str, value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
         return Err(bad(cmd, "invalid library path"));
     }
-    Ok(())
+    solidcraft_io::vfs::check(value).map_err(|e| bad(cmd, e.to_string()))
 }
 fn nested(s: &mut Session, id: &str, p: &Value) -> Result<Value> {
     crate::find_command(id).ok_or_else(|| bad("library.apply", "required assignment command is unavailable"))?.run_nested(s, p)

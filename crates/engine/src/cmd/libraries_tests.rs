@@ -61,6 +61,40 @@ fn apply_entry(s: &mut Session, file: &File, entry: &Entry, targets: Value) -> R
 }
 
 #[test]
+fn catalog_export_obeys_file_scope_in_new_file_and_overwrite_modes() {
+    let file = File::new();
+    let base = std::path::Path::new(&file.0).with_extension("scope");
+    std::fs::create_dir(&base).unwrap();
+    let root = base.join("allowed");
+    let outside = base.join("outside");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    let sentinel = outside.join("existing.json");
+    std::fs::write(&sentinel, b"previous contents").unwrap();
+    let mut s = session();
+    let before = s.doc.clone();
+    let undo = s.undo.len();
+    solidcraft_io::vfs::scoped(Some(solidcraft_io::vfs::PathScope::new([root.clone()])), || {
+        for path in [outside.join("new.json"), root.join("../outside/traversal.json"), sentinel.clone()] {
+            for overwrite in [false, true] {
+                let error = s.execute("library.export", &json!({"path":path,"overwrite":overwrite})).unwrap_err();
+                assert!(error.to_string().contains("outside the folders this agent may use"), "{error}");
+            }
+        }
+        for overwrite in [false, true] {
+            s.execute("library.export", &json!({"path":root.join("allowed.json"),"overwrite":overwrite})).unwrap();
+        }
+    });
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"previous contents");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    assert!(root.join("allowed.json").is_file());
+    assert!(Arc::ptr_eq(&before, &s.doc));
+    assert_eq!(s.undo.len(), undo);
+    assert!(!s.is_dirty());
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
 fn catalog_appearance_copy_keeps_mass_and_survives_undo_and_cold_reopen_without_file() {
     let file = File::new();
     let catalog = catalog();
