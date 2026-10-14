@@ -286,6 +286,7 @@
   "cmd.view_list": "List Named Views",
   "cmd.view_rename": "Rename Named View",
   "cmd.view_save": "New Named View",
+  "dialog.computing": "Computing… {seconds} s",
   "dialog.custom_axis": "↖ Custom Axis",
   "dialog.edit_title": "EDIT {title}",
   "dialog.select": "↖ Select",

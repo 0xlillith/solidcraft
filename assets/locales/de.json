@@ -10,6 +10,7 @@
   "browser.precision": "Genauigkeit: {precision}",
   "browser.sketch_name": "Skizze {number}",
   "browser.units": "Einheiten: {units}",
+  "dialog.computing": "Wird berechnet… {seconds} s",
   "dialog.custom_axis": "↖ Eigene Achse",
   "dialog.edit_title": "{title} bearbeiten",
   "dialog.select": "↖ Auswählen",

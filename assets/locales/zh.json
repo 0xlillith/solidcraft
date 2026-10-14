@@ -286,6 +286,7 @@
   "cmd.view_list": "列出命名视图",
   "cmd.view_rename": "重命名命名视图",
   "cmd.view_save": "新建命名视图",
+  "dialog.computing": "正在计算… {seconds} 秒",
   "dialog.custom_axis": "↖ 自定义轴",
   "dialog.edit_title": "编辑 {title}",
   "dialog.select": "↖ 选择",

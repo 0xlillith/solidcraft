@@ -10,6 +10,7 @@
   "browser.precision": "정밀도: {precision}",
   "browser.sketch_name": "스케치{number}",
   "browser.units": "단위: {units}",
+  "dialog.computing": "계산 중… {seconds}초",
   "dialog.custom_axis": "↖ 사용자 정의 축",
   "dialog.edit_title": "{title} 편집",
   "dialog.select": "↖ 선택",

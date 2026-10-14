@@ -286,6 +286,7 @@
   "cmd.view_list": "名前付きビューを一覧表示",
   "cmd.view_rename": "名前付きビューの名前を変更",
   "cmd.view_save": "新規名前付きビュー",
+  "dialog.computing": "計算中… {seconds} 秒",
   "dialog.custom_axis": "↖ カスタム軸",
   "dialog.edit_title": "{title}を編集",
   "dialog.select": "↖ 選択",
