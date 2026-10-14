@@ -10,7 +10,7 @@ card validator (#934), shared STEP text/import progress and GPU buffer chunking 
 The physical cards remain read-only candidates, independent of catalog definitions
 and rendered looks. Upstream owns document
 format 19 for editable associative offset dimensions. Saved render setups were added
-in format 20; format 21 adds opt-in opaque optical parameters without reinterpreting
+in format 20, alongside opt-in opaque optical parameters without reinterpreting
 legacy scalar looks. The Design viewport retains upstream GPU
 tessellation; the separate product scene continues to upload its prepared CPU meshes.
 The already-merged HDR input contribution is retained through its original ancestry.

@@ -141,15 +141,16 @@
 
 //! - 20: named render setups (`render.setups`) save renderer-independent intent. An absent
 //!   field defaults to no setups; older readers refuse rather than silently lose saved intent.
-//! - 21: looks can explicitly select opaque PBR parameters (`pbr`). Absent fields preserve
+//!   Under the same version, looks can explicitly select opaque PBR parameters (`pbr`). Absent fields preserve
 //!   legacy scalar shading; older readers refuse instead of silently dropping the response.
+//!   Version 19 shipped in 0.10.0; these unreleased additions share version 20.
 
 use serde_json::Value;
 
 use crate::{DocError, Document, Result};
 
 /// The format this build writes.
-pub const FORMAT: u32 = 21;
+pub const FORMAT: u32 = 20;
 
 pub fn format_string(n: u32) -> String {
     format!("solidcraft/{n}")
@@ -166,7 +167,7 @@ pub fn version_of(s: &str) -> Option<u32> {
 
 /// JSON-level upgrades: entry `i` turns format `i + 1` into `i + 2`.
 type JsonStep = fn(&mut Value) -> Result<()>;
-const JSON_STEPS: [JsonStep; 20] = [
+const JSON_STEPS: [JsonStep; 19] = [
     |_| Ok(()),
     v2_to_v3,
     v3_to_v4,
@@ -180,7 +181,6 @@ const JSON_STEPS: [JsonStep; 20] = [
     |_| Ok(()),
     |_| Ok(()),
     v13_to_v14,
-    |_| Ok(()),
     |_| Ok(()),
     |_| Ok(()),
     |_| Ok(()),
