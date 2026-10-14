@@ -10,12 +10,14 @@
 //! See `solidcraft_ui_egui::control` and docs/control-protocol.md.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 #[cfg(not(target_os = "macos"))]
-#[path = "../../app_icon.rs"]
+#[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
 mod control_server;
+#[cfg(target_os = "macos")]
+mod open_documents;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod space_mouse;
 
@@ -37,6 +39,10 @@ impl eframe::App for App {
         if ctx.input(|i| i.viewport().close_requested()) && !self.solve.quit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             solidcraft_ui_egui::documents::request_quit(&mut self.solve);
+        }
+        #[cfg(target_os = "macos")]
+        for f in open_documents::take() {
+            self.solve.open_path_async(&f);
         }
         self.solve.logic(ctx);
         #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -286,7 +292,10 @@ fn main() -> eframe::Result {
             b.with_x11();
         }));
     }
-    eframe::run_native(
+    // Files opened from Finder and the Dock arrive as events, not arguments.
+    #[cfg(target_os = "macos")]
+    open_documents::install();
+    let result = eframe::run_native(
         "SolidCraft",
         options,
         Box::new(move |cc| {
@@ -320,6 +329,12 @@ fn main() -> eframe::Result {
                 app.session.mark_saved();
                 app.session.undo.clear();
             }
+            // A launch from Finder: its files arrived before the window.
+            #[cfg(target_os = "macos")]
+            let files = {
+                open_documents::set_ui(&cc.egui_ctx);
+                [files, open_documents::take()].concat()
+            };
             for f in &files {
                 app.open_path_async(f);
             }
@@ -344,7 +359,9 @@ fn main() -> eframe::Result {
                 space_mouse,
             }))
         }),
-    )
+    );
+    control_server::remove_token_file();
+    result
 }
 
 /// Whether to run through XWayland rather than native Wayland. winit has no file drag-and-drop

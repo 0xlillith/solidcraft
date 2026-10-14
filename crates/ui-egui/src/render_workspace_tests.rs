@@ -30,29 +30,36 @@ fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
 
 #[test]
 fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
-    let mut h = Harness::new();
-    h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
-    h.app.session.mark_saved();
-    h.frames(3);
-    let camera = h.app.cam;
-    let flags = (h.app.ui.show_grid, h.app.ui.show_origin, h.app.ui.visual_style, h.app.ui.perspective);
-    let undo = h.app.session.undo.len();
-    let at = crate::scenario::rect_of("workspace_switcher").unwrap().center();
-    h.step(&json!({"click":[at.x,at.y]})).unwrap();
-    h.step(&json!({"click":{"handle":"menu:ui.workspace.render"}})).unwrap();
-    assert!(active(&h.app));
-    assert!(h.widget("Render Settings").is_some());
-    h.step(&json!({"widget":"Perspective camera"})).unwrap();
-    assert!(!h.app.session.is_dirty(), "preview edits are staged");
-    h.step(&json!({"widget":"Save Setup"})).unwrap();
-    assert_eq!(h.app.session.undo.len(), undo + 1);
-    assert_eq!(h.app.session.doc.render.setups["Studio"].camera, h.app.cam);
-    h.step(&json!({"widget":"Return to Design"})).unwrap();
-    assert!(!active(&h.app));
-    assert_eq!(h.app.cam, camera);
-    assert_eq!(flags, (h.app.ui.show_grid, h.app.ui.show_origin, h.app.ui.visual_style, h.app.ui.perspective));
-    h.app.run("edit.undo", json!({})).unwrap();
-    assert!(!h.app.session.is_dirty());
+    for language in ["en", "de", "ko"] {
+        let mut h = Harness::new();
+        h.app.preferences.language = language.into();
+        h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
+        h.app.session.mark_saved();
+        h.frames(3);
+        let camera = h.app.cam;
+        let flags = (h.app.ui.show_grid, h.app.ui.show_origin, h.app.ui.visual_style, h.app.ui.perspective);
+        let undo = h.app.session.undo.len();
+        let at = crate::scenario::rect_of("workspace_switcher").unwrap().center();
+        h.step(&json!({"click":[at.x,at.y]})).unwrap();
+        h.step(&json!({"click":{"handle":"menu:ui.workspace.render"}})).unwrap();
+        assert!(active(&h.app));
+        let heading = h.app.tr("cmd.render_settings_get").to_string();
+        let perspective = h.app.tr("render.perspective").to_string();
+        let save = h.app.tr("render.save_setup").to_string();
+        let back = h.app.tr("render.return_design").to_string();
+        assert!(h.widget(&heading).is_some(), "{language}");
+        h.step(&json!({"widget":perspective})).unwrap();
+        assert!(!h.app.session.is_dirty(), "preview edits are staged");
+        h.step(&json!({"widget":save})).unwrap();
+        assert_eq!(h.app.session.undo.len(), undo + 1);
+        assert_eq!(h.app.session.doc.render.setups["Studio"].camera, h.app.cam);
+        h.step(&json!({"widget":back})).unwrap();
+        assert!(!active(&h.app));
+        assert_eq!(h.app.cam, camera);
+        assert_eq!(flags, (h.app.ui.show_grid, h.app.ui.show_origin, h.app.ui.visual_style, h.app.ui.perspective));
+        h.app.run("edit.undo", json!({})).unwrap();
+        assert!(!h.app.session.is_dirty());
+    }
 }
 
 #[test]
