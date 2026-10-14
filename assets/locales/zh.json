@@ -960,5 +960,8 @@
   "ui.analysis": "分析",
   "ui.edit_section_analysis": "编辑截面分析",
   "cmd.material_properties_validate":"验证物理材料数据",
-  "cmd.material_properties_directional":"方向弹性模量"
+  "cmd.material_properties_directional":"方向弹性模量",
+  "cmd.library_inspect": "检查本地库",
+  "cmd.library_export": "导出设计库",
+  "cmd.library_apply": "应用本地库条目"
 }
