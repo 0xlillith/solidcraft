@@ -972,7 +972,7 @@
   "toolbar.render_image": "画像",
   "toolbar.render_scene": "シーン",
   "cmd.library_inspect": "ローカルライブラリを確認",
-  "cmd.library_export": "デザインのライブラリを書き出し",
+  "cmd.library_export": "デザインライブラリを書き出す",
   "cmd.library_apply": "ローカルライブラリ項目を適用",
   "cmd.material_properties_validate":"物理材料データを検証",
   "appearance.surface_response": "表面の応答",
