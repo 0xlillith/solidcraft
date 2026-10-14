@@ -5,7 +5,7 @@ original ancestry and are validated together on a pinned upstream revision. The
 integration PR is a reviewable combined tree; it does not assert that any constituent
 PR has merged. Maintainers can choose the combined or individual merge path.
 
-The refreshed stack incorporates upstream `0f4cda05`, including the merged physical
+The refreshed stack incorporates upstream `b5efde94`, including the merged physical
 card validator (#934), shared STEP text/import progress and GPU buffer chunking (#925).
 Physical cards are candidate engineering records, independent of assigned mass
 density and rendered looks; format 22 persists them. Upstream owns document

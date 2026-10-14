@@ -73,6 +73,10 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   not assign/persist properties; neither path provides a solver or enables rendering; see
   [the contract and staged follow-ups](docs/physical-material-cards.md).
 
+- Directional elasticity (#994) queries the validated card in material-local axes
+  through read-only `material.properties.directional`, with source/condition review.
+  It does not assign body frames, predict structural behavior or enable a solver.
+
 ## Library foundations (#785, #786, #787)
 
 - Portable catalog v2 (#1062) retains opaque PBR and validated engineering cards

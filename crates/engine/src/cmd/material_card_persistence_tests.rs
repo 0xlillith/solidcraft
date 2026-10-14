@@ -48,6 +48,8 @@ fn card_edits_preserve_mass_optics_and_geometry_and_survive_undo_reopen() {
     let mut reopened = Session::new(Document::from_json(&saved).unwrap());
     assert_eq!(reopened.execute("component.properties", &json!({})).unwrap(), mass);
     assert_eq!(reopened.doc.user_materials, s.doc.user_materials);
+    let modulus = reopened.doc.user_materials[0].physical_card.as_ref().unwrap().card().directional_modulus([1., 2., 3.]).unwrap();
+    assert_eq!(modulus.young_modulus_pa, 12.25e9);
     let doc = reopened.doc.clone();
     let before = (reopened.revision, reopened.undo.len(), reopened.camera, reopened.selection.clone());
     let list = reopened.execute("material.list", &json!({})).unwrap();
