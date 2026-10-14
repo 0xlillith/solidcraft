@@ -338,9 +338,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 if item(ui, &format!("{}…", app.tr("ui.open")), "Ctrl+O") {
-                    if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
-                        app.open_path_async(&p);
-                    }
+                    app.pick_open(|app, p| app.open_path_async(&p));
                     close = true;
                 }
                 ui.menu_button(app.tr("ui.open_recent"), |ui| {
@@ -456,9 +454,7 @@ fn save_as(app: &mut SolveApp) {
 
 fn save_as_with_extension(app: &mut SolveApp, extension: &str) {
     let name = format!("{}.{extension}", app.session.doc.name);
-    if let Some(p) = app.services.pick_save.as_ref().and_then(|f| f(&name, &[solidcraft_engine::io::DESIGN_EXT, "json"])) {
-        let _ = app.run("file.save_as", json!({"path": p}));
-    }
+    app.pick_save(&name, &[solidcraft_engine::io::DESIGN_EXT, "json"], |app, p| drop(app.run("file.save_as", json!({"path": p}))));
 }
 
 fn export(app: &mut SolveApp, ext: &str) {
@@ -468,14 +464,16 @@ fn export(app: &mut SolveApp, ext: &str) {
 /// Export to a file with extension `ext`, in `format` when the extension alone doesn't name it.
 fn export_as(app: &mut SolveApp, ext: &str, format: Option<&str>) {
     let name = format!("{}.{ext}", app.session.doc.name);
-    let Some(p) = app.services.pick_save.as_ref().and_then(|f| f(&name, &[ext])) else { return };
-    let params = match format {
-        Some(f) => json!({"path": p, "format": f}),
-        None => json!({"path": p}),
-    };
-    if app.run("file.export", params).is_ok() {
-        app.set_status(format!("Exported {p}"), false);
-    }
+    let format = format.map(str::to_string);
+    app.pick_save(&name, &[ext], move |app, p| {
+        let params = match &format {
+            Some(f) => json!({"path": p, "format": f}),
+            None => json!({"path": p}),
+        };
+        if app.run("file.export", params).is_ok() {
+            app.set_status(format!("Exported {p}"), false);
+        }
+    });
 }
 
 pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -1156,11 +1154,7 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             match k {
                 Key::N => crate::documents::new_design(app),
                 Key::Comma => crate::prefs::open_at(app, 0),
-                Key::O => {
-                    if let Some(p) = app.services.pick_open.as_ref().and_then(|f| f()) {
-                        app.open_path_async(&p);
-                    }
-                }
+                Key::O => app.pick_open(|app, p| app.open_path_async(&p)),
                 _ if !shown => {}
                 Key::Z => drop(app.run("edit.undo", json!({}))),
                 Key::Y => drop(app.run("edit.redo", json!({}))),
@@ -1219,8 +1213,6 @@ mod header_report_tests {
     fn file_menu_json_save_and_export_use_commands_and_keep_distinct_paths() {
         let mut h = crate::scenario::Harness::new();
         h.app.run("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
-        let dir = h.dir.clone();
-        h.app.services.pick_save = Some(Box::new(move |name, _extensions| Some(dir.join(name).to_string_lossy().into_owned())));
         h.frames(3);
         h.step(&json!({"click":{"handle":"appbar:folder"}})).unwrap();
         h.step(&json!({"widget":"Save As JSON…"})).unwrap();

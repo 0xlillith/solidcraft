@@ -326,10 +326,16 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.checkbox(&mut app.render_workspace.view.overwrite, overwrite_label);
     if ui.add_enabled(app.render_workspace.view.completed.is_some(), egui::Button::new(app.tr("render.image_export"))).clicked()
         && let Some(job) = app.render_workspace.view.completed
-        && let Some(path) = app.services.pick_save.as_ref().and_then(|pick| pick("render.png", &["png"]))
     {
-        let _ = app.run("render.export", json!({"job":job,"path":path,"overwrite":app.render_workspace.view.overwrite}));
+        export_image(app, job, app.render_workspace.view.overwrite);
     }
+}
+
+/// Keep the selected image and overwrite consent fixed while the document-bound picker waits.
+fn export_image(app: &mut SolveApp, job: solidcraft_engine::render::job::JobId, overwrite: bool) {
+    app.pick_save("render.png", &["png"], move |app, path| {
+        let _ = app.run("render.export", json!({"job":job,"path":path,"overwrite":overwrite}));
+    });
 }
 
 /// Convert only product surfaces; geometry budgets are admitted before vertex allocation.

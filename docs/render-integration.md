@@ -39,18 +39,22 @@ Both atomic PNG publication modes check the existing caller file scope. The
 control-channel regression rejects outside folders and traversal and permits a
 valid destination, including explicit overwrite. This guard and document-adoption
 regression now belong to standalone R4a, so its safety does not depend on this
-combined integration. Source production code in this integration matches that
-foundation; the additional guide is not a second renderer or file-access service.
+combined integration. Render engine and scene production code match that foundation. The combined UI
+additionally consumes the async picker candidate described below; it does not add
+a second renderer or file-access service.
 
 ## Picker integration before release
 
 #1114 replaces blocking native pickers to fix a macOS abort and keeps the response
-bound to the requesting document. Open render/library consumers must adopt that
-contract when integrated. For PNG export, capture the explicit completed job ID
+bound to the requesting document. This combined branch integrates its candidate
+head `c8c1b122` with original ancestry and adapts Render; this is not a claim that
+#1114 has merged upstream. Other open material/library consumers still need the
+adaptation when refreshed. For PNG export, capture the explicit completed job ID
 and overwrite choice before requesting the dialog. Do not substitute a newer image
 when its answer arrives; a closed document drops the answer and an evicted result
 fails explicitly. Verify delayed answers, cancel, tab switching/close and result
-replacement. Keep this pending dependency visible; the synchronous picker must not
+replacement. The Render consumer has dedicated delayed-answer regressions for these
+cases. Keep the upstream dependency visible; the synchronous picker must not
 be described as safe on macOS merely because the clicked test harness passes.
 
 ## Material, appearance and resource ownership

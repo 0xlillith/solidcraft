@@ -14,6 +14,14 @@ fn plate() -> SolveApp {
     SolveApp::new(s, Services::default())
 }
 
+/// What the open Create Flat Pattern dialog reports about its last export.
+fn flat_status(app: &SolveApp) -> Option<String> {
+    match app.dialog.as_ref().map(|d| &d.kind) {
+        Some(Kind::Sheet(Sm::FlatPattern { status, .. })) => status.clone(),
+        _ => None,
+    }
+}
+
 fn run_all(app: &mut SolveApp, c: Vec<(String, Value)>) {
     for (id, p) in c {
         app.run(&id, p).unwrap();
@@ -112,19 +120,47 @@ fn flat_exports_use_the_save_picker() {
     use std::sync::{Arc, Mutex};
     let mut app = plate();
     app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    app.start("sheet.flat_pattern");
+    let ctx = egui::Context::default();
     let picks = Arc::new(Mutex::new(Vec::new()));
-    let captured = picks.clone();
-    app.services.pick_save = Some(Box::new(move |name, extensions| {
-        captured.lock().unwrap().push((name.to_string(), extensions.iter().map(|x| x.to_string()).collect::<Vec<_>>()));
-        None
-    }));
-    assert_eq!(export_flat(&mut app, "Base", "csv"), "Export cancelled");
-    assert_eq!(export_flat(&mut app, "Base", "dxf"), "Export cancelled");
+    for extension in ["csv", "dxf"] {
+        let before = flat_status(&app);
+        export_flat(&mut app, "Base", extension);
+        assert_eq!(flat_status(&app), before, "nothing is reported before the picker is answered");
+        let captured = picks.clone();
+        app.poll_file_dialog(&ctx, |request| {
+            let crate::file_dialog::FileDialogRequest::Save { name, extensions } = request else { panic!("a save request") };
+            captured.lock().unwrap().push((name, extensions));
+            Box::pin(std::future::ready(None))
+        });
+        assert_eq!(flat_status(&app).as_deref(), Some("Export cancelled"));
+    }
     let picks = picks.lock().unwrap();
     assert!(picks[0].0.ends_with("-Base.csv"));
     assert_eq!(picks[0].1, vec!["csv"]);
     assert!(picks[1].0.ends_with("-Base.dxf"));
     assert_eq!(picks[1].1, vec!["dxf"]);
+    assert!(!app.file_dialog_open());
+}
+
+/// A flat export asked while another dialog is shown is refused, and the other dialog's end does not
+/// reach the flat pattern dialog.
+#[test]
+fn flat_export_is_refused_while_another_file_dialog_is_shown() {
+    use crate::file_dialog::test_support::{Slot, manual};
+    let mut app = plate();
+    app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    app.start("sheet.flat_pattern");
+    let ctx = egui::Context::default();
+    let slot = Slot::default();
+    app.pick_open(|_, _| {});
+    app.poll_file_dialog(&ctx, |_| manual(&slot));
+    export_flat(&mut app, "Base", "dxf");
+    assert!(matches!(&app.status, Some((m, _, true)) if m == crate::file_dialog::ALREADY_OPEN));
+    *slot.borrow_mut() = Some(None);
+    app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert!(!app.file_dialog_open());
+    assert_eq!(flat_status(&app), None, "the other dialog's end says nothing in the flat pattern dialog");
 }
 
 #[test]
@@ -270,13 +306,7 @@ fn pocket_export_button_uses_the_picker_and_preserves_depth_layers() {
     ] {
         h.app.run(command, params).unwrap();
     }
-    let path = h.dir.join("picked-pocket.dxf");
-    let chosen = path.to_string_lossy().into_owned();
-    h.app.services.pick_save = Some(Box::new(move |name, extensions| {
-        assert!(name.ends_with("-Body1.dxf"));
-        assert_eq!(extensions, &["dxf"]);
-        Some(chosen.clone())
-    }));
+    let path = h.dir.join(format!("{}-Body1.dxf", h.app.session.doc.name));
     h.app.start("sheet.flat_pattern");
     h.settle();
     let undo = h.app.session.undo.len();
@@ -298,12 +328,16 @@ fn bend_table_picker_writes_the_current_body() {
     let path = std::env::temp_dir().join(format!("solidcraft-bend-table-{}.csv", std::process::id()));
     let output = path.to_string_lossy().into_owned();
     let chosen = output.clone();
-    app.services.pick_save = Some(Box::new(move |_, extensions| {
-        assert_eq!(extensions, &["csv"]);
-        Some(chosen.clone())
-    }));
+    app.start("sheet.flat_pattern");
     let undo = app.session.undo.len();
-    assert_eq!(export_flat(&mut app, &body, "csv"), format!("Saved {output}"));
+    export_flat(&mut app, &body, "csv");
+    app.poll_file_dialog(&egui::Context::default(), |request| {
+        let crate::file_dialog::FileDialogRequest::Save { extensions, .. } = request else { panic!("a save request") };
+        assert_eq!(extensions, ["csv"]);
+        Box::pin(std::future::ready(Some(chosen)))
+    });
+    let Some(Kind::Sheet(Sm::FlatPattern { status, .. })) = app.dialog.as_ref().map(|d| &d.kind) else { panic!("flat dialog") };
+    assert_eq!(status.as_deref(), Some(format!("Saved {output}").as_str()));
     let contents = std::fs::read_to_string(&path).unwrap();
     std::fs::remove_file(&path).unwrap();
     assert_eq!(contents.lines().count(), 2);

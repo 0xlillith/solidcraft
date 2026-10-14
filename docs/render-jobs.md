@@ -90,8 +90,15 @@ no filesystem paths or base64 payloads are persisted in the design.
 
 The Render panel provides Check Render Request, Start Render, phase progress,
 Cancel Render and Export PNG. Replace existing file is an explicit opt-in. A failed or
-cancelled new render leaves the previous successful export available. Image controls
-and phase messages use stable offline catalog IDs in English, Japanese, Chinese,
+cancelled new render leaves the previous successful export available.
+
+Native PNG export in the combined integration uses the document-bound asynchronous
+picker from #1114. The requested job ID and overwrite choice are captured before the
+dialog opens: cancellation writes nothing, closing the originating document drops
+the answer, and an evicted image fails instead of substituting a newer result. A tab
+switch does not redirect the export to another document.
+
+Controls and phase messages use stable offline catalog IDs in English, Japanese, Chinese,
 German and Korean; command IDs and scenario handles remain unchanged.
 
 ```sh

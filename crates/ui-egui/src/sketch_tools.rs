@@ -28,6 +28,8 @@ thread_local! {
     static COMBS: RefCell<Vec<Vec<[Vec3; 2]>>> = const { RefCell::new(Vec::new()) };
     /// The image file a Canvas or Decal tool places.
     static IMAGE: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The image was just picked: the Canvas or Decal tool starts without asking again.
+    static STARTING: Cell<bool> = const { Cell::new(false) };
     /// Analysis markers shown while an analysis tool is active: (where, label).
     static MARKS: RefCell<Vec<(Vec3, String)>> = const { RefCell::new(Vec::new()) };
     /// Isocurve analysis polylines (as segments) while the tool is active.
@@ -165,10 +167,18 @@ pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
     if !matches!(id, "canvas.insert" | "canvas.decal") {
         return true;
     }
-    let path = app.services.pick_open.as_ref().and_then(|f| f());
-    let ok = path.is_some();
-    IMAGE.with(|i| *i.borrow_mut() = path);
-    ok
+    // The tool starts again once the image is picked.
+    if STARTING.replace(false) {
+        return true;
+    }
+    let id = id.to_string();
+    app.pick_open(move |app, path| {
+        IMAGE.with(|i| *i.borrow_mut() = Some(path));
+        STARTING.set(true);
+        app.start(&id);
+        STARTING.set(false);
+    });
+    false
 }
 
 fn v3(v: &Value) -> Option<Vec3> {

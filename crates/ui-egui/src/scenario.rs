@@ -46,6 +46,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::Session;
 
 use crate::control::{ControlRequest, Outcome, handle};
+use crate::file_dialog::FileDialogRequest;
 use crate::{Services, SolveApp};
 
 thread_local! {
@@ -175,15 +176,9 @@ impl Harness {
         h
     }
 
-    /// File pickers answer like a person would: save into the scenario's folder, open the file
-    /// the scenario chose.
     fn install(&mut self) {
         // Frames are laid out, never painted.
         self.app.viewport.no_pixels = true;
-        let dir = self.dir.clone();
-        self.app.services.pick_save = Some(Box::new(move |name, _| Some(dir.join(name).to_string_lossy().into_owned())));
-        let next = self.next_file.clone();
-        self.app.services.pick_open = Some(Box::new(move || next.borrow_mut().take()));
     }
 
     /// Autosave into the scenario's recovery folder (as the desktop app does into the user's).
@@ -201,10 +196,19 @@ impl Harness {
             ..Default::default()
         };
         self.app.raw_input_hook(&mut raw);
-        let app = &mut self.app;
+        let (app, dir, next_file) = (&mut self.app, &self.dir, &self.next_file);
         let mut out = self.ctx.run_ui(raw, |ui| {
             app.logic(ui.ctx());
             app.ui(ui);
+            // File pickers answer like a person would: save into the scenario's folder, open the
+            // file the scenario chose (`None`: cancelled).
+            app.poll_file_dialog(ui.ctx(), |request| {
+                let answer = match request {
+                    FileDialogRequest::Save { name, .. } => Some(dir.join(name).to_string_lossy().into_owned()),
+                    FileDialogRequest::Open => next_file.borrow_mut().take(),
+                };
+                Box::pin(std::future::ready(answer))
+            });
         });
         // Nothing is painted: drop the frame's texture changes.
         out.textures_delta.clear();

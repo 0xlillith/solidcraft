@@ -552,17 +552,20 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     ctx.copy_image((**image).clone());
                     draft.note = "Paste the image into the GitHub draft, or save the PNG if image copying is unavailable.".into();
                 }
-                if ui.add_enabled(draft.image.is_some() && app.services.pick_save.is_some(), egui::Button::new("Save screenshot…")).clicked()
-                    && let Some(image) = draft.image.as_ref()
-                    && let Some(path) =
-                        app.services.pick_save.as_ref().and_then(|pick| pick(&format!("solidcraft-issue-{}.png", app.shot_token), &["png"]))
+                if ui.add_enabled(draft.image.is_some(), egui::Button::new("Save screenshot…")).clicked()
+                    && let Some(image) = draft.image.clone()
                 {
-                    let result = crate::control::save_screenshot(image, Some(&path));
-                    draft.note = if result.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-                        "Screenshot saved. Attach the PNG in the GitHub draft.".into()
-                    } else {
-                        format!("Could not save screenshot: {}", debug(&result.get("error"), 1000))
-                    };
+                    app.pick_save(&format!("solidcraft-issue-{}.png", app.shot_token), &["png"], move |app, path| {
+                        let result = crate::control::save_screenshot(&image, Some(&path));
+                        let note = if result.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+                            "Screenshot saved. Attach the PNG in the GitHub draft.".into()
+                        } else {
+                            format!("Could not save screenshot: {}", debug(&result.get("error"), 1000))
+                        };
+                        if let Some(draft) = app.issue_report.draft.as_mut() {
+                            draft.note = note;
+                        }
+                    });
                 }
                 if ui.add_enabled(draft.image.is_some(), egui::Button::new(crate::i18n::tr_label("Remove screenshot"))).clicked() {
                     draft.image = None;

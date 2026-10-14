@@ -236,3 +236,116 @@ fn host_profiles_do_not_advertise_image_export_final_or_features() {
     assert!(host_executor(1024, false, 1).unwrap().availability != Availability::Available);
     assert!(host_executor(1024, true, 0).is_err());
 }
+
+fn completed_preview(h: &mut Harness, background: [u8; 3]) -> solidcraft_engine::render::job::JobId {
+    let reply = h.app.run("render.start", json!({"settings":{"width":16,"height":16,"background":background}})).unwrap();
+    let job = serde_json::from_value(reply["job"].clone()).unwrap();
+    let host = h.app.session.render_job_host().unwrap().clone();
+    for _ in 0..100 {
+        host.pump(16384).unwrap();
+        if h.app.session.execute("render.status", &json!({"job":job})).unwrap()["progress"]["phase"] == "completed" {
+            return job;
+        }
+    }
+    panic!("small cooperative image did not complete within the work budget");
+}
+
+fn async_export_fixture() -> (Harness, solidcraft_engine::render::job::JobId) {
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
+    h.app.session.mark_saved();
+    let job = completed_preview(&mut h, [200, 210, 220]);
+    (h, job)
+}
+
+#[test]
+fn delayed_image_export_returns_to_its_document_without_changing_history() {
+    use crate::file_dialog::test_support::{Slot, manual};
+    let (mut h, job) = async_export_fixture();
+    let path = h.dir.join("delayed.png");
+    let doc = h.app.session.doc.clone();
+    let undo = h.app.session.undo.len();
+    let ctx = egui::Context::default();
+    let slot: Slot = Default::default();
+    export_image(&mut h.app, job, false);
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert!(h.app.file_dialog_open() && !path.exists());
+    assert_eq!(h.call("ui.inspect", json!({}))["result"]["file_dialog_open"], true);
+    crate::documents::new_design(&mut h.app);
+    let other = h.app.session.doc.clone();
+    *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert_eq!(h.app.docs.active, 1);
+    assert_eq!(h.call("ui.inspect", json!({}))["result"]["file_dialog_open"], false);
+    assert!(Arc::ptr_eq(&other, &h.app.session.doc));
+    assert_eq!(&std::fs::read(&path).unwrap()[..8], b"\x89PNG\r\n\x1a\n");
+    crate::documents::switch(&mut h.app, 0);
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert_eq!(h.app.session.undo.len(), undo);
+    assert!(!h.app.session.is_dirty());
+}
+
+#[test]
+fn delayed_image_export_cancel_and_overwrite_choice_preserve_existing_files() {
+    use crate::file_dialog::test_support::{Slot, manual};
+    let (mut h, job) = async_export_fixture();
+    let path = h.dir.join("existing.png");
+    std::fs::write(&path, b"existing contents").unwrap();
+    let doc = h.app.session.doc.clone();
+    let ctx = egui::Context::default();
+    let slot: Slot = Default::default();
+    export_image(&mut h.app, job, false);
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    *slot.borrow_mut() = Some(None);
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert!(!h.app.file_dialog_open());
+    assert_eq!(std::fs::read(&path).unwrap(), b"existing contents");
+    export_image(&mut h.app, job, false);
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    h.app.render_workspace.view.overwrite = true;
+    *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert_eq!(std::fs::read(&path).unwrap(), b"existing contents", "a later checkbox change is not overwrite consent for the pending export");
+    assert!(matches!(&h.app.status, Some((_, _, true))));
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert_eq!(h.app.session.execute("render.status", &json!({"job":job})).unwrap()["progress"]["phase"], "completed");
+}
+
+#[test]
+fn delayed_image_export_never_substitutes_a_newer_retained_image() {
+    use crate::file_dialog::test_support::{Slot, manual};
+    let (mut h, job) = async_export_fixture();
+    let path = h.dir.join("old-image.png");
+    let ctx = egui::Context::default();
+    let slot: Slot = Default::default();
+    export_image(&mut h.app, job, false);
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    let newer = completed_preview(&mut h, [20, 30, 40]);
+    h.app.render_workspace.view.completed = Some(newer);
+    *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert!(!path.exists(), "the evicted requested image must fail instead of exporting the newer image");
+    assert!(matches!(&h.app.status, Some((_, _, true))));
+    assert_eq!(h.app.render_workspace.view.completed, Some(newer));
+    let newer_path = h.dir.join("new-image.png");
+    h.app.run("render.export", json!({"job":newer,"path":newer_path})).unwrap();
+    assert!(newer_path.is_file());
+}
+
+#[test]
+fn delayed_image_export_for_a_closed_document_writes_nothing() {
+    use crate::file_dialog::test_support::{Slot, manual};
+    let (mut h, job) = async_export_fixture();
+    let path = h.dir.join("closed.png");
+    let ctx = egui::Context::default();
+    let slot: Slot = Default::default();
+    export_image(&mut h.app, job, false);
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    crate::documents::new_design(&mut h.app);
+    crate::documents::close(&mut h.app, 0, true);
+    let other = h.app.session.doc.clone();
+    *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
+    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    assert!(!path.exists() && !h.app.file_dialog_open());
+    assert!(Arc::ptr_eq(&other, &h.app.session.doc));
+}
