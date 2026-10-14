@@ -1,4 +1,4 @@
-//! Scalar local libraries: inspect/export files and copy exact revisions into a design.
+//! Local material libraries: inspect/export files and copy exact revisions into a design.
 use super::CommandSpec;
 use crate::{Result, Session, params::bad};
 use serde::Deserialize;
@@ -7,9 +7,9 @@ use solidcraft_io::catalog::{Catalog, Definition, Provenance};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("library.inspect", "Inspect Local Library", inspect).noundo().doc_only()
-        .params("path: scalar library JSON; returns validated catalog and exact entry revisions, without changing the design"),
+        .params("path: v1/v2 library JSON; returns validated catalog and exact entry revisions, without changing the design"),
     CommandSpec::new("library.export", "Export Design Library", export).noundo().doc_only()
-        .params("path: .json; id? (default user.local), name?, provenance?, overwrite? false. Copies assigned looks and design-local physical definitions; never changes the design"),
+        .params("path: .json; id? (default user.local), name?, provenance?, overwrite? false, format? solidcraft-library/2 (default) | solidcraft-library/1 (refuses PBR/cards). Copies assigned looks and design-local physical definitions; never changes the design"),
     CommandSpec::new("library.apply", "Apply Local Library Entry", apply).enabled(super::not_in_sketch)
         .params("path, entry: qualified ID, revision: exact content SHA-256; targets?: {bodies?, faces?: [{body,point}], components?}; name?: physical material name on import. Copies values in one undo step; material conflicts are explicit"),
 ];
@@ -31,6 +31,11 @@ struct Export {
     provenance: Provenance,
     #[serde(default)]
     overwrite: bool,
+    #[serde(default = "default_format")]
+    format: String,
+}
+fn default_format() -> String {
+    solidcraft_io::catalog::FORMAT.into()
 }
 fn default_id() -> String {
     "user.local".into()
@@ -107,7 +112,9 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     if !request.path.to_ascii_lowercase().ends_with(".json") {
         return Err(bad(cmd, "library export path must end in .json"));
     }
-    let catalog = Catalog::from_document(&s.doc, &request.id, &request.name, request.provenance).map_err(|e| bad(cmd, e.to_string()))?;
+    let catalog = Catalog::from_document(&s.doc, &request.id, &request.name, request.provenance)
+        .and_then(|catalog| catalog.in_format(&request.format))
+        .map_err(|e| bad(cmd, e.to_string()))?;
     let bytes = catalog.encode().map_err(|e| bad(cmd, e.to_string()))?;
     #[cfg(not(target_arch = "wasm32"))]
     let result = if request.overwrite {
@@ -146,6 +153,9 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             target["appearance"] = json!(look.name);
             target["color"] = json!(look.color);
             target["opacity"] = json!(look.opacity);
+            if let Some(pbr) = look.pbr {
+                target["pbr"] = json!(pbr);
+            }
             nested(s, "appearance.assign", &target)?
         }
         Definition::Material(material) => {
@@ -172,6 +182,12 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(look) = &material.appearance {
                     params["color"] = json!(look.color);
                     params["opacity"] = json!(look.opacity);
+                    if let Some(pbr) = look.pbr {
+                        params["pbr"] = json!(pbr);
+                    }
+                }
+                if let Some(card) = &material.physical_card {
+                    params["physical_card"] = json!(card);
                 }
                 nested(s, "material.create", &params)?;
                 // The existing colour API labels a custom look after its material.

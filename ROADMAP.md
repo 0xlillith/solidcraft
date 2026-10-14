@@ -65,7 +65,7 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   material create/edit/list commands, with source/condition records, atomic refusal,
   undo/reopen and explicit density comparison. Format 22 retains cards independently
   of assigned mass density and optical looks. Scalar catalog v1 refuses data loss;
-  rich catalog transport and property-authoring UI remain separate phases.
+  rich catalog transport follows below; property-authoring UI remains separate.
 
 - Physical material card validation (#923/#922) provides typed SI mechanical and
   thermal data, per-property sources/conditions and isotropic/orthotropic stability
@@ -74,6 +74,12 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   [the contract and staged follow-ups](docs/physical-material-cards.md).
 
 ## Library foundations (#785, #786, #787)
+
+- Portable catalog v2 (#1062) retains opaque PBR and validated engineering cards
+  through existing library commands and Appearance application. V1 bytes/revisions
+  remain compatible; explicit v1 export refuses data loss. Rich definitions stay
+  design-owned after source removal and cold reopening. Texture/resource packs,
+  catalog update receipts and property-authoring UI remain later phases.
 
 - Proposed phases cover offline bundled/project/user packs, physical materials and
   appearances, editable wood mapping, and parameterized component/assembly families.

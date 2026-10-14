@@ -35,10 +35,10 @@ upgrade without reinterpretation; older readers refuse newly saved files instead
 of dropping their optical response. Undo/redo, copying and cold reopening use the
 existing design-owned values, with no external file dependency.
 
-The current scalar catalog v1 cannot represent PBR. Conversion/export refuses a
+The scalar catalog v1 cannot represent PBR. Explicit v1 export refuses a
 PBR look or physical-material default instead of silently dropping its parameters.
-In-design swatches retain and reuse the response. A richer catalog version remains
-a separate integration step.
+In-design swatches retain and reuse the response. Portable catalog v2 transports
+the parameters through the same assignments; see [local libraries](book/src/dev/local-libraries.md).
 
 ## Actual consumers and color
 

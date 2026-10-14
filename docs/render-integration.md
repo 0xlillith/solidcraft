@@ -5,10 +5,10 @@ original ancestry and are validated together on a pinned upstream revision. The
 integration PR is a reviewable combined tree; it does not assert that any constituent
 PR has merged. Maintainers can choose the combined or individual merge path.
 
-The refreshed stack incorporates upstream `01f2c78c`, including the merged physical
+The refreshed stack incorporates upstream `0f4cda05`, including the merged physical
 card validator (#934), shared STEP text/import progress and GPU buffer chunking (#925).
-The physical cards remain read-only candidates, independent of catalog definitions
-and rendered looks. Upstream owns document
+Physical cards are candidate engineering records, independent of assigned mass
+density and rendered looks; format 22 persists them. Upstream owns document
 format 19 for editable associative offset dimensions. Saved render setups were added
 in format 20; format 21 adds opt-in opaque optical parameters without reinterpreting
 legacy scalar looks. The Design viewport retains upstream GPU
@@ -21,7 +21,8 @@ The already-merged HDR input contribution is retained through its original ances
 | 2 | HDR input #837: cooperative Radiance preparation alongside the existing job host | Codec/host tests together, canvas format guard, unchanged CPU output/capabilities, native and wasm gates |
 | 3 | First local scalar library #846, building on #785/#786 and proposal #792 | Portable catalog round trips, bounded hostile input, explicit revisions/conflicts, copied definitions, undo/cold reopen and actual UI evidence |
 | 4 | Opaque PBR consumer #1004: saved optical parameters, existing assignment/editor, integrated GPU and CPU image paths | Atomic admission, unchanged mass/geometry, undo/copy/reopen, GPU/CPU color parity and original native evidence |
-| Follow-up | Texture sets, wood grain/mapping, richer catalogs and HDRI (#813) | Actual lighting/texture interpretation, resource admission and separate native/browser visual evidence |
+| 5 | Engineering-card persistence #1048 and portable library v2 #1062 | Typed file admission, atomic edits, v1 bytes/revisions, no lossy downgrade, source-independent reopen and actual library UI evidence |
+| Follow-up | Texture sets, wood grain/mapping and HDRI (#813) | Actual lighting/texture interpretation, resource admission and separate native/browser visual evidence |
 
 ## Current capability boundary
 
@@ -41,10 +42,12 @@ image and CAD state. See [backend contracts](render-backends.md),
 
 Reuse existing `Look`, design-local physical materials and assignment commands.
 Physical density, visual colour/opacity and render environments remain distinct.
-The first catalog handles scalar appearance and density/look definitions only; it
-contains no texture files, PBR parameters or environment descriptors. Selected values
+The first v1 catalog handles scalar appearance and density/look definitions only.
+V2 retains existing PBR parameters and engineering cards; neither contains texture
+files or environment descriptors. Selected values
 are copied into the existing document representation so reopening does not need the
-catalog. Catalog provenance/revisions remain in the catalog; this first slice adds
+catalog. Catalog provenance/revisions remain in the catalog, while engineering-card
+sources/conditions are copied with their card. This adds
 no persistent catalog-update link or new document-format version. It does not claim
 the complete resource/provenance embedding proposed in #792.
 

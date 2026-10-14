@@ -4,7 +4,7 @@ use serde_json::json;
 fn catalog() -> Catalog {
     let entry = Entry::new(
         "user.test",
-        Definition::Appearance(ScalarLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8 }),
+        Definition::Appearance(LibraryLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8, pbr: None }),
         Provenance::default(),
     )
     .unwrap();
@@ -34,7 +34,7 @@ fn strict_schema_rejects_unknown_kinds_fields_versions_and_bad_identity() {
     for changed in [
         {
             let mut v = value.clone();
-            v["format"] = json!("solidcraft-library/2");
+            v["format"] = json!("solidcraft-library/99");
             v
         },
         {
@@ -96,14 +96,17 @@ fn scalar_validation_refuses_nonfinite_density_opacity_counts_strings_and_oversi
         assert!(
             Entry::new(
                 "user.test",
-                Definition::Material(ScalarMaterial { name: "Timber".into(), density_g_cm3: density, appearance: None }),
+                Definition::Material(LibraryMaterial { name: "Timber".into(), density_g_cm3: density, appearance: None, physical_card: None }),
                 Provenance::default()
             )
             .is_err()
         );
     }
     for name in ["".into(), "x".repeat(129), "bad\nname".into(), " leading".into()] {
-        assert!(Entry::new("user.test", Definition::Appearance(ScalarLook { name, color: [1, 2, 3], opacity: 1.0 }), Provenance::default()).is_err());
+        assert!(
+            Entry::new("user.test", Definition::Appearance(LibraryLook { name, color: [1, 2, 3], opacity: 1.0, pbr: None }), Provenance::default())
+                .is_err()
+        );
     }
     assert!(Catalog::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
     let source = Provenance { source_url: Some("x".repeat(2049)), ..Default::default() };
@@ -112,7 +115,7 @@ fn scalar_validation_refuses_nonfinite_density_opacity_counts_strings_and_oversi
 #[test]
 fn design_export_deduplicates_exact_looks_and_keeps_physical_properties_distinct() {
     let mut doc = Document::default();
-    let look = ScalarLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8 }.to_look();
+    let look = LibraryLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8, pbr: None }.to_look();
     doc.appearances.bodies.insert("Body1".into(), look.clone());
     doc.appearances.bodies.insert("Body2".into(), look.clone());
     doc.user_materials.push(UserMaterial { name: "Timber density".into(), density: 0.7, appearance: Some(look), physical_card: None });

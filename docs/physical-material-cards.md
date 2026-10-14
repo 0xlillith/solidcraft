@@ -134,8 +134,9 @@ elastic moduli in Pa above the coordinate limit. At most 1000 user materials are
 admitted by the normal file reader, matching command creation.
 
 Portable scalar catalog v1 refuses a material carrying a card rather than losing
-its engineering data. Rich versioned catalog transport and property-authoring UI
-remain separate work. The existing JSON commands expose full inspection through
+its engineering data. Portable catalog v2 transports validated cards and default
+PBR looks without coupling them. Property-authoring UI remains separate work.
+The existing JSON commands expose full inspection through
 CLI/MCP/control; no source is fetched and no engineering dataset is bundled.
 
 `solidcraft-cli run examples/material-card.json --results --save candidate.solidcraft`
@@ -148,8 +149,8 @@ the cold-reopened card and its validation report.
 
 ## Next phases and references
 
-Rich library integration follows the design-owned persistence phase, coordinated
-with #863/#1046. Curves,
+Rich library integration (#1062) follows the design-owned persistence phase,
+coordinated with #863/#1046. Curves,
 uncertainty, hardness scales, viscoelasticity and failure criteria remain later work.
 Visual PBR/texture/environment consumption uses the renderer contract requested
 in #813, with #909/#837 input utilities; accepting physical data advertises none

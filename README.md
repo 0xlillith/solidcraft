@@ -142,6 +142,9 @@ rebuild with no errors, replayed here at 2× speed.
   and measurement conditions separately from mass density and visual appearance.
   Numerical validation does not certify design values or provide an analysis solver.
   See [physical cards and command inspection](docs/physical-material-cards.md).
+- **Local libraries:** copy PBR appearances and engineering material cards between
+  designs using versioned offline catalogs. Existing scalar catalogs remain readable;
+  explicit legacy export refuses data it cannot preserve. See [local libraries](docs/book/src/dev/local-libraries.md).
 - **Desktop app** (egui + wgpu): toolbar with workspace tabs, browser, timeline, 3D viewport with
   axis view and navigation bar, sketch tools, feature dialogs, command palette, and a JSON-lines
   control channel so agents and tests can drive it.

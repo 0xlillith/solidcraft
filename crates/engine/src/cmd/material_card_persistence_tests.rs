@@ -68,7 +68,11 @@ fn omission_retains_null_clears_and_unrelated_material_edits_retain_cards() {
         s.execute("material.edit", &p).unwrap();
         assert_eq!(s.doc.user_materials[1].physical_card, original);
     }
-    let error = solidcraft_io::catalog::ScalarMaterial::from_material(&s.doc.user_materials[1]).unwrap_err();
+    let mut only_card = Document::default();
+    only_card.user_materials.push(s.doc.user_materials[1].clone());
+    let error = solidcraft_io::catalog::Catalog::from_document(&only_card, "user.fixture", "Original", Default::default())
+        .and_then(|c| c.in_format(solidcraft_io::catalog::V1_FORMAT))
+        .unwrap_err();
     assert!(error.to_string().contains("engineering cards"));
     s.execute("material.edit", &json!({"material":"Renamed","physical_card":null})).unwrap();
     assert!(s.doc.user_materials[1].physical_card.is_none());
