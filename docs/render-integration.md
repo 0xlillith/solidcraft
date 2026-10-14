@@ -13,7 +13,7 @@ merge or describe compiled wasm as verified browser interaction.
 | 1 | R2 #667, R3 #706, R4a #800: document-owned setups, product viewport, bounded CPU PNG jobs | Setup migration/save/reopen/undo, document and job isolation, strict capabilities, cancellation, native evidence and repository gates |
 | 2 | Merged HDR input #837 and surface reference #1019 | Bounded codec/BRDF tests; unchanged existing CPU capabilities until actual consumers exist |
 | 3 | Opaque product PBR #1046; engineering-card persistence #1060 | Explicit supported optical fields, source/condition preservation, one-step undo, cold reopening, unchanged geometry and independent assigned density |
-| 4 | Scalar catalogs #863; richer transport #1086; inspector/import #1094 | Exact selected revisions, copied definitions, hostile-input bounds, no lossy downgrade, scoped file access, reviewed import and actual native evidence |
+| 4 | Merged scalar catalogs #863; richer transport #1086; inspector/import #1094 | Exact selected revisions, copied definitions, hostile-input bounds, no lossy downgrade, scoped file access, reviewed import and actual native evidence |
 | 5 | Environment consumer #813, then texture/wood mapping #1004/#786 using resource admission #909 | Actual linear/sRGB interpretation and lighting, persistent object-local frames, cancellation/memory bounds, transformed instances, separate native/browser evidence |
 | 6 | Family-specific optical/data quality under #922 | Wood L/R/T and moisture/grade conditions; polymer grade/process/temperature/rate; glass thickness/IOR/absorption; metal alloy/temper/conductor response and brushed anisotropy; source/license review before shipping data |
 
@@ -48,8 +48,9 @@ a second renderer or file-access service.
 #1114 replaces blocking native pickers to fix a macOS abort and keeps the response
 bound to the requesting document. This combined branch integrates its candidate
 head `c8c1b122` with original ancestry and adapts Render; this is not a claim that
-#1114 has merged upstream. Other open material/library consumers still need the
-adaptation when refreshed. For PNG export, capture the explicit completed job ID
+#1114 has merged upstream. The merged scalar library #863 is also adapted here, with delayed-answer editor
+identity and overwrite-consent checks. Other open richer material/library consumers
+still need the adaptation when refreshed. For PNG export, capture the explicit completed job ID
 and overwrite choice before requesting the dialog. Do not substitute a newer image
 when its answer arrives; a closed document drops the answer and an evicted result
 fails explicitly. Verify delayed answers, cancel, tab switching/close and result

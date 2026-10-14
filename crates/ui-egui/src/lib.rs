@@ -19,6 +19,7 @@ pub mod delete;
 pub mod dialogs;
 pub mod dialogs_appearance;
 pub mod dialogs_assembly;
+pub mod dialogs_library;
 pub mod dialogs_motion;
 pub mod dialogs_move;
 pub mod dialogs_parts;
@@ -127,6 +128,8 @@ mod sketch_text_move;
 pub mod sketch_tools;
 pub mod stand_up;
 pub mod theme;
+#[cfg(test)]
+mod thin_extrude_tests;
 pub mod timeline;
 pub mod timeline_left;
 pub mod titlebar;

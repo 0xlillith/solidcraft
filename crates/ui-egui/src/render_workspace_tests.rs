@@ -59,7 +59,7 @@ fn adopting_into_blank_document_resets_render_draft_and_preserves_hosts() {
 
 #[test]
 fn clicked_image_controls_complete_cancel_and_export_without_dirtying_the_design() {
-    for language in ["en", "de", "ko"] {
+    for language in ["en", "de", "ko", "ru"] {
         let mut h = Harness::new();
         h.app.preferences.language = language.into();
         h.frames(1);
@@ -130,7 +130,7 @@ fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
 
 #[test]
 fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
-    for language in ["en", "de", "ko"] {
+    for language in ["en", "de", "ko", "ru"] {
         let mut h = Harness::new();
         h.app.preferences.language = language.into();
         h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
