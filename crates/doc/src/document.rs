@@ -1712,6 +1712,9 @@ pub struct Visibility {
     pub hidden_sketches: Vec<u64>,
     /// Finished sketches shown although a feature uses them.
     pub shown_sketches: Vec<u64>,
+    /// Assembly joints by id: their glyphs are not drawn (they still constrain and move).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_joints: Vec<u64>,
 }
 
 impl Visibility {
@@ -1722,6 +1725,7 @@ impl Visibility {
             && self.hidden_origin.is_empty()
             && self.hidden_sketches.is_empty()
             && self.shown_sketches.is_empty()
+            && self.hidden_joints.is_empty()
     }
 }
 
