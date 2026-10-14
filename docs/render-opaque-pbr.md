@@ -82,7 +82,7 @@ Silhouettes are excluded because CPU images use 2x supersampling and that test's
 target uses 1x. This is a scoped parity result, not browser or universal GPU certification.
 
 Command tests check unchanged geometry/mass, atomic refusal, undo/redo, cold reopen,
-physical default/face precedence, retained scalar format-20 looks and explicit v1
+physical default/face precedence, retained scalar format-20 looks upgraded to 21 and explicit v1
 catalog refusal. A clicked editor regression checks one transaction and reopening
 the same selected body. Native media and exact current-head gate results belong
 in the PR. wasm compilation and actual browser interaction are separate evidence.

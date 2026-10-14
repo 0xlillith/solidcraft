@@ -557,6 +557,12 @@ fn plane_items(app: &SolveApp, id: u64) -> Vec<Item> {
 fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
     let Some(j) = app.session.doc.assembly.joints.iter().find(|j| j.id == id) else { return Vec::new() };
     let rigid = j.kind == solidcraft_engine::doc::joints::JointKind::Rigid;
+    // Show/Hide acts on every joint picked in the browser (this one among them).
+    let mut joints = app.tree.picked_joints.clone();
+    if !joints.contains(&id) {
+        joints = vec![id];
+    }
+    let hidden = !joints.iter().any(|j| app.session.joint_visible(*j));
     vec![
         act("ui.editJoint", "Edit Joint", "joint").with(json!({ "joint": id })),
         act("ui.editJoint", "Edit Joint Limits", "").with(json!({ "joint": id })).on(!rigid),
@@ -567,6 +573,9 @@ fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
         Item::sep(),
         cmd(app, "joint.delete", "Delete").key("Del").with(json!({ "joint": id })),
         act("ui.rename", "Rename", "").with(json!({ "joint": id })),
+        Item::sep(),
+        // Hiding a joint hides only its glyph: it still constrains and moves the parts.
+        act("browser.visibility", "Show/Hide", "eye").key("V").with(json!({ "joints": joints, "visible": hidden })),
     ]
 }
 
@@ -712,6 +721,13 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         return v;
     }
     let ents: Vec<String> = curves.iter().chain(points.iter()).cloned().collect();
+    for pattern in &ss.sketch.patterns {
+        if ents.iter().any(|id| pattern.contains(id))
+            || app.session.selection.iter().filter_map(|sel| crate::sketch_modify_ui::point_id(&app.session, sel)).any(|id| pattern.contains(id))
+        {
+            v.push(act("ui.editSketchPattern", "Edit Sketch Pattern", "sketch_circ_pattern").with(json!({"pattern":pattern.id})));
+        }
+    }
     if crate::sketch_text::selected_entity(app).is_some() {
         v.push(cmd(app, "sketch.edit_text", "Edit Text"));
     }
@@ -798,6 +814,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.delete" if item.params.is_some() => crate::delete::request(app, p),
         "ui.delete" => delete(app),
         "ui.finishSketch" => app.finish_sketch(),
+        "ui.editSketchPattern" => {
+            if let Some(id) = p.get("pattern").and_then(Value::as_str) {
+                crate::sketch_modify_ui::edit_pattern(app, id);
+            }
+        }
         "ui.hide" => {
             for b in bodies {
                 if !app.session.visibility.hidden_bodies.contains(&b) {
@@ -1096,7 +1117,7 @@ pub fn delete(app: &mut SolveApp) {
 
 /// Show/Hide (the V key): what is selected in the viewport or picked in the browser flips its
 /// visibility (bodies, faces' and edges' bodies, sketches, construction and origin planes and
-/// axes, components' bodies, canvases). When some are shown and some hidden, all are hidden.
+/// axes, components' bodies, canvases, joints' glyphs). When some are shown and some hidden, all are hidden.
 pub fn toggle_visibility(app: &mut SolveApp) {
     use solidcraft_engine::doc::FeatureKind;
     let paths: Vec<Vec<u64>> =
@@ -1126,7 +1147,9 @@ pub fn toggle_visibility(app: &mut SolveApp) {
         })
         .collect();
     let canvases = app.tree.picked_canvases.clone();
+    let joints = app.tree.picked_joints.clone();
     let any_visible = bodies.iter().any(|b| !app.session.visibility.hidden_bodies.contains(b))
+        || joints.iter().any(|j| app.session.joint_visible(*j))
         || sketches.iter().any(|s| crate::browser::sketch_visible(app, *s))
         || origin.iter().any(|o| !app.session.visibility.hidden_origin.contains(o))
         || app.session.doc.canvases.iter().any(|c| canvases.contains(&c.id) && c.visible);
@@ -1139,6 +1162,9 @@ pub fn toggle_visibility(app: &mut SolveApp) {
     }
     for s in sketches {
         crate::browser::set_sketch_visible(app, s, !hide);
+    }
+    if !joints.is_empty() {
+        let _ = app.run("browser.visibility", json!({ "joints": joints, "visible": !hide }));
     }
     for c in canvases {
         let _ = app.run("canvas.edit", json!({ "canvas": c, "visible": !hide }));

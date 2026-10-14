@@ -10,26 +10,26 @@ fn fixture() -> Session {
 }
 
 #[test]
-fn format19_scalar_looks_upgrade_and_format20_setups_keep_their_meaning() {
+fn format20_scalar_looks_upgrade_and_format21_setups_keep_their_meaning() {
     let mut s = fixture();
     s.execute("appearance.assign", &json!({"bodies":["Specimen"],"appearance":"Original legacy look","color":"#b47846","opacity":0.4})).unwrap();
     let before = serde_json::to_value(&s.doc.appearances).unwrap();
     let mut legacy = serde_json::to_value(&*s.doc).unwrap();
-    legacy["format"] = json!("solidcraft/19");
+    legacy["format"] = json!("solidcraft/20");
     legacy.as_object_mut().unwrap().remove("render");
     let upgraded = crate::doc::Document::from_json(&legacy.to_string()).unwrap();
-    assert_eq!(upgraded.format, "solidcraft/20");
+    assert_eq!(upgraded.format, "solidcraft/21");
     assert_eq!(serde_json::to_value(&upgraded.appearances).unwrap(), before);
     assert!(upgraded.render.setups.is_empty());
     s.execute("render.settings.set", &json!({"name":"Studio","set":{"width":320,"height":240}})).unwrap();
     let mut saved: serde_json::Value = serde_json::from_str(&s.doc.to_json()).unwrap();
-    saved["format"] = json!("solidcraft/20");
+    saved["format"] = json!("solidcraft/21");
     let d = crate::doc::Document::from_json(&saved.to_string()).unwrap();
     assert_eq!(d.format, crate::doc::format::format_string(crate::doc::format::FORMAT));
     assert_eq!(serde_json::to_value(&d.appearances).unwrap(), before);
     assert!(d.appearances.bodies["Specimen"].pbr.is_none());
     assert_eq!(d.render.setups["Studio"].width, 320);
-    for version in [21, 22] {
+    for version in [22, 23] {
         saved["format"] = json!(format!("solidcraft/{version}"));
         assert!(crate::doc::Document::from_json(&saved.to_string()).is_err());
     }
@@ -52,7 +52,7 @@ fn opaque_response_preserves_geometry_mass_undo_and_cold_reopening() {
     assert!(after.meshes[0].surface.is_some());
     assert_eq!(after.required_features(), vec![crate::render::RenderFeature::Pbr]);
     let saved = s.doc.to_json();
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["format"], "solidcraft/20");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&saved).unwrap()["format"], "solidcraft/21");
     let look = &s.doc.appearances.bodies["Specimen"];
     assert_eq!(crate::doc::config::appearance_cell(&serde_json::to_string(look).unwrap()).unwrap().as_ref(), Some(look));
     let list = s.execute("appearance.list", &json!({})).unwrap();

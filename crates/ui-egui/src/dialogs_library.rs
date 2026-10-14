@@ -92,6 +92,7 @@ fn export(app: &mut SolveApp, k: &mut Ap, path: String, overwrite: bool) {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load(app: &mut SolveApp, library: &mut LocalLibrary) -> Result<String, String> {
     let result = app.run("library.inspect", json!({"path":library.path}))?;
     let catalog: Catalog = serde_json::from_value(result.get("catalog").cloned().ok_or("Library response is missing")?).map_err(|e| e.to_string())?;

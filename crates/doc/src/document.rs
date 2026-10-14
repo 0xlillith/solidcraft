@@ -1712,6 +1712,9 @@ pub struct Visibility {
     pub hidden_sketches: Vec<u64>,
     /// Finished sketches shown although a feature uses them.
     pub shown_sketches: Vec<u64>,
+    /// Assembly joints by id: their glyphs are not drawn (they still constrain and move).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden_joints: Vec<u64>,
 }
 
 impl Visibility {
@@ -1722,6 +1725,7 @@ impl Visibility {
             && self.hidden_origin.is_empty()
             && self.hidden_sketches.is_empty()
             && self.shown_sketches.is_empty()
+            && self.hidden_joints.is_empty()
     }
 }
 
@@ -2374,8 +2378,14 @@ impl Document {
 
     /// Evaluate an expression against the document's parameters.
     pub fn eval(&self, e: &str, kind: Kind) -> Result<f64> {
-        let (vals, _) = self.param_values();
-        Self::eval_in(&vals, e, kind)
+        // The parameters are evaluated only when the expression names one: most expressions an
+        // agent sends are plain values, and evaluating every parameter of a large design for
+        // each of them made every new feature cost more than the last.
+        let vals: std::cell::OnceCell<std::collections::BTreeMap<String, expr::Value>> = std::cell::OnceCell::new();
+        expr::eval_with(e, &|n| {
+            vals.get_or_init(|| self.param_values().0).get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`")))
+        })?
+        .to_kind(kind)
     }
 
     pub fn eval_in(vals: &std::collections::BTreeMap<String, expr::Value>, e: &str, kind: Kind) -> Result<f64> {

@@ -47,12 +47,11 @@ has at most 32 setups. Validation also runs during document deserialization.
 
 ## Persistence and evaluation
 
-Document format 20 adds `render: {setups: {name: setup}}`. Released format-19 and older designs migrate with
+Document format 21 adds `render: {setups: {name: setup}}`. Format-20 and older designs migrate with
 an empty map; empty render state is omitted when saved. Existing geometry, appearances,
 opacity and physical materials are untouched. Plain JSON, design containers and crash
-journal replay use the same document/command representation. Older builds reject format
-20 instead of silently losing setups. All unreleased persisted additions share version 20;
-this slice adds only render intent. No runtime capability, job, texture or device is saved.
+journal replay use the same document/command representation. Older builds (0.11.0 reads up to 20) reject format
+21 instead of silently losing setups. This slice adds only render intent. No runtime capability, job, texture or device is saved.
 
 The engine avoids geometry evaluation only after proving that the document differs
 solely in validated render settings, with unchanged active sketch and pending moves.

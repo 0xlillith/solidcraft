@@ -17,8 +17,8 @@ merge or describe compiled wasm as verified browser interaction.
 | 5 | Environment consumer #813, then texture/wood mapping #1004/#786 using resource admission #909 | Actual linear/sRGB interpretation and lighting, persistent object-local frames, cancellation/memory bounds, transformed instances, separate native/browser evidence |
 | 6 | Family-specific optical/data quality under #922 | Wood L/R/T and moisture/grade conditions; polymer grade/process/temperature/rate; glass thickness/IOR/absorption; metal alloy/temper/conductor response and brushed anisotropy; source/license review before shipping data |
 
-The released document format is 19; unreleased persisted additions share format 20.
-Saved render setups migrate from 17/18/19 with older-reader refusal. The Design
+The released document format is 20 (v0.11.0); render setups and opaque PBR looks are saved
+under format 21. Saved render setups migrate from older formats with older-reader refusal. The Design
 viewport retains upstream display-plan tessellation; Render uses its separate
 prepared product meshes. Neither runtime jobs nor device handles are persisted.
 See the versioned contracts rather than reserving another format independently.
