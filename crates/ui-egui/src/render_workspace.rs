@@ -521,6 +521,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             cap: [0.0; 4],
             images: Vec::new(),
             analysis: [0.0; 8],
+            analysis_colors: [0.0; 36],
             access: None,
             outline: false,
             eye: [eye.x as f32, eye.y as f32, eye.z as f32, if camera.fov > 0.0 { 1.0 } else { 0.0 }],
