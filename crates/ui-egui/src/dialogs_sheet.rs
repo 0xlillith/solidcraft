@@ -3,9 +3,6 @@
 //! Sheet Metal Rules (the rule manager) and Create Flat Pattern (a flat view of the part with
 //! its bend lines, the bend table and DXF export).
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Stroke, pos2, vec2};
 use serde_json::{Map, Value, json};
 use solidcraft_engine::Sel;
@@ -410,12 +407,12 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     }
                     row_label(ui, "");
                     if ui.button("Export DXF…").clicked() {
-                        export_flat(app, v["body"].as_str().unwrap_or(""), "dxf");
+                        *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "dxf"));
                     }
                     ui.end_row();
                     row_label(ui, "");
                     if ui.button("Export Bend Table…").clicked() {
-                        export_flat(app, v["body"].as_str().unwrap_or(""), "csv");
+                        *status = Some(export_flat(app, v["body"].as_str().unwrap_or(""), "csv"));
                     }
                     ui.end_row();
                     if let Some(s) = status {
@@ -436,38 +433,29 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     enter
 }
 
-/// Ask where to save the flat pattern's DXF or bend table; the flat pattern dialog shows the
-/// outcome when the picker is answered.
-fn export_flat(app: &mut SolveApp, body: &str, extension: &str) {
+fn export_flat(app: &mut SolveApp, body: &str, extension: &str) -> String {
     let name = format!("{}-{body}.{extension}", app.session.doc.name);
-    let (body, command) = (body.to_string(), if extension == "csv" { "sheet.export_bend_table" } else { "sheet.export_dxf" });
-    if app.refuse_if_file_dialog_open() {
-        return;
-    }
-    let picked = Rc::new(Cell::new(false));
-    let flag = picked.clone();
+    let body = body.to_string();
+    let command = if extension == "csv" { "sheet.export_bend_table" } else { "sheet.export_dxf" };
     app.pick_save(&name, &[extension], move |app, path| {
-        flag.set(true);
-        let message = match app.run(command, json!({"body": body, "path": path})) {
-            Ok(_) => {
-                app.set_status(format!("Exported {path}"), false);
-                format!("Saved {path}")
+        let message = if let Some(path) = path {
+            match app.run(command, json!({"body": body, "path": path})) {
+                Ok(_) => {
+                    app.set_status(format!("Exported {path}"), false);
+                    format!("Saved {path}")
+                }
+                Err(e) => e,
             }
-            Err(e) => e,
+        } else {
+            "Export cancelled".into()
         };
-        show_flat_status(app, message);
-    });
-    app.after_file_dialog(move |app| {
-        if !picked.get() {
-            show_flat_status(app, "Export cancelled".into());
+        if let Some(d) = app.dialog.as_mut()
+            && let Kind::Sheet(Sm::FlatPattern { status, .. }) = &mut d.kind
+        {
+            *status = Some(message);
         }
     });
-}
-
-fn show_flat_status(app: &mut SolveApp, message: String) {
-    if let Some(Dialog { kind: Kind::Sheet(Sm::FlatPattern { status, .. }), .. }) = app.dialog.as_mut() {
-        *status = Some(message);
-    }
+    "Choose an export file…".into()
 }
 
 // ---- commands ----

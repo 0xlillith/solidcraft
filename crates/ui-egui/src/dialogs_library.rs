@@ -31,7 +31,13 @@ fn editor<'a>(app: &'a mut SolveApp, token: &Arc<()>) -> Option<&'a mut Ap> {
 }
 
 fn save_library(app: &mut SolveApp, token: Arc<()>, overwrite: bool) {
+    let origin = app.session.doc.clone();
     app.pick_save("my-library.solidcraft-library.json", &["json"], move |app, path| {
+        let Some(path) = path else { return };
+        if !Arc::ptr_eq(&origin, &app.session.doc) {
+            app.set_status("The library export document changed while choosing its destination", true);
+            return;
+        }
         match app.run("library.export", json!({"path":path,"overwrite":overwrite})) {
             Ok(result) => {
                 let parsed = result.get("catalog").cloned().and_then(|v| serde_json::from_value::<Catalog>(v).ok()).map(display_order);
@@ -56,6 +62,7 @@ fn save_library(app: &mut SolveApp, token: Arc<()>, overwrite: bool) {
 #[cfg(not(target_arch = "wasm32"))]
 fn open_library(app: &mut SolveApp, token: Arc<()>) {
     app.pick_open(move |app, path| {
+        let Some(path) = path else { return };
         let Some(k) = editor(app, &token) else { return };
         let mut local = k.local.clone();
         local.path = path;
@@ -69,7 +76,22 @@ fn open_library(app: &mut SolveApp, token: Arc<()>) {
     });
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Exports the design's library to `path` and shows it as the local library.
+fn export(app: &mut SolveApp, k: &mut Ap, path: String, overwrite: bool) {
+    k.note = Some(match app.run("library.export", json!({"path":path,"overwrite":overwrite})) {
+        Ok(result) => {
+            let parsed = result.get("catalog").cloned().and_then(|v| serde_json::from_value::<Catalog>(v).ok()).map(display_order);
+            let count = parsed.as_ref().map_or(0, |c| c.entries.len());
+            k.local.path = path;
+            k.local.catalog = parsed;
+            k.local.selected = None;
+            k.local.search.clear();
+            format!("Saved {count} reusable definitions. The design is unchanged.")
+        }
+        Err(error) => error,
+    });
+}
+
 fn load(app: &mut SolveApp, library: &mut LocalLibrary) -> Result<String, String> {
     let result = app.run("library.inspect", json!({"path":library.path}))?;
     let catalog: Catalog = serde_json::from_value(result.get("catalog").cloned().ok_or("Library response is missing")?).map_err(|e| e.to_string())?;
@@ -94,7 +116,11 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelInpu
         let save = ui.button(crate::i18n::tr_label("Export design library..."));
         crate::scenario::publish_handle("library:export", save.rect.center());
         if save.clicked() {
-            save_library(app, k.local.token.clone(), k.local.overwrite);
+            if app.services.pick_save.is_some() {
+                save_library(app, k.local.token.clone(), k.local.overwrite);
+            } else if !k.local.path.is_empty() {
+                export(app, k, k.local.path.clone(), k.local.overwrite);
+            }
         }
         ui.label(
             RichText::new("Apply your appearance first. Exports assigned appearances and materials created in this design.")

@@ -47,18 +47,21 @@ a second renderer or file-access service.
 
 ## Picker integration before release
 
-#1114 replaces blocking native pickers to fix a macOS abort and keeps the response
-bound to the requesting document. This combined branch integrates its candidate
-head `c8c1b122` with original ancestry and adapts Render; this is not a claim that
-#1114 has merged upstream. The merged scalar library #863 is also adapted here, with delayed-answer editor
-identity and overwrite-consent checks. Other open richer material/library consumers
-still need the adaptation when refreshed. For PNG export, capture the explicit completed job ID
-and overwrite choice before requesting the dialog. Do not substitute a newer image
-when its answer arrives; a closed document drops the answer and an evicted result
-fails explicitly. Verify delayed answers, cancel, tab switching/close and result
-replacement. The Render consumer has dedicated delayed-answer regressions for these
-cases. Keep the upstream dependency visible; the synchronous picker must not
-be described as safe on macOS merely because the clicked test harness passes.
+The merged upstream #1127 service (`file_picker`) replaces the earlier #1114
+candidate in this branch. There is one picker service, provided by main. Its future
+returns a selected path or cancellation; the event loop continues drawing/resizing
+while model input, tab switching/closing and control engine commands wait.
+The compatibility inspection flag `file_dialog_open` mirrors `file_picker_busy`
+and exposes no paths. Render and library callbacks capture overwrite consent and
+retain explicit job/editor/document identity. An evicted image fails instead of
+substituting a newer result. Cancellation writes nothing. Source/host changes that
+replace the requesting document refuse the export; a replaced editor cannot receive
+an old library response. Controlled future regressions cover these boundaries.
+
+Earlier native responsiveness evidence and tab-routing tests used #1114's candidate
+and keep their original pins. They are not proof of the new hold-input policy.
+The upstream service's own tests cover held input and resize frames; add native
+review evidence before describing the refreshed product workflow as GUI-verified.
 
 ## Material, appearance and resource ownership
 

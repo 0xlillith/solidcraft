@@ -75,6 +75,10 @@ Product images use `render.preflight/start/status/cancel/export` through `engine
 Keep the returned session-scoped job ID for subsequent calls; status does not block or
 render. See [render jobs](render-jobs.md) for capture, cancellation and export semantics.
 
+While an interactive native file picker is open, `ui.inspect` reports `file_picker_busy: true`.
+Engine commands, `ui.file` and `ui.home` requests wait for its answer; window resizing,
+inspection and screenshots remain available.
+
 Every `sketch.*` command that changes a sketch adds `created: {points, curves, constraints,
 dimensions}` to its result (and `wires` for 3D curves): the ids of what it added, in creation
 order, next to whatever else the command returns (`curves`, `sides`, `corners`…). Sketch ids are
@@ -97,7 +101,7 @@ unit regardless of the design, pass an expression with one: `"value": "50 mm"` o
 
 | Method | Params | Notes |
 |---|---|---|
-| `ui.inspect` | — | UI state, pending file dialog (`file_dialog_open`: queued or awaiting an answer, no path), what is hidden (`visibility`: bodies, origin and construction items, sketches; set it with the `browser.visibility` command), viewport rect, camera, active tool/dialog, the status line (`status`: text and whether it is an error), hover, renderer, timings, live preview (`active`, `busy`, `error`, `ms`, bodies it stands in for) |
+| `ui.inspect` | — | UI state, pending file picker (`file_picker_busy`; compatibility alias `file_dialog_open`, no path), what is hidden (`visibility`: bodies, origin and construction items, sketches; set it with the `browser.visibility` command), viewport rect, camera, active tool/dialog, the status line (`status`: text and whether it is an error), hover, renderer, timings, live preview (`active`, `busy`, `error`, `ms`, bodies it stands in for) |
 | `ui.set` | any `UiState` field (`tab`, `perspective`, `showGrid`, `dark`, …), and `hiddenBodies`, `hiddenOrigin`, `hiddenSketches`, `shownSketches` (whole lists; `browser.visibility` changes single items) | `dark: false` switches to the light theme |
 | `ui.view` | `view`: `front`, `back`, `top`, `bottom`, `left`, `right`, `iso`, `home`, `fit`; `animate` (bool, default false: snap) | |
 | `ui.start` | `command` | like a toolbar click: starts the sketch tool or dialog for the command |
@@ -120,7 +124,7 @@ unit regardless of the design, pass an expression with one: `"value": "50 mm"` o
 | `ui.key` | `key` (egui key name, `Enter`, `Escape`…), `cmd?`, `shift?` | |
 | `ui.text` | `text` | typed text |
 | `ui.screenshot` | `path?` | PNG of the window (needs a presented frame) |
-| `ui.render` | `path`, `width?`, `height?` | CPU render of the model with the current camera (no window needed); cut by the section the viewport shows (`inspect.section`, an open Section Analysis dialog's preview, a sketch's Slice), with the cut face capped |
+| `ui.render` | `path`, `width?`, `height?` | CPU render of the model with the current camera (no window needed), in the window's theme (light or dark; `solidcraft-cli snapshot` keeps the light colours); cut by the section the viewport shows (`inspect.section`, an open Section Analysis dialog's preview, a sketch's Slice), with the cut face capped |
 | `ui.confirm` | `accept?`: bool | answers the Delete confirmation (shown when a delete takes other features with it or makes some fail); without `accept`, what it lists |
 | `ui.documents` | `action?`: `new`, `switch`, `close`, `quit`; `index?`; `force?` (close without asking); `answer?`: `save`, `dont_save`, `cancel` (answers "save changes?") | the open designs (tabs): names, unsaved flags, the active one, a pending "save changes?" prompt, whether a quit is asking |
 | `ui.file` | `path`; `insert?`: bool | starts an interactive background Open or Insert; poll `ui.inspect.file_busy` for completion; the window stays responsive |

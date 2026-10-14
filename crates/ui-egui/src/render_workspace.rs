@@ -336,9 +336,15 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
-/// Keep the selected image and overwrite consent fixed while the document-bound picker waits.
+/// Keep the selected image and overwrite consent fixed while the upstream picker holds model input.
 fn export_image(app: &mut SolveApp, job: solidcraft_engine::render::job::JobId, overwrite: bool) {
+    let origin = app.session.doc.clone();
     app.pick_save("render.png", &["png"], move |app, path| {
+        let Some(path) = path else { return };
+        if !Arc::ptr_eq(&origin, &app.session.doc) {
+            app.set_status("The render export document changed while choosing its destination", true);
+            return;
+        }
         let _ = app.run("render.export", json!({"job":job,"path":path,"overwrite":overwrite}));
     });
 }

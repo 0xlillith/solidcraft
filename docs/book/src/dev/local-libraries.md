@@ -24,13 +24,13 @@ unless **Replace existing library file** is explicitly selected. Export is a sna
 the design definitions, not an automatic merge with entries in an existing catalog.
 Editing a copied look/material uses the normal commands and does not edit its source.
 
-The combined render integration adapts these pickers to #1114's asynchronous service.
-A response remains bound to the requesting design; overwrite consent is captured
-before the picker opens. Export snapshots that design when `library.export` runs
-after choosing the destination, so intervening programmatic edits can be included.
-Closing the Appearance editor and opening another does not let an old picker replace
-the new editor's draft. Cancellation does not read or write the selected library.
-The upstream #1114 dependency remains explicit until merged.
+The combined render integration uses main's merged #1127 asynchronous picker.
+Model edits and tab changes wait for its answer while drawing/resizing continues.
+Overwrite consent is captured before opening; export snapshots the design when
+`library.export` runs after choosing the destination. Document identity is checked,
+and an old library answer cannot replace another Appearance editor. Cancellation
+does not read or write a library. The earlier #1114 candidate is no longer a runtime
+dependency of the refreshed consumer.
 
 The desktop panel applies appearances. Physical-material import/assignment is available
 through `library.apply`; imported definitions also appear in the existing material list.

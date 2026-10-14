@@ -257,11 +257,14 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
         Some((_, "export")) => {
             let text = crate::toolbar_custom::export(app).to_string();
             app.pick_save("SolidCraft shortcuts.json", &["json"], move |app, path| {
-                app.keymap.message = std::fs::write(&path, text).err().map(|e| format!("export: {e}"));
+                if let Some(path) = path {
+                    app.keymap.message = std::fs::write(&path, text).err().map(|e| format!("export: {e}"));
+                }
             });
         }
         Some((_, "import")) => {
             app.pick_open(|app, path| {
+                let Some(path) = path else { return };
                 let r = std::fs::read_to_string(&path)
                     .map_err(|e| e.to_string())
                     .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()))

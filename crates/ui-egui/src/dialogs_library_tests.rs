@@ -65,21 +65,22 @@ fn start_appearance(h: &mut Harness) -> Result<Arc<()>, String> {
 }
 
 #[test]
-fn async_library_export_is_bound_to_its_document_after_a_tab_switch() {
-    use crate::file_dialog::test_support::{Slot, manual};
+fn async_library_export_holds_its_document_until_the_answer() {
+    use crate::picker_test_support::{Slot, save};
     let (mut h, token) = appearance_fixture().unwrap();
     let original = h.app.session.doc.clone();
     let path = h.dir.join("delayed-library.json");
     let ctx = egui::Context::default();
     let slot: Slot = Default::default();
+    save(&mut h.app, &slot);
     save_library(&mut h.app, token, false);
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    crate::file_picker::tick(&mut h.app, &ctx);
     assert!(!path.exists());
     crate::documents::new_design(&mut h.app);
     let other = h.app.session.doc.clone();
     *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
-    assert_eq!(h.app.docs.active, 1);
+    crate::file_picker::tick(&mut h.app, &ctx);
+    assert_eq!(h.app.docs.active, 0, "upstream holds tab changes while a picker is pending");
     assert!(Arc::ptr_eq(&other, &h.app.session.doc));
     let catalog = Catalog::read(&path.to_string_lossy()).unwrap();
     assert_eq!(catalog.entries.len(), 1);
@@ -91,47 +92,75 @@ fn async_library_export_is_bound_to_its_document_after_a_tab_switch() {
 
 #[test]
 fn async_library_export_captures_overwrite_consent_and_cancel_writes_nothing() {
-    use crate::file_dialog::test_support::{Slot, manual};
+    use crate::picker_test_support::{Slot, save};
     let (mut h, token) = appearance_fixture().unwrap();
     let path = h.dir.join("existing-library.json");
     std::fs::write(&path, b"keep this file").unwrap();
     let original = h.app.session.doc.clone();
     let ctx = egui::Context::default();
     let slot: Slot = Default::default();
+    save(&mut h.app, &slot);
     save_library(&mut h.app, token.clone(), false);
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    crate::file_picker::tick(&mut h.app, &ctx);
     editor(&mut h.app, &token).unwrap().local.overwrite = true;
     *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    crate::file_picker::tick(&mut h.app, &ctx);
     assert_eq!(std::fs::read(&path).unwrap(), b"keep this file");
     assert!(matches!(&h.app.status, Some((_, _, true))));
     save_library(&mut h.app, token, false);
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    crate::file_picker::tick(&mut h.app, &ctx);
     *slot.borrow_mut() = Some(None);
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
-    assert!(!h.app.file_dialog_open());
+    crate::file_picker::tick(&mut h.app, &ctx);
+    assert!(!h.app.file_picker_busy());
     assert_eq!(std::fs::read(&path).unwrap(), b"keep this file");
     assert!(Arc::ptr_eq(&original, &h.app.session.doc));
 }
 
 #[test]
 fn async_library_open_does_not_replace_a_new_appearance_editor() {
-    use crate::file_dialog::test_support::{Slot, manual};
+    use crate::picker_test_support::{Slot, save};
     let (mut h, token) = appearance_fixture().unwrap();
     let path = h.dir.join("source-library.json");
     h.app.run("library.export", json!({"path":path})).unwrap();
     let original = h.app.session.doc.clone();
     let ctx = egui::Context::default();
     let slot: Slot = Default::default();
-    open_library(&mut h.app, token);
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
-    h.app.dialog = None;
+    save(&mut h.app, &slot);
+    // Prepare a different editor before the picker holds user commands, then model
+    // an internal host replacing it while the old asynchronous answer is pending.
+    let original_editor = h.app.dialog.take();
     let newer = start_appearance(&mut h).unwrap();
     editor(&mut h.app, &newer).unwrap().local.path = "new editor draft".into();
+    let replacement_editor = h.app.dialog.take();
+    h.app.dialog = original_editor;
+    crate::picker_test_support::open(&mut h.app, &slot);
+    open_library(&mut h.app, token);
+    crate::file_picker::tick(&mut h.app, &ctx);
+    h.app.dialog = replacement_editor;
     *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
-    h.app.poll_file_dialog(&ctx, |_| manual(&slot));
+    crate::file_picker::tick(&mut h.app, &ctx);
     let k = editor(&mut h.app, &newer).unwrap();
     assert_eq!(k.local.path, "new editor draft");
     assert!(k.local.catalog.is_none());
     assert!(Arc::ptr_eq(&original, &h.app.session.doc));
+}
+
+#[test]
+fn delayed_library_export_refuses_an_internally_changed_design_without_overwriting() {
+    use crate::picker_test_support::{Slot, save};
+    let (mut h, token) = appearance_fixture().unwrap();
+    let path = h.dir.join("keep.json");
+    std::fs::write(&path, b"keep library").unwrap();
+    let slot: Slot = Default::default();
+    save(&mut h.app, &slot);
+    save_library(&mut h.app, token, true);
+    h.app.session.execute("appearance.assign", &json!({"bodies":["Body1"],"color":[1,2,3]})).unwrap();
+    let changed = h.app.session.doc.clone();
+    let history = (h.app.session.undo.len(), h.app.session.revision);
+    *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
+    crate::file_picker::tick(&mut h.app, &egui::Context::default());
+    assert_eq!(std::fs::read(path).unwrap(), b"keep library");
+    assert!(Arc::ptr_eq(&changed, &h.app.session.doc));
+    assert_eq!((h.app.session.undo.len(), h.app.session.revision), history);
+    assert!(matches!(&h.app.status, Some((_, _, true))));
 }
