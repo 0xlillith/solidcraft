@@ -980,5 +980,6 @@
   "appearance.dielectric_ior": "誘電体の屈折率",
   "appearance.pbr_help": "この表面はレンダリング作業空間または製品PNGで確認できます。屈折や透過には対応していません。",
   "render.opaque_preview_help": "不透明PBRと単色表示、アルファ合成による透明表示に対応します。屈折、HDRI、最終レンダリングにはまだ対応していません。",
-  "render.opaque_image_summary": "プレビューPNG · 不透明PBR · アルファ合成の透明表示"
+  "render.opaque_image_summary": "プレビューPNG · 不透明PBR · アルファ合成の透明表示",
+  "cmd.material_properties_directional":"方向別弾性率"
 }
