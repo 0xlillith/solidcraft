@@ -5,7 +5,10 @@ original ancestry and are validated together on a pinned upstream revision. The
 integration PR is a reviewable combined tree; it does not assert that any constituent
 PR has merged. Maintainers can choose the combined or individual merge path.
 
-The refreshed stack incorporates upstream `3669d4b3`. Upstream now owns document
+The refreshed stack incorporates upstream `01f2c78c`, including the merged physical
+card validator (#934), shared STEP text/import progress and GPU buffer chunking (#925).
+The physical cards remain read-only candidates, independent of catalog definitions
+and rendered looks. Upstream owns document
 format 19 for editable associative offset dimensions, so saved render setups use format 20 with
 explicit migration coverage for 17, 18 and 19. The Design viewport retains upstream GPU
 tessellation; the separate product scene continues to upload its prepared CPU meshes.
@@ -52,12 +55,12 @@ does not edit the CAD design, and applying a definition is one undoable design e
 
 Run `cargo xtask ci` before each integration/code arc is committed. Record actual
 counts, platform, pinned upstream and any failure in the PR, separately from remote
-checks. Existing Windows kernel issue #796 is not fixed or suppressed by render work.
-No geometry baseline or test assertion is weakened to publish an integration.
-On upstream `3669d4b3`, the refreshed full local run also reported robustness-golden
-failures; the engine and GPU test binaries were bounded after 15 minutes without
-complete summaries. Those interrupted binaries are not passes. The PR records the
-exact failed cases, focused reproductions and limits separately from completed gates.
+checks. The earlier Windows geometry failures #796/#878 were resolved by the now-merged
+#906; render work neither suppressed them nor weakened their baselines. Historical
+interrupted test binaries remain incomplete evidence, not passes. Current local CI
+still stops at the independently tracked Windows MCP lint #907. The PR records
+completed focused checks and actual remote results separately; no full local green
+gate is inferred from them.
 Native compilation, wasm compilation and actual browser interaction are separate
 claims. Use original small examples and actual app/PNG evidence for visible changes;
 do not commit generated review media or commercial reference assets.

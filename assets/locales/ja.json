@@ -971,5 +971,6 @@
   "toolbar.render_scene": "シーン",
   "cmd.library_inspect": "ローカルライブラリを確認",
   "cmd.library_export": "デザインのライブラリを書き出し",
-  "cmd.library_apply": "ローカルライブラリ項目を適用"
+  "cmd.library_apply": "ローカルライブラリ項目を適用",
+  "cmd.material_properties_validate":"物理材料データを検証"
 }

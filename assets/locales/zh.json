@@ -971,5 +971,6 @@
   "toolbar.render_scene": "场景",
   "cmd.library_inspect": "检查本地库",
   "cmd.library_export": "导出设计库",
-  "cmd.library_apply": "应用本地库条目"
+  "cmd.library_apply": "应用本地库条目",
+  "cmd.material_properties_validate":"验证物理材料数据"
 }

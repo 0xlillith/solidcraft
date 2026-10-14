@@ -971,5 +971,6 @@
   "toolbar.render_scene": "SCENE",
   "cmd.library_inspect": "Inspect Local Library",
   "cmd.library_export": "Export Design Library",
-  "cmd.library_apply": "Apply Local Library Entry"
+  "cmd.library_apply": "Apply Local Library Entry",
+  "cmd.material_properties_validate":"Validate Physical Material Data"
 }
