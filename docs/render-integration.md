@@ -9,8 +9,9 @@ The refreshed stack incorporates upstream `01f2c78c`, including the merged physi
 card validator (#934), shared STEP text/import progress and GPU buffer chunking (#925).
 The physical cards remain read-only candidates, independent of catalog definitions
 and rendered looks. Upstream owns document
-format 19 for editable associative offset dimensions, so saved render setups use format 20 with
-explicit migration coverage for 17, 18 and 19. The Design viewport retains upstream GPU
+format 19 for editable associative offset dimensions. Saved render setups were added
+in format 20; format 21 adds opt-in opaque optical parameters without reinterpreting
+legacy scalar looks. The Design viewport retains upstream GPU
 tessellation; the separate product scene continues to upload its prepared CPU meshes.
 The already-merged HDR input contribution is retained through its original ancestry.
 
@@ -19,15 +20,19 @@ The already-merged HDR input contribution is retained through its original ances
 | 1 | R2 #667, R3 #706, R4a #800: saved setups, integrated product workspace and bounded CPU PNG jobs | Setup save/reopen/undo, document isolation, strict capabilities, cancellation, native exports and full repository gate |
 | 2 | HDR input #837: cooperative Radiance preparation alongside the existing job host | Codec/host tests together, canvas format guard, unchanged CPU output/capabilities, native and wasm gates |
 | 3 | First local scalar library #846, building on #785/#786 and proposal #792 | Portable catalog round trips, bounded hostile input, explicit revisions/conflicts, copied definitions, undo/cold reopen and actual UI evidence |
-| Follow-up | Texture sets, wood grain/mapping and HDRI/PBR renderer consumption (#813) | Shared contracts proposed in #1004, actual lighting/texture interpretation, resource admission and separate native/browser visual evidence |
+| 4 | Opaque PBR consumer #1004: saved optical parameters, existing assignment/editor, integrated GPU and CPU image paths | Atomic admission, unchanged mass/geometry, undo/copy/reopen, GPU/CPU color parity and original native evidence |
+| Follow-up | Texture sets, wood grain/mapping, richer catalogs and HDRI (#813) | Actual lighting/texture interpretation, resource admission and separate native/browser visual evidence |
 
 ## Current capability boundary
 
 The GPU host provides the product **viewport**. The CPU product executor provides
-bounded preview **PNG images**, with approximate sorted transparency. The Radiance
+bounded preview **PNG images**, with opt-in opaque PBR and approximate sorted
+transparency for legacy transparent looks. The [fixed studio consumer](render-opaque-pbr.md)
+has no HDRI, transmission or cast shadows. The Radiance
 utility prepares linear RGB values in their source colour space; it is not a lighting
-implementation. Adding its codec never adds HDRI/PBR/refraction/final/EXR support to
-an executor. Unsupported requests remain explicit errors, preserving the last valid
+implementation. Adding its codec never adds rendering capabilities; the opaque
+consumer independently installs PBR in the actual product executors. HDRI/refraction/
+final/EXR remain unsupported. Refused image requests preserve the last valid
 image and CAD state. See [backend contracts](render-backends.md),
 [settings](render-settings.md), [workspace](render-workspace.md),
 [jobs](render-jobs.md) and [HDR input](render-hdr-input.md).

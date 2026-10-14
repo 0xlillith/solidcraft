@@ -2,8 +2,10 @@
 
 R4a adds bounded CPU preview images to the Render workspace. The installed `builtin` /
 `cpu-product` executor supports Preview, Image and PNG. It does not promise refraction,
-HDRI, PBR, exposure, final mode or EXR; those requests fail explicitly. The legacy
-snapshot renderer and GPU viewport retain their existing behavior.
+HDRI, exposure, final mode or EXR; those requests fail explicitly. The subsequent
+[opaque PBR consumer](render-opaque-pbr.md) adds opt-in direct-lit surfaces through
+the same host. Legacy scalar looks and the Design snapshot renderer retain their
+existing shading.
 
 ## One command path
 

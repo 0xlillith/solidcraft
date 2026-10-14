@@ -97,6 +97,9 @@ pub fn admit(scene: &ProductScene, request: &ImageRequest) -> Result<Admission> 
         for count in [m.seams.capacity(), m.smooth_edges.capacity(), m.sharp_edges.capacity()] {
             add_bytes(&mut geometry, count, 1)?;
         }
+        if body.surface.is_some() && body.opacity != 1.0 {
+            return Err(invalid("opaque PBR requires opacity 1"));
+        }
         if !body.opacity.is_finite() || !(0.0..=1.0).contains(&body.opacity) {
             return Err(invalid("invalid body opacity"));
         }
@@ -104,7 +107,7 @@ pub fn admit(scene: &ProductScene, request: &ImageRequest) -> Result<Admission> 
     // Three bounded 16-byte lists, a conservative map-node allowance, and codec overhead.
     let preparation = triangles
         .checked_mul(48)
-        .and_then(|n| faces.checked_mul(96).and_then(|f| n.checked_add(f)))
+        .and_then(|n| faces.checked_mul(160).and_then(|f| n.checked_add(f)))
         .and_then(|n| n.checked_add(scene.meshes.len() as u64 * 128 + 262_144))
         .ok_or_else(|| limit("work list size overflow"))?;
     let total = geometry
@@ -147,10 +150,12 @@ impl Draw {
 
 struct Triangle {
     points: [[f64; 3]; 3],
+    world: [Vec3; 3],
     normals: [Vec3; 3],
     inv_w: [f64; 3],
     colour: [f64; 3],
     opacity: f64,
+    surface: Option<crate::surface::OpaqueSurface>,
     centre_depth: f64,
     area: f64,
     bounds: [usize; 4],
@@ -375,7 +380,18 @@ impl ImageTask {
             return Err(invalid("non-finite product triangle"));
         }
         let look = self.looks.get(draw.body as usize).and_then(|looks| mesh.tri_face.get(draw.triangle as usize).and_then(|face| looks.get(face)));
-        let (colour, opacity) = look.map_or((body.color, body.opacity), |look| (look.color, look.opacity));
+        let (colour, opacity, surface) = look.map_or((body.color, body.opacity, body.surface), |look| (look.color, look.opacity, look.surface));
+        if surface.is_some() && opacity != 1.0 {
+            return Err(invalid("opaque PBR requires opacity 1"));
+        }
+        let normals = if surface.is_some() {
+            [crate::surface::unit_direction(na), crate::surface::unit_direction(nb), crate::surface::unit_direction(nc)]
+                .map(|n| n.map_err(|e| invalid(&e.to_string())))
+        } else {
+            [Ok(normals[0]), Ok(normals[1]), Ok(normals[2])]
+        };
+        let [na, nb, nc] = normals;
+        let normals = [na?, nb?, nc?];
         if opacity <= 0.0 {
             return Ok(None);
         }
@@ -407,10 +423,12 @@ impl ImageTask {
         }
         Ok(Some(Triangle {
             points,
+            world,
             normals,
             inv_w,
             colour: colour.map(decode),
             opacity,
+            surface,
             centre_depth,
             area,
             bounds: [x0 as usize, x1 as usize, y0 as usize, y1 as usize],
@@ -525,7 +543,8 @@ impl ImageTask {
             return Ok(());
         }
         let triangle = self.triangle.as_mut().ok_or_else(|| invalid("missing raster triangle"))?;
-        raster_pixel(triangle, self.sw, self.back, &mut self.pixels, &mut self.depth)?;
+        let eye = (self.request.camera.fov > 0.0).then(|| self.request.camera.eye());
+        raster_pixel(triangle, self.sw, self.back, eye, &mut self.pixels, &mut self.depth)?;
         triangle.x += 1;
         if triangle.x > triangle.bounds[1] {
             triangle.x = triangle.bounds[0];
@@ -610,7 +629,7 @@ impl ImageTask {
     }
 }
 
-fn raster_pixel(t: &Triangle, width: usize, back: Vec3, pixels: &mut [[u8; 4]], depth: &mut [f32]) -> Result<()> {
+fn raster_pixel(t: &Triangle, width: usize, back: Vec3, eye: Option<Vec3>, pixels: &mut [[u8; 4]], depth: &mut [f32]) -> Result<()> {
     let [a, b, c] = t.points;
     let (x, y) = (t.x as f64 + 0.5, t.y as f64 + 0.5);
     let w0 = ((b[0] - x) * (c[1] - y) - (b[1] - y) * (c[0] - x)) / t.area;
@@ -643,7 +662,15 @@ fn raster_pixel(t: &Triangle, width: usize, back: Vec3, pixels: &mut [[u8; 4]], 
         return Ok(());
     }
     let n = t.normals.iter().zip(weights).fold(Vec3::ZERO, |v, (n, w)| v + *n * (w / sum)).normalized().unwrap_or(Vec3::Z);
-    let colour = crate::raster::shade(n, back, t.colour);
+    let colour = if let Some(surface) = t.surface {
+        let world = t.world.iter().zip(weights).fold(Vec3::ZERO, |p, (v, w)| p + *v * (w / sum));
+        let view = eye.map_or(back, |eye| eye - world);
+        let radiance = crate::studio::shade(surface, n, view).map_err(|e| invalid(&e.to_string()))?;
+        let mapped = crate::studio::tone_map(radiance).map_err(|e| invalid(&e.to_string()))?;
+        [mapped.x, mapped.y, mapped.z]
+    } else {
+        crate::raster::shade(n, back, t.colour)
+    };
     if colour.iter().any(|v| !v.is_finite()) {
         return Err(invalid("non-finite shaded colour"));
     }

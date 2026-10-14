@@ -56,7 +56,8 @@ Saved exposure/environment/output fields are not newly applied to shading or exp
 
 `render.backends` always retains the built-in `cpu-raster` preview/PNG image executor.
 Only an installed UI GPU host adds `gpu-viewport`, advertising **Preview / Viewport**
-with no image formats or HDRI/PBR/refraction/progressive features. The host reports
+with no image formats or HDRI/refraction/progressive features. The installed
+[opaque PBR consumer](render-opaque-pbr.md) adds the `pbr` feature. The host reports
 effective limits from its created device and depth attachment: at most 4096 pixels
 per dimension and 4,194,304 pixels, within the 256 MiB pixel scratch admission policy.
 The estimate includes the selected MSAA colour/depth cost; it excludes scene geometry,
@@ -77,11 +78,13 @@ Reinstalling the host invalidates product uploads. This is not a general device-
 render-job or cancellation protocol; those ownership mechanisms belong to R4.
 
 Transparency uses the existing raster far/near alpha-blending approximation, without
-refraction, physically based materials or HDR illumination. R3 adds no HDRI assets,
-export job, result gallery or Bevy dependency. Render persistence uses format 20 because upstream assigned format 19 to editable
-associative offset-distance dimensions while R2 was pending.
+refraction or HDR illumination. Opaque PBR uses a separate surface batch in the
+same installed renderer. R3 itself added no export job; R4a supplies CPU product
+PNG jobs. There is no result gallery or Bevy dependency. Saved setups were added
+in format 20; format 21 adds opt-in optical parameters to existing looks.
 `ui.render` remains the existing Design CPU snapshot API; `ui.screenshot` captures
-the actual integrated Render workspace. No product-image export is implied.
+the actual integrated Render workspace. Product-image export uses `render.start`
+and `render.export`, rather than the Design snapshot API.
 
 ## Reproduce
 

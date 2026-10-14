@@ -31,10 +31,19 @@ pub fn extract(s: &Session) -> Result<ProductScene> {
                     face: u32::try_from(face).map_err(|_| EngineError::Other("render face index exceeds the mesh contract".into()))?,
                     color: look.color,
                     opacity: look.opacity.clamp(0.0, 1.0),
+                    surface: look.opaque_surface().map_err(|e| EngineError::Other(e.to_string()))?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        scene.meshes.push(ProductMesh { name: body.name.clone(), mesh, color, opacity: s.doc.model_body_opacity(body).clamp(0.0, 1.0), faces });
+        let surface = s.doc.model_body_look(body).map(|l| l.opaque_surface()).transpose().map_err(|e| EngineError::Other(e.to_string()))?.flatten();
+        scene.meshes.push(ProductMesh {
+            name: body.name.clone(),
+            mesh,
+            color,
+            opacity: s.doc.model_body_opacity(body).clamp(0.0, 1.0),
+            surface,
+            faces,
+        });
     }
     Ok(scene)
 }

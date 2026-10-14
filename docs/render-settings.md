@@ -3,7 +3,8 @@
 Named setups save common render intent in the document. They do not start a render,
 apply the navigation camera or make a currently unavailable backend available.
 The integrated workspace and jobs consume these settings through their own capability
-checks. Assets and PBR remain follow-ups of [#620](https://github.com/bherbruck/solidcraft/issues/620);
+checks. [Opaque PBR](render-opaque-pbr.md) is an opt-in appearance response; texture
+and environment assets remain follow-ups of [#620](https://github.com/bherbruck/solidcraft/issues/620);
 see [the combined integration boundary](render-integration.md).
 
 ## Commands

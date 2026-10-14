@@ -11,6 +11,8 @@ pub mod job;
 pub mod lighting;
 mod product;
 mod raster;
+pub mod studio;
+pub mod surface;
 
 pub use backend::{
     Availability, BackendDescriptor, BackendId, ExecutorDescriptor, ExecutorId, MAX_RENDER_ID_BYTES, RenderFeature, RenderFormat, RenderLimits,

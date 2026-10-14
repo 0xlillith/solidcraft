@@ -169,6 +169,7 @@ fn import_rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &[SelI
                 if let Definition::Appearance(look) = entry.definition {
                     k.color = look.color;
                     k.opacity = look.opacity;
+                    k.pbr = None;
                     k.look = Some(look.name.clone());
                     k.remove_override = false;
                     k.applied = selected_params(k, picked);

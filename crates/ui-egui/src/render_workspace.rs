@@ -81,7 +81,12 @@ pub fn host_executor(max_dimension: u32, depth: bool, samples: u32) -> Result<Ex
         } else {
             Availability::Unavailable { reason: "product preview requires an installed device with a depth buffer".into() }
         },
-        profiles: vec![RenderProfile { mode: RenderMode::Preview, operation: RenderOperation::Viewport, formats: Vec::new(), features: Vec::new() }],
+        profiles: vec![RenderProfile {
+            mode: RenderMode::Preview,
+            operation: RenderOperation::Viewport,
+            formats: Vec::new(),
+            features: vec![solidcraft_engine::render::RenderFeature::Pbr],
+        }],
         limits: RenderLimits { max_dimension: u64::from(max_dimension.clamp(1, 4096)), ..Default::default() },
         scratch: ScratchLayout {
             sample_scale: 1,
@@ -175,7 +180,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.heading("Render Settings");
                 ui.label("Integrated preview");
-                ui.small("Raster shading and blended transparency. Refraction, HDRI and final rendering are not available yet.");
+                ui.small(app.tr("render.opaque_preview_help"));
                 ui.separator();
                 let names: Vec<_> = app.session.doc.render.setups.keys().cloned().collect();
                 let old_name = app.render_workspace.view.name.clone();
@@ -250,7 +255,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.heading("Render Image");
-    ui.small("CPU preview image · PNG · approximate transparency");
+    ui.small(app.tr("render.opaque_image_summary"));
     ui.horizontal(|ui| {
         ui.label("Width");
         if ui.add(egui::DragValue::new(&mut app.render_workspace.view.draft.width).range(1..=4096)).changed() {
@@ -335,7 +340,7 @@ pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
     let bytes = scene
         .meshes
         .iter()
-        .try_fold(0usize, |n, m| m.mesh.triangles.len().checked_mul(3 * crate::gpu::TRI_SIZE).and_then(|x| n.checked_add(x)))
+        .try_fold(0usize, |n, m| m.mesh.triangles.len().checked_mul(3 * crate::gpu::PBR_SIZE).and_then(|x| n.checked_add(x)))
         .ok_or("product geometry size overflow")?;
     if bytes > MAX_GEOMETRY_BYTES {
         return Err("product preview exceeds the 128 MiB geometry upload budget".into());
@@ -343,6 +348,9 @@ pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     let mut gpu = GpuScene::default();
     for body in &scene.meshes {
+        if body.faces.len() > 262_144 {
+            return Err("product preview exceeds the face-appearance admission cap".into());
+        }
         if !body.opacity.is_finite()
             || !(0.0..=1.0).contains(&body.opacity)
             || body.faces.iter().any(|f| !f.opacity.is_finite() || !(0.0..=1.0).contains(&f.opacity))
@@ -353,27 +361,46 @@ pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
         body.name.hash(&mut hash);
         body.color.hash(&mut hash);
         body.opacity.to_bits().hash(&mut hash);
+        hash_surface(body.surface, &mut hash);
         let looks: std::collections::BTreeMap<_, _> = body.faces.iter().map(|l| (l.face, l)).collect();
         for face in &body.faces {
             face.face.hash(&mut hash);
             face.color.hash(&mut hash);
             face.opacity.to_bits().hash(&mut hash);
+            hash_surface(face.surface, &mut hash);
         }
         for (index, triangle) in body.mesh.triangles.iter().enumerate() {
             let face = body.mesh.tri_face.get(index).and_then(|f| looks.get(f));
-            let (color, opacity) = face.map_or((body.color, body.opacity), |l| (l.color, l.opacity));
+            let (color, opacity, surface) = face.map_or((body.color, body.opacity, body.surface), |l| (l.color, l.opacity, l.surface));
+            if surface.is_some() && opacity != 1.0 {
+                return Err("opaque PBR requires opacity 1".into());
+            }
             if opacity <= 0.0 {
                 continue;
             }
             let vertices = triangle.map(|i| {
                 let p = body.mesh.positions.get(i as usize)?.to_f32();
-                let n = body.mesh.normals.get(i as usize)?.to_f32();
+                let n = *body.mesh.normals.get(i as usize)?;
+                let n = if surface.is_some() { solidcraft_engine::render::surface::unit_direction(n).ok()? } else { n }.to_f32();
                 p.into_iter().chain(n).all(f32::is_finite).then_some((p, n))
             });
             let [Some(a), Some(b), Some(c)] = vertices else { return Err("invalid product triangle".into()) };
             let rgba = [color[0], color[1], color[2], (opacity * 255.0).round() as u8];
+            let (buffer, stride) = if surface.is_some() {
+                (&mut gpu.pbr, crate::gpu::PBR_SIZE)
+            } else if opacity < 0.999 {
+                (&mut gpu.glass, crate::gpu::TRI_SIZE)
+            } else {
+                (&mut gpu.tris, crate::gpu::TRI_SIZE)
+            };
+            buffer.try_reserve(3 * stride).map_err(|_| "product preview vertex allocation failed".to_string())?;
             for (p, n) in [a, b, c] {
-                if opacity < 0.999 {
+                if let Some(surface) = surface {
+                    if n.iter().all(|v| *v == 0.0) {
+                        return Err("PBR requires nonzero surface normals".into());
+                    }
+                    gpu.pbr_tri(p, n, surface);
+                } else if opacity < 0.999 {
                     gpu.glass_tri(p, n, rgba);
                 } else {
                     gpu.tri(p, n, rgba);
@@ -382,6 +409,16 @@ pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
         }
     }
     Ok((hash.finish(), gpu))
+}
+
+fn hash_surface(surface: Option<solidcraft_engine::render::surface::OpaqueSurface>, hash: &mut impl Hasher) {
+    surface.is_some().hash(hash);
+    if let Some(s) = surface {
+        let c = s.base_color();
+        for value in [c.x, c.y, c.z, s.metallic(), s.roughness(), s.dielectric_ior()] {
+            value.to_bits().hash(hash);
+        }
+    }
 }
 
 pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -409,7 +446,10 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         let ppp = ui.ctx().pixels_per_point();
         let setup = &app.render_workspace.view.draft;
-        let request = RenderRequest {
+        if setup.exposure_ev != 0.0 || setup.environment_rotation != 0.0 || setup.environment_intensity != 1.0 {
+            return Err("fixed studio preview requires exposure 0, environment rotation 0 and intensity 1".into());
+        }
+        let mut request = RenderRequest {
             backend: Some(setup.backend.clone()),
             mode: setup.mode,
             operation: RenderOperation::Viewport,
@@ -440,6 +480,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             app.render_workspace.scene_signature = Some(signature);
         }
         let scene = app.render_workspace.scene.as_ref().ok_or("no product scene")?;
+        request.features = scene.required_features();
+        solidcraft_engine::render::resolve_request(&[app.session.render_backend()], &request).map_err(|e| e.to_string())?;
         let key = app.render_workspace.key.ok_or("no product geometry")?;
         if scene.bounds.is_empty() {
             return Err("Create a visible solid in Design to preview it here.".into());

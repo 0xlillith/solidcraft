@@ -2,6 +2,89 @@ use super::*;
 use crate::scenario::Harness;
 use solidcraft_engine::Session;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn opaque_pbr_product_gpu_and_cpu_share_color_and_material_semantics() {
+    use solidcraft_engine::render::{
+        StandardView,
+        job::{CancelToken, ImageRequest, ImageTask, TaskPoll},
+    };
+    let mut s = Session::default();
+    s.execute("solid.sphere", &json!({"radius":10,"body_name":"Original sphere"})).unwrap();
+    const SIZE: u32 = 256;
+    let mut previous = None;
+    for (metallic, roughness) in [(0.0, 0.2), (0.0, 0.65), (1.0, 0.2), (1.0, 0.65)] {
+        s.execute(
+            "appearance.assign",
+            &json!({"bodies":["Original sphere"],"color":"#b47846",
+            "pbr":{"metallic":metallic,"roughness":roughness,"dielectric_ior":1.5}}),
+        )
+        .unwrap();
+        let scene = solidcraft_engine::product_scene::extract(&s).unwrap();
+        let (key, gpu) = gpu_scene(&scene).unwrap();
+        assert!(!gpu.pbr.is_empty() && gpu.tris.is_empty());
+        assert_ne!(previous, Some(key));
+        previous = Some(key);
+        let mut camera = Camera { fov: 0.0, ..Default::default() };
+        camera.set_view(StandardView::Iso);
+        camera.fit(&scene.bounds);
+        let radius = scene.bounds.diagonal().max(10.0) + scene.bounds.center().dist(camera.target);
+        let eye = camera.eye().to_f32();
+        let mut task = ImageTask::new(
+            scene,
+            ImageRequest { camera, width: SIZE, height: SIZE, background: [255; 3], transparent_background: false },
+            CancelToken::default(),
+        )
+        .unwrap();
+        let mut png = None;
+        for _ in 0..100_000 {
+            if let TaskPoll::Complete(bytes) = task.step(4096).unwrap() {
+                png = Some(bytes);
+                break;
+            }
+        }
+        let cpu = image::load_from_memory(&png.expect("bounded original fixture completes")).unwrap().to_rgba8();
+        assert_eq!(cpu.dimensions(), (SIZE, SIZE));
+        let cpu = cpu.into_raw();
+        for srgb in [false, true] {
+            let Some(gpu) = crate::gpu::render_product_offscreen(
+                gpu.clone(),
+                camera.view_proj(1.0, radius).to_f32(),
+                camera.back().to_f32(),
+                [eye[0], eye[1], eye[2], 0.0],
+                SIZE,
+                srgb,
+            ) else {
+                eprintln!("skipping: no GPU adapter");
+                return;
+            };
+            let at = |pixels: &[u8], x: usize, y: usize| {
+                let i = (y * SIZE as usize + x) * 4;
+                [pixels[i], pixels[i + 1], pixels[i + 2]]
+            };
+            let mut core = 0usize;
+            let mut error = 0usize;
+            let mut outliers = 0usize;
+            for y in 2..SIZE as usize - 2 {
+                for x in 2..SIZE as usize - 2 {
+                    // Exclude antialiased silhouettes: CPU uses 2x supersampling, GPU uses 1x.
+                    if (y - 1..=y + 1).any(|ny| (x - 1..=x + 1).any(|nx| at(&cpu, nx, ny) == [255; 3] || at(&gpu, nx, ny) == [255; 3])) {
+                        continue;
+                    }
+                    let delta = at(&cpu, x, y).into_iter().zip(at(&gpu, x, y)).map(|(a, b)| usize::from(a.abs_diff(b))).collect::<Vec<_>>();
+                    error += delta.iter().sum::<usize>();
+                    outliers += usize::from(delta.iter().any(|d| *d > 12));
+                    core += 1;
+                }
+            }
+            assert!(core > 1000);
+            let mean = error as f64 / (3 * core) as f64;
+            eprintln!("PBR m={metallic} r={roughness} srgb={srgb}: core={core}, mean={mean}, outliers={outliers}");
+            assert!(mean < 2.0 && outliers * 100 < core * 2, "CPU/GPU color or material interpretation differs");
+        }
+    }
+}
+
 #[test]
 fn control_render_export_respects_upstream_file_scope() {
     let mut h = Harness::new();
@@ -187,12 +270,13 @@ fn product_gpu_buffers_preserve_opacity_and_never_contain_overlays() {
 }
 
 #[test]
-fn host_profiles_do_not_advertise_image_export_final_or_features() {
+fn host_profiles_advertise_only_installed_opaque_pbr_not_hdri_refraction_or_final() {
     use solidcraft_engine::render::*;
     let host = host_executor(512, true, 4).unwrap();
     assert_eq!(host.limits.max_dimension, 512);
     assert_eq!(host.profiles.len(), 1);
-    assert!(host.profiles[0].features.is_empty() && host.profiles[0].formats.is_empty());
+    assert_eq!(host.profiles[0].features, vec![RenderFeature::Pbr]);
+    assert!(host.profiles[0].formats.is_empty());
     let mut s = Session::default();
     s.set_render_viewport(Some(host)).unwrap();
     let mut request = RenderRequest {
@@ -206,6 +290,13 @@ fn host_profiles_do_not_advertise_image_export_final_or_features() {
         policy: Default::default(),
     };
     assert_eq!(resolve_request(&[s.render_backend()], &request).unwrap().executor.as_str(), "gpu-viewport");
+    request.features = vec![RenderFeature::Pbr];
+    assert!(resolve_request(&[s.render_backend()], &request).is_ok());
+    for unsupported in [RenderFeature::Hdri, RenderFeature::Refraction, RenderFeature::Progressive] {
+        request.features = vec![unsupported];
+        assert!(resolve_request(&[s.render_backend()], &request).is_err());
+    }
+    request.features.clear();
     request.width = 513;
     assert!(resolve_request(&[s.render_backend()], &request).is_err());
     request.width = 512;

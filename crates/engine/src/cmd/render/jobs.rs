@@ -52,7 +52,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<(Start, solidcr
             width: u64::from(settings.width),
             height: u64::from(settings.height),
             format: Some(settings.format),
-            features: Vec::new(),
+            features: scene.required_features(),
             policy: Default::default(),
         },
     )

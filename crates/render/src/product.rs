@@ -10,6 +10,7 @@ pub struct FaceAppearance {
     pub face: u32,
     pub color: [u8; 3],
     pub opacity: f64,
+    pub surface: Option<crate::surface::OpaqueSurface>,
 }
 
 #[derive(Clone, Debug)]
@@ -20,6 +21,7 @@ pub struct ProductMesh {
     pub mesh: Arc<Mesh>,
     pub color: [u8; 3],
     pub opacity: f64,
+    pub surface: Option<crate::surface::OpaqueSurface>,
     pub faces: Vec<FaceAppearance>,
 }
 
@@ -27,4 +29,14 @@ pub struct ProductMesh {
 pub struct ProductScene {
     pub meshes: Vec<ProductMesh>,
     pub bounds: Aabb3,
+}
+
+impl ProductScene {
+    pub fn required_features(&self) -> Vec<crate::RenderFeature> {
+        if self.meshes.iter().any(|m| m.surface.is_some() || m.faces.iter().any(|f| f.surface.is_some())) {
+            vec![crate::RenderFeature::Pbr]
+        } else {
+            Vec::new()
+        }
+    }
 }

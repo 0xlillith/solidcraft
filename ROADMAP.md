@@ -79,6 +79,13 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- Opt-in opaque PBR surfaces (#1004) connect existing saved looks and assignment
+  commands to the integrated GPU product viewport and CPU PNG jobs. Format 21 retains
+  optical parameters; legacy looks keep their scalar response. Fixed direct lighting,
+  explicit admission, unchanged mass/geometry and scoped GPU/CPU color parity are
+  covered. HDRI, transmission, textures and rich catalog export remain separate gates.
+  See [the consumer and limitations](docs/render-opaque-pbr.md).
+
 - The first local scalar library (#846) exports reusable assigned colour/opacity looks
   and design-local physical materials, validates exact revisions and copies selected
   definitions through existing commands. The desktop Appearance panel opens/applies
@@ -96,7 +103,7 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 - R3 adds the integrated Render workspace, an overlay-free product scene with existing
   world placements/appearances, runtime GPU viewport capabilities and named camera/background
-  controls. Raster transparency remains an approximation; HDRI/PBR and optional
+  controls. Raster transparency remains an approximation; HDRI/refraction and optional
   engines are later phases. See [the workspace contract](docs/render-workspace.md).
 
 - R2 adds bounded named render setups, versioned persistence and `render.settings.get/set`.
@@ -104,14 +111,20 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   including undo/redo and checkpoint restore. No render workspace or new image output is
   enabled; see [settings and refresh policy](docs/render-settings.md).
 
+- The initial opaque surface numerical contract for #1004 provides bounded linear
+  color/metallic/roughness/IOR admission and an original tested direct-light BRDF.
+  The numerical module alone advertises no capabilities; the installed consumer above
+  provides rendering. See
+  [the model, evidence and remaining consumer gates](docs/render-surface.md).
+
 - A bounded cooperative Radiance RGBE input utility is available in L1 render;
   it does not yet enable HDRI/PBR rendering or a document import command. See
   [the input contract](docs/render-hdr-input.md) and #813 for integration work.
 - R1 adds renderer-independent backend/profile metadata, strict request resolution and
   bounded image/scratch admission checks, exposed by the read-only `render.backends`
   command. It describes the current CPU raster snapshot path without evaluating the model.
-  Existing snapshot and viewport routes remain unchanged. The Render workspace, HDRI/PBR,
-  render jobs and optional engines remain future work; see [the contract](docs/render-backends.md)
+  The legacy Design snapshot route remains unchanged. Later slices above provide the
+  workspace/jobs and opaque PBR; HDRI and optional engines remain future work. See [the contract](docs/render-backends.md)
   and [the phased proposal (#620)](https://github.com/bherbruck/solidcraft/issues/620).
 
 ## Dimensioning and error reporting

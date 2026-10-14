@@ -972,5 +972,13 @@
   "cmd.library_inspect": "检查本地库",
   "cmd.library_export": "导出设计库",
   "cmd.library_apply": "应用本地库条目",
-  "cmd.material_properties_validate":"验证物理材料数据"
+  "cmd.material_properties_validate":"验证物理材料数据",
+  "appearance.surface_response": "表面响应",
+  "appearance.pbr_opaque": "不透明 PBR",
+  "appearance.metallic": "金属度",
+  "appearance.roughness": "粗糙度",
+  "appearance.dielectric_ior": "电介质折射率",
+  "appearance.pbr_help": "在渲染工作区或产品 PNG 中查看此表面。不支持折射或透射。",
+  "render.opaque_preview_help": "不透明 PBR 和纯色；透明效果使用混合。不支持折射、HDRI 和最终渲染。",
+  "render.opaque_image_summary": "预览 PNG · 不透明 PBR · 混合透明"
 }

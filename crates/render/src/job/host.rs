@@ -387,7 +387,7 @@ impl CpuHost {
                 mode: RenderMode::Preview,
                 operation: RenderOperation::Image,
                 formats: vec![RenderFormat::Png],
-                features: Vec::new(),
+                features: vec![crate::RenderFeature::Pbr],
             }],
             limits: RenderLimits::default(),
             scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
@@ -410,7 +410,7 @@ impl CpuHost {
                 width: u64::from(request.width),
                 height: u64::from(request.height),
                 format: Some(RenderFormat::Png),
-                features: Vec::new(),
+                features: scene.required_features(),
                 policy: Default::default(),
             },
         )

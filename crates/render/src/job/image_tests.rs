@@ -21,7 +21,7 @@ fn square(name: &str, colour: [u8; 3], opacity: f64, offset: Vec3) -> ProductMes
         tri_face: vec![0, 1],
         ..Default::default()
     };
-    ProductMesh { name: name.into(), mesh: Arc::new(mesh), color: colour, opacity, faces: Vec::new() }
+    ProductMesh { name: name.into(), mesh: Arc::new(mesh), color: colour, opacity, surface: None, faces: Vec::new() }
 }
 
 fn scene(meshes: Vec<ProductMesh>) -> ProductScene {
@@ -116,7 +116,7 @@ fn invalid_sizes_indices_opacity_and_large_work_lists_fail_without_a_frame() {
         if bad == 0 {
             Arc::make_mut(&mut body.mesh).triangles[0][0] = u32::MAX;
         } else {
-            body.faces.push(FaceAppearance { face: 0, color: [0; 3], opacity: f64::NAN });
+            body.faces.push(FaceAppearance { face: 0, color: [0; 3], opacity: f64::NAN, surface: None });
         }
         let mut task = ImageTask::new(scene(vec![body]), request(), CancelToken::default()).unwrap();
         let error = loop {

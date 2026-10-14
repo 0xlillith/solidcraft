@@ -134,6 +134,10 @@ rebuild with no errors, replayed here at 2× speed.
   (manifold solid B-reps, or trimmed and bounded surfaces sewn into solids) as a base feature
   that later features build on — open a `.step`/`.stp`/`.igs`/`.iges` file, insert one into a
   design, or drop it on the window ([docs/step-import.md](docs/step-import.md)).
+- **Render:** opaque surfaces can use metal fraction, roughness and dielectric IOR in the
+  integrated product viewport and CPU preview PNGs. Existing simple colors remain supported.
+  Fixed direct lighting is a preview; HDRI, refraction and texture maps are not implemented.
+  See [opaque surfaces](docs/render-opaque-pbr.md).
 - **Desktop app** (egui + wgpu): toolbar with workspace tabs, browser, timeline, 3D viewport with
   axis view and navigation bar, sketch tools, feature dialogs, command palette, and a JSON-lines
   control channel so agents and tests can drive it.

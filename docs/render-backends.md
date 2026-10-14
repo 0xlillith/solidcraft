@@ -59,11 +59,13 @@ descriptors, not design-file settings. Executor IDs are scoped to their backend.
 Backend/executor IDs are 1–64 ASCII bytes: a lowercase letter followed by lowercase
 letters, digits, `.`, `_` or `-`. Both construction and deserialization validate IDs.
 
-The integrated backend currently describes only the existing CPU raster snapshot
+Without runtime hosts the integrated backend describes the existing CPU raster snapshot
 path. Its `preview`/`image` profile exports PNG; it does not claim HDRI, PBR,
 refraction, progressive rendering or a final-quality integrator. The existing GPU
-viewport remains separate and is not advertised here until a GPU host can register
-and probe its actual capabilities. CPU and GPU are execution paths, not separate
+viewport registers separately when the UI installs its actual device/pipelines.
+The installed GPU product viewport and CPU product-image host support the subsequent
+[opaque PBR consumer](render-opaque-pbr.md); this does not alter the static raster
+descriptor or enable HDRI/refraction/final rendering. CPU and GPU are execution paths, not separate
 user-selectable engine families.
 
 ## Pure request resolution

@@ -1012,6 +1012,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                 {
                     k.color = look.color;
                     k.opacity = look.opacity;
+                    k.pbr = look.pbr;
                     k.look = Some(look.name.clone());
                 }
                 k.component = Some(name);

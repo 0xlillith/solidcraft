@@ -76,6 +76,7 @@ fn malformed_preparation_fails_the_job_without_stopping_the_host() {
             mesh: Arc::new(Mesh { triangles: vec![[99, 99, 99]], ..Default::default() }),
             color: [0; 3],
             opacity: 1.0,
+            surface: None,
             faces: Vec::new(),
         }],
     };
