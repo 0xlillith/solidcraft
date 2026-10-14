@@ -71,6 +71,10 @@ MCP server sends its folders this way on every request ([mcp.md](mcp.md)). Witho
 
 Commands never open dialogs when run this way. `solidcraft-cli commands` prints the same registry.
 
+While an interactive native file picker is open, `ui.inspect` reports `file_picker_busy: true`.
+Engine commands, `ui.file` and `ui.home` requests wait for its answer; window resizing,
+inspection and screenshots remain available.
+
 Every `sketch.*` command that changes a sketch adds `created: {points, curves, constraints,
 dimensions}` to its result (and `wires` for 3D curves): the ids of what it added, in creation
 order, next to whatever else the command returns (`curves`, `sides`, `corners`…). Sketch ids are
