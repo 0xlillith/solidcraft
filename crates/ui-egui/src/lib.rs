@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod access;
+pub mod agent_chat;
 pub mod agent_cursor;
 pub mod browser;
 pub mod canvas;
@@ -249,6 +250,10 @@ pub struct Services {
     pub http_download: Option<update::install::HttpDownload>,
     /// The browser's offer to install the web app (`install`); None: no Install button (desktop).
     pub install_app: Option<install::InstallApp>,
+    /// HTTP for the agent chat's API agents (OpenAI-compatible endpoints); None: no API agents.
+    pub agent_http: Option<agent_chat::backend::HttpFn>,
+    /// The system keychain, for API agents' keys; None: keys can't be stored.
+    pub secrets: Option<std::sync::Arc<dyn agent_chat::backend::Secrets>>,
 }
 
 pub struct SolveApp {
@@ -350,6 +355,8 @@ pub struct SolveApp {
     control_held: std::collections::VecDeque<ControlRequest>,
     /// The agent cursor acting out control requests.
     pub agent: agent_cursor::AgentCursor,
+    /// The agent chat panel (docs/design/in-app-agent-chat.md).
+    pub agent_chat: agent_chat::AgentChat,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
     queued_shots: Vec<(u64, f64, u32)>,
     shot_token: u64,
@@ -432,6 +439,7 @@ impl SolveApp {
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
             control_rx: None,
+            agent_chat: Default::default(),
             control_held: Default::default(),
             agent: Default::default(),
             pending_shots: Vec::new(),
@@ -1309,6 +1317,7 @@ impl SolveApp {
         if render_workspace::active(self) {
             render_workspace::panel(self, ui);
         }
+        agent_chat::show(self, ui);
         preview::update(self, ui.ctx());
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if render_workspace::active(self) {
@@ -1342,7 +1351,12 @@ impl SolveApp {
         /// Held requests beyond this are refused rather than kept.
         const MAX_HELD: usize = 256;
 
-        let Some(rx) = self.control_rx.take() else { return };
+        // Held requests (and the agent chat's, which it hands over here) run even when the app
+        // has no control channel of its own.
+        if self.control_rx.is_none() && self.control_held.is_empty() {
+            return;
+        }
+        let rx = self.control_rx.take();
         // While the agent cursor acts out a request, later ones wait their turn.
         for _ in 0..PER_FRAME {
             if self.agent.busy() {
@@ -1350,7 +1364,7 @@ impl SolveApp {
             }
             // Held requests go first, in order, once the file is in.
             let held = if self.file_load.busy() || self.file_picker.is_some() { None } else { self.control_held.pop_front() };
-            let Some(req) = held.or_else(|| rx.try_recv().ok()) else { break };
+            let Some(req) = held.or_else(|| rx.as_ref().and_then(|rx| rx.try_recv().ok())) else { break };
             // A file is loading: commands that change the design wait for it (the window,
             // inspection and screenshots still answer).
             if ((self.file_load.busy() || self.file_picker.is_some())
@@ -1387,7 +1401,7 @@ impl SolveApp {
             }
             ctx.request_repaint();
         }
-        self.control_rx = Some(rx);
+        self.control_rx = rx;
     }
 
     fn issue_screenshots(&mut self, ctx: &egui::Context) {
