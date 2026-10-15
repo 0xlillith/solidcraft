@@ -618,7 +618,10 @@ pub(super) fn sheet_eval(
                     None => *p,
                 });
             }
-            let mut sh = sheet::convert_body(&mb, &r.name, &rv, *face, &picks)?;
+            let (mut sh, notes) = sheet::convert_body(&mb, &r.name, &rv, *face, &picks)?;
+            for note in notes {
+                append_warning(warning, note);
+            }
             tag_flanges(&mut sh, 0, f.id);
             put_sheet(st, sh)
         }

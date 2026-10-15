@@ -2227,7 +2227,7 @@ impl SheetBody {
     /// such end left as it is.
     fn relieve_bend_ends(&mut self, i: usize, free: (bool, bool)) -> Vec<String> {
         let Some(f) = self.flanges.get(i).cloned() else { return Vec::new() };
-        if f.parent.is_some() || f.shape.is_some() {
+        if f.parent.is_some() {
             return Vec::new();
         }
         let (width, depth) = (self.bend_relief.0, self.bend_relief.1.max(0.0));
@@ -2636,32 +2636,42 @@ impl SheetBody {
     fn close_corners(&mut self, made: &[usize]) -> Vec<String> {
         let corners = self.corners(made);
         let mut notes = Vec::new();
-        let at = |s: &SheetBody, c: Vec2| {
-            let w = apply_point(&s.frame_mat(), v3(c));
-            format!("({:.3}, {:.3}, {:.3})", w.x, w.y, w.z)
-        };
         let mut closed = Vec::with_capacity(corners.len());
         for k in &corners {
             match self.close_corner(k) {
                 Ok(()) => closed.push(*k),
-                Err(why) => notes.push(format!("the flanges at {} are left open: {why}", at(self, k.c))),
+                Err(why) => notes.push(format!("the flanges at {} are left open: {why}", self.shown(k.c))),
             }
         }
+        notes.extend(self.relieve_corners(&corners, &closed));
+        notes
+    }
+
+    /// A point of the flat frame, in the part's coordinates, for a note.
+    fn shown(&self, c: Vec2) -> String {
+        let w = apply_point(&self.frame_mat(), v3(c));
+        format!("({:.3}, {:.3}, {:.3})", w.x, w.y, w.z)
+    }
+
+    /// Cut the rule's relief at each of `corners`, or tear those of them that are `closed`.
+    /// Returns a note for every corner without its relief or not torn.
+    fn relieve_corners(&mut self, corners: &[Corner], closed: &[Corner]) -> Vec<String> {
+        let mut notes = Vec::new();
         match self.relief {
             ReliefShape::Notch => {}
             // The reliefs come last: they move the bends' ends, which is how the corners were found.
             ReliefShape::Round | ReliefShape::Rectangular => {
-                for k in &corners {
-                    if let Err(why) = self.relieve_corner(k, &corners) {
-                        notes.push(format!("no corner relief at {}: {why}", at(self, k.c)));
+                for k in corners {
+                    if let Err(why) = self.relieve_corner(k, corners) {
+                        notes.push(format!("no corner relief at {}: {why}", self.shown(k.c)));
                     }
                 }
             }
             // A tear cuts to the flanges' closed ends, so a corner left open gets none.
             ReliefShape::Tear => {
-                for k in &closed {
+                for k in closed {
                     if let Err(why) = self.tear_corner(k) {
-                        notes.push(format!("the corner at {} keeps its notch: {why}", at(self, k.c)));
+                        notes.push(format!("the corner at {} keeps its notch: {why}", self.shown(k.c)));
                     }
                 }
             }
