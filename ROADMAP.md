@@ -66,6 +66,13 @@ pointer movement orbits without a mouse button, and vertical scrolling zooms. Ot
 retain their saved two-finger scroll preference; camera motion is available through
 `view.navigate` and modifier-aware `ui.move` automation.
 
+## Interactive modelling
+
+- New Body extrusion and face-offset previews show completed intermediate geometry while a
+  drag continues, then catch up to the exact final value. Changes to the selected geometry,
+  operation or feature still discard obsolete results. Distance arrows and their value boxes
+  follow the current frame's input.
+
 ## Physical material data
 
 - Physical material card validation (#923/#922) provides typed SI mechanical and
