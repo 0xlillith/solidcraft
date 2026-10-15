@@ -58,6 +58,7 @@ pub mod inference;
 pub mod install;
 pub mod issue_report;
 pub mod keymap;
+mod material_card_review;
 #[cfg(test)]
 mod menu_tests;
 #[cfg(test)]
@@ -273,6 +274,7 @@ pub struct SolveApp {
     pub params: Option<params_dialog::ParamsDialog>,
     /// The Design Properties window, when open.
     pub design_properties: Option<design_properties::DesignProperties>,
+    material_card_review: Option<material_card_review::ReviewWindow>,
     pub palette: palette::Palette,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
@@ -391,6 +393,7 @@ impl SolveApp {
             dialog: None,
             params: None,
             design_properties: None,
+            material_card_review: None,
             palette: palette::Palette::default(),
             menu: context_menu::MenuState::default(),
             tree: browser::TreeState::default(),
@@ -665,6 +668,11 @@ impl SolveApp {
         {
             let label = self.tr_label(info.label).to_string();
             self.set_status(format!("{label}: {why}"), true);
+            return;
+        }
+        if id == "material.properties.validate" {
+            self.material_card_review = Some(material_card_review::ReviewWindow::default());
+            self.home.open = false;
             return;
         }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).
@@ -1315,6 +1323,7 @@ impl SolveApp {
         self.resolve_fit(ui.ctx());
         params_dialog::show(self, ui.ctx());
         design_properties::show(self, ui.ctx());
+        material_card_review::show(self, ui.ctx());
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());
         prefs::show_reset_notice(self, ui.ctx());
