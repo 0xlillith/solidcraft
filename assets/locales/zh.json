@@ -108,6 +108,7 @@
   "cmd.file_slicers": "已安装的切片软件",
   "cmd.inspect_accessibility": "可达性分析",
   "cmd.inspect_center_of_mass": "质心",
+  "cmd.inspect_compare": "比较实体",
   "cmd.inspect_curvature_comb": "曲率梳分析",
   "cmd.inspect_curvature_map": "曲率图分析",
   "cmd.inspect_draft": "拔模分析",

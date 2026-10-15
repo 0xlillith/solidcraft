@@ -108,6 +108,7 @@
   "cmd.file_slicers": "Installed Slicers",
   "cmd.inspect_accessibility": "Accessibility Analysis",
   "cmd.inspect_center_of_mass": "Center of Mass",
+  "cmd.inspect_compare": "Compare Bodies",
   "cmd.inspect_curvature_comb": "Curvature Comb Analysis",
   "cmd.inspect_curvature_map": "Curvature Map Analysis",
   "cmd.inspect_draft": "Draft Analysis",

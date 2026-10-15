@@ -97,6 +97,7 @@
   "cmd.file_slicers": "Установленные слайсеры",
   "cmd.inspect_accessibility": "Анализ доступности",
   "cmd.inspect_center_of_mass": "Центр масс",
+  "cmd.inspect_compare": "Сравнить тела",
   "cmd.inspect_curvature_comb": "Анализ кривизны (гребёнка)",
   "cmd.inspect_curvature_map": "Карта кривизны",
   "cmd.inspect_draft": "Анализ уклонов",

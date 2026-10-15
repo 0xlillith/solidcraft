@@ -98,6 +98,7 @@
   "cmd.file_save_mesh": "Зберегти як сітку",
   "cmd.inspect_accessibility": "Аналіз доступності",
   "cmd.inspect_center_of_mass": "Центр мас",
+  "cmd.inspect_compare": "Порівняти тіла",
   "cmd.inspect_curvature_comb": "Аналіз гребеня кривизни",
   "cmd.inspect_curvature_map": "Аналіз карти кривизни",
   "cmd.inspect_draft": "Аналіз ухилу",

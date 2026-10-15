@@ -108,6 +108,7 @@
   "cmd.file_slicers": "インストール済みのスライサー",
   "cmd.inspect_accessibility": "アクセシビリティ解析",
   "cmd.inspect_center_of_mass": "重心",
+  "cmd.inspect_compare": "ボディを比較",
   "cmd.inspect_curvature_comb": "曲率コーム解析",
   "cmd.inspect_curvature_map": "曲率マップ解析",
   "cmd.inspect_draft": "勾配解析",

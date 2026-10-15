@@ -555,6 +555,7 @@
   "cmd.file_slicers": "Installierte Slicer",
   "cmd.inspect_accessibility": "Zugänglichkeitsanalyse",
   "cmd.inspect_center_of_mass": "Massenschwerpunkt",
+  "cmd.inspect_compare": "Körper vergleichen",
   "cmd.inspect_curvature_comb": "Krümmungskamm-Analyse",
   "cmd.inspect_curvature_map": "Krümmungskartenanalyse",
   "cmd.inspect_draft": "Auswinkelanalyse",
