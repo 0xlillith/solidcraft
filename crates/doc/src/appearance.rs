@@ -149,7 +149,10 @@ pub fn library(name: &str) -> Option<Look> {
         .or_else(|| {
             let (n, color, metallic, roughness) = OPAQUE_FINISHES.iter().find(|(n, ..)| n.eq_ignore_ascii_case(name.trim()))?;
             let pbr = crate::pbr_appearance::PbrParameters::new(*metallic, *roughness, 1.5).ok()?;
-            Some(Look { name: (*n).into(), color: *color, opacity: 1.0, pbr: Some(pbr) })
+            let mut look = Look::custom(*color, 1.0);
+            look.name = (*n).into();
+            look.pbr = Some(pbr);
+            Some(look)
         })
 }
 
