@@ -266,6 +266,7 @@ fn scene_key(app: &SolveApp) -> u64 {
     app.ui.show_grid.hash(&mut h);
     app.ui.visual_style.hash(&mut h);
     app.ui.ground_shadow.hash(&mut h);
+    solidcraft_engine::doc::display_quality::current().hash(&mut h);
     // The section plane (its cut outlines are part of the model scene).
     section_plane(app).map(|(o, n)| [o.x, o.y, o.z, n.x, n.y, n.z].map(f64::to_bits)).hash(&mut h);
     app.cam.up.hash(&mut h);
@@ -347,7 +348,7 @@ fn drawn_plan(
 }
 
 /// The mesh whose triangles the model scene shows for `b`'s faces: the plan's (evaluated on the
-/// CPU, the same triangles the GPU draws) or the reference mesh. A face highlighted over the model
+/// CPU, the same triangles the GPU draws) or [`drawn_mesh`]. A face highlighted over the model
 /// must use the same triangles: another triangulation of the same face fights it at equal depth
 /// and shimmers.
 fn shown_mesh(
@@ -362,7 +363,16 @@ fn shown_mesh(
         .then(|| drawn_plan(app, b, true))
         .flatten()
         .and_then(|_| b.plan_mesh())
-        .unwrap_or_else(|| b.mesh())
+        .unwrap_or_else(|| drawn_mesh(b))
+}
+
+/// The mesh the model scene builds `b` from on the CPU (its edges always, its faces when they
+/// are not drawn from the plan on the GPU): the reference mesh at Normal display quality, else
+/// the plan's mesh at the chosen quality (finer or coarser faces and edges alike), falling back
+/// to the reference mesh when the body has no plan.
+fn drawn_mesh(b: &solidcraft_engine::doc::ModelBody) -> std::sync::Arc<solidcraft_engine::geom::Mesh> {
+    use solidcraft_engine::doc::display_quality::{DisplayQuality, current};
+    if current() == DisplayQuality::Normal { b.mesh() } else { b.plan_mesh().unwrap_or_else(|| b.mesh()) }
 }
 
 /// A model scene block kept by the viewport: its bytes and the meshes they were built from
@@ -513,7 +523,7 @@ fn build_scene(app: &SolveApp) -> GpuScene {
                 .collect();
             sc.planned.push(crate::gpu::PlannedBody { plan, face_colors });
         }
-        let body = BodyDraw { mesh: b.mesh(), col, faded, opacity, face_looks, on_gpu };
+        let body = BodyDraw { mesh: drawn_mesh(b), col, faded, opacity, face_looks, on_gpu };
         let key = body.key(shaded, edges, hidden_edges, edge_col, hidden_col);
         key.hash(&mut run_key);
         run.push(body);
@@ -1665,7 +1675,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
                 // A live preview stands in for the body: its old faces would fight with it.
                 if let Some(b) = st.body(body).filter(|_| app.session.body_visible(body) && !app.preview.replaced.contains(body)) {
                     face_tris(&mut sc, &shown(b), *index, c4(t.sel_face), false);
-                    hidden_face_outline(&mut sc, &b.mesh(), *index, t.sel_edge);
+                    hidden_face_outline(&mut sc, &drawn_mesh(b), *index, t.sel_edge);
                 }
             }
             Sel::Body { name } => {
@@ -1681,7 +1691,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
             Sel::Edge { body, index, point } => {
                 if let Some(b) = st.body(body)
                     && app.session.body_visible(body)
-                    && let Some(e) = edge_of(&b.mesh(), *index, *point)
+                    && let Some(e) = edge_of(&drawn_mesh(b), *index, *point)
                 {
                     edge_lines(&mut sc, e, t.sel_edge, t.sel_edge_rim, 3.0);
                 }
@@ -1745,7 +1755,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
         }
         let k = t.hover_face_lift;
         let c = body_rgb(app, &b.name);
-        let m = b.mesh();
+        let m = drawn_mesh(b);
         let lit = shown(b);
         for &f in &faces {
             if !sel.iter().any(|x| {
@@ -1780,7 +1790,7 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
             if let Some(b) = st.body(body) {
                 let k = t.hover_face_lift;
                 let c = body_rgb(app, body);
-                let m = b.mesh();
+                let m = drawn_mesh(b);
                 let patch = m.surface_patch(*index);
                 let lit = shown(b);
                 for &f in &patch {
@@ -1797,7 +1807,8 @@ fn build_highlight(app: &SolveApp) -> GpuScene {
         }
         Some(Hit::Edge { body, index, mid }) => {
             if let Some(b) = st.body(body) {
-                let m = b.mesh();
+                // Lit over the drawn edges (finer away from Normal display quality).
+                let m = drawn_mesh(b);
                 for i in m.circular_rim(*index) {
                     let selected = sel.iter().any(|x| matches!(x, Sel::Edge { body: b, index: j, .. } if b == body && *j == i));
                     if !selected && let Some(e) = if i == *index { edge_of(&m, i, *mid) } else { m.edges.get(i) } {
