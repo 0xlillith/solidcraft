@@ -327,11 +327,8 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
             }
             // Delete (user parameters; refused while used, the message says by what).
             if r.source == "user" {
-                if ui
-                    .add(egui::Button::new(RichText::new("Delete").small().color(t.text_dim)).frame(false))
-                    .on_hover_text(crate::i18n::tr_label("Delete this parameter"))
-                    .clicked()
-                {
+                // Outlined on hover like the expression and comment fields; the label says what it does.
+                if ui.add(egui::Button::new(RichText::new("Delete").small().color(t.text_dim)).frame_when_inactive(false)).clicked() {
                     d.error = app.run("parameters.delete", json!({"name": r.name})).err();
                 }
             } else {
