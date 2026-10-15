@@ -28,6 +28,8 @@ mod history_names;
 pub use format_offsets::whole_profile_selection_from_value;
 pub mod joints;
 mod lineage;
+pub mod metadata;
+pub use metadata::Metadata;
 pub mod motion;
 mod name_lookup;
 pub mod naming;
@@ -40,6 +42,7 @@ pub use profile_refs::{capture_profile_selection, profile_selection_indices};
 pub mod plastic;
 pub mod project;
 mod project3d;
+pub mod render_settings;
 pub use project3d::iso_grid;
 pub mod sheet;
 

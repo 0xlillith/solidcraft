@@ -13,7 +13,9 @@ use egui_wgpu::wgpu::util::DeviceExt;
 pub const TRI_SIZE: usize = 28;
 /// Line instance: a, b (3 × f32 each), colour (4 × u8), width in pixels (f32).
 pub const LINE_SIZE: usize = 32;
-const UNIFORM_SIZE: u64 = 208;
+/// The shader's `U`: the view-projection matrix, 9 `vec4`s, the 8 analysis colours and their
+/// flags (`uniform_bytes`).
+const UNIFORM_SIZE: u64 = 352;
 
 /// A body drawn from its display plan, evaluated on the GPU: the plan, and a colour per face
 /// (the plan's face numbering; faces past the end take the last colour).
@@ -199,6 +201,8 @@ pub struct ViewportCallback {
     /// Surface analysis: (mode: 0 none, 1 zebra, 2 draft, 3 curvature, 4 environment,
     /// 5 accessibility; parameter; scale; size) and the pull / access direction.
     pub analysis: [f32; 8],
+    /// The analysis colours and the stripe flag ([`analysis_colors`]).
+    pub analysis_colors: [f32; 36],
     /// Accessibility: the depth map seen from the access direction.
     pub access: Option<AccessMap>,
     /// Draw silhouette outlines around the model (visual styles with edges).
@@ -830,6 +834,10 @@ fn tessellation(adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Qu
         return None;
     }
     let info = adapter.get_info();
+    if hangs_on_gpu_tessellation(info.backend, &info.name) || std::env::var_os("SOLIDCRAFT_CPU_TESS").is_some() {
+        log::warn!("bodies are built on the CPU on {} ({:?})", info.name, info.backend);
+        return None;
+    }
     match solidcraft_gpu::TessGpu::with_shader(info.name.clone(), device.clone(), queue.clone(), shader) {
         Ok(t) => Some(t),
         Err(e) => {
@@ -837,6 +845,13 @@ fn tessellation(adapter: &wgpu::Adapter, device: &wgpu::Device, queue: &wgpu::Qu
             None
         }
     }
+}
+
+/// A device whose driver hangs on the evaluation shader, so bodies are built on the CPU there:
+/// the AMD FirePro D300/D500/D700 (Mac Pro 2013, Tahiti) under Metal, where macOS resets the GPU
+/// and the whole desktop freezes. `SOLIDCRAFT_CPU_TESS=1` forces CPU evaluation on any device.
+fn hangs_on_gpu_tessellation(backend: wgpu::Backend, name: &str) -> bool {
+    backend == wgpu::Backend::Metal && name.contains("FirePro")
 }
 
 /// Create the pipelines. Call once with the app's render state and its depth/stencil/MSAA
@@ -1010,11 +1025,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
     }
 }
 
-/// Render `scene` offscreen on a device of its own, through the viewport's real resources and
-/// frame callback (`prepare`, then `paint`), and read the pixels back: straight RGBA, `size` ×
-/// `size`. `None` without a GPU adapter. With `tess` (the tessellation shader), planned bodies
-/// are evaluated on the GPU where the device builds that pipeline, as [`install`] sets it up.
-/// `highlight` is drawn as the viewport's highlight scene (hover and selection).
+/// A device of its own for an offscreen render or check (`None` without a GPU adapter).
 #[cfg(all(test, not(target_arch = "wasm32")))]
 fn offscreen_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -1035,7 +1046,15 @@ pub(crate) fn offscreen_tessellates(shader: &str) -> Option<bool> {
     Some(tessellation(&adapter, &device, &queue, shader).is_some())
 }
 
+/// Render `scene` offscreen on a device of its own, through the viewport's real resources and
+/// frame callback (`prepare`, then `paint`), and read the pixels back: straight RGBA, `size` ×
+/// `size`. `None` without a GPU adapter. With `tess` (the tessellation shader), planned bodies
+/// are evaluated on the GPU where the device builds that pipeline, as [`install`] sets it up.
+/// `highlight` is drawn as the viewport's highlight scene (hover and selection). `analysis` is the
+/// surface analysis uniform (`viewport::analysis_uniform`; zeros for none) and `colors` its
+/// colours (`analysis_colors`).
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_offscreen(
     scene: GpuScene,
     highlight: Option<GpuScene>,
@@ -1044,6 +1063,8 @@ pub(crate) fn render_offscreen(
     eye: [f32; 4],
     size: u32,
     tess: Option<&str>,
+    analysis: [f32; 8],
+    colors: [f32; 36],
 ) -> Option<Vec<u8>> {
     let (adapter, device, queue) = offscreen_device()?;
     let (format, depth) = (wgpu::TextureFormat::Rgba8Unorm, wgpu::TextureFormat::Depth24PlusStencil8);
@@ -1067,7 +1088,8 @@ pub(crate) fn render_offscreen(
         clip: [0.0; 4],
         cap: [0.0; 4],
         images: Vec::new(),
-        analysis: [0.0; 8],
+        analysis,
+        analysis_colors: colors,
         access: None,
         outline: false,
         eye,
@@ -1152,12 +1174,37 @@ pub fn uniform_bytes(cb: &ViewportCallback, w: f32, h: f32, linear: bool) -> Vec
         None => v.extend([0.0; 8]),
     }
     v.extend(cb.eye);
+    v.extend(cb.analysis_colors);
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// The shader's analysis colours (`ana_c`: draft positive, between, negative; reachable,
+/// blocked; curvature flat, middle, tight; alpha 1) and flags (`ana_f.x`: 1 to stripe the bad
+/// faces).
+pub fn analysis_colors(c: &crate::theme::AnalysisColors) -> [f32; 36] {
+    let mut v = [0.0; 36];
+    let colors = c.draft.iter().chain(&c.access).chain(&c.curvature).flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 1.0]);
+    for (slot, x) in v.iter_mut().zip(colors) {
+        *slot = x;
+    }
+    v[32] = if c.hatch { 1.0 } else { 0.0 };
+    v
 }
 
 #[cfg(test)]
 mod tests {
-    use egui_wgpu::wgpu::naga;
+    use egui_wgpu::wgpu::{self, naga};
+
+    /// Only the FirePro under Metal skips GPU evaluation; the same card under another backend
+    /// and other Metal GPUs keep it.
+    #[test]
+    fn firepro_under_metal_builds_bodies_on_the_cpu() {
+        assert!(super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "AMD FirePro D500"));
+        assert!(super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "AMD FirePro D700"));
+        assert!(!super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "Apple M2"));
+        assert!(!super::hangs_on_gpu_tessellation(wgpu::Backend::Metal, "AMD Radeon Pro 560X"));
+        assert!(!super::hangs_on_gpu_tessellation(wgpu::Backend::Vulkan, "AMD FirePro W5100"));
+    }
 
     /// The viewport shader parses and validates (a bad shader would only fail at run time).
     #[test]

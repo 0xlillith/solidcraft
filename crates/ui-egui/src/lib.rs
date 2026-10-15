@@ -12,10 +12,15 @@ pub mod access;
 pub mod agent_cursor;
 pub mod browser;
 pub mod canvas;
+#[cfg(test)]
+mod colour_tokens_tests;
+#[cfg(test)]
+mod colour_vision_tests;
 pub mod context_menu;
 pub mod control;
 pub mod crash_ui;
 pub mod delete;
+pub mod design_properties;
 pub mod dialogs;
 pub mod dialogs_appearance;
 pub mod dialogs_assembly;
@@ -54,6 +59,8 @@ pub mod keymap;
 mod menu_tests;
 #[cfg(test)]
 mod surface_clamp_tests;
+#[cfg(test)]
+mod timeline_marks_tests;
 #[cfg(test)]
 mod status_tests {
     #[test]
@@ -244,6 +251,8 @@ pub struct SolveApp {
     pub dialog: Option<dialogs::Dialog>,
     /// The Change Parameters window, when open.
     pub params: Option<params_dialog::ParamsDialog>,
+    /// The Design Properties window, when open.
+    pub design_properties: Option<design_properties::DesignProperties>,
     pub palette: palette::Palette,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
@@ -337,6 +346,7 @@ impl SolveApp {
             tool: None,
             dialog: None,
             params: None,
+            design_properties: None,
             palette: palette::Palette::default(),
             menu: context_menu::MenuState::default(),
             tree: browser::TreeState::default(),
@@ -623,6 +633,10 @@ impl SolveApp {
         }
         if id == "parameters.change" {
             params_dialog::open(self);
+            return;
+        }
+        if matches!(id, "document.metadata" | "document.metadata.set") {
+            design_properties::open(self);
             return;
         }
         if id == "sketch.finish" {
@@ -1022,8 +1036,9 @@ impl SolveApp {
         file_load::tick(self, ctx);
         self.esc_handled = false;
         prefs::apply(self, ctx);
-        if !self.styled || theme::is_dark() != self.ui.dark {
+        if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
             theme::set_dark(self.ui.dark);
+            theme::set_vision(self.preferences.color_vision);
             theme::apply(ctx);
             self.styled = true;
         }
@@ -1151,6 +1166,7 @@ impl SolveApp {
         sketch_palette::show(self, ui.ctx());
         self.resolve_fit(ui.ctx());
         params_dialog::show(self, ui.ctx());
+        design_properties::show(self, ui.ctx());
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());
         prefs::show_reset_notice(self, ui.ctx());
