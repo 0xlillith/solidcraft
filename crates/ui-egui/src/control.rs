@@ -19,9 +19,10 @@
 //! - `ui.click {x, y, button?, shift?}`, `ui.move {x, y}`: real
 //!   pointer input in screen points; `ui.scroll {x, y, delta}`: mouse-wheel input in
 //!   points (zooms); `ui.key {key, cmd?, shift?}`, `ui.text {text}`
-//! - `ui.screenshot {path?}`: PNG of the window; `ui.render {path, width?, height?}`: headless
-//!   CPU render of the model with the current camera, in the window's theme, with the section
-//!   the viewport shows (no window needed)
+//! - `ui.screenshot {path?}`: PNG of the window; `ui.render {path, width?, height?, grid?, axes?}`:
+//!   headless CPU render of the model with the current camera, in the window's theme, with the
+//!   section the viewport shows (no window needed); the ground grid and the origin's axes as the
+//!   window shows them, unless `grid` or `axes` says
 //! - `ui.menu {x?, y?, target?, close?}`: open a context menu at a point (the viewport's marking
 //!   menu, or a browser menu with `target: {type: body|sketch|component, …}`); without a point,
 //!   the open menu and its items. `ui.menuPick {item}` runs an item by id or label;
@@ -680,12 +681,19 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             let h = f("height").unwrap_or(800.0).clamp(16.0, 8192.0) as usize;
             // In the window's theme and colour vision mode, and cut by the section the viewport shows (an open Section
             // Analysis dialog's preview, a sketch's Slice), not only the committed one.
-            let scene = solidcraft_engine::view::scene_with_palette(
+            // The grid and the axes as the window shows them (the Grid and Origin switches), unless
+            // the request says: `grid` and `axes` leave them out of the picture or put them in.
+            let guides = solidcraft_engine::view::Guides {
+                grid: p.get("grid").and_then(Value::as_bool).unwrap_or(app.ui.show_grid && !crate::viewport::active_view(app).hide_grid),
+                axes: p.get("axes").and_then(Value::as_bool).unwrap_or_else(|| app.origin_visible()),
+            };
+            let scene = solidcraft_engine::view::scene_with_palette_and_guides(
                 &app.session,
                 &app.cam,
                 crate::viewport::section_plane(app),
                 solidcraft_engine::view::world_curve_parts,
                 &crate::viewport::scene_palette(app.ui.dark, app.preferences.color_vision),
+                guides,
             );
             let Some(png) = render_png(&scene, &app.cam, w, h) else { return err("render failed") };
             match s("path") {
@@ -967,6 +975,58 @@ mod tests {
         app.run("inspect.section", json!({"plane": "XZ", "offset": 15})).unwrap();
         app.dialog = None;
         assert!(render(&mut app, &dir.join("committed.png")) == preview, "the committed section renders differently");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `ui.render` with extra request parameters.
+    fn render_with(app: &mut SolveApp, path: &std::path::Path, extra: serde_json::Value) -> Vec<u8> {
+        let mut params = json!({"path": path.to_string_lossy(), "width": 200, "height": 140});
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            params[k.as_str()] = v.clone();
+        }
+        let (req, _rx) = ControlRequest::new("ui.render", params);
+        match handle(app, &egui::Context::default(), &req) {
+            Outcome::Done(v) => assert_eq!(v["ok"], true, "{v}"),
+            Outcome::Screenshot { .. } => panic!("ui.render took a screenshot"),
+        }
+        std::fs::read(path).unwrap()
+    }
+
+    /// A model render draws the ground grid (it cuts through a part that straddles Z 0) and the
+    /// origin's axes as the window does, by the Grid and Origin switches, and `grid` and `axes`
+    /// in the request say otherwise for that render.
+    #[test]
+    fn model_render_follows_the_grid_and_origin_switches_unless_asked() {
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 40, "width": 30, "height": 20, "corner": [10, -15, -10]})).unwrap();
+        let mut app = SolveApp::new(s, Services::default());
+        app.cam.set_view(solidcraft_engine::render::StandardView::Front);
+        let dir = std::env::temp_dir().join(format!("solidcraft-render-guides-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shot.png");
+        let shot = |app: &mut SolveApp, extra: serde_json::Value| render_with(app, &path, extra);
+        let all = shot(&mut app, json!({}));
+        let no_grid = shot(&mut app, json!({"grid": false}));
+        let no_axes = shot(&mut app, json!({"axes": false}));
+        let bare = shot(&mut app, json!({"grid": false, "axes": false}));
+        let pictures = [&all, &no_grid, &no_axes, &bare];
+        for (i, a) in pictures.iter().enumerate() {
+            for b in &pictures[i + 1..] {
+                assert!(a != b, "two of the pictures are the same");
+            }
+        }
+        // With the Grid switch off the render has no grid, and `grid: true` brings it back.
+        app.ui.show_grid = false;
+        assert!(shot(&mut app, json!({})) == no_grid);
+        assert!(shot(&mut app, json!({"grid": true})) == all);
+        // With the Origin off too it has neither; `axes: true` puts the axes back.
+        app.ui.show_origin = false;
+        assert!(shot(&mut app, json!({})) == bare);
+        assert!(shot(&mut app, json!({"axes": true})) == no_grid);
+        // The Origin and the Grid back on: the first picture again.
+        app.ui.show_grid = true;
+        app.ui.show_origin = true;
+        assert!(shot(&mut app, json!({})) == all);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
