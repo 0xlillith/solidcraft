@@ -600,6 +600,7 @@
   "cmd.parameters_delete": "매개 변수 삭제",
   "cmd.parameters_export": "매개 변수 내보내기",
   "cmd.parameters_favorite": "즐겨찾는 매개 변수",
+  "cmd.parameters_move": "매개 변수 이동",
   "cmd.parameters_graph": "매개 변수 그래프",
   "cmd.parameters_import": "매개 변수 가져오기",
   "cmd.parameters_list": "매개 변수 목록",

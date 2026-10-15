@@ -141,6 +141,7 @@
   "cmd.parameters_delete": "Видалити параметр",
   "cmd.parameters_export": "Експортувати параметри",
   "cmd.parameters_favorite": "Обраний параметр",
+  "cmd.parameters_move": "Перемістити параметр",
   "cmd.parameters_graph": "Граф параметрів",
   "cmd.parameters_import": "Імпортувати параметри",
   "cmd.parameters_list": "Список параметрів",

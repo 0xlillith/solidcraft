@@ -600,6 +600,7 @@
   "cmd.parameters_delete": "Parameter löschen",
   "cmd.parameters_export": "Parameter exportieren",
   "cmd.parameters_favorite": "Favorisierter Parameter",
+  "cmd.parameters_move": "Parameter verschieben",
   "cmd.parameters_graph": "Parametergraph",
   "cmd.parameters_import": "Parameter importieren",
   "cmd.parameters_list": "Parameter auflisten",

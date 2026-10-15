@@ -151,6 +151,7 @@
   "cmd.parameters_delete": "パラメータを削除",
   "cmd.parameters_export": "パラメータをエクスポート",
   "cmd.parameters_favorite": "お気に入りパラメータ",
+  "cmd.parameters_move": "パラメータを移動",
   "cmd.parameters_graph": "パラメータ グラフ",
   "cmd.parameters_import": "パラメータをインポート",
   "cmd.parameters_list": "パラメータを一覧表示",

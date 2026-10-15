@@ -140,6 +140,7 @@
   "cmd.parameters_delete": "Удалить параметр",
   "cmd.parameters_export": "Экспортировать параметры",
   "cmd.parameters_favorite": "Избранный параметр",
+  "cmd.parameters_move": "Переместить параметр",
   "cmd.parameters_graph": "График параметра",
   "cmd.parameters_import": "Импортировать параметры",
   "cmd.parameters_list": "Список параметров",

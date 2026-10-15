@@ -151,6 +151,7 @@
   "cmd.parameters_delete": "Delete Parameter",
   "cmd.parameters_export": "Export Parameters",
   "cmd.parameters_favorite": "Favourite Parameter",
+  "cmd.parameters_move": "Move Parameter",
   "cmd.parameters_graph": "Parameter Graph",
   "cmd.parameters_import": "Import Parameters",
   "cmd.parameters_list": "List Parameters",

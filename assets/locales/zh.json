@@ -151,6 +151,7 @@
   "cmd.parameters_delete": "删除参数",
   "cmd.parameters_export": "导出参数",
   "cmd.parameters_favorite": "收藏参数",
+  "cmd.parameters_move": "移动参数",
   "cmd.parameters_graph": "参数关系图",
   "cmd.parameters_import": "导入参数",
   "cmd.parameters_list": "列出参数",
