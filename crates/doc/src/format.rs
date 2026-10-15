@@ -170,6 +170,30 @@
 //!   User materials can also keep a validated engineering card (`physical_card`), independently
 //!   of mass density and optical looks. Absent cards stay unknown; 0.11.0 asks for an update
 //!   instead of silently dropping the card.
+//!   A `SurfaceUntrim` feature (Untrim: a `face` as `body` and `point`, optional `holes`
+//!   points, `outer` and `in_place`) is also first saved in 21; 0.11.0 asks for an update
+//!   instead of meeting a feature it can't read.
+//!   A `SurfaceRuled` feature (Ruled Surface: `body`, `edges` points, `distance`, optional
+//!   `mode`, `angle`, `direction`, `flip`, `corners` and `face`) is also first saved in 21;
+//!   0.11.0 asks for an update instead of meeting a feature it can't read.
+//!   Under the same version, a `SurfaceExtend` can say how it continues the surface (`mode`:
+//!   `tangent` or `curvature`; `natural` when absent), extend up to something instead of its
+//!   `distance` (`up_to`: a `plane`, a `face` as `body` and `point`, or `bounds`) and keep the
+//!   neighbouring edges as they are (`neighbours: false`). An Extend without them builds the
+//!   planar extension it always did and saves as before; 0.11.0 asks for an update instead of
+//!   dropping them and extending a plane by the distance.
+//!   Under the same version, an extrude's extent records how a symmetric `distance` is read
+//!   (`convention`: `total_distance`, split evenly around the start plane, which new solid
+//!   extrudes save; or `legacy_per_side`). An extent without it keeps the per-side reading
+//!   designs always had, so their thickness and parameters don't change; 0.11.0 asks for an
+//!   update instead of doubling a total-distance extrude.
+//!   Under the same version, a Convert to Sheet Metal bend point can lie in the middle of a
+//!   chamfer (a flat strip between two faces), which then is one bend at the two faces' virtual
+//!   sharp; 0.11.0 bent the chamfer's nearest edge instead or found no edge there. Bend points
+//!   on edges convert as before.
+//!   A bend point can also lie on a bend modelled with its radius (a cylinder between two flat
+//!   faces tangent to it), which then is one bend at the two faces' virtual sharp with the
+//!   rule's radius; 0.11.0 found no edge there or refused the curved face.
 
 use serde_json::Value;
 
@@ -1147,6 +1171,7 @@ mod tests {
                     sketch,
                     profiles: ProfileSel::All,
                     extent: Extent {
+                        convention: crate::ExtrudeConvention::LegacyPerSide,
                         distance: "10".into(),
                         direction: Direction::Negative,
                         distance2: None,

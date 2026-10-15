@@ -78,6 +78,8 @@ mod status_tests {
         assert!(app.session.log.last().is_some_and(|l| l.starts_with("Redo: ") && !l.contains("edit.redo")), "{:?}", app.session.log.last());
     }
 }
+#[cfg(test)]
+mod apply_off_thread_tests;
 mod expression_complete;
 #[cfg(test)]
 mod extrude_edit_tests;
@@ -134,6 +136,9 @@ pub(crate) mod sketch_text;
 mod sketch_text_handles;
 mod sketch_text_move;
 pub mod sketch_tools;
+pub mod smart_extrude;
+#[cfg(test)]
+mod smart_extrude_ui_tests;
 pub mod stand_up;
 pub mod theme;
 #[cfg(test)]
@@ -279,6 +284,11 @@ pub struct SolveApp {
     pub preferences: prefs::Prefs,
     pub prefs_window: prefs::PrefsWindow,
     pub preview: preview::PreviewState,
+    /// OK pressed on a feature that takes a while: its evaluation runs off the window thread.
+    pub applying: Option<dialogs::Applying>,
+    /// How long OK waits for a feature before computing it off the window thread, saying so;
+    /// `None`: it waits as long as it takes (headless use, tests). The desktop app sets it.
+    pub apply_off_thread: Option<std::time::Duration>,
     /// The last command started interactively (id, label), for Repeat.
     pub last_command: Option<(String, String)>,
     /// Esc was already acted on this frame (by the shortcuts), so later handlers skip it.
@@ -373,6 +383,8 @@ impl SolveApp {
             preferences: prefs::Prefs::default(),
             prefs_window: prefs::PrefsWindow::default(),
             preview: preview::PreviewState::default(),
+            applying: None,
+            apply_off_thread: None,
             last_command: None,
             esc_handled: false,
             status: None,
@@ -545,7 +557,10 @@ impl SolveApp {
         if let Ok(v) = &r {
             if id == "view.navigate" {
                 let to: Camera = serde_json::from_value(v.get("camera").cloned().unwrap_or_default()).map_err(|e| e.to_string())?;
-                if v.get("fit").and_then(Value::as_bool).unwrap_or(false) {
+                if v.get("continuous").and_then(Value::as_bool).unwrap_or(false) {
+                    self.cancel_view_animation();
+                    self.cam = to;
+                } else if v.get("fit").and_then(Value::as_bool).unwrap_or(false) {
                     let bounds = solidcraft_engine::view::bounds(&self.session);
                     self.animate_to(self.fitted(to));
                     self.pending_fit = Some((to, bounds, true));
@@ -557,14 +572,20 @@ impl SolveApp {
             sketch_palette::apply_mode(self, id, v);
         }
         match &r {
-            Ok(_) => {
+            Ok(v) => {
                 // Programmatic callers (the control channel, scripts) run outside a render
                 // language scope, so resolve the echo from the saved preference instead of the
                 // thread-local scope. The command's own label is translated too, so the echo
                 // reads the same way the toolbar button it came from does.
                 let language = i18n::Locale::for_language(&self.preferences.language);
                 let label = language.label(command_label(id));
-                self.session.echo(language.format("ui.command_done", &[("command", label)]));
+                if !(id == "view.navigate" && v.get("continuous").and_then(Value::as_bool) == Some(true)) {
+                    self.session.echo(language.format("ui.command_done", &[("command", label)]));
+                }
+                if id == "file.new" {
+                    // `file.new` starts from millimetres. Units of new designs still apply (#1205).
+                    prefs::apply_new_design(self);
+                }
                 if matches!(id, "file.new" | "doc.open" | "doc.recover") {
                     render_workspace::reset_document(self);
                     self.sketch_choices = sketch_families::Choices::default();
@@ -925,6 +946,15 @@ impl SolveApp {
         self.cam = self.fitted(self.cam);
     }
 
+    /// Frame `bounds` at once, keeping the view direction (programmatic use).
+    pub fn fit_bounds(&mut self, bounds: solidcraft_engine::geom::Aabb3) {
+        self.cancel_view_animation();
+        self.viewport.orbit_snap = None;
+        self.viewport.orbit_free = None;
+        self.pending_fit = Some((self.cam, bounds, false));
+        self.cam = self.fitted_bounds(self.cam, &bounds);
+    }
+
     /// `cam` moved to frame the whole model.
     pub fn fitted(&self, mut cam: Camera) -> Camera {
         let b = viewport::view_bounds(self);
@@ -1128,26 +1158,36 @@ impl SolveApp {
         if self.synthetic.is_empty() {
             return;
         }
-        let n = match self.synthetic.first() {
-            Some(egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::MouseWheel { .. }) => 1,
-            _ => self.synthetic.iter().position(|e| matches!(e, egui::Event::Key { pressed: false, .. })).map_or(self.synthetic.len(), |i| i + 1),
-        };
-        if let Some(egui::Event::PointerMoved(p) | egui::Event::PointerButton { pos: p, .. }) = self.synthetic.first() {
-            raw.events.push(egui::Event::PointerMoved(*p));
-        }
-        // egui keeps the modifier keys as input state, changed by their own event.
-        match self.synthetic.first() {
-            Some(egui::Event::PointerButton { modifiers, pressed, .. }) => {
-                // A drag keeps its press's modifiers until the release.
-                self.synthetic_mods = if *pressed { *modifiers } else { egui::Modifiers::default() };
-                raw.events.push(egui::Event::ModifiersChanged(*modifiers))
+        // Text and modifier prefixes may precede a pointer event. Never drain past that event.
+        let n = self
+            .synthetic
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerMoved(_)
+                        | egui::Event::PointerButton { .. }
+                        | egui::Event::PointerGone
+                        | egui::Event::MouseWheel { .. }
+                        | egui::Event::Key { pressed: false, .. }
+                )
+            })
+            .map_or(self.synthetic.len(), |i| i + 1);
+        for event in self.synthetic.drain(..n) {
+            match &event {
+                egui::Event::ModifiersChanged(modifiers) => self.synthetic_mods = *modifiers,
+                egui::Event::PointerButton { pos, modifiers, pressed, .. } => {
+                    raw.events.push(egui::Event::PointerMoved(*pos));
+                    raw.events.push(egui::Event::ModifiersChanged(*modifiers));
+                    // A drag keeps its press's modifiers until the release.
+                    self.synthetic_mods = if *pressed { *modifiers } else { egui::Modifiers::NONE };
+                }
+                egui::Event::Key { modifiers, .. } => raw.events.push(egui::Event::ModifiersChanged(*modifiers)),
+                egui::Event::PointerMoved(_) => raw.events.push(egui::Event::ModifiersChanged(self.synthetic_mods)),
+                _ => {}
             }
-            Some(egui::Event::Key { modifiers, .. }) => raw.events.push(egui::Event::ModifiersChanged(*modifiers)),
-            Some(egui::Event::PointerMoved(_)) => raw.events.push(egui::Event::ModifiersChanged(self.synthetic_mods)),
-            _ => {}
+            raw.events.push(event);
         }
-        let n = n.min(self.synthetic.len());
-        raw.events.extend(self.synthetic.drain(..n));
     }
 
     /// Lay out the whole window.

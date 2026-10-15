@@ -59,11 +59,16 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 | M14 | Configurations: a table of rows (parameter expressions and feature suppressions per row) switched with config.activate (undoable, all or nothing), kept through parameter renames and feature deletes (config.configure, config.table, config.column/row/activate). Per-row body materials and appearances (library looks, custom colour/opacity and clearing overrides), undoable activation and save/reopen: done. Ordered typed configuration rules, atomic validation and structured rule editing: done. Component appearance and certified semantic face style columns, atomic preview/apply and independent-copy remapping: done. Exact constructed sketch-side and immutable imported-face lineage now preserve legacy names and reject retargeting. Left: ambiguous shifted/two-sided caps | in progress | 4 |
 | M13 | Never lose work: atomic saves (temporary file, flush, rename; a crash at any moment leaves the old file or the new one) with the replaced version kept as `<file>.bak`; autosave of unsaved changes to the recovery folder every 5 minutes (preference) and after big operations, only when something changed; "Recover unsaved design?" on the next launch (`doc.recovery_list`, `doc.recover`, `doc.recovery_discard`); a kill-mid-save test (process killed while saving a 0.5 MB design 25 times). File format: `"format": "solidcraft/12"`, older formats upgraded step by step (`doc::format`), newer ones refused with a message, out-of-range numbers and broken placements refused; a corpus of designs saved by M0, components-era, joints-era and current builds (apps/solidcraft-cli/tests/corpus) that must open and evaluate as saved; damaged and hostile variants (truncation, bit flips, hostile values, removed keys, repeated features, deep nesting) never panic | done | 6 |
 
+M6 navigation preferences include **Touchpad**: Shift + pointer movement pans, Alt/Option +
+pointer movement orbits without a mouse button, and vertical scrolling zooms. Other presets
+retain their saved two-finger scroll preference; camera motion is available through
+`view.navigate` and modifier-aware `ui.move` automation.
+
 ## Physical material data
 
 - Design-owned engineering cards (#1048) can be validated and saved through existing
   material create/edit/list commands, with source/condition records, atomic refusal,
-  undo/reopen and explicit density comparison. Format 20 retains cards independently
+  undo/reopen and explicit density comparison. Format 21 retains cards independently
   of assigned mass density and optical looks. Scalar catalog v1 refuses data loss;
   rich catalog transport and property-authoring UI remain separate phases.
 
@@ -302,7 +307,8 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
   of two edges at a vertex meet in a crease, as on a box), picked together or one after the
   other, except a round after a round of the edge between the wall and a flat face that it
   would run over; the three edges at a vertex of any smooth faces, of one radius, end in a
-  piece of sphere.
+  piece of sphere. A limiting blend that collapses a side wall into coincident boundary
+  curves is refused as too large rather than returning an unmeshable face (#1113).
 - Booleans: prisms along one direction (plates with holes, slots, patterns of them, equal
   sections stacked end to end) are combined exactly in 2D. Qualified axial cuts preserve
   annular holes with overrun cutters, including inward Press Pull after a joined extrusion;

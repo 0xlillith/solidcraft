@@ -210,3 +210,26 @@ fn format20_materials_without_cards_upgrade_to21_without_changing_their_optical_
     assert!(loaded.user_materials[0].physical_card.is_none());
     assert_eq!(loaded.format, "solidcraft/21");
 }
+
+#[test]
+fn card_number_admission_preserves_metadata_without_exempting_other_material_fields() {
+    let s = fixture();
+    let mut saved = serde_json::to_value(&*s.doc).unwrap();
+    saved["user_materials"][0]["physical_card"] = card();
+    let metadata = json!({"org.example.measurement":{"value":12.25e9,"physical_card":{"untyped":12.25e9}}});
+    saved["metadata"] = metadata.clone();
+    let loaded = Document::from_json(&saved.to_string()).unwrap();
+    let reopened = solidcraft_io::read_design(&solidcraft_io::write_design_container(&loaded).unwrap()).unwrap();
+    assert_eq!(serde_json::to_value(&reopened.metadata).unwrap(), metadata);
+    assert_eq!(reopened.user_materials, loaded.user_materials);
+
+    // Only the exact root user-material card receives SI admission. The same key
+    // nested elsewhere must not exempt a hostile number from geometry limits.
+    for field in ["appearance", "unrecognized"] {
+        let mut hostile = saved.clone();
+        hostile["user_materials"][0][field] = json!({"physical_card":{"untyped":12.25e9}});
+        assert!(Document::from_json(&hostile.to_string()).unwrap_err().to_string().contains("number"));
+    }
+    saved["user_materials"][0]["density"] = json!(12.25e9);
+    assert!(Document::from_json(&saved.to_string()).unwrap_err().to_string().contains("number"));
+}

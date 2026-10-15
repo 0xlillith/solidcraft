@@ -43,7 +43,7 @@ pub const MAX_LINE: usize = 16 << 20;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
-    #[error("unknown command `{0}`")]
+    #[error("unknown command `{0}`{hint}", hint = cmd::did_you_mean(.0))]
     UnknownCommand(String),
     #[error("`{0}` is not available right now: {1}")]
     Disabled(String, String),
@@ -927,6 +927,8 @@ mod derived_units_tests;
 mod display_mesh_tests;
 #[cfg(test)]
 mod extent_tests;
+#[cfg(test)]
+mod face_name_tests;
 #[cfg(test)]
 mod hole_face_tests;
 #[cfg(test)]
