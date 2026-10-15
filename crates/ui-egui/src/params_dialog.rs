@@ -18,6 +18,8 @@ use crate::SolveApp;
 use crate::theme::Tokens;
 
 const UNITS: [&str; 9] = ["mm", "cm", "m", "in", "ft", "deg", "rad", "", "um"];
+/// The expression a new parameter row starts with.
+const NEW_EXPR: &str = "10 mm";
 
 /// Dialog state (what is being typed; the parameters themselves live in the document).
 #[derive(Default)]
@@ -41,7 +43,7 @@ pub struct ParamsDialog {
 
 impl ParamsDialog {
     pub fn new() -> Self {
-        ParamsDialog { new_expr: "10 mm".into(), ..Default::default() }
+        ParamsDialog { new_expr: NEW_EXPR.into(), ..Default::default() }
     }
     /// The command the live preview should run (a valid expression being edited).
     pub fn preview_commands(&self) -> Option<Vec<(String, Value)>> {
@@ -408,6 +410,7 @@ fn add_row(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog) {
             match app.run("parameters.add", p) {
                 Ok(_) => {
                     d.new_name.clear();
+                    d.new_expr = NEW_EXPR.into();
                     d.new_comment.clear();
                     d.error = None;
                     name.request_focus();
