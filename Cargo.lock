@@ -3590,9 +3590,11 @@ name = "solidcraft-render"
 version = "0.12.0"
 dependencies = [
  "image",
+ "moxcms",
  "png",
  "serde",
  "serde_json",
+ "sha2",
  "solidcraft-geom",
 ]
 

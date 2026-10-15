@@ -103,6 +103,12 @@ retain their saved two-finger scroll preference; camera motion is available thro
 
 ## Render foundation
 
+- Explicit texture normalization (#1218) produces completed float RGBA with
+  role-aware linear color/data semantics, bounded matrix/TRC ICC conversion and
+  opt-in EXIF orientation. It retains high-precision raw samples and records lossy
+  gamut clipping only when explicitly requested. It is not a renderer/resource
+  consumer; see [the supported policy and limits](docs/render-texture-normalization.md).
+
 - Opt-in opaque PBR (#1046) connects persisted surface parameters to the integrated
   product viewport and CPU PNG, using a fixed direct-light studio. Geometry and mass
   stay unchanged. HDRI, transmission and textures remain separate gates.
