@@ -196,6 +196,34 @@ fn agent_builds_box_fillet_hole() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `open` hands `up` and `names` to the STEP import, and the tool's schema refuses other values.
+#[test]
+fn open_stands_a_y_up_step_file_up() {
+    let mut s = server();
+    tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 40, "height": 5}}));
+    let dir = std::env::temp_dir().join(format!("solidcraft-mcp-up-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let step = dir.join("tall.step").to_string_lossy().to_string();
+    tool(&mut s, "export", json!({"path": step}));
+    let height = |s: &mut Server| {
+        let bbox = tool(s, "measure", json!({}))["bodies"][0]["bbox"].clone();
+        bbox["max"][2].as_f64().unwrap() - bbox["min"][2].as_f64().unwrap()
+    };
+
+    let r = tool(&mut s, "open", json!({"path": step}));
+    assert_eq!(r["features"], 1, "{r}");
+    assert!((height(&mut s) - 5.0).abs() < 1e-6, "as written");
+    let r = tool(&mut s, "open", json!({"path": step, "up": "y", "names": "product"}));
+    assert_eq!(r["features"], 2, "the import and the turn: {r}");
+    assert!((height(&mut s) - 40.0).abs() < 1e-6, "Y became Z");
+
+    for args in [json!({"path": step, "up": "x"}), json!({"path": step, "names": "label"}), json!({"path": step, "up": 1})] {
+        let r = raw_tool(&mut s, "open", args.clone());
+        assert_eq!(r["error"]["code"], -32602, "{args}: {r}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn save_selects_container_or_json_and_reopens_by_contents() {
     let mut s = server();

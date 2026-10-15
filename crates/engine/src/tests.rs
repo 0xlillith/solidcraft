@@ -318,6 +318,7 @@ mod rim_cut;
 mod robustness;
 mod robustness_goldens;
 mod spiral_join;
+mod step_import_options;
 mod xz_plane;
 
 /// Plan area a round of radius `r` fills at the concave corner `x` where circles (c1, r1) and
