@@ -3965,6 +3965,7 @@ dependencies = [
  "spade",
  "truck-base",
  "truck-geometry",
+ "truck-modeling",
  "truck-polymesh",
  "truck-topology",
 ]
