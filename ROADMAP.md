@@ -89,6 +89,12 @@ PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
 ## Render foundation
 
+- Explicit texture normalization (#1218) produces completed float RGBA with
+  role-aware linear color/data semantics, bounded matrix/TRC ICC conversion and
+  opt-in EXIF orientation. It retains high-precision raw samples and records lossy
+  gamut clipping only when explicitly requested. It is not a renderer/resource
+  consumer; see [the supported policy and limits](docs/render-texture-normalization.md).
+
 - R2 adds bounded named render setups in document format 21 and the read/save
   `render.settings.get/set` commands. Proven render-only changes preserve geometry
   and prepared world data through undo/redo and checkpoint restore. This slice does
