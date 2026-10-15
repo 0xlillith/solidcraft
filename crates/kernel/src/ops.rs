@@ -362,7 +362,7 @@ fn boolean_via(a: &Body, b: &Body, op: BoolOp, whole: &dyn Fn(&Body, &Body, Bool
         && let Ok(result) = &r
         && let Err(e) = crate::boolean_guard::check_retry(a, b, op, result.as_ref())
     {
-        let tried = diagnostics.warning().unwrap_or_default();
+        let tried = diagnostics.summary().unwrap_or_default();
         r = Err(match e {
             KernelError::Failed(m) => KernelError::Failed(format!("{m} ({})", tried.trim_start_matches("Boolean retry: "))),
             other => other,
@@ -425,10 +425,13 @@ fn plausible(v: f64, op: BoolOp, va: f64, vb: f64, slack: f64) -> bool {
         }
 }
 
-/// The prism route's result: `Some` when both operands are prisms along one direction (see
-/// [`crate::prism::prism_boolean`]), with a union's slab seams healed as the general B-rep
-/// boolean does.
-fn prism_result(a: &Body, b: &Body, op: BoolOp, size: f64, counts: &[(usize, usize)]) -> Option<Result<Option<Body>>> {
+/// A boolean in 2D of prisms along one direction (see [`prism_result`]).
+type Route = fn(&Body, &Body, BoolOp) -> Option<Result<Option<Body>>>;
+
+/// A prism route's result (`route`: [`crate::prism::prism_boolean`] or
+/// [`crate::prism::prism_union_between_caps`]): `Some` when both operands are prisms along one
+/// direction, with a union's slab seams healed as the general B-rep boolean does.
+fn prism_result(a: &Body, b: &Body, op: BoolOp, size: f64, counts: &[(usize, usize)], route: Route) -> Option<Result<Option<Body>>> {
     // Slab-by-slab prism booleans sew a closed solid, but leave cap and wall pieces along slab
     // boundaries: a cut along Z through a box whose side wall already has a port in it splits
     // that wall into strips at the port's top and bottom, though the cut never touches it. Merge
@@ -437,7 +440,7 @@ fn prism_result(a: &Body, b: &Body, op: BoolOp, size: f64, counts: &[(usize, usi
     // protection) keep their pieces.
     let keep: Vec<Vec<Vec3>> = a.split_keep().iter().chain(b.split_keep()).cloned().collect();
     let authored = |x: &Body| x.regularization_protected || x.paint().is_some_and(|p| !p.faces.is_empty());
-    crate::prism::prism_boolean(a, b, op).map(|result| {
+    route(a, b, op).map(|result| {
         result.map(|body| {
             body.map(|body| {
                 if op == BoolOp::Union {
@@ -490,7 +493,7 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     // join the sampled shortcut does. A pair the route cannot answer still takes the path below,
     // unchanged.
     let early_prism = matches!(op, BoolOp::Cut | BoolOp::Intersect);
-    let prism = early_prism.then(|| prism_result(a, b, op, size, &counts)).flatten();
+    let prism = early_prism.then(|| prism_result(a, b, op, size, &counts, crate::prism::prism_boolean)).flatten();
     if let Some(Ok(Some(body))) = &prism {
         let (va0, vb0) = (volume(a), volume(b));
         let (v0, slack0) = (volume(body), 2e-3 * (va0 + vb0) + 1e-9);
@@ -563,7 +566,7 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     // Prisms along one direction (plates with holes): exact, in 2D (so only the volume bounds
     // are checked). For a cut or an intersection this already ran above; the other operations
     // ask here, after the sampled shortcut, which is where that shortcut is cheapest.
-    let prism = prism.or_else(|| (!early_prism).then(|| prism_result(a, b, op, size, &counts)).flatten());
+    let prism = prism.or_else(|| (!early_prism).then(|| prism_result(a, b, op, size, &counts, crate::prism::prism_boolean)).flatten());
     if let Some(result) = prism {
         match result {
             Ok(Some(body)) => {
@@ -590,6 +593,18 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     {
         let (ok, _) = check(&body);
         if ok {
+            return Ok(Some(body));
+        }
+    }
+    // Bores on a common cylinder (a pad's bore around the hole it is joined over, a disc filling
+    // a hole). Asked before faces are pushed apart: that doesn't part walls on one cylinder, and
+    // its tries at the general boolean, all failing on those walls, cost seconds.
+    if op == BoolOp::Union && !BORES.with(|c| c.get()) && crate::coplanar::has_coincident_cylinders(a, b) {
+        BORES.with(|c| c.set(true));
+        let (r, diagnostics) = capture_boolean_diagnostics(|| crate::coplanar::bore_union(a, b, &|body| check(body).0));
+        BORES.with(|c| c.set(false));
+        if let Some(body) = r {
+            merge(diagnostics);
             return Ok(Some(body));
         }
     }
@@ -646,20 +661,15 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     {
         return Ok(Some(body));
     }
-    // Bores on a common cylinder (a pad's bore around the hole it is joined over).
-    if op == BoolOp::Union && !BORES.with(|c| c.get()) && crate::coplanar::has_coincident_cylinders(a, b) {
-        BORES.with(|c| c.set(true));
-        let (r, diagnostics) = capture_boolean_diagnostics(|| crate::coplanar::bore_union(a, b, &|body| check(body).0));
-        BORES.with(|c| c.set(false));
-        if let Some(body) = r {
-            merge(diagnostics);
-            return Ok(Some(body));
-        }
-    }
     // Faces back to back over part of their area: imprinted on each other and glued (exact; held
     // to the retry guard's checks all the same).
     if op == BoolOp::Union && crate::coplanar::faces_touch(a, b) {
         let accept = |body: &Body| check(body).0 && !unfused(body) && crate::boolean_guard::check_retry(a, b, op, Some(body)).is_ok();
+        // Imprinted along the contact's own outline (faces there bounded by lines and arcs), then
+        // along the sides' surfaces.
+        if let Some(body) = crate::outline::outline_union(a, b, &accept) {
+            return Ok(Some(body));
+        }
         if let Some(body) = crate::coplanar::imprint_union(a, b, &accept) {
             return Ok(Some(body));
         }
@@ -791,6 +801,17 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
             return Ok(None);
         }
         Err(e) => last = format!("{last}; {e}"),
+    }
+    // Prisms along one direction that end at different levels (a barrel joined between two
+    // faces of a wider part, its ends flush with them) were left to the B-rep boolean, which
+    // the coincident ends defeat, with no room to push them apart (the part goes on past
+    // them). In 2D they join exactly: asked before the tool is moved.
+    if let Some(Ok(Some(body))) = prism_result(a, b, op, size, &counts, crate::prism::prism_union_between_caps) {
+        let (ok, v) = check(&body);
+        if ok {
+            return Ok(Some(body));
+        }
+        last = format!("{last}; the prisms joined in 2D gave an implausible volume {v:.4}");
     }
     // Last resort: nudge the tool by a micron-scale screw motion (turned 2e-6 rad about a
     // skew axis and moved 2e-6 of the size), which breaks tangencies and seams lying exactly on

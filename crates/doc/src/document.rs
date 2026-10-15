@@ -1019,6 +1019,19 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         faces: Vec<Vec3>,
     },
+    /// The face at `face` restored towards its surface: the inner loops at the `holes` points
+    /// taken away (every one when `None`; none when empty), and with `outer` its outer boundary
+    /// back at the surface's natural bounds (an analytic surface's: the face's own span). A new
+    /// surface body; with `in_place`, a surface body's face is untrimmed where it is.
+    SurfaceUntrim {
+        face: FaceAt,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        holes: Option<Vec<Vec3>>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        outer: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        in_place: bool,
+    },
     /// A surface body turned about an axis from open curve chains and the boundaries of
     /// profiles: walls only, no caps (a solid where a full turn closes them).
     SurfaceRevolve {
@@ -1444,6 +1457,7 @@ impl FeatureKind {
             FeatureKind::SurfaceExtend { .. } => "ExtendFeature",
             FeatureKind::Unstitch { .. } => "UnstitchFeature",
             FeatureKind::ReverseNormal { .. } => "ReverseNormalFeature",
+            FeatureKind::SurfaceUntrim { .. } => "UntrimFeature",
             FeatureKind::Import { .. } => "BaseFeature",
             FeatureKind::MeshImport { .. } => "MeshFeature",
             FeatureKind::MeshConvert { .. } => "MeshConvertFeature",
@@ -1518,6 +1532,7 @@ impl FeatureKind {
             FeatureKind::SurfaceExtend { .. } => "Extend",
             FeatureKind::Unstitch { .. } => "Unstitch",
             FeatureKind::ReverseNormal { .. } => "ReverseNormal",
+            FeatureKind::SurfaceUntrim { .. } => "Untrim",
             FeatureKind::Import { .. } => "Import",
             FeatureKind::MeshImport { .. } => "Mesh",
             FeatureKind::MeshConvert { .. } => "ConvertMesh",
@@ -1622,6 +1637,9 @@ pub struct Document {
     pub name: String,
     #[serde(default = "default_units")]
     pub units: String,
+    /// Design properties (project, author…) and other tools' data, kept as they are (#1015).
+    #[serde(default, skip_serializing_if = "crate::Metadata::is_empty")]
+    pub metadata: crate::Metadata,
     pub params: Vec<Param>,
     pub features: Vec<Feature>,
     /// Timeline marker: features at or after this index are rolled back (not evaluated).
@@ -1835,6 +1853,7 @@ impl Document {
             format: default_format(),
             name: name.into(),
             units: default_units(),
+            metadata: Default::default(),
             params: Vec::new(),
             features: Vec::new(),
             marker: None,

@@ -32,7 +32,6 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"
 sha2 = "0.10"
 moxcms = { version = "0.8.1", default-features = false, features = ["extended_range"] }
-png = "0.18.1"
 semver = "1"
 
 # geometry kernel (Apache-2.0; see plan/adr/0001-geometry-kernel.md). Only crates/kernel uses it.
@@ -55,6 +54,7 @@ ttf-parser = { version = "0.25", default-features = false, features = ["std"] }
 
 # images
 image = { version = "0.25", default-features = false, features = ["png", "hdr"] }
+png = "0.18.1"
 
 # ui
 egui = "0.36"
