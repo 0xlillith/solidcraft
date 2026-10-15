@@ -143,3 +143,70 @@ fn format21_materials_without_cards_keep_their_optical_look() {
     assert!(loaded.user_materials[0].physical_card.is_none());
     assert_eq!(loaded.format, "solidcraft/21");
 }
+
+#[test]
+fn scalar_catalog_refuses_card_export_without_creating_or_replacing_files_or_history() {
+    struct ProbeFile(std::path::PathBuf);
+    impl Drop for ProbeFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let file = ProbeFile(std::env::temp_dir().join(format!("solidcraft-card-refusal-{}-{unique}.json", std::process::id())));
+    let mut s = Session::default();
+    s.execute("material.create", &json!({"name":"Card only","density_g_cm3":0.8,"physical_card":card()})).unwrap();
+    s.mark_saved();
+    let doc = s.doc.clone();
+    let history = (s.undo.len(), s.redo.len(), s.revision);
+    for existing in [false, true] {
+        if existing {
+            std::fs::write(&file.0, b"keep existing catalog").unwrap();
+        }
+        for overwrite in [false, true] {
+            let error = s.execute("library.export", &json!({"path":file.0,"overwrite":overwrite})).unwrap_err();
+            assert!(error.to_string().contains("cannot preserve engineering cards"));
+            if existing {
+                assert_eq!(std::fs::read(&file.0).unwrap(), b"keep existing catalog");
+            } else {
+                assert!(!file.0.exists());
+            }
+            assert!(Arc::ptr_eq(&doc, &s.doc));
+            assert_eq!((s.undo.len(), s.redo.len(), s.revision), history);
+            assert!(!s.is_dirty());
+        }
+    }
+}
+
+#[test]
+fn native_container_keeps_large_si_card_values_sources_conditions_and_density_separate() {
+    let mut s = fixture();
+    s.execute("material.edit", &json!({"material":"Synthetic","physical_card":card()})).unwrap();
+    let before = s.execute("component.properties", &json!({})).unwrap();
+    let scene = product_scene::extract(&s).unwrap();
+    let native = solidcraft_io::write_design_container(&s.doc).unwrap();
+    assert!(solidcraft_io::is_design_container(&native));
+    let loaded = solidcraft_io::read_design(&native).unwrap();
+    assert_eq!(loaded.format, "solidcraft/21");
+    assert_eq!(loaded.user_materials, s.doc.user_materials);
+    let mut reopened = Session::new(loaded);
+    assert_eq!(reopened.execute("component.properties", &json!({})).unwrap(), before);
+    assert_eq!(product_scene::extract(&reopened).unwrap().meshes[0].surface, scene.meshes[0].surface);
+    let list = reopened.execute("material.list", &json!({})).unwrap();
+    let material = list["materials"].as_array().unwrap().iter().find(|m| m["name"] == "Synthetic").unwrap();
+    assert_eq!(material["physical_card"], serde_json::to_value(s.doc.user_materials[0].physical_card.as_ref().unwrap()).unwrap());
+    assert_eq!(material["density_comparison"]["assigned_density_kg_m3"], 800.0);
+    assert_eq!(material["density_comparison"]["card_density_kg_m3"], 700.0);
+    assert_eq!(material["physical_validation"]["source_review_required"], json!(["fixture"]));
+}
+
+#[test]
+fn format20_materials_without_cards_upgrade_to21_without_changing_their_optical_look() {
+    let s = fixture();
+    let mut saved = serde_json::to_value(&*s.doc).unwrap();
+    saved["format"] = json!("solidcraft/20");
+    let loaded = Document::from_json(&saved.to_string()).unwrap();
+    assert_eq!(loaded.user_materials, s.doc.user_materials);
+    assert!(loaded.user_materials[0].physical_card.is_none());
+    assert_eq!(loaded.format, "solidcraft/21");
+}
