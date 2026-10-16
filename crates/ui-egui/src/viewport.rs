@@ -2237,6 +2237,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         painter.add(egui_wgpu::Callback::new_paint_callback(rect, cb));
     }
     analysis_legend(app, &painter, rect);
+    crate::frame_rate::paint(app, ui.ctx(), &painter, rect);
 
     // ---- interaction ----
     let add = mods.shift || mods.command || mods.ctrl;
