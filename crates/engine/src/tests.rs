@@ -1217,6 +1217,41 @@ fn extrude_auto_operation_follows_the_to_object() {
     assert_eq!(extrude_reach(&s, &json!({"face": [20, 15, 20], "distance": 5, "direction": "negative"})), Some(-5.0));
 }
 
+/// #1678: a hole's `position` takes length expressions, keeps them and follows the parameters: a
+/// hole on a plate's middle line stays there when the plate gets wider. A position of plain
+/// numbers is stored as before, with no `at`.
+#[test]
+fn a_hole_position_of_expressions_follows_the_parameters() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name": "width", "expression": "30 mm"}));
+    run(&mut s, "parameters.add", json!({"name": "t", "expression": "4 mm"}));
+    run(&mut s, "solid.box", json!({"length": 100, "width": "width", "height": "t", "body_name": "Plate"}));
+    run(&mut s, "solid.hole", json!({"position": ["40", "width/2", "t"], "clearance": "M5", "name": "Middle"}));
+    run(&mut s, "solid.hole", json!({"position": [80, 10, 4], "clearance": "M5", "name": "Fixed"}));
+    let centre_y = |s: &Session| {
+        let st = s.model.state();
+        solidcraft_kernel::measure(&st.body("Plate").unwrap().body).unwrap().centroid.y
+    };
+    let hole = |s: &Session, name: &str| -> Value {
+        let saved: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
+        saved["features"].as_array().and_then(|f| f.iter().find(|f| f["name"] == name)).cloned().unwrap()
+    };
+    assert_eq!(hole(&s, "Middle")["at"], json!([40.0, "width/2", "t"]), "the expressions are kept");
+    assert!(hole(&s, "Fixed").get("at").is_none(), "plain numbers are stored as before");
+    // The fixed hole sits off the middle line, so it alone moves the centre; widen the plate.
+    let before = centre_y(&s);
+    run(&mut s, "parameters.change", json!({"name": "width", "expression": "40 mm"}));
+    let after = centre_y(&s);
+    // The middle hole is at y = 20 now (the plate's middle); the fixed one stays at y = 10. With
+    // the middle hole left at y = 15 the centre would sit lower still.
+    let plate = 100.0 * 40.0 * 4.0;
+    let hole_v = std::f64::consts::PI * (5.5f64 / 2.0).powi(2) * 4.0;
+    let want = (plate * 20.0 - hole_v * 20.0 - hole_v * 10.0) / (plate - 2.0 * hole_v);
+    assert!((after - want).abs() < 1e-3, "centre y {after}, want {want} (was {before})");
+    // A bad expression is refused.
+    assert!(s.execute("solid.hole", &json!({"position": ["40", "nope/2", "t"], "diameter": 3})).is_err());
+}
+
 /// Additive extrusions default to joining even when only a profile side touches material.
 #[test]
 fn auto_extrude_joins_side_contact_elbow_and_keeps_new_body_explicit() {
