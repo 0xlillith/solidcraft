@@ -1384,6 +1384,59 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stitch: bool,
     },
+    /// One surface patch through a network of two to four boundary curves of a sketch
+    /// (`surface.boundary`, issue #763): the patch runs through the curves in loop order and leaves
+    /// each boundary at its own `order` — a sketch curve's boundary is a plane, so G1 and up hold
+    /// exactly — with `crown` shaping the middle without touching a boundary.
+    SurfaceBoundary {
+        sketch: SketchId,
+        /// The curves in loop order: each one ends where the next begins, and the last where the
+        /// first does.
+        curves: Vec<String>,
+        /// How much of the surface across each boundary the patch repeats, one per curve (none: a
+        /// tangent plane, `g1`, on every side).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        orders: Vec<Continuity>,
+        /// How full the middle is: 0 the plain construction, up to 3 fuller, down to -0.9 flatter.
+        #[serde(default)]
+        crown: f64,
+        /// The stations every boundary carries.
+        #[serde(default = "boundary_samples")]
+        samples: usize,
+    },
+    /// One face of a surface body rebuilt against another body (`surface.match`): the rebuilt
+    /// boundary nearest the chain of `edges` on `target` takes that chain's place and repeats the
+    /// target's own shape along the seam up to `order`, while the boundary opposite it, and the
+    /// body's name, stay where they were. `faces` picks the face to rebuild (its first, when none).
+    SurfaceMatch {
+        body: BodyName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        faces: Vec<FacePick>,
+        target: BodyName,
+        edges: Vec<Position>,
+        #[serde(default = "match_order")]
+        order: Continuity,
+    },
+    /// The B-spline faces at `faces` of `body` faired (`surface.fair`): each face's interior
+    /// control vertices move to flatten the thin-plate (curvature-variation) energy of the face,
+    /// `strength` of the full least-squares step at a time, for at most `iterations` steps.
+    /// `keep_edges` holds the row of control points next to each edge as well as the boundary row
+    /// itself, so the face keeps meeting its neighbours in position and in tangent. `tolerance`
+    /// is the farthest a control point may move, so the faired face stays within it of the one the
+    /// design asked for; an empty `faces` fairs every face of the body.
+    SurfaceFair {
+        body: BodyName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        faces: Vec<FacePick>,
+        #[serde(default = "fair_strength")]
+        strength: f64,
+        #[serde(default = "fair_iterations")]
+        iterations: u32,
+        #[serde(default = "fair_keep_edges")]
+        keep_edges: bool,
+        #[walk(length = "Tolerance")]
+        tolerance: Expr,
+    },
     /// A surface body trimmed by a plane, or by a face of a body (`tool`), keeping the side of
     /// `keep`.
     SurfaceTrim {
@@ -1600,8 +1653,31 @@ fn is_g0(g: &Continuity) -> bool {
 }
 
 /// The continuity a blend repeats by default: the tangent plane on both sides.
+/// The stations a boundary patch carries by default.
+fn boundary_samples() -> usize {
+    25
+}
+
 fn blend_orders() -> [Continuity; 2] {
     [Continuity::G1, Continuity::G1]
+}
+
+/// The continuity a match holds by default: position, tangent plane and curvature.
+fn match_order() -> Continuity {
+    Continuity::G2
+}
+
+/// A fairing's defaults for a design that leaves them out: the whole least-squares step at a
+/// time, and the boundary held (the row next to each edge too, so the face still meets its
+/// neighbours in tangent).
+fn fair_strength() -> f64 {
+    1.0
+}
+fn fair_iterations() -> u32 {
+    1
+}
+fn fair_keep_edges() -> bool {
+    true
 }
 
 /// Triangles of one imported mesh body (millimetres).
@@ -1896,6 +1972,9 @@ impl FeatureKind {
             FeatureKind::SurfaceSweep { .. } => "SurfaceSweepFeature",
             FeatureKind::SurfaceLoft { .. } => "SurfaceLoftFeature",
             FeatureKind::SurfaceBlend { .. } => "BlendFeature",
+            FeatureKind::SurfaceBoundary { .. } => "BoundaryFeature",
+            FeatureKind::SurfaceMatch { .. } => "MatchFeature",
+            FeatureKind::SurfaceFair { .. } => "FairFeature",
             FeatureKind::Stitch { .. } => "StitchFeature",
             FeatureKind::Thicken { .. } => "ThickenFeature",
             FeatureKind::SurfaceTrim { .. } => "TrimFeature",
@@ -1973,6 +2052,9 @@ impl FeatureKind {
             FeatureKind::SurfaceSweep { .. } => "SurfaceSweep",
             FeatureKind::SurfaceLoft { .. } => "SurfaceLoft",
             FeatureKind::SurfaceBlend { .. } => "Blend",
+            FeatureKind::SurfaceBoundary { .. } => "Boundary",
+            FeatureKind::SurfaceMatch { .. } => "Match",
+            FeatureKind::SurfaceFair { .. } => "Fair",
             FeatureKind::Stitch { .. } => "Stitch",
             FeatureKind::Thicken { .. } => "Thicken",
             FeatureKind::SurfaceTrim { .. } => "Trim",
