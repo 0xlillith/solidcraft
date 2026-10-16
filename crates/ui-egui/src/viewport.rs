@@ -7,7 +7,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::geom::{Vec2, Vec3};
 use solidcraft_engine::render::{Camera, Mat4, Rgb};
 use solidcraft_engine::sketch::CurveKind;
-use solidcraft_engine::view::{colors, grid_step, sketch_lines_with_sampler};
+use solidcraft_engine::view::{colors, grid_plane, grid_step, sketch_lines_with_sampler};
 use std::hash::{Hash, Hasher};
 
 use crate::gpu::{Frame, GpuScene, GpuTarget, SceneSlot, ViewportCallback};
@@ -696,9 +696,12 @@ fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
     if app.ui.show_grid && !active_view(app).hide_grid {
         let (minor, major) = grid_step(app.cam.half_height());
         let ext = (app.cam.half_height() * 3.0 / major).ceil() * major;
-        // The ground plane: XY with Z up, XZ with Y up (laid out in the camera's Z-up frame).
+        // The ground plane: XY with Z up, XZ with Y up (laid out in the camera's Z-up frame), or
+        // the upright origin plane facing the view when the ground is seen edge-on.
         let tf = app.cam.to_frame(app.cam.target);
-        let c = Vec3::new((tf.x / major).round() * major, (tf.y / major).round() * major, 0.0);
+        let (u, v) = grid_plane(app.cam.to_frame(app.cam.back()));
+        let snap = |a: Vec3| a * ((tf.dot(a) / major).round() * major);
+        let c = snap(u) + snap(v);
         let w3 = |p: Vec3| app.cam.from_frame(p).to_f32();
         let n = ((ext / minor) as i64).clamp(1, 300);
         for i in -n..=n {
@@ -706,8 +709,8 @@ fn build_sketch_scene(app: &SolveApp, proj: &Proj) -> GpuScene {
             let maj = (t / major).round() * major == t;
             let col = if maj { c4(tk.grid_major) } else { c4(tk.grid) };
             let w = if maj { 1.0 } else { 0.7 };
-            sc.under_line(w3(c + Vec3::new(t, -ext, 0.0)), w3(c + Vec3::new(t, ext, 0.0)), col, w);
-            sc.under_line(w3(c + Vec3::new(-ext, t, 0.0)), w3(c + Vec3::new(ext, t, 0.0)), col, w);
+            sc.under_line(w3(c + u * t - v * ext), w3(c + u * t + v * ext), col, w);
+            sc.under_line(w3(c - u * ext + v * t), w3(c + u * ext + v * t), col, w);
         }
     }
     for sid in visible_sketches(app) {
@@ -5496,3 +5499,35 @@ mod tests {
 #[cfg(test)]
 #[path = "view_home_tests.rs"]
 mod view_home_tests;
+
+#[cfg(test)]
+mod grid_plane_tests {
+    use super::*;
+    use solidcraft_engine::render::{StandardView, UpAxis};
+
+    fn plane(view: StandardView, up: UpAxis) -> (Vec3, Vec3) {
+        let (yaw, pitch) = view.angles();
+        let cam = Camera { yaw, pitch, up, ..Camera::default() };
+        let (u, v) = grid_plane(cam.to_frame(cam.back()));
+        (cam.from_frame(u), cam.from_frame(v))
+    }
+
+    /// #1470: the grid lies on the ground unless the view sees the ground edge-on; then it lies on
+    /// the upright origin plane facing the view, Z up or Y up alike.
+    #[test]
+    fn the_grid_faces_side_views_and_stays_on_the_ground_otherwise() {
+        let normal = |(u, v): (Vec3, Vec3)| u.cross(v);
+        for up in [UpAxis::Z, UpAxis::Y] {
+            for view in [StandardView::Top, StandardView::Bottom, StandardView::Iso] {
+                assert_eq!(normal(plane(view, up)).dot(up.dir()).abs(), 1.0, "{view:?} {up:?}: the ground");
+            }
+            for view in [StandardView::Front, StandardView::Back, StandardView::Right, StandardView::Left] {
+                let (yaw, pitch) = view.angles();
+                let back = Camera { yaw, pitch, up, ..Camera::default() }.back();
+                let n = normal(plane(view, up));
+                assert!(n.dot(up.dir()).abs() < 1e-9, "{view:?} {up:?}: an upright plane");
+                assert!((n.dot(back).abs() - 1.0).abs() < 1e-9, "{view:?} {up:?}: facing the view");
+            }
+        }
+    }
+}
