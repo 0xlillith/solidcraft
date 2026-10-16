@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 use solidcraft_geom::Vec3;
 
-use super::{four_bar, occ, rocker_pin, run, slider_crank};
+use super::{four_bar, occ, part, pin, rocker_pin, run, slider_crank};
 use crate::Session;
 
 /// A joint's series in a plot, by joint name.
@@ -98,6 +98,20 @@ fn slider_crank_piston_acceleration_matches_its_analytic_form() {
     let crank = series(&r, "Crank");
     assert!(r["time"].is_null() && crank["velocity_unit"] == "deg/step", "{crank}");
     assert!(nums(&crank["velocity"]).iter().all(|v| (v - 1.0).abs() < 1e-9));
+}
+
+/// A dial linked 2:1 to the crank turns on past a turn: its values are not taken a turn round,
+/// even half a turn a sample.
+#[test]
+fn a_linked_value_past_half_a_turn_runs_on() {
+    let (mut s, _, _) = four_bar();
+    part(&mut s, "Dial", [80.0, 0.0, -5.0]);
+    pin(&mut s, "revolute", "Dial", "Ground", "Dial", Vec3::new(80.0, 0.0, 0.0), Vec3::Z);
+    run(&mut s, "joint.motion_link", json!({"a": "Crank", "b": "Dial", "ratio": 2}));
+    run(&mut s, "motion.study", json!({"name": "Turn", "steps": 2, "keys": [{"joint": "Crank", "points": [[0, 0], [2, 360]]}]}));
+    let r = run(&mut s, "motion.plot", json!({"study": "Turn", "joints": ["Dial"], "samples": 3}));
+    let v: Vec<f64> = nums(&series(&r, "Dial")["value"]).iter().map(|x| x.abs()).collect();
+    assert!((v[1] - 360.0).abs() < 1e-6 && (v[2] - 720.0).abs() < 1e-6, "{r}");
 }
 
 /// Cubes A (grounded, x 0…10) and B (x 20…30) on a slider along x, B 10 mm away at value 10.

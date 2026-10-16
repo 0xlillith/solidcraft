@@ -212,9 +212,10 @@ pub(super) fn plot(s: &mut Session, p: &Value) -> Result<Value> {
             let unit = if angle { "deg" } else { "mm" };
             if angle {
                 v.iter_mut().for_each(|x| *x = x.to_degrees());
-                // Keyed values are as the study sets them; loops can hand back a follower's
-                // angle a turn round.
-                if !given.contains(&(*id, *i)) {
+                // Keyed values are as the study sets them, and values beyond half a turn
+                // (through motion links) already run on; a loop can hand back a follower's
+                // angle within half a turn, a turn round.
+                if !given.contains(&(*id, *i)) && v.iter().all(|x| x.abs() <= 180.0 + 1e-9) {
                     unwrap_degrees(v);
                 }
             }

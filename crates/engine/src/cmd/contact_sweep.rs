@@ -238,6 +238,8 @@ impl ContactGeometry {
     /// adds up the cost, refused past `budget`.
     pub(super) fn hits(&self, s: &Session, work: &mut usize, budget: usize, all: bool) -> Result<Vec<(Member, Member, f64)>> {
         let mut out: Vec<(Member, Member, f64)> = Vec::new();
+        // The member pairs found so far (lower id first).
+        let mut found: BTreeSet<(u64, u64)> = BTreeSet::new();
         let meshes: Vec<Mesh> = self
             .bodies
             .iter()
@@ -251,7 +253,7 @@ impl ContactGeometry {
         let boxes: Vec<Aabb3> = meshes.iter().map(Mesh::bounds).collect();
         for (a, b, oa, ob) in &self.pairs {
             // Members already found colliding need no more of their bodies tested.
-            if out.iter().any(|(x, y, _)| (x.0, y.0) == (oa.0, ob.0) || (x.0, y.0) == (ob.0, oa.0)) {
+            if found.contains(&(oa.0.min(ob.0), oa.0.max(ob.0))) {
                 continue;
             }
             let (Some(ma), Some(mb), Some(ba), Some(bb)) = (meshes.get(*a), meshes.get(*b), self.bodies.get(*a), self.bodies.get(*b)) else {
@@ -280,6 +282,7 @@ impl ContactGeometry {
                 return Err(limit("motion exceeds contact sweep collision budget; simplify the contact set or use smaller increments"));
             }
             if let Some(depth) = super::mesh_overlap(ma, mb, 1e-4 * ba.size.max(bb.size).max(1.0)) {
+                found.insert((oa.0.min(ob.0), oa.0.max(ob.0)));
                 out.push((oa.clone(), ob.clone(), depth));
                 if !all {
                     break;

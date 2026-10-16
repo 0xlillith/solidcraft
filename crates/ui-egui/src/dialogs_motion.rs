@@ -221,7 +221,13 @@ pub fn study_tracks(s: &Session, key: &str, id_first: bool) -> Result<(u64, Stri
         .filter_map(|k| {
             let joint = s.doc.assembly.joints.iter().position(|j| j.id == k.joint)?;
             let angle = s.doc.assembly.joints.get(joint)?.kind.is_angle(k.index);
-            let value = |v: f64| if angle { crate::dialogs_assembly::num(v.to_degrees(), "deg") } else { crate::dialogs_assembly::num(v, "mm") };
+            let value = |v: f64| {
+                let (x, unit) = if angle { (v.to_degrees(), "deg") } else { (v, "mm") };
+                // Short where that keeps the value; else all its digits, so OK keeps the key.
+                let short = crate::dialogs_assembly::num(x, unit);
+                let kept = short.split(' ').next().and_then(|n| n.parse::<f64>().ok()).is_some_and(|y| (y - x).abs() <= 1e-9 * x.abs().max(1.0));
+                if kept { short } else { format!("{x} {unit}") }
+            };
             let points = k.points.iter().map(|(st, v)| (st.round().clamp(0.0, f64::from(m.steps)) as u32, value(*v))).collect();
             Some(Track { joint, index: k.index, points })
         })

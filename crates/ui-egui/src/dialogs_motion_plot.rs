@@ -464,6 +464,10 @@ mod tests {
         // A study keyed between whole steps or off its timeline is not opened (the dialog would move its keys).
         h.app.run("motion.study", json!({"name": "Fine", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 10], [7.5, -5]]}]})).unwrap();
         h.app.run("motion.study", json!({"name": "Off", "steps": 15, "keys": [{"joint": "Rail", "points": [[-1, 10], [15, -5]]}]})).unwrap();
+        // A tiny key keeps its value in the form (OK writes the study back from it).
+        h.app.run("motion.study", json!({"name": "Tiny", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 0.00004], [15, 3]]}]})).unwrap();
+        let (_, _, _, tiny) = crate::dialogs_motion::study_tracks(&h.app.session, "Tiny", false).unwrap();
+        assert_eq!(tiny[0].points, vec![(0, "0.00004 mm".to_string()), (15, "3 mm".to_string())]);
         for bad in
             [json!({"study": "Nope"}), json!({"study": "Push", "step": 3}), json!({"study": [1]}), json!({"study": "Fine"}), json!({"study": "Off"})]
         {
