@@ -281,6 +281,13 @@ fn lex_spans(s: &str) -> Result<Vec<(Tok, usize, usize)>, DocError> {
         } else if c == '°' {
             out.push((Tok::Id("deg".into()), at(i), at(i + 1)));
             i += 1;
+        } else if c == '"' || c == '″' {
+            // Inch and foot marks (`1"`, `2'`, #1502), straight or as primes.
+            out.push((Tok::Id("in".into()), at(i), at(i + 1)));
+            i += 1;
+        } else if c == '\'' || c == '′' {
+            out.push((Tok::Id("ft".into()), at(i), at(i + 1)));
+            i += 1;
         } else if c == '×' || c == '·' {
             out.push((Tok::Op('*'), at(i), at(i + 1)));
             i += 1;
@@ -854,6 +861,20 @@ mod tests {
         for bad in ["2,", ",5", "2 ,5", "2, 5", "1,5,3", "1.5,3"] {
             assert!(ev(bad, Kind::Unitless).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn inch_and_foot_marks() {
+        // #1502: `1"` in a millimetre design is an inch, `2'` two feet, straight or as primes.
+        assert_eq!(ev("1\"", Kind::Length).unwrap(), 25.4);
+        assert_eq!(ev("1″", Kind::Length).unwrap(), 25.4);
+        assert_eq!(ev("2'", Kind::Length).unwrap(), 609.6);
+        assert_eq!(ev("2′", Kind::Length).unwrap(), 609.6);
+        assert_eq!(ev("1/2\"", Kind::Length).unwrap(), 12.7);
+        assert_eq!(ev("width + 1\"", Kind::Length).unwrap(), 65.4);
+        assert_eq!(ev("2' + 3\"", Kind::Length).unwrap(), 685.8);
+        // A mark alone is its unit alone, as `in` is.
+        assert_eq!(ev("\"", Kind::Length).ok(), ev("in", Kind::Length).ok());
     }
 
     #[test]
