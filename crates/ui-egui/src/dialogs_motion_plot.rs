@@ -215,7 +215,7 @@ pub fn collision_bands(v: &Value) -> Vec<[f64; 2]> {
     ranges.filter_map(|r| Some([r.get(0)?.as_f64()?, r.get(1)?.as_f64()?])).collect()
 }
 
-/// The analysis rows under a study's tracks: `study` is the study command's parameters (or why
+/// The analysis rows by a study's timeline: `study` is the study command's parameters (or why
 /// there are none yet), `step` the step shown (a click on the chart or a collision moves it).
 #[allow(clippy::too_many_arguments)]
 pub fn rows(
@@ -229,63 +229,23 @@ pub fn rows(
     inputs: &[SelInput],
 ) {
     let t = Tokens::get();
-    let s = &app.session;
-    let picked = inputs.first().is_some_and(|i| !i.items.is_empty());
-    let list = choices(s, picked);
-    a.what = a.what.min(list.len().saturating_sub(1));
-    // A joint picked in the browser is charted (until the box or another pick says otherwise).
-    let browsed = app.tree.picked_joints.first().copied();
-    if browsed != a.followed {
-        a.followed = browsed;
-        if let Some(i) = browsed.and_then(|id| list.iter().position(|(_, w)| *w == Plotted::Joint(id, 0))) {
-            a.what = i;
-        }
-    }
-    row_label(ui, "Plot");
-    let labels: Vec<&str> = list.iter().map(|(l, _)| l.as_str()).collect();
-    combo(ui, "ms_plot", &labels, &mut a.what);
-    ui.end_row();
-    let what = list.get(a.what).map_or(Plotted::Nothing, |(_, w)| *w);
-    let bands = a.collisions.as_ref().and_then(|(_, r)| r.as_ref().ok()).map(collision_bands).unwrap_or_default();
-    if what != Plotted::Nothing {
-        row_label(ui, "Quantity");
-        combo(ui, "ms_quantity", &QUANTITIES, &mut a.quantity);
-        ui.end_row();
-        row_label(ui, "Duration");
-        let r = ui.add(egui::TextEdit::singleline(&mut a.duration).hint_text(crate::i18n::tr("motion.duration_hint")));
-        crate::scenario::publish_handle("dialog:Duration", r.rect.center());
-        ui.end_row();
-        let params = study.clone().and_then(|st| plot_params(s, what, &st, &a.duration, inputs).map(|p| (st, p)));
-        let key = key_of(&params);
-        if a.plot.as_ref().is_none_or(|(k, _)| *k != key) {
-            let r = params.and_then(|(st, p)| {
-                let mut sc = s.scratch();
-                sc.execute("motion.study", &st).map_err(|e| e.to_string())?;
-                sc.execute("motion.plot", &p).map_err(|e| e.to_string())
-            });
-            a.plot = Some((key, r));
-        }
-        row_label(ui, "");
-        match a.plot.as_ref().map(|(_, r)| r) {
-            Some(Ok(v)) => {
-                ui.vertical(|ui| {
-                    if let Some((xs, ys, unit)) = line(v, what, a.quantity) {
-                        if let Some(to) = chart(ui, &xs, &ys, &unit, total, *step, &bands, &t) {
-                            (*step, *playing) = (to, false);
-                        }
-                    }
-                    if let Some(why) = stop_text(v) {
-                        ui.add(egui::Label::new(RichText::new(why).color(t.warning)).wrap());
-                    }
-                });
-            }
-            Some(Err(e)) => {
-                ui.add(egui::Label::new(RichText::new(e.as_str()).color(t.text_dim)).wrap());
-            }
-            None => {}
-        }
-        ui.end_row();
-    }
+    // The collision check first: the chart below it shades what it finds.
+    collision_rows(app, ui, a, study, step, playing, inputs, &t);
+    plot_rows(app, ui, a, study, step, playing, total, inputs, &t);
+}
+
+/// The Collisions rows: Check collisions and what it found (a click on a pair shows its first step).
+#[allow(clippy::too_many_arguments)]
+fn collision_rows(
+    app: &SolveApp,
+    ui: &mut egui::Ui,
+    a: &mut Analysis,
+    study: &Result<Value, String>,
+    step: &mut f64,
+    playing: &mut bool,
+    inputs: &[SelInput],
+    t: &Tokens,
+) {
     // Collisions over the whole study: of the picked components (against the other picks, if
     // any), else among all components or in the contact sets.
     let sets = !app.session.doc.assembly.contact_sets.is_empty() || app.session.doc.assembly.contact_all;
@@ -364,6 +324,78 @@ pub fn rows(
             ui.end_row();
         }
         None => {}
+    }
+}
+
+/// The Plot rows: what to chart, and the chart (a click on it moves the step).
+#[allow(clippy::too_many_arguments)]
+fn plot_rows(
+    app: &SolveApp,
+    ui: &mut egui::Ui,
+    a: &mut Analysis,
+    study: &Result<Value, String>,
+    step: &mut f64,
+    playing: &mut bool,
+    total: u32,
+    inputs: &[SelInput],
+    t: &Tokens,
+) {
+    let s = &app.session;
+    let picked = inputs.first().is_some_and(|i| !i.items.is_empty());
+    let list = choices(s, picked);
+    a.what = a.what.min(list.len().saturating_sub(1));
+    // A joint picked in the browser is charted (until the box or another pick says otherwise).
+    let browsed = app.tree.picked_joints.first().copied();
+    if browsed != a.followed {
+        a.followed = browsed;
+        if let Some(i) = browsed.and_then(|id| list.iter().position(|(_, w)| *w == Plotted::Joint(id, 0))) {
+            a.what = i;
+        }
+    }
+    row_label(ui, "Plot");
+    let labels: Vec<&str> = list.iter().map(|(l, _)| l.as_str()).collect();
+    combo(ui, "ms_plot", &labels, &mut a.what);
+    ui.end_row();
+    let what = list.get(a.what).map_or(Plotted::Nothing, |(_, w)| *w);
+    let bands = a.collisions.as_ref().and_then(|(_, r)| r.as_ref().ok()).map(collision_bands).unwrap_or_default();
+    if what != Plotted::Nothing {
+        row_label(ui, "Quantity");
+        combo(ui, "ms_quantity", &QUANTITIES, &mut a.quantity);
+        ui.end_row();
+        row_label(ui, "Duration");
+        let r = ui.add(egui::TextEdit::singleline(&mut a.duration).hint_text(crate::i18n::tr("motion.duration_hint")));
+        crate::scenario::publish_handle("dialog:Duration", r.rect.center());
+        ui.end_row();
+        let params = study.clone().and_then(|st| plot_params(s, what, &st, &a.duration, inputs).map(|p| (st, p)));
+        let key = key_of(&params);
+        if a.plot.as_ref().is_none_or(|(k, _)| *k != key) {
+            let r = params.and_then(|(st, p)| {
+                let mut sc = s.scratch();
+                sc.execute("motion.study", &st).map_err(|e| e.to_string())?;
+                sc.execute("motion.plot", &p).map_err(|e| e.to_string())
+            });
+            a.plot = Some((key, r));
+        }
+        row_label(ui, "");
+        match a.plot.as_ref().map(|(_, r)| r) {
+            Some(Ok(v)) => {
+                ui.vertical(|ui| {
+                    if let Some((xs, ys, unit)) = line(v, what, a.quantity) {
+                        if let Some(to) = chart(ui, &xs, &ys, &unit, total, *step, &bands, t) {
+                            (*step, *playing) = (to, false);
+                        }
+                    }
+                    if let Some(why) = stop_text(v) {
+                        ui.add(egui::Label::new(RichText::new(why).color(t.warning)).wrap());
+                    }
+                });
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e.as_str()).color(t.text_dim)).wrap());
+            }
+            None => {}
+        }
+        ui.end_row();
     }
 }
 
