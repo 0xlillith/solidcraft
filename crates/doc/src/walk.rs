@@ -364,7 +364,7 @@ impl Walk for PlaneRef {
         let mut p = self;
         for _ in 0..64 {
             match p {
-                PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } => p = base,
+                PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } | PlaneRef::Flipped { base, .. } => p = base,
                 PlaneRef::Construction { name } => return f(Ref::Feature(name)),
                 _ => return,
             }
@@ -374,7 +374,7 @@ impl Walk for PlaneRef {
         let mut p = self;
         for _ in 0..64 {
             match p {
-                PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } => p = base,
+                PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } | PlaneRef::Flipped { base, .. } => p = base,
                 PlaneRef::Construction { name } => return f(Ref::Feature(name)),
                 _ => return,
             }
