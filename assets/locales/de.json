@@ -613,7 +613,6 @@
   "ui.agent_chat_undo_label": "Agenten-Chat: {message}",
   "ui.agent_chat_undone": "(rückgängig gemacht)",
   "ui.agent_chat_view_attached": "Ansicht angehängt",
-  "ui.agent_chat_wait_turn": "Der Agent arbeitet noch an der letzten Nachricht: Warten Sie oder klicken Sie auf Abbrechen.",
   "ui.agent_cursor": "Agent-Cursor",
   "ui.agent_cursor_speed": "Agent-Cursor-Geschwindigkeit",
   "ui.ai_add": "Hinzufügen",

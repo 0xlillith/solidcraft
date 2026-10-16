@@ -613,7 +613,6 @@
   "ui.agent_chat_undo_label": "에이전트 채팅: {message}",
   "ui.agent_chat_undone": "(취소됨)",
   "ui.agent_chat_view_attached": "뷰 첨부됨",
-  "ui.agent_chat_wait_turn": "에이전트가 아직 이전 메시지를 처리 중입니다. 기다리거나 취소를 누르세요.",
   "ui.agent_cursor": "에이전트 커서",
   "ui.agent_cursor_speed": "에이전트 커서 속도",
   "ui.ai_add": "추가",
