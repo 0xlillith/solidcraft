@@ -1066,6 +1066,7 @@
   "update.available": "Доступна версія SolidCraft {version}",
   "update.button": "Оновити",
   "update.button_tip": "Доступна версія SolidCraft {version}",
+  "update.button_version": "Оновити до {version}",
   "update.check_automatically": "Автоматично перевіряти оновлення",
   "update.check_now": "Перевірити зараз",
   "update.checking": "Перевірка…",

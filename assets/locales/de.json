@@ -1139,6 +1139,7 @@
   "update.available": "SolidCraft {version} ist verfügbar",
   "update.button": "Update",
   "update.button_tip": "SolidCraft {version} ist verfügbar",
+  "update.button_version": "Auf {version} aktualisieren",
   "update.check_automatically": "Automatisch nach Updates suchen",
   "update.check_now": "Jetzt suchen",
   "update.checking": "Suche läuft…",

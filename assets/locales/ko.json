@@ -1139,6 +1139,7 @@
   "update.available": "SolidCraft {version} 사용 가능",
   "update.button": "업데이트",
   "update.button_tip": "SolidCraft {version} 사용 가능",
+  "update.button_version": "{version}(으)로 업데이트",
   "update.check_automatically": "업데이트 자동 확인",
   "update.check_now": "지금 확인",
   "update.checking": "확인 중…",

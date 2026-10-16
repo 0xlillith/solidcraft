@@ -1409,6 +1409,7 @@
   "update.available": "SolidCraft {version} が利用できます",
   "update.button": "アップデート",
   "update.button_tip": "SolidCraft {version} が利用できます",
+  "update.button_version": "{version} にアップデート",
   "update.check_automatically": "アップデートを自動的に確認",
   "update.check_now": "今すぐ確認",
   "update.checking": "確認中…",

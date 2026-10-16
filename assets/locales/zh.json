@@ -1409,6 +1409,7 @@
   "update.available": "SolidCraft {version} 已发布",
   "update.button": "更新",
   "update.button_tip": "SolidCraft {version} 已发布",
+  "update.button_version": "更新到 {version}",
   "update.check_automatically": "自动检查更新",
   "update.check_now": "立即检查",
   "update.checking": "正在检查…",
