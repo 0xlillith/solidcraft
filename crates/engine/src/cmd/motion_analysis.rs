@@ -19,7 +19,7 @@ use crate::{EngineError, Result, Session};
 
 pub const PLOT_DOC: &str = "study: id|name; joints?: [id|name] (default: every joint that moves); occurrence? and point? (a point \
      of a part to follow, as motion.trace takes them); samples? (3…1000, default the study's steps + 1); duration?: seconds the \
-     whole study takes (velocities and accelerations then per second, else per step) → step: [the study step of each sample], \
+     whole study takes, 0.001 or more (velocities and accelerations then per second, else per step) → step: [the study step of each sample], \
      time?: [s], joints: [{joint, name, index, dof, unit, value, velocity, acceleration, velocity_unit, acceleration_unit}] \
      (degrees for angles, mm for distances; angles unwrapped), point?: {occurrence, position: [[x,y,z]…], velocity, \
      acceleration (vectors), speed, acceleration_norm, unit, velocity_unit, acceleration_unit}, samples (taken), stopped_at, \
@@ -173,7 +173,8 @@ pub(super) fn plot(s: &mut Session, p: &Value) -> Result<Value> {
     let duration = match p.get("duration") {
         None | Some(Value::Null) => None,
         Some(v) => {
-            Some(v.as_f64().filter(|d| d.is_finite() && *d > 0.0 && *d <= 1e9).ok_or_else(|| bad(cmd, "`duration` must be seconds, more than 0"))?)
+            // At least a millisecond: shorter sample spacings square to nothing.
+            Some(v.as_f64().filter(|d| (1e-3..=1e9).contains(d)).ok_or_else(|| bad(cmd, "`duration` must be seconds, 0.001 or more"))?)
         }
     };
     let series = plotted(s, p, cmd)?;
@@ -261,10 +262,11 @@ fn shared_volume(s: &Session, doc: &Document, a: u64, b: u64, booleans: &mut usi
     // The bodies under each (and not under the other), with their world frames and boxes.
     let mut sides: [Vec<(Mat, Aabb3, &solidcraft_doc::ModelBody)>; 2] = Default::default();
     for (comp, path, m) in doc.placements() {
-        let side = match (path.contains(&a), path.contains(&b)) {
-            (true, false) => 0,
-            (false, true) => 1,
-            _ => continue,
+        // A body belongs to the innermost of the two on its path, as contact sets pair them.
+        let side = match path.iter().rev().find(|o| **o == a || **o == b) {
+            Some(o) if *o == a => 0,
+            Some(_) => 1,
+            None => continue,
         };
         for body in st.bodies.iter().filter(|x| doc.model_body_component(x) == comp && !x.body.is_mesh()) {
             let frame = doc.model_body_offset(body).map(|o| mat_mul(&m, o)).unwrap_or(m);

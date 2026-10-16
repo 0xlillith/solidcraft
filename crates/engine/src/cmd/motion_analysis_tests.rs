@@ -153,6 +153,18 @@ fn interference_names_the_step_two_parts_start_to_collide() {
     assert!(r["clear"] == true && r["collisions"] == json!([]), "{r}");
 }
 
+/// A number names a study by its id first, text by its name first: a study may be named like
+/// another's id.
+#[test]
+fn studies_by_id_or_name() {
+    let mut s = rail();
+    let keys = json!([{"joint": "Rail", "points": [[0, 10], [15, -5]]}]);
+    let first = run(&mut s, "motion.study", json!({"name": "Late", "steps": 15, "keys": keys}))["study"].as_u64().unwrap_or(0);
+    run(&mut s, "motion.study", json!({"name": first.to_string(), "steps": 15, "keys": keys}));
+    assert_eq!(run(&mut s, "motion.plot", json!({"study": first, "samples": 3}))["study"], "Late");
+    assert_eq!(run(&mut s, "motion.plot", json!({"study": first.to_string(), "samples": 3}))["study"], first.to_string());
+}
+
 /// Hostile parameters are refused, never a panic.
 #[test]
 fn motion_analysis_refuses_what_it_cannot_do() {
@@ -165,6 +177,7 @@ fn motion_analysis_refuses_what_it_cannot_do() {
         ("motion.plot", json!({"study": "Push", "samples": "many"})),
         ("motion.plot", json!({"study": "Push", "duration": 0})),
         ("motion.plot", json!({"study": "Push", "duration": -3})),
+        ("motion.plot", json!({"study": "Push", "duration": 1e-200})),
         ("motion.plot", json!({"study": "Push", "joints": ["Nope"]})),
         ("motion.plot", json!({"study": "Push", "joints": vec![json!("Rail"); 300]})),
         ("motion.plot", json!({"study": "Push", "point": [1, 2]})),

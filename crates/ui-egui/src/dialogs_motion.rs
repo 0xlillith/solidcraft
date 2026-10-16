@@ -264,8 +264,9 @@ pub fn study_params(s: &Session, name: &str, study: Option<&str>, steps: &str, t
         return Err("add a key for a joint first".into());
     }
     let mut p = json!({"name": name, "steps": steps, "keys": keys});
+    // The id as a number: a study may be named like another's id.
     if let Some(st) = study {
-        p["study"] = json!(st);
+        p["study"] = st.parse::<u64>().map_or_else(|_| json!(st), |id| json!(id));
     }
     Ok(p)
 }
@@ -376,9 +377,8 @@ fn moved(before: &Session, after: &Session) -> BTreeMap<u64, Mat> {
 /// The study's pose at `step`, computed on a scratch copy.
 fn study_pose(app: &SolveApp, params: &Value, step: u32) -> Result<BTreeMap<u64, Mat>, String> {
     let mut sc = app.session.scratch();
-    let name = params["study"].as_str().or(params["name"].as_str()).unwrap_or_default().to_string();
-    sc.execute("motion.study", params).map_err(|e| e.to_string())?;
-    sc.execute("motion.play", &json!({"study": name, "step": step})).map_err(|e| e.to_string())?;
+    let id = scratch_study(&mut sc, params)?;
+    sc.execute("motion.play", &json!({"study": id, "step": step})).map_err(|e| e.to_string())?;
     Ok(moved(&app.session, &sc))
 }
 
@@ -408,6 +408,12 @@ fn export_animation(app: &mut SolveApp, params: Value, name: &str) {
             Err(e) => app.set_status(e.to_string(), true),
         }
     });
+}
+
+/// Makes (or edits) the study on a scratch copy, as OK would: its id there (a name may be
+/// another study's too).
+pub fn scratch_study(sc: &mut Session, params: &Value) -> Result<Value, String> {
+    Ok(sc.execute("motion.study", params).map_err(|e| e.to_string())?["study"].clone())
 }
 
 /// The explosion at `scale`, computed on a scratch copy.

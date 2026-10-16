@@ -476,12 +476,15 @@ fn check(s: &mut Session, _p: &Value) -> Result<Value> {
 // ---- Motion studies ----
 
 fn study_index(s: &Session, p: &Value, cmd: &str) -> Result<usize> {
-    let key = match p.get("study") {
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::String(x)) => x.clone(),
+    // A number is an id first, text a name first: a study may be named like another's id.
+    let (key, id_first) = match p.get("study") {
+        Some(Value::Number(n)) => (n.to_string(), true),
+        Some(Value::String(x)) => (x.clone(), false),
         _ => return Err(bad(cmd, "`study` must be an id or a name")),
     };
-    s.doc.assembly.studies.iter().position(|m| m.id.to_string() == key || m.name == key).ok_or_else(|| bad(cmd, format!("no motion study `{key}`")))
+    let studies = &s.doc.assembly.studies;
+    let (by_id, by_name) = (studies.iter().position(|m| m.id.to_string() == key), studies.iter().position(|m| m.name == key));
+    if id_first { by_id.or(by_name) } else { by_name.or(by_id) }.ok_or_else(|| bad(cmd, format!("no motion study `{key}`")))
 }
 
 fn study(s: &mut Session, p: &Value) -> Result<Value> {

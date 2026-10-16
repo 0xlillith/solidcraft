@@ -79,7 +79,7 @@ pub fn plot_params(s: &Session, what: Plotted, study: &Value, duration: &str, in
     }
     let d = duration.trim();
     if !d.is_empty() {
-        let seconds = d.parse::<f64>().ok().filter(|x| x.is_finite() && *x > 0.0).ok_or("the duration must be a number of seconds, more than 0")?;
+        let seconds = d.parse::<f64>().ok().filter(|x| (1e-3..=1e9).contains(x)).ok_or("the duration must be a number of seconds, 0.001 or more")?;
         p["duration"] = json!(seconds);
     }
     Ok(p)
@@ -276,8 +276,10 @@ fn collision_rows(
             && let Some((st, mut p)) = check
         {
             let mut sc = app.session.scratch();
-            p["study"] = st.get("study").or_else(|| st.get("name")).cloned().unwrap_or(Value::Null);
-            let r = sc.execute("motion.study", &st).and_then(|_| sc.execute("motion.interference", &p)).map_err(|e| e.to_string());
+            let r = super::scratch_study(&mut sc, &st).and_then(|id| {
+                p["study"] = id;
+                sc.execute("motion.interference", &p).map_err(|e| e.to_string())
+            });
             a.collisions = Some((key, r));
         }
     });
@@ -369,9 +371,9 @@ fn plot_rows(
         let params = study.clone().and_then(|st| plot_params(s, what, &st, &a.duration, inputs).map(|p| (st, p)));
         let key = key_of(&params);
         if a.plot.as_ref().is_none_or(|(k, _)| *k != key) {
-            let r = params.and_then(|(st, p)| {
+            let r = params.and_then(|(st, mut p)| {
                 let mut sc = s.scratch();
-                sc.execute("motion.study", &st).map_err(|e| e.to_string())?;
+                p["study"] = super::scratch_study(&mut sc, &st)?;
                 sc.execute("motion.plot", &p).map_err(|e| e.to_string())
             });
             a.plot = Some((key, r));
@@ -380,10 +382,10 @@ fn plot_rows(
         match a.plot.as_ref().map(|(_, r)| r) {
             Some(Ok(v)) => {
                 ui.vertical(|ui| {
-                    if let Some((xs, ys, unit)) = line(v, what, a.quantity) {
-                        if let Some(to) = chart(ui, &xs, &ys, &unit, total, *step, &bands, t) {
-                            (*step, *playing) = (to, false);
-                        }
+                    if let Some((xs, ys, unit)) = line(v, what, a.quantity)
+                        && let Some(to) = chart(ui, &xs, &ys, &unit, total, *step, &bands, t)
+                    {
+                        (*step, *playing) = (to, false);
                     }
                     if let Some(why) = stop_text(v) {
                         ui.add(egui::Label::new(RichText::new(why).color(t.warning)).wrap());
