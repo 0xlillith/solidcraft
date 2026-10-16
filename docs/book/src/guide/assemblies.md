@@ -189,9 +189,10 @@ so they are as smooth as the samples are dense (up to 1000, one per step by defa
 unwrapped, so a joint that turns on past half a turn keeps counting.
 `motion.interference {study, occurrences?, against?, contact_sets?, samples?}` answers each
 colliding pair with its `first_step`, `last_step`, the `steps` ranges where they overlap, how
-deep (`depth_mm`, the deepest at `deepest_step`) and their shared `volume_mm3` there. It plays
-the study as `motion.play` does, but contact sets don't stop it, and parts are tested at the
-samples only: a part that passes right through another between two samples is missed. A check
+far into each other (`depth_mm`, the most at `deepest_step`) and their shared `volume_mm3`
+there (null when it is not cheap to work out). It plays the study as `motion.play` does, but
+contact sets don't stop it, and parts are tested at the samples only: a part that passes right
+through another between two samples is missed. A check
 takes at most 256 bodies; on a large design, list the `occurrences` to check (an arm, with
 `against` the parts it must miss). When the work runs out it says `truncated` and the step it
 `checked_to`.

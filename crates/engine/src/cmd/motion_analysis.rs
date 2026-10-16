@@ -31,7 +31,8 @@ pub const INTERFERENCE_DOC: &str = "study: id|name; occurrences?: [ids or names]
      default every occurrence), with against?: [ids or names] (then each of `occurrences` is checked only against these, such \
      as an arm against the parts it must miss), or contact_sets?: true (the pairs of the design's contact sets); samples? \
      (2…1000, default the study's steps + 1) → collisions: [{a, b, first_step, last_step, steps: [[from, to]…] (the step ranges where they overlap), \
-     depth_mm (the deepest), deepest_step, volume_mm3 (their overlap there; null when it could not be worked out)}], clear, \
+     depth_mm (how far into each other, the most at deepest_step), volume_mm3 (their overlap there; null when it was not \
+     cheap to work out)}], clear, \
      pairs (checked), samples (taken), truncated (the work budget ran out; checked_to: the last step checked), stopped_at, \
      stopped_by_loop. The study plays as motion.play plays it but contact sets do not stop it, on a copy (the design is not \
      changed). Parts are tested at the samples only: one that passes wholly through another between two samples is missed";

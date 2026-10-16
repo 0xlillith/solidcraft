@@ -228,10 +228,11 @@ impl ContactGeometry {
         Ok(self.hits(s, work, MAX_WORK, false)?.into_iter().next().map(|(a, b, depth)| (a.1, b.1, depth)))
     }
 
-    /// The pairs that pass through each other in `s`, with how deep (every pair, or the first
-    /// found when `all` is false). `work` adds up the cost, refused past `budget`.
+    /// The pairs of set members whose bodies pass through each other in `s`, with how deep the
+    /// first two bodies found go (every pair, or the first found when `all` is false). `work`
+    /// adds up the cost, refused past `budget`.
     pub(super) fn hits(&self, s: &Session, work: &mut usize, budget: usize, all: bool) -> Result<Vec<(Member, Member, f64)>> {
-        let mut out = Vec::new();
+        let mut out: Vec<(Member, Member, f64)> = Vec::new();
         let meshes: Vec<Mesh> = self
             .bodies
             .iter()
@@ -242,6 +243,10 @@ impl ContactGeometry {
             })
             .collect::<Result<_>>()?;
         for (a, b, oa, ob) in &self.pairs {
+            // Members already found colliding need no more of their bodies tested.
+            if out.iter().any(|(x, y, _)| (x.0, y.0) == (oa.0, ob.0) || (x.0, y.0) == (ob.0, oa.0)) {
+                continue;
+            }
             let (Some(ma), Some(mb), Some(ba), Some(bb)) = (meshes.get(*a), meshes.get(*b), self.bodies.get(*a), self.bodies.get(*b)) else {
                 return Err(limit("invalid contact geometry pair"));
             };

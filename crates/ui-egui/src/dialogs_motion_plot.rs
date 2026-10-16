@@ -163,6 +163,9 @@ fn chart(ui: &mut egui::Ui, xs: &[f64], ys: &[f64], unit: &str, total: u32, now:
             p.text(r.right_top() + vec2(-4.0, 2.0), Align2::RIGHT_TOP, format!("{} {unit}", short(v)), font, t.text);
         }
     }
+    // Where steps 0 and `total` fall, for a scenario or an agent to click between.
+    crate::scenario::publish_handle("motion:chart_start", pos2(x(0.0), plot.center().y));
+    crate::scenario::publish_handle("motion:chart_end", pos2(x(total), plot.center().y));
     let cx = x(now);
     p.line_segment([pos2(cx, r.top()), pos2(cx, r.bottom())], Stroke::new(1.5, t.warning));
     let pos = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.dragged())?;
@@ -238,7 +241,8 @@ pub fn rows(
         combo(ui, "ms_quantity", &QUANTITIES, &mut a.quantity);
         ui.end_row();
         row_label(ui, "Duration");
-        ui.add(egui::TextEdit::singleline(&mut a.duration).hint_text(crate::i18n::tr("motion.duration_hint")));
+        let r = ui.add(egui::TextEdit::singleline(&mut a.duration).hint_text(crate::i18n::tr("motion.duration_hint")));
+        crate::scenario::publish_handle("dialog:Duration", r.rect.center());
         ui.end_row();
         let params = study.clone().and_then(|st| plot_params(s, what, &st, &a.duration, inputs).map(|p| (st, p)));
         let key = key_of(&params);
@@ -295,7 +299,9 @@ pub fn rows(
         if sets && parts.is_empty() {
             combo(ui, "ms_among", &["All components", "Contact sets"], &mut a.among);
         }
-        if ui.add_enabled(check.is_some(), egui::Button::new(crate::i18n::tr_label("Check collisions"))).clicked()
+        let button = ui.add_enabled(check.is_some(), egui::Button::new(crate::i18n::tr_label("Check collisions")));
+        crate::scenario::publish_handle("motion:check", button.rect.center());
+        if button.clicked()
             && let Some((st, mut p)) = check
         {
             let mut sc = app.session.scratch();
@@ -313,7 +319,7 @@ pub fn rows(
                 if hits.is_empty() {
                     ui.label(RichText::new(crate::i18n::tr("motion.no_collisions")).color(t.text_dim));
                 }
-                for c in &hits {
+                for (i, c) in hits.iter().enumerate() {
                     let steps: Vec<String> = c["steps"]
                         .as_array()
                         .into_iter()
@@ -326,7 +332,9 @@ pub fn rows(
                     let name = |k: &str| c[k].as_str().unwrap_or_default().to_string();
                     let text = crate::i18n::format("motion.collision", &[("a", &name("a")), ("b", &name("b")), ("steps", &steps.join(", "))]);
                     // A click shows where they first collide.
-                    if ui.link(RichText::new(text).color(t.error)).clicked()
+                    let link = ui.link(RichText::new(text).color(t.error));
+                    crate::scenario::publish_handle(&format!("motion:collision:{i}"), link.rect.center());
+                    if link.clicked()
                         && let Some(first) = c["first_step"].as_f64()
                     {
                         (*step, *playing) = (first, false);
