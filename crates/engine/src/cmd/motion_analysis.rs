@@ -391,6 +391,10 @@ pub(super) fn interference(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(true)
     })?;
+    // Nothing checked is not clear.
+    if truncated && checked == 0 {
+        return Err(bad(cmd, "the check ran out of its work budget before its first step: check fewer parts (occurrences, against)"));
+    }
     let mut list: Vec<(&(u64, u64), &Collision)> = found.iter().collect();
     list.sort_by_key(|(_, c)| c.samples.first().copied().unwrap_or(usize::MAX));
     let mut booleans = MAX_BOOLEANS;

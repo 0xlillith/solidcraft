@@ -248,7 +248,9 @@ fn collision_rows(
 ) {
     // Collisions over the whole study: of the picked components (against the other picks, if
     // any), else among all components or in the contact sets.
-    let sets = !app.session.doc.assembly.contact_sets.is_empty() || app.session.doc.assembly.contact_all;
+    // Offered when there is a set to check (suppressed ones don't count).
+    let assembly = &app.session.doc.assembly;
+    let sets = assembly.contact_all || assembly.contact_sets.iter().any(|c| !c.suppressed);
     a.among = if sets { a.among.min(1) } else { 0 };
     let (parts, against) = (picked_occurrences(&app.session, inputs, 1), picked_occurrences(&app.session, inputs, 2));
     let among = if !parts.is_empty() {
