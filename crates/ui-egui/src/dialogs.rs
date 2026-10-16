@@ -522,9 +522,10 @@ impl Dialog {
                 Kind::AnglePlane { angle: "45 deg".into() },
                 vec![SelInput::new("Plane", PLANES, false), SelInput::new("Axis", AXES, false)],
             ),
-            "solid.split_body" => {
-                Dialog::new(Kind::Split, vec![SelInput::new("Body to split", BODIES, false), SelInput::new("Splitting tool", PLANES | FACES, false)])
-            }
+            "solid.split_body" => Dialog::new(
+                Kind::Split,
+                vec![SelInput::new("Body to split", BODIES, false), SelInput::new("Splitting tool", PLANES | FACES | AXES, false)],
+            ),
             "solid.scale" => Dialog::new(Kind::Scale { factor: "2".into() }, vec![SelInput::new("Bodies", BODIES, true)]),
             "solid.offset_face" => Dialog::new(Kind::OffsetFaces { distance: "2 mm".into() }, vec![SelInput::new("Faces", PLANAR_FACES, true)]),
             "solid.thread" => {
@@ -3889,7 +3890,19 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     Some((_, n)) => json!({"body": body, "plane": {"origin": pt(*point), "normal": pt(n)}}),
                     None => json!({"body": body, "tool": {"body": b, "point": pt(*point)}}),
                 },
-                _ => return Err("pick a plane or a face".into()),
+                // A straight sketch line, in the sketch it was picked in (#1552).
+                Some(Sel::SketchCurve { id }) => {
+                    let picked = d.extra.get("tool_sketch").and_then(Value::as_u64);
+                    let st = s.world_state();
+                    let holding: Vec<u64> = st.sketches.iter().filter(|ss| ss.sketch.curve_index(id).is_some()).map(|ss| ss.feature).collect();
+                    let sketch = match picked {
+                        Some(k) if holding.contains(&k) => k,
+                        None if holding.len() == 1 => holding.first().copied().ok_or("pick a sketch line")?,
+                        _ => return Err("pick the sketch line in the viewport".into()),
+                    };
+                    json!({"body": body, "sketch": sketch, "line": id})
+                }
+                _ => return Err("pick a plane, a face or a sketch line".into()),
             };
             ("solid.split_body", p)
         }
@@ -4866,12 +4879,17 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Split { body, plane, tool } => {
+        FeatureKind::Split { body, plane, tool, sketch, line } => {
             let mut d = start("solid.split_body")?;
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = vec![Sel::Body { name: body.to_string() }];
             }
-            if let Some(inp) = d.inputs.get_mut(1) {
+            if let (Some(k), Some(id)) = (sketch, line) {
+                d.extra.insert("tool_sketch".into(), json!(k.0));
+                if let Some(inp) = d.inputs.get_mut(1) {
+                    inp.items = vec![Sel::SketchCurve { id: id.clone() }];
+                }
+            } else if let Some(inp) = d.inputs.get_mut(1) {
                 inp.items = match tool {
                     Some(t) => face_sel(s, t.point.0).into_iter().collect(),
                     None => plane_sel(s, plane).into_iter().collect(),
