@@ -18,6 +18,8 @@ use crate::theme::Tokens;
 
 #[path = "configuration_rules_ui.rs"]
 mod configuration_rules_ui;
+#[path = "dialogs_motion_plot.rs"]
+pub mod plot;
 
 /// One keyed value of a motion study: a joint's value (index) at steps.
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +54,8 @@ pub enum Mo {
         shown: Option<(u64, u64)>,
         saved: Option<BTreeMap<u64, Mat>>,
         error: Option<String>,
+        /// The chart and the collision check by the timeline.
+        analysis: Box<plot::Analysis>,
     },
     Explode {
         name: String,
@@ -114,8 +118,14 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
                 shown: None,
                 saved: None,
                 error: None,
+                analysis: Box::default(),
             },
-            vec![],
+            // A point to plot, and the parts to check for collisions (each optional).
+            vec![
+                SelInput::new("Point", crate::dialogs_assembly::SNAPS, false),
+                SelInput::new("Components", BODIES, true),
+                SelInput::new("Against", BODIES, true),
+            ],
         ),
         "explode.create" => (Mo::Explode { name: n("Exploded View", "explode.list"), scale: 1.0, shown: None, saved: None, error: None }, vec![]),
         "config.table" | "config.configure" => (Mo::Configurations { new_row: String::new(), error: None, rule_editor: Default::default() }, vec![]),
@@ -191,6 +201,43 @@ fn transport(ui: &mut egui::Ui, what: Transport, tip: &str) -> egui::Response {
         }
     }
     resp.on_hover_text(tip)
+}
+
+/// Study `key` (an id or a name) as the Motion Study dialog edits it: its name, steps and keys
+/// as tracks (values in degrees and mm).
+pub fn study_tracks(s: &Session, key: &str) -> Result<(String, String, Vec<Track>), String> {
+    let m = s.doc.assembly.studies.iter().find(|m| m.id.to_string() == key || m.name == key).ok_or_else(|| format!("no motion study `{key}`"))?;
+    let tracks = m
+        .keys
+        .iter()
+        .filter_map(|k| {
+            let joint = s.doc.assembly.joints.iter().position(|j| j.id == k.joint)?;
+            let angle = s.doc.assembly.joints.get(joint)?.kind.is_angle(k.index);
+            let value = |v: f64| if angle { crate::dialogs_assembly::num(v.to_degrees(), "deg") } else { crate::dialogs_assembly::num(v, "mm") };
+            let points = k.points.iter().map(|(st, v)| (st.round().clamp(0.0, f64::from(m.steps)) as u32, value(*v))).collect();
+            Some(Track { joint, index: k.index, points })
+        })
+        .collect();
+    Ok((m.name.clone(), m.steps.to_string(), tracks))
+}
+
+/// What the Motion Study dialog opens on when the control channel's `ui.start` passes `params`:
+/// `study` (an id or a name), opened to edit.
+pub fn preset(s: &Session, k: &mut Mo, p: &Value) -> Result<(), String> {
+    let Mo::MotionStudy { name, study, steps, tracks, shown, .. } = k else { return Err("not a Motion Study dialog".into()) };
+    let o = p.as_object().ok_or("`params` must be an object")?;
+    if let Some(key) = o.keys().find(|k| k.as_str() != "study") {
+        return Err(format!("unknown param `{key}` (Motion Study takes study)"));
+    }
+    let key = match o.get("study") {
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::String(x)) => x.clone(),
+        Some(_) => return Err("`study` must be an id or a name".into()),
+        None => return Ok(()),
+    };
+    let (n, st, t) = study_tracks(s, &key)?;
+    (*study, *name, *steps, *tracks, *shown) = (Some(n.clone()), n, st, t, None);
+    Ok(())
 }
 
 /// The study command's parameters.
@@ -432,7 +479,24 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 ui.end_row();
             }
         }
-        Mo::MotionStudy { name, study, steps, tracks, step, playing, looping, speed, shown, saved, error } => {
+        Mo::MotionStudy { name, study, steps, tracks, step, playing, looping, speed, shown, saved, error, analysis } => {
+            // An existing study opens to edit (and to chart); New makes another from these keys.
+            let names: Vec<String> = app.session.doc.assembly.studies.iter().map(|m| m.name.clone()).collect();
+            if !names.is_empty() {
+                let labels: Vec<&str> = std::iter::once("New study").chain(names.iter().map(String::as_str)).collect();
+                let was = study.as_ref().and_then(|n| names.iter().position(|x| x == n)).map_or(0, |i| i + 1);
+                let mut pick = was;
+                row_label(ui, "Study");
+                combo(ui, "ms_study", &labels, &mut pick);
+                ui.end_row();
+                if pick != was {
+                    match pick.checked_sub(1).and_then(|i| names.get(i)).map(|n| study_tracks(&app.session, n)) {
+                        Some(Ok((n, st, t))) => (*study, *name, *steps, *tracks, *shown, *playing) = (Some(n.clone()), n, st, t, None, false),
+                        Some(Err(e)) => *error = Some(e),
+                        None => *study = None,
+                    }
+                }
+            }
             row_label(ui, "Name");
             ui.text_edit_singleline(name);
             ui.end_row();
@@ -497,6 +561,9 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 (*step, *playing) = advance(*step, dt * fps, total, *looping);
                 ui.ctx().request_repaint();
             }
+            // The chart and the collision check, by the timeline.
+            let study_now = study_params(&app.session, name, study.as_deref(), steps, tracks);
+            plot::rows(app, ui, analysis, &study_now, step, playing, total, inputs);
             // Tracks: a row per keyed joint value, its keys on a strip under the steps.
             let now = step.round() as u32;
             let mut remove: Option<usize> = None;
@@ -1043,6 +1110,7 @@ mod tests {
                     shown: None,
                     saved,
                     error: None,
+                    analysis: Box::default(),
                 }
             } else {
                 Mo::Explode { name: "E".into(), scale: 1.0, shown: None, saved, error: None }
