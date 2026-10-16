@@ -1013,6 +1013,23 @@ fn ray_box(o: Vec3, d: Vec3, b: &solidcraft_engine::geom::Aabb3, pad: f64) -> Op
     (t0 <= t1).then_some(t0)
 }
 
+/// The point of segment `a`–`b` nearest the ray from `o` along `d`.
+fn ray_segment_closest(o: Vec3, d: Vec3, a: Vec3, b: Vec3) -> Vec3 {
+    let u = b - a;
+    let w = a - o;
+    let (dd, du, uu) = (d.dot(d), d.dot(u), u.dot(u));
+    let den = dd * uu - du * du;
+    // Parallel or degenerate: every point is as near, so the start stands for the segment.
+    if !(den.is_finite() && den > 1e-12 * dd * uu) {
+        return a;
+    }
+    let s = (du * d.dot(w) - dd * u.dot(w)) / den;
+    if !s.is_finite() {
+        return a;
+    }
+    a + u * s.clamp(0.0, 1.0)
+}
+
 /// A box's outline on screen, grown by `px` (None: behind the eye).
 fn screen_box(proj: &Proj, b: &solidcraft_engine::geom::Aabb3, px: f32) -> Option<Rect> {
     let mut r = Rect::NOTHING;
@@ -1227,7 +1244,9 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
         }
     }
     let slack = scene_radius(app) * 0.02;
-    let visible = |p: Vec3| bestf.as_ref().is_none_or(|(t, _)| (p - o).dot(d) <= *t + slack);
+    // Wireframe draws no faces, so nothing hides an edge or a vertex.
+    let wireframe = app.ui.visual_style == 2;
+    let visible = |p: Vec3| wireframe || bestf.as_ref().is_none_or(|(t, _)| (p - o).dot(d) <= *t + slack);
     // Vertices (edge end points) and edges.
     let mut bestv = Near::new(all);
     let mut beste = Near::new(all);
@@ -1254,16 +1273,13 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
                     }
                 }
             }
-            let pts: Vec<Pos2> = e.iter().filter_map(|q| proj.to_screen(*q)).collect();
-            for (k, w) in pts.windows(2).enumerate() {
-                let dd = seg_dist(pos, w[0], w[1]);
-                if dd < 6.0 && beste.wants(dd) {
-                    let mid = polyline_mid(e);
-                    // Visible where the cursor is (not just at the middle).
-                    let at = e.get(k).copied().unwrap_or(mid);
-                    if visible(at) || visible(mid) {
-                        beste.offer(dd, Hit::Edge { body: b.name.clone(), index: ei, mid });
-                    }
+            for w in e.windows(2) {
+                let (Some(a), Some(c)) = (proj.to_screen(w[0]), proj.to_screen(w[1])) else { continue };
+                let dd = seg_dist(pos, a, c);
+                // Visible where the cursor is: the edge's point under the cursor, not an end or
+                // the middle, which can lie deeper than the face the cursor is on.
+                if dd < 6.0 && beste.wants(dd) && visible(ray_segment_closest(o, d, w[0], w[1])) {
+                    beste.offer(dd, Hit::Edge { body: b.name.clone(), index: ei, mid: polyline_mid(e) });
                 }
             }
         }
@@ -3782,6 +3798,61 @@ mod tests {
         app.session.selection = vec![Sel::Feature { id }];
         let bounds = selection_bounds(&app).unwrap();
         assert!(bounds.min.x >= 29.99 && bounds.max.x <= 32.01 && bounds.max.y >= 41.99, "{bounds:?}");
+    }
+
+    #[test]
+    fn ray_segment_closest_takes_the_point_under_the_ray() {
+        let (o, d) = (Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0));
+        let x = |a: Vec3, b: Vec3| ray_segment_closest(o, d, a, b);
+        assert!(x(Vec3::new(-5.0, 0.0, 0.0), Vec3::new(5.0, 0.0, -4.0)).dist(Vec3::new(0.0, 0.0, -2.0)) < 1e-9);
+        // Beyond an end: the end.
+        assert!(x(Vec3::new(1.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 0.0)).dist(Vec3::new(1.0, 0.0, 0.0)) < 1e-9);
+        // Parallel, degenerate and non-finite input: the start, no panic.
+        assert_eq!(x(Vec3::new(1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 5.0)), Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(x(Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.0, 0.0, 0.0)), Vec3::new(2.0, 0.0, 0.0));
+        let nan = Vec3::new(f64::NAN, 0.0, 0.0);
+        let _ = x(nan, Vec3::ZERO);
+    }
+
+    /// Hovering anywhere along a visible edge between two faces picks that edge, not a face
+    /// (the edge used to pick only where its start or middle was as near as the face).
+    #[test]
+    fn edge_between_two_faces_picks_along_its_whole_length() {
+        for style in [0u8, 2] {
+            let ctx = egui::Context::default();
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+            app.viewport.no_pixels = true;
+            app.run("solid.box", json!({"length":200,"width":120,"height":160})).unwrap();
+            app.ui.show_origin = false;
+            app.ui.visual_style = style;
+            app.cam.yaw = 0.7;
+            app.cam.pitch = 0.5;
+            app.cam.target = Vec3::new(100.0, 60.0, 80.0);
+            app.cam.distance = 500.0;
+            hover_frame(&mut app, &ctx, vec![]);
+            let proj = projection(&app, app.viewport.rect.unwrap());
+            let st = app.session.world_state();
+            let m = st.body("Body1").unwrap().mesh();
+            let mut checked = 0;
+            for (ei, e) in m.edges.iter().enumerate() {
+                let (Some(a), Some(b)) = (e.first().copied(), e.last().copied()) else { continue };
+                for k in 1..10 {
+                    let p = a.lerp(b, k as f64 / 10.0);
+                    let Some(sp) = proj.to_screen(p) else { continue };
+                    let (o, d) = proj.ray(sp);
+                    // Only edges in front at that point (shaded); every edge in wireframe.
+                    let depth = (p - o).dot(d);
+                    if style != 2 && m.raycast(o, d).is_some_and(|(t, _)| t < depth - 1e-3) {
+                        continue;
+                    }
+                    let hits = pick(&app, &proj, sp);
+                    let first = candidate(&app, &hits).map(|x| x.1);
+                    assert!(matches!(first, Some(Sel::Edge { index, .. }) if index == ei), "style {style}: edge {ei} at {k}/10 picked {first:?}");
+                    checked += 1;
+                }
+            }
+            assert!(checked > 50, "style {style}: only {checked} samples");
+        }
     }
 
     fn hover_frame(app: &mut SolveApp, ctx: &egui::Context, events: Vec<egui::Event>) {
