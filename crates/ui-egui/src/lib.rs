@@ -148,6 +148,7 @@ pub mod sketch_modify_ui;
 #[cfg(test)]
 mod sketch_modify_ui_tests;
 pub mod sketch_palette;
+mod sketch_pattern_tree;
 pub(crate) mod sketch_text;
 mod sketch_text_handles;
 mod sketch_text_move;
