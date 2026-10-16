@@ -807,7 +807,8 @@ fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &std::sync::Arc<solidcra
 /// Sketch line types share the same world-space dash phase in the scene and overlays.
 pub(crate) fn sketch_segments(pts: &[Vec3], mode: u8, unit: f64) -> Vec<(Vec3, Vec3)> {
     match mode {
-        1 => dashes(pts, &[0.3 * unit, 0.2 * unit]),
+        // Construction, and infinite lines (#1359), which are construction too.
+        1 | 3 => dashes(pts, &[0.3 * unit, 0.2 * unit]),
         2 => dashes(pts, &[0.6 * unit, 0.15 * unit, 0.05 * unit, 0.15 * unit]),
         _ => pts.windows(2).map(|w| (w[0], w[1])).collect(),
     }
