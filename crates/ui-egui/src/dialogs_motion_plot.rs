@@ -461,9 +461,12 @@ mod tests {
             .run("motion.study", json!({"name": "Push", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 10], [15, -5]]}]}))
             .unwrap()["study"]
             .to_string();
-        // A study keyed between whole steps is not opened (the dialog would round its keys).
+        // A study keyed between whole steps or off its timeline is not opened (the dialog would move its keys).
         h.app.run("motion.study", json!({"name": "Fine", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 10], [7.5, -5]]}]})).unwrap();
-        for bad in [json!({"study": "Nope"}), json!({"study": "Push", "step": 3}), json!({"study": [1]}), json!({"study": "Fine"})] {
+        h.app.run("motion.study", json!({"name": "Off", "steps": 15, "keys": [{"joint": "Rail", "points": [[-1, 10], [15, -5]]}]})).unwrap();
+        for bad in
+            [json!({"study": "Nope"}), json!({"study": "Push", "step": 3}), json!({"study": [1]}), json!({"study": "Fine"}), json!({"study": "Off"})]
+        {
             let r = h.call("ui.start", json!({"command": "motion.study", "params": bad}));
             assert!(r["ok"] == false && h.app.dialog.is_none(), "{bad}: {r}");
         }

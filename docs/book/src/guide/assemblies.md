@@ -193,10 +193,11 @@ colliding pair with its `first_step`, `last_step`, the `steps` ranges where they
 far into each other (`depth_mm`, the most at `deepest_step`) and their shared `volume_mm3`
 there (null when it is not cheap to work out). It plays the study as `motion.play` does, but
 contact sets don't stop it, and parts are tested at the samples only: a part that passes right
-through another between two samples is missed. A check
-takes at most 256 bodies; on a large design, list the `occurrences` to check (an arm, with
-`against` the parts it must miss). When the work runs out it says `truncated` and the step it
-`checked_to`.
+through another between two samples is missed. Parts are told apart by occurrence, as contact
+sets tell them apart: an occurrence inside a sub-assembly placed twice is one part, so its two
+copies are not checked against each other. A check takes at most 256 bodies; on a large design,
+list the `occurrences` to check (an arm, with `against` the parts it must miss). When the work
+runs out it says `truncated` and the step it `checked_to`.
 
 **Insert Design** (`component.insert_design {path, translate?}`, on the **ASSEMBLE** panel and
 in the **File** menu) adds a component linked to another saved design, so each part can live in

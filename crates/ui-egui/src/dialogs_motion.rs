@@ -203,18 +203,17 @@ fn transport(ui: &mut egui::Ui, what: Transport, tip: &str) -> egui::Response {
     resp.on_hover_text(tip)
 }
 
-/// Study `key` (an id or a name) as the Motion Study dialog edits it: (id, name, steps, keys as
-/// tracks with values in degrees and mm). The dialog keys whole steps, so a study keyed between
-/// them (made by a command) is refused rather than rounded.
-pub fn study_tracks(s: &Session, key: &str) -> Result<(u64, String, String, Vec<Track>), String> {
+/// Study `key` as the Motion Study dialog edits it: (id, name, steps, keys as tracks with values
+/// in degrees and mm). `key` is an id first when `id_first`, else a name first (as
+/// `motion.study` reads a number and text). The dialog keys whole steps of its timeline, so a
+/// study keyed between them or off it (made by a command) is refused rather than changed.
+pub fn study_tracks(s: &Session, key: &str, id_first: bool) -> Result<(u64, String, String, Vec<Track>), String> {
     let studies = &s.doc.assembly.studies;
-    let m = studies
-        .iter()
-        .find(|m| m.id.to_string() == key)
-        .or_else(|| studies.iter().find(|m| m.name == key))
-        .ok_or_else(|| format!("no motion study `{key}`"))?;
-    if m.keys.iter().flat_map(|k| &k.points).any(|(st, _)| st.fract() != 0.0) {
-        return Err(format!("{} has keys between whole steps, which this dialog can't keep: edit it with motion.study", m.name));
+    let (by_id, by_name) = (studies.iter().find(|m| m.id.to_string() == key), studies.iter().find(|m| m.name == key));
+    let m = if id_first { by_id.or(by_name) } else { by_name.or(by_id) }.ok_or_else(|| format!("no motion study `{key}`"))?;
+    let last = f64::from(m.steps);
+    if m.keys.iter().flat_map(|k| &k.points).any(|(st, _)| st.fract() != 0.0 || !(0.0..=last).contains(st)) {
+        return Err(format!("{} has keys between whole steps or off its timeline, which this dialog can't keep: edit it with motion.study", m.name));
     }
     let tracks = m
         .keys
@@ -238,13 +237,13 @@ pub fn preset(s: &Session, k: &mut Mo, p: &Value) -> Result<(), String> {
     if let Some(key) = o.keys().find(|k| k.as_str() != "study") {
         return Err(format!("unknown param `{key}` (Motion Study takes study)"));
     }
-    let key = match o.get("study") {
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::String(x)) => x.clone(),
+    let (key, id_first) = match o.get("study") {
+        Some(Value::Number(n)) => (n.to_string(), true),
+        Some(Value::String(x)) => (x.clone(), false),
         Some(_) => return Err("`study` must be an id or a name".into()),
         None => return Ok(()),
     };
-    let (id, n, st, t) = study_tracks(s, &key)?;
+    let (id, n, st, t) = study_tracks(s, &key, id_first)?;
     (*study, *name, *steps, *tracks, *shown) = (Some(id.to_string()), n, st, t, None);
     Ok(())
 }
@@ -506,7 +505,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
                 combo(ui, "ms_study", &labels, &mut pick);
                 ui.end_row();
                 if pick != was {
-                    match pick.checked_sub(1).and_then(|i| studies.get(i)).map(|(id, _)| study_tracks(&app.session, id)) {
+                    match pick.checked_sub(1).and_then(|i| studies.get(i)).map(|(id, _)| study_tracks(&app.session, id, true)) {
                         Some(Ok((id, n, st, t))) => {
                             (*study, *name, *steps, *tracks, *shown, *playing) = (Some(id.to_string()), n, st, t, None, false)
                         }

@@ -162,7 +162,7 @@ impl ContactGeometry {
 
     /// How many pairs of set members are checked against each other.
     pub(super) fn pair_count(&self) -> usize {
-        self.pairs.iter().map(|(_, _, a, b)| (a.0, b.0)).collect::<BTreeSet<_>>().len()
+        self.pairs.iter().map(|(_, _, a, b)| (a.0.min(b.0), a.0.max(b.0))).collect::<BTreeSet<_>>().len()
     }
 
     fn frame(body: &CachedBody, s: &Session) -> Result<Mat> {
