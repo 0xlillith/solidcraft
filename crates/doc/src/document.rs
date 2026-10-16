@@ -1721,6 +1721,14 @@ pub enum PatternKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[walk(length = "Spacing 2")]
         spacing2: Option<Expr>,
+        #[serde(default, skip_serializing_if = "default_pattern_alignment")]
+        alignment: solidcraft_sketch::PatternAlignment,
+        #[serde(default, skip_serializing_if = "default_pattern_alignment")]
+        alignment2: solidcraft_sketch::PatternAlignment,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed2: bool,
     },
     Circular {
         origin: Position,
@@ -1730,6 +1738,10 @@ pub enum PatternKind {
         /// Total angle (360 deg = evenly around).
         #[walk(angle = "Total angle")]
         angle: Expr,
+        #[serde(default, skip_serializing_if = "default_pattern_alignment")]
+        alignment: solidcraft_sketch::PatternAlignment,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed: bool,
     },
     /// Copies along a chain of sketch curves: instance k moves by path(k·spacing) − path(0),
     /// measured along the path from its start.
@@ -1751,6 +1763,10 @@ pub enum PatternKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         orient: bool,
     },
+}
+
+fn default_pattern_alignment(alignment: &solidcraft_sketch::PatternAlignment) -> bool {
+    *alignment == solidcraft_sketch::PatternAlignment::Right
 }
 
 fn z_axis() -> Dir {

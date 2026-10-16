@@ -42,6 +42,7 @@ impl Walk for i8 {}
 impl Walk for f64 {}
 impl Walk for ProfileSel {}
 impl Walk for solidcraft_sketch::Sketch {}
+impl Walk for solidcraft_sketch::PatternAlignment {}
 impl Walk for solidcraft_kernel::StepNode {}
 impl Walk for crate::document::Operation {}
 impl Walk for solidcraft_kernel::Continuity {}
