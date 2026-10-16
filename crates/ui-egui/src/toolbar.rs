@@ -1305,6 +1305,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     }
     for k in keys {
         use egui::Key;
+        if shown && crate::navigation::view_key(app, ctx, k, mods) {
+            continue;
+        }
         if mods.command {
             match k {
                 Key::N => crate::documents::new_design(app),
