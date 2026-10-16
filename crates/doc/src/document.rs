@@ -1013,6 +1013,15 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[walk(body)]
         body: Option<String>,
+        /// The relief cut where two of this feature's bends meet at a corner of the base, in place
+        /// of the rule's: `corner_relief_shape` (notch | round | rectangular | tear) and
+        /// `corner_relief`, the size across. Either one left out follows the rule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner_relief_shape: Option<String>,
+        /// Walked last, after the edges' values, so the inputs before it keep their names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Corner relief")]
+        corner_relief: Option<String>,
     },
     /// Flat hems on sheet edges.
     SheetHem {
