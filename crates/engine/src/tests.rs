@@ -316,6 +316,7 @@ mod loft_spacing;
 mod mirror_planes;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_cad_import;
+mod nudge_slivers;
 mod path_scope;
 mod pleat_join;
 mod primitive_points;
