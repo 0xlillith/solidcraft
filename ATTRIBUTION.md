@@ -186,3 +186,5 @@ its original `egui.wgsl` shader are retained; no images or other artwork are cop
 SolidCraft's narrow patch selects a safe 1x MSAA path on the chosen OpenGL adapter
 and shares that effective count with the surface attachments and CAD callbacks.
 Vulkan, DirectX 12, Metal and WebGPU retain their requested multisampling.
+A frame whose meshes the GPU refuses to stage (device lost or out of memory) is
+skipped with a warning instead of panicking (#1469).
