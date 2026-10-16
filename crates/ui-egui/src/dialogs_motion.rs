@@ -40,7 +40,7 @@ pub enum Mo {
     },
     MotionStudy {
         name: String,
-        /// Editing this study (its name).
+        /// Editing this study (its id).
         study: Option<String>,
         steps: String,
         tracks: Vec<Track>,
@@ -203,10 +203,19 @@ fn transport(ui: &mut egui::Ui, what: Transport, tip: &str) -> egui::Response {
     resp.on_hover_text(tip)
 }
 
-/// Study `key` (an id or a name) as the Motion Study dialog edits it: its name, steps and keys
-/// as tracks (values in degrees and mm).
-pub fn study_tracks(s: &Session, key: &str) -> Result<(String, String, Vec<Track>), String> {
-    let m = s.doc.assembly.studies.iter().find(|m| m.id.to_string() == key || m.name == key).ok_or_else(|| format!("no motion study `{key}`"))?;
+/// Study `key` (an id or a name) as the Motion Study dialog edits it: (id, name, steps, keys as
+/// tracks with values in degrees and mm). The dialog keys whole steps, so a study keyed between
+/// them (made by a command) is refused rather than rounded.
+pub fn study_tracks(s: &Session, key: &str) -> Result<(u64, String, String, Vec<Track>), String> {
+    let studies = &s.doc.assembly.studies;
+    let m = studies
+        .iter()
+        .find(|m| m.id.to_string() == key)
+        .or_else(|| studies.iter().find(|m| m.name == key))
+        .ok_or_else(|| format!("no motion study `{key}`"))?;
+    if m.keys.iter().flat_map(|k| &k.points).any(|(st, _)| st.fract() != 0.0) {
+        return Err(format!("{} has keys between whole steps, which this dialog can't keep: edit it with motion.study", m.name));
+    }
     let tracks = m
         .keys
         .iter()
@@ -218,7 +227,7 @@ pub fn study_tracks(s: &Session, key: &str) -> Result<(String, String, Vec<Track
             Some(Track { joint, index: k.index, points })
         })
         .collect();
-    Ok((m.name.clone(), m.steps.to_string(), tracks))
+    Ok((m.id, m.name.clone(), m.steps.to_string(), tracks))
 }
 
 /// What the Motion Study dialog opens on when the control channel's `ui.start` passes `params`:
@@ -235,8 +244,8 @@ pub fn preset(s: &Session, k: &mut Mo, p: &Value) -> Result<(), String> {
         Some(_) => return Err("`study` must be an id or a name".into()),
         None => return Ok(()),
     };
-    let (n, st, t) = study_tracks(s, &key)?;
-    (*study, *name, *steps, *tracks, *shown) = (Some(n.clone()), n, st, t, None);
+    let (id, n, st, t) = study_tracks(s, &key)?;
+    (*study, *name, *steps, *tracks, *shown) = (Some(id.to_string()), n, st, t, None);
     Ok(())
 }
 
@@ -481,18 +490,21 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Mo, inputs: &mut [Sel
         }
         Mo::MotionStudy { name, study, steps, tracks, step, playing, looping, speed, shown, saved, error, analysis } => {
             // An existing study opens to edit (and to chart); New makes another from these keys.
-            let names: Vec<String> = app.session.doc.assembly.studies.iter().map(|m| m.name.clone()).collect();
-            if !names.is_empty() {
-                let labels: Vec<&str> = std::iter::once("New study").chain(names.iter().map(String::as_str)).collect();
-                let was = study.as_ref().and_then(|n| names.iter().position(|x| x == n)).map_or(0, |i| i + 1);
+            // By id: two studies may share a name.
+            let studies: Vec<(String, String)> = app.session.doc.assembly.studies.iter().map(|m| (m.id.to_string(), m.name.clone())).collect();
+            if !studies.is_empty() {
+                let labels: Vec<&str> = std::iter::once("New study").chain(studies.iter().map(|(_, n)| n.as_str())).collect();
+                let was = study.as_ref().and_then(|id| studies.iter().position(|(x, _)| x == id)).map_or(0, |i| i + 1);
                 let mut pick = was;
                 row_label(ui, "Study");
                 combo(ui, "ms_study", &labels, &mut pick);
                 ui.end_row();
                 if pick != was {
-                    match pick.checked_sub(1).and_then(|i| names.get(i)).map(|n| study_tracks(&app.session, n)) {
-                        Some(Ok((n, st, t))) => (*study, *name, *steps, *tracks, *shown, *playing) = (Some(n.clone()), n, st, t, None, false),
-                        Some(Err(e)) => *error = Some(e),
+                    match pick.checked_sub(1).and_then(|i| studies.get(i)).map(|(id, _)| study_tracks(&app.session, id)) {
+                        Some(Ok((id, n, st, t))) => {
+                            (*study, *name, *steps, *tracks, *shown, *playing) = (Some(id.to_string()), n, st, t, None, false)
+                        }
+                        Some(Err(e)) => app.set_status(e, true),
                         None => *study = None,
                     }
                 }

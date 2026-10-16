@@ -168,8 +168,9 @@ what changed from one frame to the next. Frames are capped: at most 1000, and a 
 
 **Motion analysis.** The **Motion Study** dialog's **Study** box opens a saved study to edit, and
 by its timeline the dialog charts what the study does.
-**Plot** picks a moving joint value (or **Picked point**, once a point is picked in the dialog's
-**Point** box) and whether to show its value, velocity or acceleration; the chart runs over the
+**Plot** picks a moving joint value (a joint picked in the Browser is picked here too), or
+**Picked point** once a point is picked in the dialog's **Point** box, and **Quantity** whether to
+show its value, velocity or acceleration; the chart runs over the
 study's steps with a cursor at the step shown, and a click or a drag on it moves to that step.
 Values are in degrees and millimetres; rates are per step, or per second once **Duration** says
 how many seconds the whole study takes. A picked point charts its distance from where it

@@ -155,6 +155,11 @@ impl ContactGeometry {
         self.pairs.retain(|(_, _, a, b)| keep(a.0, b.0));
     }
 
+    /// How many mesh points are placed for each check.
+    pub(super) fn vertex_count(&self) -> usize {
+        self.bodies.iter().map(|b| b.mesh.positions.len()).fold(0, usize::saturating_add)
+    }
+
     /// How many pairs of set members are checked against each other.
     pub(super) fn pair_count(&self) -> usize {
         self.pairs.iter().map(|(_, _, a, b)| (a.0, b.0)).collect::<BTreeSet<_>>().len()
@@ -242,6 +247,8 @@ impl ContactGeometry {
                 Ok(Mesh { positions, triangles: body.mesh.triangles.clone(), ..Mesh::default() })
             })
             .collect::<Result<_>>()?;
+        // Each mesh's box once, not once per pair it is in.
+        let boxes: Vec<Aabb3> = meshes.iter().map(Mesh::bounds).collect();
         for (a, b, oa, ob) in &self.pairs {
             // Members already found colliding need no more of their bodies tested.
             if out.iter().any(|(x, y, _)| (x.0, y.0) == (oa.0, ob.0) || (x.0, y.0) == (ob.0, oa.0)) {
@@ -250,7 +257,9 @@ impl ContactGeometry {
             let (Some(ma), Some(mb), Some(ba), Some(bb)) = (meshes.get(*a), meshes.get(*b), self.bodies.get(*a), self.bodies.get(*b)) else {
                 return Err(limit("invalid contact geometry pair"));
             };
-            let (aabb, bbb) = (ma.bounds(), mb.bounds());
+            let (Some(aabb), Some(bbb)) = (boxes.get(*a), boxes.get(*b)) else {
+                return Err(limit("invalid contact geometry pair"));
+            };
             if aabb.max.x < bbb.min.x
                 || bbb.max.x < aabb.min.x
                 || aabb.max.y < bbb.min.y

@@ -128,12 +128,14 @@ fn second_derivative(v: &[f64], h: f64) -> Vec<f64> {
 }
 
 /// Angles in degrees made continuous: a jump of more than half a turn between samples is taken
-/// as the angle going round.
+/// as the angle going round (half a turn exactly is a real step).
 fn unwrap_degrees(v: &mut [f64]) {
     let (mut turns, mut prev) = (0.0, None::<f64>);
     for x in v.iter_mut() {
         let raw = *x;
-        if let Some(p) = prev {
+        if let Some(p) = prev
+            && (raw - p).abs() > 180.0
+        {
             turns -= 360.0 * ((raw - p) / 360.0).round();
         }
         prev = Some(raw);
@@ -175,6 +177,7 @@ pub(super) fn plot(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let series = plotted(s, p, cmd)?;
+    let given = keyed(&m);
     let point = if p.get("point").is_some() || p.get("occurrence").is_some() { Some(traced_point(s, p, cmd)?) } else { None };
     let mut values: Vec<Vec<f64>> = vec![Vec::new(); series.len()];
     let mut path: Vec<Vec3> = Vec::new();
@@ -208,7 +211,11 @@ pub(super) fn plot(s: &mut Session, p: &Value) -> Result<Value> {
             let unit = if angle { "deg" } else { "mm" };
             if angle {
                 v.iter_mut().for_each(|x| *x = x.to_degrees());
-                unwrap_degrees(v);
+                // Keyed values are as the study sets them; loops can hand back a follower's
+                // angle a turn round.
+                if !given.contains(&(*id, *i)) {
+                    unwrap_degrees(v);
+                }
             }
             json!({"joint": id, "name": j.map(|j| j.name.clone()), "index": i, "dof": j.and_then(|j| j.kind.dofs().get(*i).copied()),
                 "unit": unit, "velocity_unit": format!("{unit}/{per}"), "acceleration_unit": format!("{unit}/{per}²"),
@@ -347,6 +354,12 @@ pub(super) fn interference(s: &mut Session, p: &Value) -> Result<Value> {
     let mut found: BTreeMap<(u64, u64), Collision> = BTreeMap::new();
     let (mut work, mut checked, mut truncated) = (0usize, 0usize, false);
     let stop = play(s, &m, n, false, |t, k| {
+        // Placing the meshes is work too, also where nothing comes near.
+        work = work.saturating_add(geometry.vertex_count());
+        if work > MAX_WORK {
+            truncated = true;
+            return Ok(false);
+        }
         let hits: Vec<(Member, Member, f64)> = match geometry.hits(t, &mut work, MAX_WORK, true) {
             Ok(h) => h,
             Err(_) if work > MAX_WORK => {
@@ -428,5 +441,9 @@ mod tests {
         let mut v = vec![170.0, 179.0, -172.0, -160.0, 175.0];
         unwrap_degrees(&mut v);
         assert_eq!(v, vec![170.0, 179.0, 188.0, 200.0, 175.0]);
+        // Half a turn a sample is a step, not a wrap.
+        let mut v = vec![0.0, 180.0, 360.0];
+        unwrap_degrees(&mut v);
+        assert_eq!(v, vec![0.0, 180.0, 360.0]);
     }
 }

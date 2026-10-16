@@ -39,6 +39,8 @@ pub struct Analysis {
     pub duration: String,
     /// Collisions among all components (0) or in the design's contact sets (1).
     pub among: usize,
+    /// The joint last picked in the browser, which the chart then shows.
+    followed: Option<u64>,
     /// The chart's `motion.plot` answer (or why none) and what it was for.
     plot: Option<(u64, Result<Value, String>)>,
     /// The last collision check's answer and what it was for.
@@ -77,7 +79,8 @@ pub fn plot_params(s: &Session, what: Plotted, study: &Value, duration: &str, in
     }
     let d = duration.trim();
     if !d.is_empty() {
-        p["duration"] = json!(d.parse::<f64>().map_err(|_| "the duration must be a number of seconds".to_string())?);
+        let seconds = d.parse::<f64>().ok().filter(|x| x.is_finite() && *x > 0.0).ok_or("the duration must be a number of seconds, more than 0")?;
+        p["duration"] = json!(seconds);
     }
     Ok(p)
 }
@@ -230,6 +233,14 @@ pub fn rows(
     let picked = inputs.first().is_some_and(|i| !i.items.is_empty());
     let list = choices(s, picked);
     a.what = a.what.min(list.len().saturating_sub(1));
+    // A joint picked in the browser is charted (until the box or another pick says otherwise).
+    let browsed = app.tree.picked_joints.first().copied();
+    if browsed != a.followed {
+        a.followed = browsed;
+        if let Some(i) = browsed.and_then(|id| list.iter().position(|(_, w)| *w == Plotted::Joint(id, 0))) {
+            a.what = i;
+        }
+    }
     row_label(ui, "Plot");
     let labels: Vec<&str> = list.iter().map(|(l, _)| l.as_str()).collect();
     combo(ui, "ms_plot", &labels, &mut a.what);
@@ -377,6 +388,15 @@ mod tests {
         assert_eq!(value_at(&[0.0, 2.0], &[1.0, 3.0], 9.0), None);
         let hits = json!({"collisions": [{"steps": [[11.0, 15.0], [20.0, 20.0]]}]});
         assert_eq!(collision_bands(&hits), vec![[11.0, 15.0], [20.0, 20.0]]);
+        // A duration is a number of seconds, more than 0; empty is per step.
+        let s = Session::default();
+        let study = json!({"name": "S", "steps": 10});
+        let p = |d: &str| plot_params(&s, Plotted::Joint(7, 0), &study, d, &[]);
+        assert_eq!(p("2").unwrap()["duration"], json!(2.0));
+        assert!(p("").unwrap().get("duration").is_none());
+        for bad in ["1e400", "nan", "-1", "0", "soon"] {
+            assert!(p(bad).is_err(), "{bad}");
+        }
     }
 
     /// The analysis of the open Motion Study dialog, and its step.
@@ -402,8 +422,14 @@ mod tests {
         h.app.run("occurrence.ground", json!({"occurrence": "A:1", "grounded": true})).unwrap();
         h.app.run("joint.create", json!({"type": "slider", "a": {"face": [10, 5, 5]}, "b": {"face": [20, 5, 5]}, "name": "Rail"})).unwrap();
         h.app.run("joint.drive", json!({"joint": "Rail", "value": 10})).unwrap();
-        h.app.run("motion.study", json!({"name": "Push", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 10], [15, -5]]}]})).unwrap();
-        for bad in [json!({"study": "Nope"}), json!({"study": "Push", "step": 3}), json!({"study": [1]})] {
+        let push = h
+            .app
+            .run("motion.study", json!({"name": "Push", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 10], [15, -5]]}]}))
+            .unwrap()["study"]
+            .to_string();
+        // A study keyed between whole steps is not opened (the dialog would round its keys).
+        h.app.run("motion.study", json!({"name": "Fine", "steps": 15, "keys": [{"joint": "Rail", "points": [[0, 10], [7.5, -5]]}]})).unwrap();
+        for bad in [json!({"study": "Nope"}), json!({"study": "Push", "step": 3}), json!({"study": [1]}), json!({"study": "Fine"})] {
             let r = h.call("ui.start", json!({"command": "motion.study", "params": bad}));
             assert!(r["ok"] == false && h.app.dialog.is_none(), "{bad}: {r}");
         }
@@ -413,7 +439,7 @@ mod tests {
         if let Some(crate::dialogs::Kind::Motion(crate::dialogs_motion::Mo::MotionStudy { study, steps, tracks, analysis, .. })) =
             h.app.dialog.as_mut().map(|d| &mut d.kind)
         {
-            assert_eq!((study.as_deref(), steps.as_str()), (Some("Push"), "15"));
+            assert_eq!((study.as_deref(), steps.as_str()), (Some(push.as_str()), "15"));
             assert_eq!(*tracks, vec![crate::dialogs_motion::Track { joint: 0, index: 0, points: vec![(0, "10 mm".into()), (15, "-5 mm".into())] }]);
             (analysis.what, analysis.quantity) = (1, 1);
         }
