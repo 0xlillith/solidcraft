@@ -141,6 +141,20 @@ fn extrude_base(s: &Session, p: &Value) -> Option<(Vec3, Vec3)> {
     Some((ss.plane.to_world(q), ss.plane.normal()))
 }
 
+/// How far an extrude with these parameters goes from its profile along the profile's normal
+/// (negative: the other way). To an object, the target's height, on whichever side it is: the
+/// extrude goes there and its `direction` does not count (#1633). Otherwise its distance, turned
+/// round for the negative direction.
+pub fn extrude_reach(s: &Session, p: &Value) -> Option<f64> {
+    if let Some(t) = p.get("to").and_then(vec3) {
+        let (base, n) = extrude_base(s, p)?;
+        return Some((t - base).dot(n)).filter(|h| h.is_finite());
+    }
+    let d = s.doc.eval(&expr(p, "distance")?, Kind::Length).ok()?;
+    let dir = str_(p, "direction").map(str::to_ascii_lowercase);
+    Some(if matches!(dir.as_deref(), Some("negative" | "reverse" | "flip")) { -d } else { d })
+}
+
 /// How far past the profile [`auto_operation`] looks for material it starts in.
 const START_PROBE_MM: f64 = 0.1;
 
@@ -152,10 +166,8 @@ const START_PROBE_MM: f64 = 0.1;
 /// direction it grows, or halfway along it. With the halfway point alone, a cut dragged far
 /// past a body's far side read as a Join (#1257).
 pub fn auto_operation(s: &Session, p: &Value) -> Option<&'static str> {
-    let d = s.doc.eval(&expr(p, "distance")?, Kind::Length).ok()?;
-    let dir = str_(p, "direction").map(str::to_ascii_lowercase);
-    let symmetric = dir.as_deref() == Some("symmetric");
-    let d = if matches!(dir.as_deref(), Some("negative" | "reverse" | "flip")) { -d } else { d };
+    let d = extrude_reach(s, p)?;
+    let symmetric = p.get("to").is_none() && str_(p, "direction").is_some_and(|d| d.eq_ignore_ascii_case("symmetric"));
     let (base, n) = extrude_base(s, p)?;
     let st = s.model.state();
     if st.bodies.is_empty() || !d.is_finite() {
