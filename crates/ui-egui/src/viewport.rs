@@ -40,6 +40,9 @@ pub enum NavMode {
 
 #[derive(Default)]
 pub struct ViewportState {
+    /// A two-point drawing tool's first point was placed by a press that became a drag: the
+    /// release places the second (#1630).
+    pub(crate) draw_drag: bool,
     /// Per-body boxes of one world state, held (not just its address, which a later state can
     /// reuse once the old one is freed, so stale boxes would come back).
     pick_bounds: std::sync::Mutex<Option<BodyBounds>>,
@@ -2277,11 +2280,40 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::frame_rate::paint(app, ui.ctx(), &painter, rect);
 
     // ---- interaction ----
+    // A two-point shape being dragged out (#1630) follows the pointer and ends where it is let go,
+    // even over the shape's own dimension box, which rides along beside the pointer.
+    if app.viewport.draw_drag {
+        let at = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p));
+        if resp.drag_stopped() {
+            app.viewport.draw_drag = false;
+            if let Some(p) = at
+                && app.tool.as_ref().is_some_and(|t| t.pts.len() == 1)
+            {
+                crate::tools::on_hover(app, &proj, p);
+                crate::tools::on_click(app, &proj, p);
+            }
+        } else if let Some(p) = at {
+            crate::tools::on_hover(app, &proj, p);
+        }
+    }
     let add = mods.shift || mods.command || mods.ctrl;
     crate::sketch_text::set_one_letter(mods.shift);
     if let Some(p) = hover.filter(|_| inside) {
         if app.tool.is_some() {
             crate::tools::on_hover(app, &proj, p);
+        }
+        // Rectangles, circles and polygons also draw by press, drag and release (#1630): the press
+        // places the first point as a click there would, the release the second.
+        let two_point_start = app.tool.as_ref().is_some_and(|t| matches!(t.kind, crate::tools::Kind::Draw(2)) && t.pts.is_empty());
+        if two_point_start
+            && !held
+            && primary_nav.is_none()
+            && mode.is_none()
+            && resp.drag_started_by(egui::PointerButton::Primary)
+            && let Some(a) = ui.input(|i| i.pointer.press_origin())
+        {
+            crate::tools::on_click(app, &proj, a);
+            app.viewport.draw_drag = app.tool.as_ref().is_some_and(|t| t.pts.len() == 1);
         }
         if resp.clicked() && !held {
             if app.tool.is_some() {
