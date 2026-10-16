@@ -221,8 +221,12 @@ With 3DxWare on Windows, SolidCraft follows 3DxWare's profile for it when there 
 3DxWare's object mode (tilt to roll, twist to spin) until there is. The mouse-wheel turns that
 3DxWare makes from the cap's motion are ignored, so the view doesn't zoom in steps as the cap tilts.
 
-On Linux SolidCraft reads `/dev/hidrawN` directly, so the logged-in user needs access to the
-device. A udev rule that adds the `uaccess` tag does that, for example
+On Linux SolidCraft reads the 3D mouse through `spacenavd` when that daemon runs (its socket
+`/var/run/spnav.sock`), so what you set in `spnavcfg` (swapped or inverted axes, sensitivity, dead
+zones) applies as it does in other programs, and no udev rule is needed. With nothing set there,
+the motion is the same as without the daemon. Without `spacenavd`, SolidCraft reads `/dev/hidrawN`
+directly, so the logged-in user needs access to the device. A udev rule that adds the `uaccess`
+tag does that, for example
 `/etc/udev/rules.d/70-3d-mouse.rules` for devices with 3Dconnexion's vendor id:
 
 ```
