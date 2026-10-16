@@ -5597,7 +5597,7 @@ mod tests {
                         assert!((s.base.area() - base).abs() < tol, "{what}: {} vs {base}", s.base.area());
                         assert!((flat_area(&s) - (base + len * (ba + panel))).abs() < 1e-6, "{what}: {}", flat_area(&s));
                         // (A sliver 0.0001 wide is below the flat pattern's shortest edge.)
-                        if hair < 0.0 || hair > 1e-3 {
+                        if !(0.0..=1e-3).contains(&hair) {
                             holds_the_flat_material(&s, &what);
                         } else {
                             let b = s.solid().unwrap_or_else(|e| panic!("{what}: no solid: {e}"));
