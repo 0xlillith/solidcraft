@@ -14,10 +14,10 @@ use super::joints::{cannot_move, effective_values, joint_id, occurrence_id, reso
 use crate::params::{bad, bool_, str_, vec3};
 use crate::{EngineError, Result, Session};
 
-#[path = "motion_animation.rs"]
-mod animation;
 #[path = "motion_analysis.rs"]
 mod analysis;
+#[path = "motion_animation.rs"]
+mod animation;
 #[path = "contact_sweep.rs"]
 mod contact_sweep;
 
