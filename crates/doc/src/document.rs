@@ -682,6 +682,11 @@ pub enum FeatureKind {
         /// Join each mirrored body with its original.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         combine: bool,
+        /// Where each of `bodies` is mirrored from: the occurrence path of the placement it was
+        /// picked at. The body is mirrored where that placement shows it, as the feature's own
+        /// component sees it. Empty in older designs, which mirror the bodies' own geometry.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        placements: Vec<Vec<u64>>,
     },
     /// A drilled hole (simple, counterbore or countersink) at a point, into the material.
     Hole {

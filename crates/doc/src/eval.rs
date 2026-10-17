@@ -1039,7 +1039,9 @@ fn placement_digest(doc: &Document, f: &Feature) -> u64 {
         FeatureKind::Revolve { to, .. } => to.is_some(),
         _ => false,
     };
-    if to_object {
+    // A mirror of placed bodies follows where they are placed.
+    let placed_mirror = matches!(&f.kind, FeatureKind::Mirror { placements, .. } if !placements.is_empty());
+    if to_object || placed_mirror {
         return if doc.occurrences.is_empty() && doc.body_offsets.is_empty() { 0 } else { placements_hash(doc) };
     }
     let FeatureKind::Sketch { plane, sketch } = &f.kind else { return 0 };
@@ -3741,6 +3743,20 @@ fn mirror_matrix(pl: &Plane) -> Mat {
 
 const MAX_INSTANCES: usize = 1000;
 
+/// Where a mirrored body is, in the frame of the mirror's component: through the placement it
+/// was picked at and the feature's component frame. `None` when that is the body's own frame
+/// (and in older designs, which saved no placement).
+fn mirrored_placement(doc: &Document, f: &Feature, mb: &ModelBody, path: Option<&[u64]>) -> Result<Option<Mat>> {
+    let Some(path) = path else { return Ok(None) };
+    let owner = doc.model_body_component(mb);
+    let lost = || DocError::Invalid(format!("the placement `{}` was mirrored at no longer exists", mb.name));
+    let world = doc.path_transform(owner, path).ok_or_else(lost)?;
+    let world = doc.model_body_offset(mb).map(|offset| crate::mat_mul(&world, offset)).unwrap_or(world);
+    let inverse = crate::mat_inverse(&doc.component_transform(f.component)).ok_or_else(lost)?;
+    let rel = crate::mat_mul(&inverse, &world);
+    Ok((!crate::is_identity(&rel)).then_some(rel))
+}
+
 /// The placements (column-major matrices) of a pattern's copies, the original excluded.
 pub fn pattern_matrices(doc: &Document, st: &ModelState, p: &crate::PatternKind) -> Result<Vec<[[f64; 4]; 4]>> {
     let (vals, _) = doc.param_values();
@@ -4670,17 +4686,28 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             }
             Ok(())
         }
-        FeatureKind::Mirror { features, plane, bodies, combine } => {
+        FeatureKind::Mirror { features, plane, bodies, combine, placements } => {
             let pl = doc.resolve_plane_in(vals, plane, 0, Some(st))?;
             if bodies.is_empty() {
                 return replay(doc, vals, f, st, &crate::plain(features), &[mirror_matrix(&pl)], warning);
             }
             let m = mirror_matrix(&pl);
             let mut output = 0;
-            for n in bodies {
+            for (k, n) in bodies.iter().enumerate() {
                 let i = st.bodies.iter().position(|b| &b.name == n).ok_or_else(|| DocError::Unknown(format!("body `{n}`")))?;
                 let Some(mb) = st.bodies.get(i).cloned() else { continue };
-                let mirrored = moved_copy(&mb, kernel::transform_matrix(&mb.body, m)?, 1);
+                // A body of a component placed elsewhere is mirrored where it is shown: the copy
+                // (in this feature's component) from its placement, a joined body in its own frame.
+                let placed = mirrored_placement(doc, f, &mb, placements.get(k).map(Vec::as_slice))?;
+                let (copy, own) = match placed {
+                    Some(rel) => {
+                        let inverse = crate::mat_inverse(&rel).ok_or_else(|| DocError::Invalid(format!("the placement of `{n}` is singular")))?;
+                        let copy = crate::mat_mul(&m, &rel);
+                        (copy, crate::mat_mul(&inverse, &copy))
+                    }
+                    None => (m, m),
+                };
+                let mirrored = moved_copy(&mb, kernel::transform_matrix(&mb.body, if *combine { own } else { copy })?, 1);
                 if *combine {
                     let joined = kernel::boolean(&mb.body, &mirrored.body, BoolOp::Union)?
                         .ok_or_else(|| DocError::Invalid("the mirror join produced nothing".into()))?;

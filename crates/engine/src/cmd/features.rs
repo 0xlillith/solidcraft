@@ -1358,6 +1358,7 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
     let features = if bodies.is_empty() { source_features(s, p, cmd)? } else { Vec::new() };
     let plane = plane_param(s, p.get("plane"), cmd)?;
     let combine = bool_(p, "combine").unwrap_or(false);
+    let (bodies, placements) = placed_bodies(s, bodies, cmd)?;
     add_feature(
         s,
         p,
@@ -1366,8 +1367,29 @@ fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
             plane,
             bodies: bodies.into_iter().map(BodyName).collect(),
             combine,
+            placements,
         },
     )
+}
+
+/// Bodies picked where the viewport shows them: each world name ("Body1", or "Body1 (Occ:2)"
+/// for a further instance) becomes its component's body name, with the occurrence path of the
+/// placement it was picked at. Names stay as they are (and no placement is kept) while every
+/// component is in place, or when one of them is not a body.
+fn placed_bodies(s: &Session, names: Vec<String>, cmd: &str) -> Result<(Vec<String>, Vec<Vec<u64>>)> {
+    if names.is_empty() || !crate::frames::placed(s) {
+        return Ok((names, Vec::new()));
+    }
+    let frames = s.doc.body_frames_with_source(&s.model.state());
+    let mut picked = Vec::with_capacity(names.len());
+    for name in &names {
+        let Some((_, own, _, path, _)) = frames.iter().find(|(world, ..)| world == name) else { return Ok((names, Vec::new())) };
+        if path.iter().any(|id| s.pending_moves.contains_key(id)) {
+            return Err(bad(cmd, format!("`{name}` has a position that is not captured yet: Capture Position (component.capture_position) first")));
+        }
+        picked.push((own.clone(), path.clone()));
+    }
+    Ok(picked.into_iter().unzip())
 }
 
 /// The other name of an origin plane (`Top` for `XY`, `XY` for `Top`...), if `name` is one.

@@ -4921,14 +4921,20 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Mirror { features, plane, bodies, .. } => {
+        FeatureKind::Mirror { features, plane, bodies, placements, .. } => {
             let mut d = start("solid.mirror")?;
             let ids: Vec<u64> = features.iter().filter_map(|n| s.doc.find_feature(n).map(|f| f.id)).collect();
             // Replay references stay features, including features that created a body.
             let as_features = !features.is_empty();
             if let Some(inp) = d.inputs.get_mut(0) {
                 if !bodies.is_empty() {
-                    inp.items = bodies.iter().map(|name| Sel::Body { name: name.to_string() }).collect();
+                    // Each body as the placement it was mirrored at shows it (an instance by its world name).
+                    let own = s.model.state();
+                    let world = |k: usize, name: &str| match (placements.get(k), own.body(name)) {
+                        (Some(path), Some(b)) => s.doc.world_body_name(&own, name, s.doc.model_body_component(b), path),
+                        _ => name.to_string(),
+                    };
+                    inp.items = bodies.iter().enumerate().map(|(k, name)| Sel::Body { name: world(k, name) }).collect();
                 } else if as_features {
                     inp.accept = selection::FEATURES;
                     inp.label = objects_label(inp.accept);
