@@ -276,7 +276,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.heading(app.tr("render.image_title"));
-    ui.small(app.tr("render.opaque_image_summary"));
+    ui.small(app.tr(if app.render_workspace.view.progressive { "render.progressive_image_summary" } else { "render.opaque_image_summary" }));
     ui.horizontal(|ui| {
         ui.label(app.tr("render.image_width"));
         if ui.add(egui::DragValue::new(&mut app.render_workspace.view.draft.width).range(1..=4096)).changed() {
