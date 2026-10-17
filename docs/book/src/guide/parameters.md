@@ -11,7 +11,9 @@ parameter editor. The separate **Configurations** button opens the configuration
 
 Press **Enter** in the new parameter's name, expression or comment field to add it.
 Valid entries return focus to the name field for the next parameter; invalid entries remain
-editable. In expression fields, **Up/Down** selects an autocomplete suggestion,
+editable. In expression fields, type a parameter or dimension name for autocomplete,
+or press **Ctrl+Space** to open suggestions, including in an empty field.
+**Up/Down** selects an autocomplete suggestion,
 **Enter/Tab** accepts it, and **Escape** dismisses the suggestions. Accepting a suggestion
 does not also submit the parameter.
 
