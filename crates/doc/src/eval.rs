@@ -2660,6 +2660,23 @@ fn sheet_hole_cut(
     let mut handled: Vec<String> = Vec::new();
     // Noted only when every tool was machined here.
     let mut parted = None;
+    // Many plain drills along one axis (a hole on each of a pattern's points): all in one pass.
+    let prisms: Option<Vec<more::PrimitivePrism>> = tools.iter().map(|(_, prism)| *prism).collect();
+    if let Some(prisms) = prisms {
+        match more::sheet_drill_cuts(f, st, &prisms, &mut parted) {
+            Ok(Some(done)) => {
+                if let Some(note) = parted {
+                    append_warning(warning, note);
+                }
+                return Ok(done);
+            }
+            // Not all of them that way, or refused at once: one by one, from the model as it was.
+            Ok(None) | Err(_) => {
+                (st.sheets, st.bodies) = saved.clone();
+                parted = None;
+            }
+        }
+    }
     for (tool, prism) in tools {
         let tool = &tool.body;
         let done = match prism {
