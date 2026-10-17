@@ -33,6 +33,7 @@ impl Catalog {
 
 static ENGLISH: Catalog = Catalog::new("en", "English", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/en.json")));
 static GERMAN: Catalog = Catalog::new("de", "Deutsch", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/de.json")));
+static SPANISH: Catalog = Catalog::new("es", "Español (España)", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/es.json")));
 static FRENCH: Catalog = Catalog::new("fr", "Français", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/fr.json")));
 static GALICIAN: Catalog = Catalog::new("gl", "Galego", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/gl.json")));
 static JAPANESE: Catalog = Catalog::new("ja", "日本語", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/ja.json")));
@@ -49,6 +50,7 @@ static CHINESE: Catalog = Catalog::new("zh", "中文", include_str!(concat!(env!
 pub const LOCALES: &[&Catalog] = &[
     &ENGLISH,
     &GERMAN,
+    &SPANISH,
     &FRENCH,
     &GALICIAN,
     &JAPANESE,
@@ -469,6 +471,18 @@ mod tests {
         assert_eq!(de.given_name("Fillet"), "Fillet");
         assert_eq!(de.given_name("Sketch3"), de.dynamic("Sketch3"));
         assert_ne!(de.given_name("Sketch3"), "Sketch3");
+    }
+
+    #[test]
+    fn spanish_catalog_is_registered_and_translates_cad_labels() {
+        let es = Locale::for_language("es");
+        assert_eq!(es.name(), "Español (España)");
+        assert!(is_supported("es"));
+        assert_eq!(es.text("ui.preferences"), "Preferencias");
+        assert_eq!(es.label("Extrude"), "Extruir");
+        assert_eq!(es.label("Fillet"), "Redondeo");
+        assert_eq!(es.dynamic("Sketch1"), "Boceto1");
+        assert_eq!(es.format("document.save_changes", &[("name", "Pieza")]), "¿Guardar los cambios de Pieza?");
     }
 
     #[test]
