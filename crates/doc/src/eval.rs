@@ -1754,7 +1754,9 @@ fn fill_void_holes(st: &ModelState, r: &Region2, op: Operation, targets: &[Strin
     let size = bodies.iter().map(|b| b.body.size()).fold(0.0, f64::max);
     let margin = (size * 1e-4).max(1e-4);
     let n = plane.normal();
-    let inside_any = |p: Vec3| meshes.iter().any(|m| m.contains(p));
+    // Many probes on one mesh each: indexed, the same answers as `Mesh::contains`.
+    let inside: Vec<_> = meshes.iter().map(|m| m.inside_index()).collect();
+    let inside_any = |p: Vec3| inside.iter().any(|m| m.contains(p));
     let want = op == Operation::Join;
     let mut holes = Vec::with_capacity(r.holes.len());
     for h in &r.holes {
@@ -1816,7 +1818,9 @@ fn grow_profile_for_coplanar(st: &ModelState, r: &Region2, op: Operation, target
             _ => None,
         }
     };
-    let inside_any = |p: Vec3| meshes.iter().any(|m| m.contains(p));
+    // Many probes on one mesh each: indexed, the same answers as `Mesh::contains`.
+    let inside: Vec<_> = meshes.iter().map(|m| m.inside_index()).collect();
+    let inside_any = |p: Vec3| inside.iter().any(|m| m.contains(p));
     let mut grow = vec![0.0; segs.len()];
     let mut any = false;
     for (i, seg) in segs.iter().enumerate() {
@@ -1912,7 +1916,9 @@ fn extend_for_coplanar(st: &ModelState, plane: &Plane, r: &Region2, lo: f64, hi:
     let meshes: Vec<Arc<Mesh>> = bodies.iter().map(|b| b.mesh()).collect();
     let samples = region_samples(r);
     let n = plane.normal();
-    let inside_any = |p: Vec3| meshes.iter().any(|m| m.contains(p));
+    // Many probes on one mesh each: indexed, the same answers as `Mesh::contains`.
+    let inside: Vec<_> = meshes.iter().map(|m| m.inside_index()).collect();
+    let inside_any = |p: Vec3| inside.iter().any(|m| m.contains(p));
     // Heights of the targets' faces parallel to the profile plane.
     let tol = (size * 1e-7).max(1e-9);
     let levels: Vec<f64> = meshes
