@@ -247,31 +247,17 @@ fn ray_segment_precise(o: vec3<f32>, o_low: vec3<f32>, previous: vec3<f32>, prev
 
 // Explicit parallel slab handling avoids 0*infinity/NaN at box boundaries.
 fn box_hit(node: Node, o: vec3<f32>, d: vec3<f32>, limit: f32) -> bool {
-    var near = 0.0;
-    var far = limit;
-    for (var k = 0u; k < 3u; k += 1u) {
-        if abs(d[k]) < 1e-20 {
-            if o[k] < node.lo[k]-u.lighting.x || o[k] > node.hi[k]+u.lighting.x { return false; }
-        } else {
-            let a = (node.lo[k]-u.lighting.x-o[k])/d[k];
-            let b = (node.hi[k]+u.lighting.x-o[k])/d[k];
-            near = max(near, min(a,b)); far = min(far, max(a,b));
-        }
-    }
-    return far >= near;
+    return box_hit_padded(node,o,d,limit,u.lighting.x);
 }
-fn box_hit_precise(node: Node, o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, limit: f32) -> bool {
-    if all(o_low==vec3<f32>(0.0)) { return box_hit(node,o,d,limit); }
-    let lo=precise_point_delta(node.lo,vec3<f32>(0.0),o,o_low);
-    let hi=precise_point_delta(node.hi,vec3<f32>(0.0),o,o_low);
+fn box_hit_padded(node: Node, o: vec3<f32>, d: vec3<f32>, limit: f32, pad: f32) -> bool {
     var near = 0.0;
     var far = limit;
     for (var k = 0u; k < 3u; k += 1u) {
         if abs(d[k]) < 1e-20 {
-            if 0.0 < lo[k]-u.lighting.x || 0.0 > hi[k]+u.lighting.x { return false; }
+            if o[k] < node.lo[k]-pad || o[k] > node.hi[k]+pad { return false; }
         } else {
-            let a = (lo[k]-u.lighting.x)/d[k];
-            let b = (hi[k]+u.lighting.x)/d[k];
+            let a = (node.lo[k]-pad-o[k])/d[k];
+            let b = (node.hi[k]+pad-o[k])/d[k];
             near = max(near, min(a,b)); far = min(far, max(a,b));
         }
     }
@@ -314,6 +300,17 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
     if abs(d.z)>abs(d[kz]) { kz=2u; }
     let kx=(kz+1u)%3u; let ky=(kx+1u)%3u;
     let shear=vec3<f32>(d[kx]/d[kz],d[ky]/d[kz],1.0/d[kz]);
+    // Only candidates near the origin need the integer-defined deltas. The
+    // rounded origin is within a few ULPs of the true anchor plus offset, so
+    // boxes grown by that bound reject conservatively: every point the true
+    // ray reaches at depth t lies in the grown box along the rounded ray at
+    // the same t. A triangle whose bounds are farther from the rounded origin
+    // than the near radius cannot change hit sign or order under that error,
+    // and uses ordinary arithmetic.
+    let rounded=o+o_low;
+    let scale=max(max(abs(rounded.x),max(abs(rounded.y),abs(rounded.z))),1.0);
+    let pad=u.lighting.x+scale*(1.0/1048576.0);
+    let near_radius=scale*(1.0/256.0);
     // A balanced tree over <= 2^20 triangles needs <= 21 pending nodes.
     var stack: array<u32, 32>;
     stack[0] = 0u;
@@ -322,7 +319,7 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
         if size == 0u { break; }
         size -= 1u;
         let node = nodes[stack[size]];
-        if node.first == 0xffffffffu || !box_hit_precise(node, o, o_low, d, hit.distance) { continue; }
+        if node.first == 0xffffffffu || !box_hit_padded(node, rounded, d, hit.distance, pad) { continue; }
         if node.count == 0u {
             if size + 2u > 32u { break; }
             stack[size] = node.first; stack[size+1u] = node.first+1u; size += 2u;
@@ -335,6 +332,27 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
             // of one body; curved facets and other bodies remain candidates.
             if excluded!=0xffffffffu && geometry[geometry[3]+i]==geometry[geometry[3]+excluded] { continue; }
             let t = triangle(i);
+            let lo=min(t.p0.xyz,min(t.p1.xyz,t.p2.xyz));
+            let hi=max(t.p0.xyz,max(t.p1.xyz,t.p2.xyz));
+            let gap=max(lo-rounded,rounded-hi);
+            if any(gap>vec3<f32>(near_radius)) {
+                if !triangle_ahead(t,rounded,d) { continue; }
+                let qa=t.p0.xyz-rounded; let qb=t.p1.xyz-rounded; let qc=t.p2.xyz-rounded;
+                let fa=vec2<f32>(qa[kx]-shear.x*qa[kz],qa[ky]-shear.y*qa[kz]);
+                let fb=vec2<f32>(qb[kx]-shear.x*qb[kz],qb[ky]-shear.y*qb[kz]);
+                let fc=vec2<f32>(qc[kx]-shear.x*qc[kz],qc[ky]-shear.y*qc[kz]);
+                let far_weights=vec3<f32>(difference_products(fb.x,fc.y,fb.y,fc.x),difference_products(fc.x,fa.y,fc.y,fa.x),difference_products(fa.x,fb.y,fa.y,fb.x));
+                if any(far_weights<vec3<f32>(0.0)) && any(far_weights>vec3<f32>(0.0)) { continue; }
+                let far_det=far_weights.x+far_weights.y+far_weights.z;
+                if far_det==0.0 { continue; }
+                let far_bary=far_weights/far_det;
+                let far_distance=surface_ray_depth(t,far_bary,rounded,kz)*shear.z;
+                if far_distance > minimum && far_distance < hit.distance {
+                    hit = Hit(far_distance,i,far_bary);
+                    if any_hit { return hit; }
+                }
+                continue;
+            }
             if !triangle_ahead_precise(t,o,o_low,d) { continue; }
             let pa=precise_point_delta(t.p0.xyz,vec3<f32>(0.0),o,o_low);
             let pb=precise_point_delta(t.p1.xyz,vec3<f32>(0.0),o,o_low);
