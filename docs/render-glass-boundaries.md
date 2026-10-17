@@ -70,9 +70,22 @@ integer rounding boundaries. Zero-offset rays retain the existing floating
 path. Integer bit results include subnormals; later floating consumers remain
 subject to WGSL's allowed subnormal handling.
 
-The candidate routes BVH bounds, triangle coordinate bounds, relative vertices,
-hit depth, analytic emitter intersections, and physical-point Beer distances
-through this representation. For a finite emitter, it first subtracts the
+The candidate routes triangle coordinate bounds, relative vertices and hit depth
+of triangles near the origin, analytic emitter intersections, and physical-point
+Beer distances through this representation. Traversal itself does not: BVH boxes
+are tested in ordinary arithmetic from the rounded origin `anchor+offset`, grown
+by the scene broad-phase pad plus `2^-20` of the origin's largest coordinate
+magnitude (several ULPs, covering the rounding of that origin). Every point the
+true ray reaches at depth `t` lies in the grown box along the rounded ray at the
+same `t`, so box rejection stays conservative. A triangle whose stored bounds
+are separated from the rounded origin by more than `2^-8` of that magnitude on
+some axis (about 4 mm at 1 m) uses the ordinary intersection from the rounded
+origin: a one-ULP origin error cannot change the sign or order of a hit that
+far away. Only the remaining nearby triangles, which include every sharp-rib
+exit, use the integer-defined deltas. On the exploded coffee machine at 1080p
+and 8 samples per pixel this cuts closed-glass time on an NVIDIA GB10 from
+43.5 s to 5.7 s (opaque: 5.2 s); 3 of 2,073,600 pixels differ from the
+all-exact result, by at most 6/255. For a finite emitter, it first subtracts the
 previous physical point from the ray origin and then adds the ray segment `d*t`.
 It does not add a short segment into a large local offset and subtract that
 offset again. Area-light density uses the same resulting physical segment.
