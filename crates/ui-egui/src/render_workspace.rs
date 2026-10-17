@@ -283,7 +283,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.heading(app.tr("render.image_title"));
-    ui.small(app.tr("render.opaque_image_summary"));
+    ui.small(app.tr(if app.render_workspace.view.progressive { "render.progressive_image_summary" } else { "render.opaque_image_summary" }));
     ui.horizontal(|ui| {
         ui.label(app.tr("render.image_width"));
         if crate::ui_kit::number_field(ui, &mut app.render_workspace.view.draft.width, 1..=4096, 1.0, "").changed() {
