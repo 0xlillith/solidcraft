@@ -10,6 +10,8 @@ Help is welcome, whether that's a one-line fix or owning a whole area. This page
 build it, how the code is laid out, the few rules that aren't negotiable, and where help is
 needed most.
 
+Questions, ideas or want to say what you're working on? Join the [Discord](https://discord.gg/FtU4NQNVDH).
+
 ## Get it running (about 10 minutes on a fast machine)
 
 You need stable Rust 1.95 or newer (required by egui/eframe 0.36). For the web
@@ -181,7 +183,8 @@ Pull requests skip a few heavy tests (one to four minutes each), which run on ev
   `pattern_suppress_tests::enclosure_arc_extinction_keeps_a_real_sharp_inner_lip_after_resize_and_reopen`,
   `pattern_suppress_tests::enclosure_datums_follow_wall_height_and_board_depth_with_material_proofs`,
   `cmd::plastic::tests::enclosure_snap_fit_follows_resized_front_wall`, the `atomic_commands` contract tests
-- `solidcraft-kernel`: `tests::boolean_identity_on_tangent_primitives`, the `boolean_props` property tests
+- `solidcraft-kernel`: `tests::boolean_identity_on_tangent_primitives`, and the `boolean_props` property tests
+  (these run only in the nightly "Property tests" job: their inputs are random, so main skips them too)
 - `solidcraft-ui-egui` scenarios: `acceptance_sensor_enclosure`
 
 **The action matrix** tries every ordinary action on every face, edge, vertex and body of a
