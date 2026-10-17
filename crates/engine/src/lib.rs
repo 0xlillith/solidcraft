@@ -1019,6 +1019,8 @@ mod derived_units_tests;
 #[cfg(test)]
 mod display_mesh_tests;
 #[cfg(test)]
+mod exact_tool_tests;
+#[cfg(test)]
 mod extent_tests;
 #[cfg(test)]
 mod face_name_tests;
