@@ -57,10 +57,12 @@ terms. Each secondary hit resets area and punctual continuation state.
 The existing HDR/reflection estimator partition and `primary_samples` 1/4/16
 policy remain; this adds no glass, MIS, GI, denoiser or material persistence.
 
-The ordinary CLI `render` wrapper and Render UI still select the raster path.
-This integration adds no CLI flags or UI light editor. A persistent native
-MCP session with the existing `raytrace-cpu` build and installed host is the
-command route. Feature-off and unavailable hosts refuse before capture.
+The ordinary CLI `render` wrapper still selects the raster path. Optional
+desktop CPU/AA controls are described in [CPU ray images](render-raytrace-image.md);
+they do not expose explicit light authoring. This integration adds no CLI
+lighting flags or UI light editor. A persistent native MCP session with the
+existing `raytrace-cpu` build and installed host is the command route for these
+lights. Feature-off and unavailable hosts refuse before capture.
 
 Written tests cover combined counts/capacities, recipe preservation and atomic
 refusals, N-independent area weights, mixed radiance, continuation partitioning,

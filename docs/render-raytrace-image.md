@@ -1,6 +1,6 @@
 # CPU ray visibility and hard shadows (RT2)
 
-## Current combined integration boundary (2026-10-16)
+## Current combined integration boundary (2026-10-17)
 
 The sections below describe the original RT2 direct-image stage. In the combined
 source, [HDR/reflection integration](render-hdr-reflections-integration.md) adds
@@ -15,62 +15,105 @@ reflection combination; direct anisotropic HDR and anisotropic delta mirrors
 refuse. Those additions do not imply MIS, GI or unrestricted material transport.
 
 The opt-in `solidcraft-engine/raytrace-cpu` feature forwards the render feature.
-The current native host selects `cpu-raytrace` only for explicit
+The native host selects `cpu-raytrace` only for explicit
 `integrator: "raytrace"`; raster remains the default, and cooperative/browser
 hosts refuse ray tracing. Use the same preflight/start/status/cancel/export
 commands and job identity described in [product-image jobs](render-jobs.md).
 Preflight does not reserve a queue slot or memory; start repeats admission.
-The existing CLI `render` wrapper does not accept `--integrator` or
-`--raytrace-options`; it submits settings and transparency through the default
-raster route. Use engine commands through a persistent native MCP session with
-the compiled feature and installed host for this ray tracing workflow. A one-shot
-CLI process is not a durable asynchronous job host. The current Render workspace
-UI also submits settings and transparency without selecting the ray tracing
-integrator. Its ordinary buttons do not establish a ray tracing UI workflow;
-that UI and GPU ray tracing are not qualified by the headless MCP evidence.
 
-Primary rays default to fixed pixel centers; explicit primary_samples4/16
-uses the bounded spatial policy in [primary AA](render-primary-aa.md). More
-reflection samples alone do not provide geometric antialiasing. The retained raster scratch estimate does not
-mean ray tracing performs raster supersampling. The source-only [light union](render-light-union.md) connects existing
-rectangle, point/spot and continuous LED cores to this same ImageTask. Its
-combined tests have NOT RUN. Texture sampling and glass/refraction/transmission
-remain outside this consumer. Output remains
-opaque Preview/Image/PNG, without EXR or GPU ray tracing. Existing shared-host
-limits remain: 262,144 triangles, 128 MiB retained source geometry, 384 MiB job
-admission and a 512 MiB shared pool. These are not total CAD-process RSS limits.
-HDR buffers, reflection selectors and actual retained capacities join the same
-ownership/accounting; the common cumulative work cap remains 1,000,000,000.
+The CLI `render` wrapper accepts settings, output and timeout options, but no
+`--integrator` or `--raytrace-options` flags. It submits settings and transparency
+through the default raster route, waits for the job and exports within that
+process. Jobs do not survive the host process exiting. Ray tracing commands can
+instead use a persistent native MCP session with the compiled feature and an
+installed image host, or the optional desktop image controls described below.
 
-This combined candidate has not been compiled, tested or rendered. It includes
-the exact-coordinate-plane depth correction. On its earlier isolated source,
-the Rust witness failed before the correction and passed afterwards; that source
-passed 222 feature-on and 147 feature-off render tests plus scoped Clippy/wasm.
-Those historical results do not qualify this candidate after main integration,
-primary-shading reuse and reflection-sequence changes. General oblique and
-near-edge robustness remain outside the coordinate-plane correction's scope.
+Primary rays default to fixed pixel centres. Explicit `primary_samples` values
+of 4 or 16 use bounded pixel-box quadrature in [primary AA](render-primary-aa.md).
+Reflection samples and viewport MSAA are separate controls. The retained raster
+scratch estimate does not mean ray tracing performs raster supersampling.
+The [light union](render-light-union.md) connects bounded rectangle and point/spot
+sources to this same `ImageTask`; continuous LED strip recipes lower to a rectangle
+before capture. These source integrations require their own revision-specific
+qualification. Texture sampling and glass/refraction/transmission remain outside
+this consumer. Output remains opaque Preview/Image/PNG, without EXR or GPU ray
+tracing.
+
+Existing shared-host limits remain: 262,144 triangles, 128 MiB retained source
+geometry, 384 MiB job admission and a 512 MiB shared pool. These are not total
+CAD-process RSS limits. HDR buffers, reflection selectors, light options and
+actual retained capacities join the same ownership/accounting; the common
+cumulative work cap remains 1,000,000,000.
+
+### Desktop CPU/AA controls
+
+The optional desktop feature `solidcraft/raytrace-cpu` forwards the engine feature
+and enables the Render image-method choice when the installed image host supports
+ray tracing. Raster remains the default. CPU **Edge samples** offers exactly
+1× (the original fixed centre), 4× or 16×. Preset lighting, cast shadows and
+exposure are temporary per-document editor choices. More samples cost more work
+and can exhaust the unchanged limits.
+
+Check and Start use the same request builder, native image host and captured-job
+commands. CPU images require an opaque background. Missing, stopped, cooperative
+and compiled-out CPU hosts refuse before image scene capture; the selector does
+not install a fallback or another host. A stale model must be explicitly refreshed
+or its modelling gesture finished before Check or Start.
+
+The current Check badge is advisory. It invalidates on document identity,
+revision, visibility, camera/options or host changes. Start rebuilds the current
+request and repeats admission. The global status message is not a current Check
+identity. Export uses the retained completed job selected when its file picker
+opens; changing options does not rerender that image. A failed or cancelled new
+job preserves the previous successful frame.
+
+Runtime method, AA, preset, shadows and exposure are not persisted by Save Setup
+or added to document undo. Switching to Raster discards CPU options and resets
+the next CPU choice to 1×; a new or reopened document starts with Raster.
+Existing Record and navigation routes are unchanged. This panel does not expose
+HDR, reflection selection, explicit directional/area/punctual lights, LED recipes
+or anisotropy authoring. It rejects non-panel raytrace options instead of silently
+forwarding them. Engine/MCP lighting support is a separate interface.
+
+### Qualification and historical evidence
+
+Qualification belongs to a specific source revision and build configuration.
+Report the exact source, feature-on/off checks, wasm and full CI results, native
+executable identity and visible evidence in the accompanying PR. Earlier scoped
+CPU/AA results belong to their recorded source snapshot; they do not certify a
+later merge with main or changes to lighting and host contracts.
+
+For this UI consumer, evidence must exercise the actual method and AA controls,
+Check, a new Start/completion for both 4× and 16×, and native PNG export. Check
+that those requests reach the same host, the exported bytes belong to the selected
+completed frame, and repeated export does not rerender it. Preserve document
+geometry, physical properties and history during rendering; save and reopen the
+design to verify that the transient CPU/AA choices are absent. Include refusal,
+preflight invalidation and cancellation coverage, with the CPU feature both on
+and off. These are acceptance criteria, not a claim that this combined revision
+has passed them. Broader HDR/reflection/light changes require their own evidence.
+
+The combined path includes the exact-coordinate-plane depth correction. On an
+earlier isolated source, the Rust witness failed before the correction and passed
+afterwards; that source passed 222 feature-on and 147 feature-off render tests
+plus scoped Clippy/wasm. Those historical results do not qualify later main
+integration, primary-shading reuse or reflection-sequence changes. General oblique
+and near-edge robustness remain outside the coordinate-plane correction's scope.
 
 The original combined source's full CI ended incomplete at its fixed deadline.
 Known modelling golden failures remain recorded separately; do not attribute
-their cause to rendering without paired baseline evidence. An earlier optional
-960x540 request exhausted the billion-unit cap without producing a PNG; smaller
-drafts do not qualify that request. No cap, assertion, tolerance, ignore or
-golden-baseline change is implied, and presentation readiness remains pending.
+their cause to rendering or carry them over as a verdict on another revision
+without paired baseline evidence. An earlier optional 960x540 request exhausted
+the billion-unit cap without producing a PNG; smaller drafts do not qualify that
+request. No cap, assertion, tolerance, ignore or golden-baseline change is implied.
 
-Before publication, execute the relevant regressions, complete current
-`cargo xtask ci` and wasm checks, and inspect exact-build native visibility,
-shadow, reflection and HDR output. Historical results and source review alone
-do not qualify the final combined revision. The stage-specific validation text
-below is historical scope, not a current pass/fail report.
+The stage-specific descriptions below record the original direct-image scope,
+not a current pass/fail report. This opt-in slice of #1368 follows the phased
+render design in #620 and connects SolidCraft's original RT1 triangle/BVH core
+to immutable product captures and the existing image-job host. The
+`raytrace-cpu` Cargo feature stays off by default.
 
-
-This opt-in slice of #1368 follows the phased render design in #620. It connects
-SolidCraft's original RT1 triangle/BVH core to immutable product captures and the
-existing image-job host. The `raytrace-cpu` Cargo feature is off by default.
-Implementation is under review; tests, native PNG acceptance and full CI for this
-integration remain pending. Historical RT1 results do not qualify this new consumer.
-
-## Runtime contract
+## Original RT2 runtime contract
 
 `render.preflight` and `render.start` accept `integrator: "raster"` (the default) or
 `"raytrace"`. Optional `raytrace` settings contain `lights`, `exposure_ev` and
@@ -155,7 +198,8 @@ near/far camera policy in both projections/up axes, translated thin occluders,
 self-shadow avoidance, runtime refusal and captured-resource release. Lighting tests
 use analytic Lambert values and independently masked colored lights. Actual test
 counts, compiler results and original-scene PNG review must be reported only after
-execution. The draft PR stays unqualified until those gates complete.
+execution. Qualification of the integrated revision requires those gates and the
+PR evidence described above.
 
 Beyond the original direct-image stage, HDR/reflection connections are described
 at the top of this page. Qualified texture resources, role-correct material maps,
