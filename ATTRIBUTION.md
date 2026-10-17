@@ -80,6 +80,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/icons/ui/source/markers.rs | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/icons/ui/source/navigation.rs | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/icons/ui/source/pointer.rs | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
+| assets/locales/cs.json | potuzai | Czech translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/de.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/en.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/es.json | jawler | Spanish (Spain) translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
@@ -466,3 +467,5 @@ and shares that effective count with the surface attachments and CAD callbacks.
 Vulkan, DirectX 12, Metal and WebGPU retain their requested multisampling.
 A frame whose meshes the GPU refuses to stage (device lost or out of memory) is
 skipped with a warning instead of panicking (#1469).
+Paint callbacks are prepared only after a drawable is acquired, so a skipped
+surface frame cannot strand cached meshes without their GPU initialization.
