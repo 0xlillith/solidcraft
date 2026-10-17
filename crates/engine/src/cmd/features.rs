@@ -48,7 +48,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("features: [names] | bodies: [names] | components: [names]; axis: X|Y|Z | {origin, dir}; count; angle? (default 360 deg; partial arcs include both ends); alignment?: left|center|right (default right; original stays fixed); reversed?: bool (Flip; selects the extra side for even centered counts)"),
     CommandSpec::new("solid.pattern.path", "Pattern on Path", pattern_path)
         .at("SOLID", "CREATE")
-        .icon("pattern_rect")
+        .icon("pattern_path")
         .params("features: [names] | bodies: [names]; path_sketch: sketch; path: [curve ids in order]; count; spacing (between instances) | distance (first to last); orientation?: identical|path; flip?: bool"),
     CommandSpec::new("solid.mirror", "Mirror", mirror).at("SOLID", "CREATE").icon("mirror").params("features: [names] | bodies: [names] (combine?: join with the original); plane: XY|XZ|YZ|construction plane name or id|{origin, normal}|{origin, x_dir, y_dir} (origin coordinates may be length expressions; the mirror follows them, or a construction plane)"),
     CommandSpec::new("solid.hole", "Hole", hole)
@@ -62,7 +62,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("path_sketch: sketch; path: [curve ids in order]; diameter: expr; wall?: expr (hollow); operation?, targets?, name?, body_name?"),
     CommandSpec::new("solid.bounding_solid", "Bounding Solid", bounding_solid)
         .at("SOLID", "CREATE")
-        .icon("box")
+        .icon("bounding_solid")
         .params("bodies?: [names] (default: all); margin?: expr; name?, body_name?"),
     CommandSpec::new("solid.scale", "Scale", scale)
         .at("SOLID", "MODIFY")
@@ -70,7 +70,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("bodies: [names]; factor: expr | factors: [x, y, z] exprs; origin?: [x,y,z]"),
     CommandSpec::new("face.delete", "Delete Face", delete_face)
         .at("SOLID", "MODIFY")
-        .icon("delete")
+        .icon("delete_face")
         .params("faces: [[x,y,z] points on the faces, or face names from model.faces]; body?; heal?: bool (default true: the neighbouring planes close the gap, as when a rounded edge, hole or boss is taken off; false: the gap stays open and the faces left are a surface body)"),
     CommandSpec::new("solid.offset_face", "Offset Face", offset_face)
         .at("SOLID", "MODIFY")
@@ -94,17 +94,17 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("base: XY|XZ|YZ|plane name, or a planar face {face: [x,y,z], body?, index?, path?}; offset: expr; name?"),
     CommandSpec::new("construct.plane.at_angle", "Plane at Angle", plane_angle)
         .at("SOLID", "CONSTRUCT")
-        .icon("plane")
+        .icon("plane_angle")
         .params("base: XY|XZ|YZ|plane name; axis: X|Y|Z|{origin, dir}; angle: expr; name?"),
     CommandSpec::new("solid.split_face", "Split Face", split_face)
         .at("SOLID", "MODIFY")
-        .icon("split")
+        .icon("split_face")
         .params(
             "faces: [[x,y,z] points on the faces to split, or face names from model.faces]; body?; and the splitting tool: plane: XY|XZ|YZ|plane name|{origin, normal} — or tool: {body, point} (a face of a body, its surface extended) — or sketch: id or name (its curves, along the sketch's normal)",
         ),
     CommandSpec::new("solid.split_body", "Split Body", split_body)
         .at("SOLID", "MODIFY")
-        .icon("split")
+        .icon("split_body")
         .params("body: name; plane: XY|XZ|YZ|plane name|{origin, normal} — or tool: {body, point} (a face of a body, its surface extended) — or sketch: id, line: curve id (a straight sketch line, along the sketch's normal)"),
     CommandSpec::new("solid.press_pull", "Press Pull", press_pull)
         .at("SOLID", "MODIFY")

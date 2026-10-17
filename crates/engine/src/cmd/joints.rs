@@ -37,7 +37,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          reason: why the joint can move nothing (suppressed, its origins lost, or its chain joined to nothing grounded → unconnected: \
          the occurrence named)",
     ),
-    CommandSpec::new("joint.reach", "Reach Point", reach).params(
+    CommandSpec::new("joint.reach", "Reach Point", reach).icon("reach").params(
         "occurrence: id|name; point: [x,y,z] (where its point goes, world); at?: [x,y,z] (its point, in the world where it is now; default: the centre of          its bodies' box); z?: [x,y,z] (the way its axis then points); axis?: [x,y,z] (that axis, in the world now; default: its own z); joints?: [ids          or names] (only these move toward the point; the other joints of a closed loop they are in follow); quiet?: bool; continuous?: bool (a frame          of a drag: the answer says continuous, and the app's command line doesn't echo it). Moves the values of the joints          on its chain from where they are to the nearest pose, within their limits, through motion links, keeping closed loops closed as joint.drive does          (contact sets are not checked) → reached; error_mm (and error_deg with z): how close it got; point: where its point is; values: [{joint, name,          values}] of the joints that moved, as joint.list gives them; moved; stopped_by_limit: [{joint, value, limit: min|max}]: the limits it rests on          short of the point; stopped_by_loop: {joint}: the closed loop that stopped it (its chain alone gets closer); reason: why nothing can move",
     ),
     CommandSpec::new("joint.motion_link", "Motion Link", motion_link)
@@ -64,14 +64,14 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.cam", "Cam", cam_cmd).at("SOLID", "ASSEMBLE").icon("cam").params(
         "a: the cam's joint (revolute); b: the follower's joint, a slider (a translating follower) or a revolute (an oscillating one),          b driven by a; profile: {sketch: id|name, index?: the profile (default: the largest)} | {edges: [[x,y,z]…] (points on edges of          the cam's bodies forming one closed loop, world), occurrence?}: the cam's outline, in a plane square to its axis, read again          whenever the design changes; follower?: knife|roller|flat (default knife; flat: a face square to a slider's line); radius?: the          roller's radius (mm, an expression or {circle: [x,y,z], occurrence?}: the roller's round face, which is its tip too); tip?: a          joint origin where the follower touches: its knife's point or its roller's centre, such as {circle: [x,y,z]} on the roller          (needed for an oscillating follower; a translating one's line runs through it, by default along its slider's axis); flip?: bool (ride the cam from the other side          than the one the follower is on now); link?: index (replace that motion link) → link, lift: {min, max, rise, unit} (b's travel          over a turn of the cam), reverse (the side it rides from), follower_offset (mm: how far a translating follower's line passes          from the cam's axis); b keeps where it is",
     ),
-    CommandSpec::new("joint.limits", "Joint Limits", limits).params("joint; index?: value index (default 0); min?, max? (omit both to clear)"),
-    CommandSpec::new("joint.edit", "Edit Joint", edit).params("joint; type?, flip?, offset?, angle?, suppressed?, name?"),
-    CommandSpec::new("joint.delete", "Delete Joint", delete).params("joint: id|name (or origin: name, link: index)"),
-    CommandSpec::new("joint.list", "List Joints", list).noundo().params(
+    CommandSpec::new("joint.limits", "Joint Limits", limits).icon("joint").params("joint; index?: value index (default 0); min?, max? (omit both to clear)"),
+    CommandSpec::new("joint.edit", "Edit Joint", edit).icon("edit").params("joint; type?, flip?, offset?, angle?, suppressed?, name?"),
+    CommandSpec::new("joint.delete", "Delete Joint", delete).icon("delete").params("joint: id|name (or origin: name, link: index)"),
+    CommandSpec::new("joint.list", "List Joints", list).icon("list").noundo().params(
         "→ joints (type, occurrences, values, limits), origins, links, degrees of freedom, conflicts, floating: [{occurrences, joints}] \
          (joint chains joined to nothing grounded: the solver places none of them, so driving them moves nothing)",
     ),
-    CommandSpec::new("joint.solve", "Solve Joints", solve_cmd).params("re-place the occurrences from the joints → conflicts, errors, dof"),
+    CommandSpec::new("joint.solve", "Solve Joints", solve_cmd).icon("compute").params("re-place the occurrences from the joints → conflicts, errors, dof"),
     CommandSpec::new("inspect.interference", "Interference", interference).at("SOLID", "INSPECT").icon("interference").noundo().params(
         "bodies?: [names] (default: all, in world placement) → interferences: pairs that overlap with the overlap volume, area, bounding box and centre; unchecked: pairs that could not be checked, with the reason. Bodies are pruned by bounding box first, so any number of bodies is fine; at most 20000 pairs whose boxes overlap are intersected per call (truncated: true and skipped_pairs: n say when more were left out)",
     ),

@@ -119,6 +119,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Asset attribution
         run: cargo xtask assets
+      - name: UI icon standards and review tool
+        run: cargo xtask icons
       - name: Licences
         run: cargo xtask licences --check
       - name: Dependency layers

@@ -76,11 +76,14 @@ fails, or leaves a sliver face (narrower than 1/200 of the part), it is tried th
 other way too: one way can push a face into a curved face it only touched (a cut
 whose end lies tangent to a round side) and leave a sliver of it, where the other
 way parts them (#897, #827).
-Exact planar and piecewise fallbacks report zero displacement. The existing
-volume and spatial acceptance checks still apply to all results.
-
-The command that adds a feature carries the same `warning` in its reply, so a
-script or an agent sees such a retry without asking the timeline.
+Exact planar and piecewise fallbacks report zero displacement. When a conical
+cutter meets a body with earlier conical faces (pointed bores copied in a pattern),
+two finer, unshifted passes are tried first, at 1e-5 and 1e-6 of their size (never
+below 1e-6 mm). A coarse first cut can leave tiny junctions that later copies cannot
+intersect, so refining only the failing copy is too late. Every candidate must pass
+the volume, membership and spatial checks; a rejected candidate continues to the
+next tolerance, then the ordinary routes. The existing acceptance checks still
+apply to all results.
 
 A join or a cut that needed any retry is then held to what it can do at all
 (`crates/kernel/src/boolean_guard.rs`, #616): the result is closed, a join
