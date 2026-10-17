@@ -747,6 +747,8 @@ pub struct Model {
     pub cache: Arc<std::sync::Mutex<EvalCache>>,
     /// Evaluate everything from scratch (no reuse; tests compare the two).
     pub no_cache: bool,
+    /// The imported texts' digests the last `evaluate` fingerprinted the features with.
+    step_digests: StepDigests,
 }
 
 /// Parameters a feature uses directly (inputs, sketch dimensions and the expressions of a
@@ -762,12 +764,12 @@ fn param_names(f: &Feature) -> Vec<String> {
     names
 }
 
-fn fingerprint(prev: u64, f: &Feature, vals: &BTreeMap<String, Value>, rolled_back: bool) -> u64 {
+fn fingerprint(prev: u64, f: &Feature, vals: &BTreeMap<String, Value>, rolled_back: bool, steps: &StepDigests) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     prev.hash(&mut h);
     rolled_back.hash(&mut h);
     vals.get(DESIGN_LEN).map(|v| v.v.to_bits()).hash(&mut h);
-    feature_json(f).hash(&mut h);
+    feature_json(f, steps).hash(&mut h);
     for n in param_names(f) {
         n.hash(&mut h);
         match vals.get(&n) {
@@ -779,6 +781,44 @@ fn fingerprint(prev: u64, f: &Feature, vals: &BTreeMap<String, Value>, rolled_ba
             None => 0u8.hash(&mut h),
         }
     }
+    h.finish()
+}
+
+/// The digests of the Import features' STEP texts, by feature id, with the text each was taken
+/// from. Every evaluation fingerprints every feature, and writing out a design's imported files
+/// each time made every command as slow as the files are large: a text is shared (`Arc`), so
+/// its digest is taken once and kept while the feature holds that same text.
+#[derive(Clone, Debug, Default)]
+struct StepDigests(std::collections::HashMap<u64, (Arc<str>, u64)>);
+
+impl StepDigests {
+    /// The digests of `doc`'s imported texts, reusing `known` for texts it has seen.
+    fn of(doc: &Document, known: &StepDigests) -> StepDigests {
+        let texts = doc.features.iter().filter_map(|f| match &f.kind {
+            FeatureKind::Import { step, .. } => Some((f.id, step)),
+            _ => None,
+        });
+        StepDigests(
+            texts
+                .map(|(id, step)| {
+                    let digest = known.get(id, step).unwrap_or_else(|| step_text_digest(step));
+                    (id, (step.clone(), digest))
+                })
+                .collect(),
+        )
+    }
+
+    /// The digest of `step`, when it is the text feature `id` was last seen with.
+    fn get(&self, id: u64, step: &Arc<str>) -> Option<u64> {
+        self.0.get(&id).filter(|(text, _)| Arc::ptr_eq(text, step)).map(|(_, digest)| *digest)
+    }
+}
+
+fn step_text_digest(text: &str) -> u64 {
+    #[cfg(test)]
+    cost_tests::count(|c| c.digested += 1);
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
     h.finish()
 }
 
@@ -806,8 +846,17 @@ fn quantize(sk: &mut solidcraft_sketch::Sketch) {
     }
 }
 
-/// A feature as fingerprinted: its definition, a sketch's stored solve quantized.
-fn feature_json(f: &Feature) -> String {
+/// A feature as fingerprinted: its definition, a sketch's stored solve quantized, an imported
+/// file's text by its digest.
+fn feature_json(f: &Feature, steps: &StepDigests) -> String {
+    if let FeatureKind::Import { step, .. } = &f.kind {
+        let mut g = f.clone();
+        if let FeatureKind::Import { step: text, .. } = &mut g.kind {
+            let digest = steps.get(f.id, step).unwrap_or_else(|| step_text_digest(step));
+            *text = Arc::from(format!("{digest:016x}:{}", step.len()));
+        }
+        return serde_json::to_string(&g).unwrap_or_default();
+    }
     if let FeatureKind::Sketch { .. } = &f.kind {
         let mut g = f.clone();
         if let FeatureKind::Sketch { sketch, .. } = &mut g.kind {
@@ -866,8 +915,8 @@ fn evaluation_values(doc: &Document) -> (BTreeMap<String, Value>, BTreeMap<Strin
 
 /// A feature's fingerprint in the chain after `prev`: its own inputs, where it is placed, and
 /// the sheet metal or plastic rules it takes defaults from.
-fn chain_fingerprint(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, prev: u64, rolled_back: bool) -> u64 {
-    let mut fp = fingerprint(prev, f, vals, rolled_back) ^ placement_digest(doc, f);
+fn chain_fingerprint(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, prev: u64, rolled_back: bool, steps: &StepDigests) -> u64 {
+    let mut fp = fingerprint(prev, f, vals, rolled_back, steps) ^ placement_digest(doc, f);
     // Sheet metal features also depend on the rules (and the parameters they use).
     if f.kind.is_sheet() {
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -906,7 +955,7 @@ fn context_digest(doc: &Document, vals: &BTreeMap<String, Value>) -> u64 {
     for f in doc.features.iter().filter(|f| {
         matches!(f.kind, FeatureKind::ConstructionPlane { .. } | FeatureKind::ConstructionAxis { .. } | FeatureKind::ConstructionPoint { .. })
     }) {
-        fingerprint(0, f, vals, false).hash(&mut h);
+        fingerprint(0, f, vals, false, &StepDigests::default()).hash(&mut h);
     }
     doc.units.hash(&mut h);
     serde_json::to_string(&doc.sheet).unwrap_or_default().hash(&mut h);
@@ -1089,10 +1138,11 @@ impl Model {
         }
         // The fingerprints from the first stored sketch on.
         let vals = evaluation_values(doc).0;
+        let steps = StepDigests::of(doc, &self.step_digests);
         let marker = doc.marker.unwrap_or(usize::MAX);
         let mut prev_fp = first.checked_sub(1).and_then(|i| self.results.get(i)).map_or(0, |r| r.fingerprint);
         for (i, f) in doc.features.iter().enumerate().skip(first) {
-            prev_fp = chain_fingerprint(doc, &vals, f, prev_fp, i >= marker);
+            prev_fp = chain_fingerprint(doc, &vals, f, prev_fp, i >= marker, &steps);
             if let Some(r) = self.results.get_mut(i).filter(|r| r.id == f.id) {
                 r.fingerprint = prev_fp;
             }
@@ -1120,6 +1170,7 @@ impl Model {
         let mut restored = 0;
         let marker = doc.marker.unwrap_or(usize::MAX);
         let ctx = context_digest(doc, &vals);
+        self.step_digests = StepDigests::of(doc, &self.step_digests);
         // Each feature's component, for `Document::legacy_body_component` on every body after
         // every feature without searching the timeline for each (the first feature with an id).
         let mut feature_component: std::collections::HashMap<u64, u64> = std::collections::HashMap::with_capacity(doc.features.len());
@@ -1131,7 +1182,7 @@ impl Model {
             let rolled_back = i >= marker;
             // Opening was cancelled: the rest is skipped and the result discarded.
             let cancelled = watched.step(i);
-            let fp = chain_fingerprint(doc, &vals, f, prev_fp, rolled_back);
+            let fp = chain_fingerprint(doc, &vals, f, prev_fp, rolled_back, &self.step_digests);
             prev_fp = fp;
             if reuse
                 && let Some(old) = self.results.get(i)
@@ -1162,7 +1213,7 @@ impl Model {
                 continue;
             }
             // The same feature on the same inputs: its earlier result.
-            let key = cache_key(f, fp, fingerprint(0, f, &vals, false) ^ placement_digest(doc, f), ctx, &state);
+            let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f), ctx, &state);
             if !self.no_cache
                 && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key))
             {
@@ -4293,6 +4344,10 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
             let anchor = crate::face_anchor::plane_face_anchor(plane);
             let fst = match anchor {
                 Some(anchor) => crate::state_in_face_anchor_frame(doc, st, anchor, f.component)?,
+                // A sketch that reads no geometry (a fixed plane, no projections) needs no other
+                // component's bodies moved into its frame: placing every body of a large
+                // assembly again is what made each sketch edit as slow as the design is big.
+                None if !plane_reads_geometry(plane) && sketch.links.is_empty() => std::borrow::Cow::Borrowed(st),
                 None => state_in_frame(doc, st, f.component),
             };
             let (plane, face_warning) = match (anchor, plane) {
@@ -4456,6 +4511,8 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                     let fst = crate::state_in_face_anchor_frame(doc, st, anchor, f.component)?;
                     doc.resolve_attached_plane(vals, plane, f.component, st, &fst)?
                 }
+                // A plane of numbers alone reads no body: placing them all is the design's size.
+                None if plane_is_fixed(plane) => doc.resolve_plane_in(vals, plane, 0, Some(st))?,
                 // Picks on bodies of other (moved) components are where those bodies are shown.
                 None => doc.resolve_plane_in(vals, plane, 0, Some(&construction_state(doc, st, f.component)))?,
             };
@@ -5038,6 +5095,31 @@ fn construction_state<'a>(doc: &Document, st: &'a ModelState, comp: u64) -> std:
     state_in_frame(doc, st, comp)
 }
 
+/// Whether `plane` is given by the origin planes and numbers alone.
+fn plane_is_fixed(plane: &PlaneRef) -> bool {
+    match plane {
+        PlaneRef::Origin { .. } | PlaneRef::Custom { .. } | PlaneRef::Placed { .. } => true,
+        PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } | PlaneRef::Flipped { base, .. } => plane_is_fixed(base),
+        _ => false,
+    }
+}
+
+/// Whether resolving `plane` reads the model's bodies or sketches (a face, edges, points),
+/// rather than only the origin planes, numbers and construction planes.
+fn plane_reads_geometry(plane: &PlaneRef) -> bool {
+    match plane {
+        PlaneRef::Origin { .. } | PlaneRef::Custom { .. } | PlaneRef::Placed { .. } | PlaneRef::Construction { .. } => false,
+        PlaneRef::Offset { base, .. } | PlaneRef::AtAngle { base, .. } | PlaneRef::Flipped { base, .. } => plane_reads_geometry(base),
+        PlaneRef::Midplane { .. }
+        | PlaneRef::TwoEdges { .. }
+        | PlaneRef::ThreePoints { .. }
+        | PlaneRef::Tangent { .. }
+        | PlaneRef::AlongPath { .. }
+        | PlaneRef::Perpendicular { .. }
+        | PlaneRef::Face { .. } => true,
+    }
+}
+
 pub fn state_in_frame<'a>(doc: &Document, st: &'a ModelState, comp: u64) -> std::borrow::Cow<'a, ModelState> {
     state_in_frame_at(doc, st, comp, doc.component_transform(comp))
 }
@@ -5114,6 +5196,8 @@ pub fn state_in_frame_at<'a>(doc: &Document, st: &'a ModelState, comp: u64, fram
         if !crate::is_identity(m)
             && let Ok(t) = kernel::transform_matrix(&b.body, *m)
         {
+            #[cfg(test)]
+            cost_tests::count(|c| c.moved += 1);
             // Moving a body keeps its faces (and their order): it keeps their names.
             let names = crate::naming::NameCell::same(b);
             let mut nb = ModelBody::new(b.name.clone(), t, b.feature);
@@ -5408,6 +5492,10 @@ mod chain_tests {
         assert_eq!(faces.len(), 3, "{faces:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "eval_cost_tests.rs"]
+mod cost_tests;
 
 #[cfg(test)]
 mod body_name_tests {
