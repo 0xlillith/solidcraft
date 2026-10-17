@@ -51,6 +51,12 @@ fn add_bytes(sum: &mut u64, count: usize, size: usize) -> Result<()> {
 /// counted even when another owner already holds them. Allocator and codec internals are estimates.
 /// Includes the CPU raster work estimate and its 384 MiB per-job check.
 pub fn admit(scene: &ProductScene, request: &ImageRequest) -> Result<Admission> {
+    if request.environment.is_some() {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "CPU product does not support environment maps"));
+    }
+    if request.textures.is_some() {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "runtime textures require the progressive GPU executor"));
+    }
     admit_raster(admit_source(scene, request, MAX_TRIANGLES)?)
 }
 
