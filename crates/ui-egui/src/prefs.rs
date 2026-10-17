@@ -1438,8 +1438,9 @@ fn colour_vision_sample(ui: &mut egui::Ui, t: &Tokens) {
 }
 
 /// The control channel's `ui.prefs`: `open` (a page name) opens the dialog there, `button`
-/// presses OK, Cancel, Apply or Restore Defaults, `stand_up: true` answers the stand-up offer;
-/// any other keys set preferences. Returns them all, the open page and the offer.
+/// presses OK, Cancel, Apply or Restore Defaults, `stand_up: true` answers the stand-up offer
+/// (`false` leaves the file as it is, like "Leave it"); any other keys set preferences. Returns
+/// them all, the open page and the offer.
 pub fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Value, String> {
     let mut rest = p.as_object().cloned().unwrap_or_default();
     if let Some(page) = rest.remove("open") {
@@ -1450,8 +1451,10 @@ pub fn control(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::
             app.prefs_window.snapshot = Some(Snapshot::take(app));
         }
     }
-    if rest.remove("stand_up").and_then(|v| v.as_bool()) == Some(true) {
-        crate::stand_up::stand_up(app)?;
+    match rest.remove("stand_up").and_then(|v| v.as_bool()) {
+        Some(true) => crate::stand_up::stand_up(app)?,
+        Some(false) => crate::stand_up::leave(app),
+        None => {}
     }
     let button = rest.remove("button");
     let mut out = set(app, &serde_json::Value::Object(rest))?;
