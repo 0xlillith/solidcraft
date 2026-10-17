@@ -36,6 +36,8 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/archive/icons/macos-v1/exports/icon.iconset/icon_256x256@2x.png | SolidCraft contributors | native sips export from assets/archive/icons/macos-v1/exports/icon.png | MIT OR Apache-2.0 |
 | assets/archive/icons/macos-v1/exports/icon.iconset/icon_512x512.png | SolidCraft contributors | native sips export from assets/archive/icons/macos-v1/exports/icon.png | MIT OR Apache-2.0 |
 | assets/archive/icons/macos-v1/exports/icon.iconset/icon_512x512@2x.png | SolidCraft contributors | native sips export from assets/archive/icons/macos-v1/exports/icon.png | MIT OR Apache-2.0 |
+| docs/screenshots/class-a-blend.png | SolidCraft contributors | screenshot of SolidCraft itself: two boxes bridged by `surface.blend` (a 40x10 sheet, `solidcraft-cli snapshot` of plan/evidence script ev_blend) | MIT OR Apache-2.0 |
+| docs/screenshots/class-a-crown.png | SolidCraft contributors | screenshot of SolidCraft itself: a patch crowned with `surface.patch crown=0.3` over a saddle rim (`solidcraft-cli snapshot`) | MIT OR Apache-2.0 |
 | docs/screenshots/class-a-boundary.png | SolidCraft contributors | screenshot of SolidCraft itself: a patch through two sketch lines built by `surface.boundary` with `crown: 0.4` (`solidcraft-cli snapshot`) | MIT OR Apache-2.0 |
 | docs/screenshots/sample-plate.png | SolidCraft contributors | screenshot of SolidCraft itself (`solidcraft --sample`) | MIT OR Apache-2.0 |
 | docs/screenshots/demo-0.8.gif | SolidCraft contributors | original screen recording of the actual SolidCraft 0.8 English desktop UI modelling an original Raspberry Pi 4 case (no logos or branding; the engraved text is set in the system's DejaVu Sans Bold), generated with examples/demo/record_ui.sh and its original animated pointer overlay (9× playback) | MIT OR Apache-2.0 |
@@ -94,9 +96,11 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/locales/de.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/en.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/fr.json | rlartot | French translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
+| assets/locales/gl.json | Pablo López (pablopeza) | Galician translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/ja.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/ko.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/ru.json | Alex Pro (del000) | Russian translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
+| assets/locales/pt-BR.json | DuBearte | Brazilian Portuguese translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/tr.json | macrulz54 | Turkish translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/uk.json | Igor Bronovskyi (BrunIF) | Ukrainian translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/zh.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
@@ -115,6 +119,17 @@ Editable drawing code, native projects and shipped exports are collected under `
 | crates/io/src/native_cad/fixtures/block.3dm | SolidCraft contributors | original 10 × 20 × 30 mm test box written with McNeel's MIT-licensed rhino3dm Python package (`make_block_3dm.py` beside it); no third-party geometry | MIT OR Apache-2.0 |
 
 | docs/book/src/og.png | SolidCraft contributors | copy of assets/branding/web/source/og.png staged by cargo xtask book (gitignored) | MIT OR Apache-2.0 |
+
+## Mathematical references for original GGX visible-normal sampling
+
+The source-only VNDF proposal in `crates/render/src/anisotropic_surface.rs` and
+`crates/render/src/raytrace/reflection.rs` is original Rust from public equations:
+Heitz, JCGT 7(4), 2018, <https://jcgt.org/published/0007/04/01/> (paper CC BY-ND
+3.0), and Dupuy/Benyoub, 2023, <https://arxiv.org/abs/2306.05044> (arXiv paper
+CC BY 4.0). No paper prose, figures or code listing is copied; no dependency or
+external artwork is added. Original implementation: MIT OR Apache-2.0.
+See `docs/render-vndf-prototype.md` for derivation, control/production boundaries
+and pending validation. These references do not qualify an unexecuted prototype.
 
 ## Code adapted from sibling projects
 
