@@ -15,7 +15,8 @@ Questions, ideas or want to say what you're working on? Join the [Discord](https
 ## Get it running (about 10 minutes on a fast machine)
 
 You need stable Rust 1.95 or newer (required by egui/eframe 0.36). For the web
-build you also need `rustup target add wasm32-unknown-unknown` and [`trunk`](https://trunkrs.dev).
+build you also need `rustup target add wasm32-unknown-unknown` and [`trunk`](https://github.com/trunk-rs/trunk)
+([documentation](https://trunk-rs.github.io/trunk/)).
 
 ```sh
 git clone https://github.com/tangency-labs/solidcraft && cd solidcraft
