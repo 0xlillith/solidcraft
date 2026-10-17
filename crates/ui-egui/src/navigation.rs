@@ -915,4 +915,26 @@ mod view_key_tests {
         }
         assert!(crate::keymap::RESERVED.contains(&crate::keymap::key_name(egui::Key::Num8, egui::Modifiers::COMMAND).as_str()));
     }
+
+    /// #1886: Ctrl+8 looks straight at the sketch; pressed again while the view faces it, it
+    /// looks from the other side, and a third press turns it back. Opening a sketch never flips.
+    #[test]
+    fn ctrl_8_again_looks_from_the_other_side() {
+        let mut h = Harness::new();
+        h.app.preferences.look_at_anim = false;
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.frames(2);
+        let back_z = |h: &Harness| h.app.cam.back().z;
+        for want in [1.0, -1.0, 1.0] {
+            h.step(&json!({"key": "8", "cmd": true})).unwrap();
+            h.frames(2);
+            assert!((back_z(&h) - want).abs() < 1e-3, "looking from z {want}: back {:?}", h.app.cam.back());
+        }
+        // Programmatic look-at (as on opening a sketch) keeps the sketch's own side.
+        crate::dialogs::look_at_sketch(&mut h.app);
+        h.frames(2);
+        crate::dialogs::look_at_sketch(&mut h.app);
+        h.frames(2);
+        assert!((back_z(&h) - 1.0).abs() < 1e-3, "{:?}", h.app.cam.back());
+    }
 }

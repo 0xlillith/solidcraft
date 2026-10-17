@@ -3348,7 +3348,8 @@ pub(crate) fn nearest_quarter_turn(yaw: f64) -> f64 {
 }
 
 /// Navigation bar (bottom centre).
-/// Turn the view to face the selected planar face or plane, else the active sketch.
+/// Turn the view to face the selected planar face or plane, else the active sketch; asked again
+/// while it already faces it, from the other side (#1886).
 pub fn look_at_selection(app: &mut SolveApp) {
     let target = app.session.selection.iter().find_map(|s| match s {
         Sel::Face { body, index, point } => crate::dialogs::planar_face(&app.session, body, *index).map(|(_, n)| (*point, n)),
@@ -3357,11 +3358,11 @@ pub fn look_at_selection(app: &mut SolveApp) {
     });
     match target {
         Some((p, n)) => {
-            let mut to = app.cam.looking_from(n);
+            let mut to = app.cam.looking_from(crate::dialogs::facing(app, n, true));
             to.target = p;
             app.animate_to(to);
         }
-        None => crate::dialogs::look_at_sketch(app),
+        None => crate::dialogs::look_at_sketch_again(app),
     }
 }
 

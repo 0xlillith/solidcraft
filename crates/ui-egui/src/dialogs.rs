@@ -3505,17 +3505,34 @@ fn plane_by_name(app: &SolveApp, name: &str) -> Option<solidcraft_engine::geom::
 
 /// Animate the camera to look straight at the active sketch plane.
 pub fn look_at_sketch(app: &mut SolveApp) {
+    look_at_sketch_from(app, false);
+}
+
+/// Look At asked for by the user (Ctrl+8, the Look At buttons): like [`look_at_sketch`], and
+/// from the sketch's other side when the view already faces it (#1886).
+pub fn look_at_sketch_again(app: &mut SolveApp) {
+    look_at_sketch_from(app, true);
+}
+
+fn look_at_sketch_from(app: &mut SolveApp, again: bool) {
     let st = app.session.world_state();
     if let Some(ss) = app.session.active_sketch.and_then(|id| st.sketch(id)) {
-        let mut to = app.cam.looking_from(ss.plane.normal());
+        let n = facing(app, ss.plane.normal(), again);
+        let mut to = app.cam.looking_from(n);
         // Keep the sketch's own x axis to the right when looking straight down or up.
-        if ss.plane.normal().z.abs() > 0.999 {
+        if n.z.abs() > 0.999 {
             let x = ss.plane.x;
-            to.yaw = if ss.plane.normal().z > 0.0 { (-x.y).atan2(x.x) } else { x.y.atan2(x.x) };
+            to.yaw = if n.z > 0.0 { (-x.y).atan2(x.x) } else { x.y.atan2(x.x) };
         }
         to.target = ss.plane.origin;
         app.animate_to(to);
     }
+}
+
+/// The side to look from at a plane with normal `n`: its own side, or with `again` the other
+/// side when the view already looks from `n`, so a second Look At turns the view round (#1886).
+pub(crate) fn facing(app: &SolveApp, n: Vec3, again: bool) -> Vec3 {
+    if again && app.cam.back().dot(n) > 0.999 { -n } else { n }
 }
 
 fn sels(d: &Dialog, i: usize) -> &[Sel] {
