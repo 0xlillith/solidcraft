@@ -73,7 +73,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     CommandSpec::new("joint.solve", "Solve Joints", solve_cmd).icon("compute").params("re-place the occurrences from the joints → conflicts, errors, dof"),
     CommandSpec::new("inspect.interference", "Interference", interference).at("SOLID", "INSPECT").icon("interference").noundo().params(
-        "bodies?: [names] (default: all, in world placement) → interferences: pairs that overlap with the overlap volume, area, bounding box and centre; unchecked: pairs that could not be checked, with the reason. Bodies are pruned by bounding box first, so any number of bodies is fine; at most 20000 pairs whose boxes overlap are intersected per call (truncated: true and skipped_pairs: n say when more were left out)",
+        "bodies?: [names] (default: all, in world placement) → interferences: pairs that overlap with the overlap volume, area, bounding box and centre (a pin a hair off the axis of a hole of its size also has near_coaxial: {offset_mm, length_mm}, its volume the crescent the walls share); unchecked: pairs that could not be checked, with the reason. Bodies are pruned by bounding box first, so any number of bodies is fine; at most 20000 pairs whose boxes overlap are intersected per call (truncated: true and skipped_pairs: n say when more were left out)",
     ),
 ];
 
@@ -1156,6 +1156,16 @@ fn interference(s: &mut Session, p: &Value) -> Result<Value> {
     let (mut hits, mut unchecked) = (Vec::new(), Vec::new());
     for (i, j) in pairs {
         let (Some(a), Some(b)) = (bodies.get(i), bodies.get(j)) else { continue };
+        let threshold = 1e-9 * a.body.size().max(1.0).powi(3);
+        // A pin a hair off the axis of its hole: the crescent the walls share, which the
+        // boolean can't intersect.
+        if let Some(o) = solidcraft_kernel::coaxial_overlap(&a.body, &b.body) {
+            if o.volume > threshold {
+                hits.push(json!({"a": a.name, "b": b.name, "volume_mm3": o.volume, "area_mm2": o.area, "center": o.centroid,
+                    "bbox": {"min": o.bbox.min, "max": o.bbox.max}, "near_coaxial": {"offset_mm": o.offset, "length_mm": o.length}}));
+            }
+            continue;
+        }
         // A pair whose shared part can't be worked out is reported, not passed as clear.
         let (shared, report) =
             solidcraft_kernel::capture_boolean_diagnostics(|| solidcraft_kernel::boolean(&a.body, &b.body, solidcraft_kernel::BoolOp::Intersect));
@@ -1178,7 +1188,7 @@ fn interference(s: &mut Session, p: &Value) -> Result<Value> {
                 continue;
             }
         };
-        if m.volume > 1e-9 * a.body.size().max(1.0).powi(3) {
+        if m.volume > threshold {
             hits.push(json!({"a": a.name, "b": b.name, "volume_mm3": m.volume, "area_mm2": m.area, "center": m.centroid, "bbox": {"min": m.bbox.min, "max": m.bbox.max}}));
         }
     }
