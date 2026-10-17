@@ -213,6 +213,17 @@ cargo run --release -p solidcraft-cli -- run examples/bracket.json --results --j
 cargo run --release -p solidcraft-cli -- eval examples/bracket.json --json-out measures.json
 ```
 
+To find the slow steps of a script, `--timings` prints how long each command took instead of
+the measurement: `{"timings": [{"index", "command", "ms"}], "total_ms"}`, with `index` counted
+from 0. `--profile` adds each command's `profile: {"boolean_ms", "tessellate_ms", "other_ms"}`,
+its wall time in the kernel's booleans, in tessellation and in everything else. With
+`--results` as well, the results go in the same object as `results`; `--results` alone still
+prints a plain array.
+
+```sh
+cargo run --release -p solidcraft-cli -- run examples/bracket.json --profile
+```
+
 A design's history turns into a script that rebuilds it, which makes a bug that only shows
 on one design a one-file reproduction:
 
