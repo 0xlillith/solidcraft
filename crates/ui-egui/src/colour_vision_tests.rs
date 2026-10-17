@@ -292,6 +292,7 @@ fn groups(t: &Tokens) -> Vec<Group> {
                 ("body_selected", t.body_selected),
                 ("hover_face_lift", lift(t.body)),
                 ("preview_add", t.preview_add),
+                ("preview_new", t.preview_new),
             ],
             &[],
         ),

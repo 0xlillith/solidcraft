@@ -208,6 +208,8 @@ pub struct Tokens {
     pub manipulator: Color32,
     /// New surface in a feature preview.
     pub preview_add: Color32,
+    /// The surface of a body a feature preview creates (New Body), apart from a join (#1805).
+    pub preview_new: Color32,
     /// Proposed sketch geometry, distinct from blue selections.
     pub preview_sketch: Color32,
     /// Removed material in a feature preview (translucent).
