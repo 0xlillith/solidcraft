@@ -287,10 +287,18 @@ fn difference_products(a: f32, b: f32, c: f32, d: f32) -> f32 {
     return fma(a,b,-cd)+error;
 }
 struct Hit { distance: f32, triangle: u32, bary: vec3<f32> };
-fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32) -> Hit {
+// Hits are ordered by the unscaled dominant-axis depth: scaling by 1/d[kz]
+// can round a sharp-rim entry and exit to one distance. On an exact depth tie
+// prefer the face that changes the current medium state: the entry from
+// outside, the exit from inside. Traversal order must not choose it.
+fn tie_preferred(t: Triangle, d: vec3<f32>, inside: bool) -> bool {
+    let front=dot(cross(t.p1.xyz-t.p0.xyz,t.p2.xyz-t.p0.xyz),d)<0.0;
+    return front!=inside;
+}
+fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool) -> Hit {
     // Dispatch once before traversal. Ordinary rays keep the original lean BVH
     // loop, without precision-helper branches inside every candidate/node test.
-    if all(o_low==vec3<f32>(0.0)) { return trace_bounded(o,d,any_hit,excluded,minimum); }
+    if all(o_low==vec3<f32>(0.0)) { return trace_ordered(o,d,any_hit,excluded,minimum,inside); }
     var hit = Hit(FAR, 0xffffffffu, vec3<f32>(0.0));
     // Project every candidate into the same ray-aligned 2D coordinate system.
     // Shared edges then use identical products with opposite signs, avoiding the
@@ -300,6 +308,8 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
     if abs(d.z)>abs(d[kz]) { kz=2u; }
     let kx=(kz+1u)%3u; let ky=(kx+1u)%3u;
     let shear=vec3<f32>(d[kx]/d[kz],d[ky]/d[kz],1.0/d[kz]);
+    let order=select(-1.0,1.0,d[kz]>0.0);
+    var best=FAR;
     // Only candidates near the origin need the integer-defined deltas. The
     // rounded origin is within a few ULPs of the true anchor plus offset, so
     // boxes grown by that bound reject conservatively: every point the true
@@ -346,9 +356,11 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
                 let far_det=far_weights.x+far_weights.y+far_weights.z;
                 if far_det==0.0 { continue; }
                 let far_bary=far_weights/far_det;
-                let far_distance=surface_ray_depth(t,far_bary,rounded,kz)*shear.z;
-                if far_distance > minimum && far_distance < hit.distance {
-                    hit = Hit(far_distance,i,far_bary);
+                let far_depth=surface_ray_depth(t,far_bary,rounded,kz);
+                let far_distance=far_depth*shear.z;
+                let far_key=far_depth*order;
+                if far_distance > minimum && (far_key < best || (far_key == best && tie_preferred(t,d,inside))) {
+                    hit = Hit(far_distance,i,far_bary); best=far_key;
                     if any_hit { return hit; }
                 }
                 continue;
@@ -367,9 +379,11 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
             // Retain all three directly evaluated weights: 1-u-v can erase a
             // small corner clearance when the other two weights sum to one.
             let bary=weights/det;
-            let distance=surface_ray_depth_precise(t,bary,o,o_low,kz)*shear.z;
-            if distance > minimum && distance < hit.distance {
-                hit = Hit(distance,i,bary);
+            let depth=surface_ray_depth_precise(t,bary,o,o_low,kz);
+            let distance=depth*shear.z;
+            let key=depth*order;
+            if distance > minimum && (key < best || (key == best && tie_preferred(t,d,inside))) {
+                hit = Hit(distance,i,bary); best=key;
                 if any_hit { return hit; }
             }
         }
@@ -378,6 +392,9 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
 }
 
 fn trace_bounded(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32) -> Hit {
+    return trace_ordered(o,d,any_hit,excluded,minimum,false);
+}
+fn trace_ordered(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool) -> Hit {
     var hit = Hit(FAR, 0xffffffffu, vec3<f32>(0.0));
     // Project every candidate into the same ray-aligned 2D coordinate system.
     // Shared edges then use identical products with opposite signs, avoiding the
@@ -387,6 +404,8 @@ fn trace_bounded(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minim
     if abs(d.z)>abs(d[kz]) { kz=2u; }
     let kx=(kz+1u)%3u; let ky=(kx+1u)%3u;
     let shear=vec3<f32>(d[kx]/d[kz],d[ky]/d[kz],1.0/d[kz]);
+    let order=select(-1.0,1.0,d[kz]>0.0);
+    var best=FAR;
     // A balanced tree over <= 2^20 triangles needs <= 21 pending nodes.
     var stack: array<u32, 32>;
     stack[0] = 0u;
@@ -420,9 +439,11 @@ fn trace_bounded(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minim
             // Retain all three directly evaluated weights: 1-u-v can erase a
             // small corner clearance when the other two weights sum to one.
             let bary=weights/det;
-            let distance=surface_ray_depth(t,bary,o,kz)*shear.z;
-            if distance > minimum && distance < hit.distance {
-                hit = Hit(distance,i,bary);
+            let depth=surface_ray_depth(t,bary,o,kz);
+            let distance=depth*shear.z;
+            let key=depth*order;
+            if distance > minimum && (key < best || (key == best && tie_preferred(t,d,inside))) {
+                hit = Hit(distance,i,bary); best=key;
                 if any_hit { return hit; }
             }
         }
@@ -669,7 +690,7 @@ fn sample_path(pixel: u32) -> vec4<f32> {
     var medium_count = 0u;
     let lights = array<vec4<f32>,3>(vec4<f32>(0.6,0.0,0.8,3.0),vec4<f32>(-0.8,0.0,0.6,1.0),vec4<f32>(0.0,-0.6,0.8,1.5));
     for (var bounce = 0u; bounce < u.sampling.y; bounce += 1u) {
-        let hit = trace_precise(o,o_low,d,false,ray_excluded,ray_minimum);
+        let hit = trace_precise(o,o_low,d,false,ray_excluded,ray_minimum,medium_count>0u);
         if u.environment.w > 0.0 {
             let emitter = emitter_hit_precise(o,o_low,d,ray_minimum);
             if emitter.distance < hit.distance {
@@ -1016,7 +1037,7 @@ fn rib_residual_reference() {
     let direction=reflect(u.back.xyz,outward);
     let f=dielectric(abs(dot(outward,u.back.xyz)),t.parameters.z,1.0);
     let dropped=trace_bounded(point.hi+point.lo,direction,false,source,0.0);
-    let retained=trace_precise(point.hi,point.lo,direction,false,source,0.0);
+    let retained=trace_precise(point.hi,point.lo,direction,false,source,0.0,true);
     var valid_exit=false;
     if retained.triangle!=0xffffffffu {
         let other=triangle(retained.triangle);
