@@ -17,7 +17,7 @@ fn shadow_transmittance(origin: vec3<f32>, direction: vec3<f32>, limit: f32) -> 
     var entry_low = vec3<f32>(0.0);
     // Up to 64 interfaces. If traversal cannot establish visibility, block it.
     for (var step=0u; step<=64u; step+=1u) {
-        let hit = trace_precise(o,o_low,direction,false,ray_excluded,ray_minimum);
+        let hit = trace_precise(o,o_low,direction,false,ray_excluded,ray_minimum,medium_id!=0.0);
         let traversed = dot(precise_point_delta(o,o_low,origin,vec3<f32>(0.0)),direction);
         let remaining = limit-traversed;
         if hit.triangle == 0xffffffffu {
