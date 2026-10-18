@@ -1888,7 +1888,39 @@ fn gpu_shadow_endpoint_near_interfaces_uses_true_distance() {
 #[test]
 fn gpu_long_ray_thin_corner_orders_entry_before_exit() {
     let Some(executor) = executor() else { return };
-    let context = &executor.context;
+    let origin = Vec3::new(f64::from(f32::from_bits(0x43ad5626)), f64::from(f32::from_bits(0x44737912)), f64::from(f32::from_bits(0xc2dd2710)));
+    let direction = Vec3::new(f64::from(f32::from_bits(0xbe341340)), f64::from(f32::from_bits(0xbf762fdb)), f64::from(f32::from_bits(0x3e577470)));
+    // Captured stored-f32 tank side entry and top exit. Independent f64 plane
+    // distances are 929.5224413721813 and 929.5225421330013 respectively.
+    let side = [Vec3::new(243., 80., -86.), Vec3::new(157., 80., 85.), Vec3::new(243., 80., 85.)];
+    let top = [Vec3::new(157., 80., 85.), Vec3::new(160., 77., 85.), Vec3::new(243., 80., 85.)];
+    assert_entry_before_exit(&executor.context, origin, direction, side, top);
+}
+
+#[test]
+fn gpu_camera_ray_sharp_rim_tie_orders_entry_before_exit() {
+    let Some(executor) = executor() else { return };
+    let origin = Vec3::new(f64::from(f32::from_bits(0xc409ad54)), f64::from(f32::from_bits(0xc45c5451)), f64::from(f32::from_bits(0x44160000)));
+    let direction = Vec3::new(f64::from(f32::from_bits(0x3eac85fe)), f64::from(f32::from_bits(0x3f3d52db)), f64::from(f32::from_bits(0xbf152b54)));
+    // Captured 64-spp coffee camera ray across the bin rim. Exact ray
+    // parameters are 1124.0922606444 (entry) and 1124.0923198562 (exit):
+    // closer than one f32 ULP, and both rounded to one scaled distance.
+    let bottom = [Vec3::new(-152., -50., -55.), Vec3::new(-212., -50., -55.), Vec3::new(-182., -53., -55.)];
+    let side = [Vec3::new(-152., -50., -55.), Vec3::new(-152., -50., -124.), Vec3::new(-212., -50., -55.)];
+    assert_entry_before_exit(&executor.context, origin, direction, bottom, side);
+}
+
+#[test]
+fn gpu_exact_rim_tie_prefers_entry_from_outside() {
+    let Some(executor) = executor() else { return };
+    // The ray crosses the shared rim edge itself: both faces report the same
+    // exact depth, so only the medium-state tie preference can order them.
+    let top = [Vec3::new(0., 0., 0.), Vec3::new(0.5, -1., 0.), Vec3::new(1., 0., 0.)];
+    let side = [Vec3::new(0., 0., 0.), Vec3::new(1., 0., 0.), Vec3::new(0.5, 0., -1.)];
+    assert_entry_before_exit(&executor.context, Vec3::new(0.25, -4., 4.), Vec3::new(0., 1., -1.), top, side);
+}
+
+fn assert_entry_before_exit(context: &Arc<Context>, origin: Vec3, direction: Vec3, entry: [Vec3; 3], exit: [Vec3; 3]) {
     let shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("long-ray ordering oracle"),
         source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -1906,12 +1938,6 @@ fn gpu_long_ray_thin_corner_orders_entry_before_exit() {
         compilation_options: Default::default(),
         cache: None,
     });
-    let origin = Vec3::new(f64::from(f32::from_bits(0x43ad5626)), f64::from(f32::from_bits(0x44737912)), f64::from(f32::from_bits(0xc2dd2710)));
-    let direction = Vec3::new(f64::from(f32::from_bits(0xbe341340)), f64::from(f32::from_bits(0xbf762fdb)), f64::from(f32::from_bits(0x3e577470)));
-    // Captured stored-f32 tank side entry and top exit. Independent f64 plane
-    // distances are 929.5224413721813 and 929.5225421330013 respectively.
-    let side = [Vec3::new(243., 80., -86.), Vec3::new(157., 80., 85.), Vec3::new(243., 80., 85.)];
-    let top = [Vec3::new(157., 80., 85.), Vec3::new(160., 77., 85.), Vec3::new(243., 80., 85.)];
     for permutation in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let odd = (permutation[0] > permutation[1]) ^ (permutation[0] > permutation[2]) ^ (permutation[1] > permutation[2]);
         for reflection in 0..8_u32 {
@@ -1923,7 +1949,7 @@ fn gpu_long_ray_thin_corner_orders_entry_before_exit() {
             let invert = odd ^ (reflection.count_ones() % 2 != 0);
             for reverse in [false, true] {
                 let mut mesh = Mesh::default();
-                for face in if reverse { [top, side] } else { [side, top] } {
+                for face in if reverse { [exit, entry] } else { [entry, exit] } {
                     let mut face = face.map(transform);
                     if invert {
                         face.swap(1, 2);

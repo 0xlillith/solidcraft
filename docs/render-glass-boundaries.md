@@ -44,6 +44,16 @@ its regression covers all axis permutations, coordinate reflections and both
 triangle orders. This improves distance ordering without treating an unmatched
 medium exit as transparent.
 
+Candidates are ordered by that dominant-axis depth before it is scaled into a
+ray distance. Scaling can round two different depths to one distance: a
+captured 64-sample coffee camera ray crosses a bin rim at ray parameters
+1124.0922606 and 1124.0923199, under one f32 ULP apart. The two depths still
+differed by one ULP, but both scaled distances were equal. Traversal order then
+picked the exit, and the path stopped at the medium gate. On an exact depth tie
+the hit that changes the current medium state wins: the entry face from
+outside, the exit face from inside. A ray through the shared rim edge itself
+exercises that rule. Traversal order never decides between them.
+
 The regression fixtures distinguish short real exits, a normal offset crossing a
 sloped adjacent face, exact diagonal hits, and a captured impossible hit at a
 polygon edge. Original editable CAD renders exercise hollow walls and repeated
