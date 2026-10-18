@@ -33,6 +33,19 @@ struct Params {
 struct EnvironmentTexel { rgb: vec3<f32>, pdf: f32, threshold: f32, alternate: u32, padding: vec2<f32> };
 struct EnvironmentData { header: vec4<u32>, texels: array<EnvironmentTexel> };
 @group(0) @binding(4) var<storage, read> environment_data: EnvironmentData;
+// Count of paths ended at an unclassifiable glass medium, then the pixel, bounce,
+// sample and code of the first one. The host fails jobs where this is not rare.
+@group(0) @binding(6) var<storage, read_write> failures: array<atomic<u32>>;
+// Codes: 1 escaped inside a medium, 2 exit with no medium, 3 exit from another
+// medium, 4 entry while inside a medium or beyond 16 nested media.
+fn medium_failure(radiance: vec3<f32>, coverage: f32, pixel: u32, bounce: u32, code: u32) -> vec4<f32> {
+    if atomicAdd(&failures[0],1u)==0u {
+        atomicStore(&failures[1],pixel); atomicStore(&failures[2],bounce);
+        atomicStore(&failures[3],u.image.z); atomicStore(&failures[4],code);
+    }
+    // End the path with the light it has already gathered.
+    return vec4<f32>(radiance,coverage);
+}
 const PI: f32 = 3.141592653589793;
 const FAR: f32 = 1e30;
 
@@ -285,6 +298,20 @@ fn difference_products(a: f32, b: f32, c: f32, d: f32) -> f32 {
     return fma(a,b,-cd)+error;
 }
 struct Hit { distance: f32, triangle: u32, bary: vec3<f32> };
+// A closed continuation that leaves its producing triangle at a shared edge or
+// vertex can meet an adjacent face of the same body within the origin's rounding
+// error, crossing in the direction it just crossed (an entry while inside, an
+// exit while outside). That is the same interface crossing seen again, not a
+// medium change. Consistent crossings, however short, are always kept.
+fn repeated_crossing(t: Triangle, source: Triangle, d: vec3<f32>, inside: bool, distance: f32, tolerance: f32) -> bool {
+    if distance>tolerance || t.base.w<=0.0 || t.parameters.w>=0.0 || t.optics.w!=source.optics.w { return false; }
+    let a=array<vec3<f32>,3>(t.p0.xyz,t.p1.xyz,t.p2.xyz);
+    let b=array<vec3<f32>,3>(source.p0.xyz,source.p1.xyz,source.p2.xyz);
+    var adjacent=false;
+    for (var i=0u; i<3u; i+=1u) { for (var j=0u; j<3u; j+=1u) { adjacent = adjacent || all(a[i]==b[j]); } }
+    let front=dot(cross(t.p1.xyz-t.p0.xyz,t.p2.xyz-t.p0.xyz),d)<0.0;
+    return adjacent && front==inside;
+}
 // Hits are ordered by the unscaled dominant-axis depth: scaling by 1/d[kz]
 // can round a sharp-rim entry and exit to one distance. On an exact depth tie
 // prefer the face that changes the current medium state: the entry from
@@ -319,11 +346,15 @@ fn trace_precise_within(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: b
     // boxes grown by that bound reject conservatively: every point the true
     // ray reaches at depth t lies in the grown box along the rounded ray at
     // the same t. A triangle whose bounds are farther from the rounded origin
-    // than the near radius cannot change hit sign or order under that error,
-    // and uses ordinary arithmetic.
+    // than the near radius uses ordinary arithmetic from it: that error cannot
+    // reorder such a hit, but it can move the ray across an edge, so decisions
+    // within the error bound of an edge or bound fall back to the exact path.
     let rounded=o+o_low;
     let scale=max(max(abs(rounded.x),max(abs(rounded.y),abs(rounded.z))),1.0);
-    let pad=u.lighting.x+scale*(1.0/1048576.0);
+    let origin_error=scale*(1.0/1048576.0);
+    let pad=u.lighting.x+origin_error;
+    var source: Triangle;
+    if excluded!=0xffffffffu { source=triangle(excluded); }
     let near_radius=scale*(1.0/256.0);
     // Children are tested at their parent and visited near-first. The build
     // bounds tree depth to 30, so at most 31 nodes are pending.
@@ -364,24 +395,32 @@ fn trace_precise_within(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: b
             let hi=max(t.p0.xyz,max(t.p1.xyz,t.p2.xyz));
             let gap=max(lo-rounded,rounded-hi);
             if any(gap>vec3<f32>(near_radius)) {
-                if !triangle_ahead(t,rounded,d) { continue; }
+                // The rounded origin is within origin_error of the true one on each
+                // axis. Bound and edge decisions that close to their threshold could
+                // flip, while a nearby neighbour across the edge is tested exactly:
+                // a crossing would fall between them. Such candidates take the exact
+                // path below.
+                if any((rounded<=lo-vec3<f32>(origin_error))&(d<vec3<f32>(0.0))) || any((rounded>=hi+vec3<f32>(origin_error))&(d>vec3<f32>(0.0))) { continue; }
+                if any((d==vec3<f32>(0.0))&((rounded<lo-vec3<f32>(origin_error))|(rounded>hi+vec3<f32>(origin_error)))) { continue; }
                 let qa=t.p0.xyz-rounded; let qb=t.p1.xyz-rounded; let qc=t.p2.xyz-rounded;
                 let fa=vec2<f32>(qa[kx]-shear.x*qa[kz],qa[ky]-shear.y*qa[kz]);
                 let fb=vec2<f32>(qb[kx]-shear.x*qb[kz],qb[ky]-shear.y*qb[kz]);
                 let fc=vec2<f32>(qc[kx]-shear.x*qc[kz],qc[ky]-shear.y*qc[kz]);
                 let far_weights=vec3<f32>(difference_products(fb.x,fc.y,fb.y,fc.x),difference_products(fc.x,fa.y,fc.y,fa.x),difference_products(fa.x,fb.y,fa.y,fb.x));
-                if any(far_weights<vec3<f32>(0.0)) && any(far_weights>vec3<f32>(0.0)) { continue; }
-                let far_det=far_weights.x+far_weights.y+far_weights.z;
-                if far_det==0.0 { continue; }
-                let far_bary=far_weights/far_det;
-                let far_depth=surface_ray_depth(t,far_bary,rounded,kz);
-                let far_distance=far_depth*shear.z;
-                let far_key=far_depth*order;
-                if far_distance > minimum && far_distance < limit && (far_key < best || (far_key == best && tie_preferred(t,d,inside))) {
-                    hit = Hit(far_distance,i,far_bary); best=far_key;
-                    if any_hit || (far_distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
+                let edge_error=origin_error*vec3<f32>(length(fb-fc),length(fc-fa),length(fa-fb));
+                if all(abs(far_weights)>edge_error) {
+                    if any(far_weights<vec3<f32>(0.0)) && any(far_weights>vec3<f32>(0.0)) { continue; }
+                    let far_det=far_weights.x+far_weights.y+far_weights.z;
+                    let far_bary=far_weights/far_det;
+                    let far_depth=surface_ray_depth(t,far_bary,rounded,kz);
+                    let far_distance=far_depth*shear.z;
+                    let far_key=far_depth*order;
+                    if far_distance > minimum && far_distance < limit && (far_key < best || (far_key == best && tie_preferred(t,d,inside))) {
+                        hit = Hit(far_distance,i,far_bary); best=far_key;
+                        if any_hit || (far_distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
+                    }
+                    continue;
                 }
-                continue;
             }
             if !triangle_ahead_precise(t,o,o_low,d) { continue; }
             let pa=precise_point_delta(t.p0.xyz,vec3<f32>(0.0),o,o_low);
@@ -400,6 +439,7 @@ fn trace_precise_within(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: b
             let depth=surface_ray_depth_precise(t,bary,o,o_low,kz);
             let distance=depth*shear.z;
             let key=depth*order;
+            if excluded!=0xffffffffu && repeated_crossing(t,source,d,inside,distance,origin_error) { continue; }
             if distance > minimum && distance < limit && (key < best || (key == best && tie_preferred(t,d,inside))) {
                 hit = Hit(distance,i,bary); best=key;
                 if any_hit || (distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
@@ -414,6 +454,9 @@ fn trace_bounded(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minim
 }
 fn trace_ordered_within(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool, limit: f32, blocker: f32) -> Hit {
     var hit = Hit(limit, 0xffffffffu, vec3<f32>(0.0));
+    let origin_error=max(max(abs(o.x),max(abs(o.y),abs(o.z))),1.0)*(1.0/1048576.0);
+    var source: Triangle;
+    if excluded!=0xffffffffu { source=triangle(excluded); }
     // Project every candidate into the same ray-aligned 2D coordinate system.
     // Shared edges then use identical products with opposite signs, avoiding the
     // independently rounded barycentric comparisons of Moller-Trumbore.
@@ -474,6 +517,7 @@ fn trace_ordered_within(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32
             let depth=surface_ray_depth(t,bary,o,kz);
             let distance=depth*shear.z;
             let key=depth*order;
+            if excluded!=0xffffffffu && repeated_crossing(t,source,d,inside,distance,origin_error) { continue; }
             if distance > minimum && distance < limit && (key < best || (key == best && tie_preferred(t,d,inside))) {
                 hit = Hit(distance,i,bary); best=key;
                 if any_hit || (distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
@@ -722,6 +766,9 @@ fn sample_path(pixel: u32) -> vec4<f32> {
     var medium_count = 0u;
     let lights = array<vec4<f32>,3>(vec4<f32>(0.6,0.0,0.8,3.0),vec4<f32>(-0.8,0.0,0.6,1.0),vec4<f32>(0.0,-0.6,0.8,1.5));
     for (var bounce = 0u; bounce < u.sampling.y; bounce += 1u) {
+        // Closed-glass continuations set an excluded producing triangle; every
+        // other launch (camera, opaque or thin-sheet surface) does not.
+        let continued = ray_excluded != 0xffffffffu;
         let hit = trace_precise(o,o_low,d,false,ray_excluded,ray_minimum,medium_count>0u);
         if u.environment.w > 0.0 {
             let emitter = emitter_hit_precise(o,o_low,d,ray_minimum);
@@ -743,7 +790,7 @@ fn sample_path(pixel: u32) -> vec4<f32> {
         }
         if hit.triangle == 0xffffffffu {
             // Camera-inside and intersecting/open volumes are deliberately unsupported.
-            if medium_count > 0u { return vec4<f32>(f32(bounce),0.0,0.0,-1.0); }
+            if medium_count > 0u { return medium_failure(radiance,coverage,pixel,bounce,1u); }
             if u.environment.w > 0.0 {
                 // The backplate remains request.background; environment lights covered paths.
                 if bounce>0u && !suppress_direct {
@@ -802,11 +849,21 @@ fn sample_path(pixel: u32) -> vec4<f32> {
         if t.base.w > 0.0 && random(&rng) < t.base.w {
             var nt = t.parameters.z;
             if t.parameters.w < 0.0 && entering && medium_count > 0u {
-                return vec4<f32>(f32(bounce),0.0,0.0,-4.0);
+                return medium_failure(radiance,coverage,pixel,bounce,4u);
             }
             if t.parameters.w < 0.0 && !entering {
-                if medium_count == 0u { return vec4<f32>(f32(bounce),0.0,0.0,-2.0); }
-                if media[medium_count-1u].id != t.optics.w { return vec4<f32>(f32(bounce),0.0,0.0,-3.0); }
+                if medium_count == 0u {
+                    // A ray launched from a surface (not the camera, not a glass
+                    // continuation) whose first crossing exits closed glass started
+                    // inside that body: the surface touches or lies within the glass,
+                    // like a tumbler resting on a table. Start the path in its medium.
+                    if continued || bounce == 0u { return medium_failure(radiance,coverage,pixel,bounce,2u); }
+                    media[0] = Medium(t.optics.w,t.parameters.z,t.optics.xyz);
+                    medium_count = 1u;
+                    ni = t.parameters.z;
+                    throughput *= exp(-t.optics.xyz*hit.distance);
+                }
+                if media[medium_count-1u].id != t.optics.w { return medium_failure(radiance,coverage,pixel,bounce,3u); }
                 nt = 1.0;
                 if medium_count > 1u { nt = media[medium_count-2u].ior; }
             }
@@ -846,7 +903,7 @@ fn sample_path(pixel: u32) -> vec4<f32> {
                 else { suppress_direct=false; }
                 previous_delta=true; previous_scatter_position=position; previous_scatter_position_low=position_low;
                 if entering {
-                    if medium_count >= 16u { return vec4<f32>(f32(bounce),0.0,0.0,-4.0); }
+                    if medium_count >= 16u { return medium_failure(radiance,coverage,pixel,bounce,4u); }
                     media[medium_count] = Medium(t.optics.w,nt,t.optics.xyz);
                     medium_count += 1u;
                 } else { medium_count -= 1u; }
@@ -861,6 +918,11 @@ fn sample_path(pixel: u32) -> vec4<f32> {
                 // the producing triangle, and retain every strictly positive exit.
                 // Medium-order errors are still rejected; no neighboring faces
                 // are skipped by angular or distance heuristics.
+                // A continuation within 1e-6 of tangent skims its producing face:
+                // the reconstructed point's rounding then decides which side of
+                // the neighbouring faces it is on, so its medium cannot be
+                // classified. Such directions carry negligible energy; end the path.
+                if abs(dot(d,geometric))<1e-6 { break; }
                 o=position; o_low=position_low; ray_excluded=hit.triangle; ray_minimum=0.0;
             }
             continue;
@@ -887,9 +949,7 @@ fn sample_path(pixel: u32) -> vec4<f32> {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel = u.image.w + gid.x;
     if gid.x >= u.sampling.z || pixel >= u.image.x*u.image.y { return; }
-    if u.image.z > 0u && accumulation[pixel].w < 0.0 { return; }
     let sample = sample_path(pixel);
-    if sample.w < 0.0 { accumulation[pixel] = vec4<f32>(sample.x,f32(u.image.z),f32(pixel),sample.w); return; }
     if u.image.z == 0u { accumulation[pixel] = sample; }
     else { accumulation[pixel] += sample; }
 }
@@ -1023,6 +1083,13 @@ fn ordering_candidate(t: Triangle, o: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
     let distance=surface_ray_depth(t,bary,o,kz)*shear.z;
     let valid=!(any(weights<vec3<f32>(0.0))&&any(weights>vec3<f32>(0.0))) && det!=0.0;
     return vec2<f32>(distance,select(0.0,1.0,valid));
+}
+// Closed continuation from an anchor (eye) plus local offset (right) along up,
+// excluding triangle 0's producing patch; eye.w > 0.5 starts inside a medium.
+@compute @workgroup_size(1)
+fn continuation_reference() {
+    let hit=trace_precise(u.eye.xyz,u.right.xyz,u.up.xyz,false,0u,0.0,u.eye.w>0.5);
+    accumulation[0]=vec4<f32>(f32(hit.triangle),hit.distance,0.0,1.0);
 }
 @compute @workgroup_size(1)
 fn ordering_reference() {

@@ -23,6 +23,12 @@ mod textures;
 const SHADER: &str = concat!(include_str!("path.wgsl"), "\n", include_str!("shadows.wgsl"), "\n", include_str!("textures.wgsl"));
 const MAX_TRIANGLES: u64 = 1_048_576;
 const PARAMETER_BYTES: usize = 448;
+// Eight u32 words: failed path count, then pixel, bounce, sample and code of the first.
+const FAILURE_BYTES: u64 = 32;
+// A path that cannot classify its glass medium ends there. Isolated paths at the
+// limits of f32 geometry are tolerated and logged; more than this fraction of all
+// paths (any systematic error such as a camera inside glass) fails the job.
+const FAILURE_FRACTION: f64 = 1e-6;
 const TILE: u32 = 262_144;
 const TIMEOUT: Duration = Duration::from_secs(30);
 // Software Vulkan drivers can compile a pipeline at its first dispatch, which on a cold
@@ -69,13 +75,13 @@ pub fn host_on_adapter(adapter: &wgpu::Adapter) -> Result<ImageHost> {
     ImageHost::with_executor(Arc::new(Executor::new(device, queue)?))
 }
 
-// Path resources need five storage buffers (geometry, BVH, accumulation, HDRI,
-// textures). Request that limit only on this independent path device: raster and
+// Path resources need six storage buffers (geometry, BVH, accumulation, HDRI,
+// textures, medium-failure counts). Request that limit only on this independent path device: raster and
 // tessellation keep their existing four-buffer downlevel requirement.
-const PATH_STORAGE_BUFFERS: u32 = 5;
+const PATH_STORAGE_BUFFERS: u32 = 6;
 fn device_limits(supported: wgpu::Limits) -> Result<wgpu::Limits> {
     if supported.max_storage_buffers_per_shader_stage < PATH_STORAGE_BUFFERS {
-        return Err(gpu("gpu-path requires five storage buffers per shader stage"));
+        return Err(gpu("gpu-path requires six storage buffers per shader stage"));
     }
     let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(supported);
     limits.max_storage_buffers_per_shader_stage = PATH_STORAGE_BUFFERS;
@@ -116,12 +122,16 @@ impl Executor {
         let scopes = scopes(&device);
         let shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu-path"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let entries: Vec<_> = (0..6)
+        let entries: Vec<_> = (0..7)
             .map(|binding| wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: if binding == 0 { wgpu::BufferBindingType::Uniform } else { wgpu::BufferBindingType::Storage { read_only: binding != 3 } },
+                    ty: if binding == 0 {
+                        wgpu::BufferBindingType::Uniform
+                    } else {
+                        wgpu::BufferBindingType::Storage { read_only: binding != 3 && binding != 6 }
+                    },
                     has_dynamic_offset: false,
                     min_binding_size: None,
                 },
@@ -143,7 +153,7 @@ impl Executor {
             cache: None,
         });
         checked(scopes)?;
-        warm_up(&device, &queue, &pipeline, &placeholder_bind(&device, &layout, 6)?)?;
+        warm_up(&device, &queue, &pipeline, &placeholder_bind(&device, &layout, 7)?)?;
         Ok(Self { context: Arc::new(Context { device, queue, pipeline, layout, denoise: std::sync::OnceLock::new() }) })
     }
 }
@@ -185,6 +195,10 @@ fn warm_up(device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &wgpu::ComputeP
     checked(scopes)?;
     device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(SETUP_TIMEOUT) }).map_err(gpu)?;
     Ok(())
+}
+
+fn medium_failures_tolerated(failed: u32, paths: u64) -> bool {
+    f64::from(failed) <= paths as f64 * FAILURE_FRACTION
 }
 
 fn descriptor() -> Result<ExecutorDescriptor> {
@@ -293,6 +307,7 @@ struct Task {
     cancel: CancelToken,
     uniform: wgpu::Buffer,
     accumulation: wgpu::Buffer,
+    failures: wgpu::Buffer,
     readback: wgpu::Buffer,
     bind: wgpu::BindGroup,
     denoiser: Option<denoise::Resources>,
@@ -361,9 +376,11 @@ impl Task {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        // Inconsistent-medium path count and the first such path's location (see read_linear).
+        let failures = make("path medium failures", &[0; FAILURE_BYTES as usize], wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("path readback"),
-            size,
+            size: size + FAILURE_BYTES,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -373,9 +390,10 @@ impl Task {
             .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: binding as u32, resource: buffer.as_entire_binding() })
             .collect();
         entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
+        entries.push(wgpu::BindGroupEntry { binding: 6, resource: failures.as_entire_binding() });
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-path"), layout: &context.layout, entries: &entries });
         let denoiser = if options.denoise {
-            Some(denoise::Resources::new(&context, &uniform, [&triangles, &nodes, &environment, &texture_buffer], &accumulation, size)?)
+            Some(denoise::Resources::new(&context, &uniform, [&triangles, &nodes, &environment, &texture_buffer, &failures], &accumulation, size)?)
         } else {
             None
         };
@@ -400,6 +418,7 @@ impl Task {
             cancel,
             uniform,
             accumulation,
+            failures,
             readback,
             bind,
             denoiser,
@@ -507,6 +526,7 @@ impl Task {
         let scopes = scopes(&context.device);
         let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path readback") });
         encoder.copy_buffer_to_buffer(source, 0, &self.readback, 0, self.accumulation.size());
+        encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, self.accumulation.size(), FAILURE_BYTES);
         let submission = context.queue.submit([encoder.finish()]);
         checked(scopes)?;
         let slice = self.readback.slice(..);
@@ -517,18 +537,24 @@ impl Task {
         context.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
         rx.try_recv().map_err(gpu)?.map_err(gpu)?;
         let data = slice.get_mapped_range().map_err(gpu)?;
-        let mut values = scene::reserved((self.request.width * self.request.height) as usize)?;
-        for (index, pixel) in data.as_chunks::<16>().0.iter().enumerate() {
-            if f32::from_le_bytes([pixel[12], pixel[13], pixel[14], pixel[15]]) < 0.0 {
-                let diagnostic = [0, 4, 8, 12].map(|i| f32::from_le_bytes([pixel[i], pixel[i + 1], pixel[i + 2], pixel[i + 3]]));
+        let (pixels, failures) = data.split_at(data.len().saturating_sub(FAILURE_BYTES as usize));
+        let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
+        let failed = word(0);
+        if failed > 0 {
+            let paths = u64::from(self.request.width) * u64::from(self.request.height) * u64::from(self.sample.max(1));
+            let detail = format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
+            if !medium_failures_tolerated(failed, paths) {
                 return Err(JobError::new(
                     ErrorCode::InvalidScene,
                     format!(
-                        "inconsistent glass medium path at pixel {index}, bounce {}, sample {}, code {}: camera must start outside volumes; overlapping solids or more than 16 nested media are unsupported",
-                        diagnostic[0], diagnostic[1], -diagnostic[3]
+                        "inconsistent glass medium paths ({detail}): camera must start outside volumes; overlapping solids or more than 16 nested media are unsupported"
                     ),
                 ));
             }
+            log::warn!("gpu-path ended {detail} at an unclassifiable glass medium");
+        }
+        let mut values = scene::reserved((self.request.width * self.request.height) as usize)?;
+        for pixel in pixels.as_chunks::<16>().0 {
             let mut value = [0.0; 4];
             for (v, bytes) in value.iter_mut().zip(pixel.as_chunks::<4>().0) {
                 *v = f32::from_le_bytes(*bytes) / self.sample as f32;
