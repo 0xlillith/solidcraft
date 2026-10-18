@@ -72,6 +72,11 @@ fn shadow_transmittance(origin: vec3<f32>, direction: vec3<f32>, limit: f32) -> 
                 if medium_id!=0.0 { return blocked_shadow(); }
                 medium_id=t.optics.w; medium_ior=t.parameters.z; entry=position; entry_low=position_low; sigma=t.optics.xyz;
             } else {
+                // The first crossing from the shading point exits a closed body:
+                // the point touches or lies within it (see the path loop).
+                if medium_id==0.0 && step==0u {
+                    medium_id=t.optics.w; medium_ior=t.parameters.z; sigma=t.optics.xyz; entry=origin; entry_low=vec3<f32>(0.0);
+                }
                 if medium_id==0.0 || medium_id!=t.optics.w { return blocked_shadow(); }
                 result.transmittance*=exp(-sigma*length(precise_point_delta(position,position_low,entry,entry_low)));
                 medium_id=0.0;

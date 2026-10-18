@@ -43,8 +43,8 @@ metadata only; completion or cancellation releases captured source bytes even
 when callers retain job/status/frame handles. GPU preparation also releases
 source bytes after preparing the pixel buffer.
 
-The independent progressive device requests five storage buffers per shader
-stage. An adapter limited to four cannot install this executor; raster and
+The independent progressive device requests six storage buffers per shader
+stage. An adapter limited to fewer cannot install this executor; raster and
 tessellation device requirements remain unchanged.
 
 Independent f64 tests cover explicit sRGB decoding, linear normal channels,
