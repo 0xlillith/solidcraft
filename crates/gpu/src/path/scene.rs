@@ -176,7 +176,7 @@ pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) 
     }
     let mut nodes = reserved(triangles.len().saturating_mul(2).max(1))?;
     nodes.push(Node::default());
-    build(&mut triangles, 0, &mut nodes, 0, cancel)?;
+    build(&mut triangles, 0, &mut nodes, 0, 0, cancel)?;
     let patches = planar_patches::ids(&triangles, cancel)?;
     let extent = nodes.first().map_or(1.0, |n| n.lo.iter().zip(n.hi).map(|(a, b)| b - a).fold(0.0f32, f32::max));
     let mut geometry = reserved(16 + triangles.len().max(1) * 84 + vertices.len())?;
@@ -376,34 +376,136 @@ fn medium_root(parents: &mut [usize], mut index: usize) -> Result<usize> {
     }
 }
 
-fn build(triangles: &mut [Triangle], offset: usize, nodes: &mut Vec<Node>, index: usize, cancel: &CancelToken) -> Result<()> {
-    cancel.check()?;
-    let mut lo = [f32::INFINITY; 3];
-    let mut hi = [f32::NEG_INFINITY; 3];
+// The shader's traversal stack holds 32 nodes and needs at most depth + 1.
+const MAX_BVH_DEPTH: usize = 30;
+const SAH_BINS: usize = 16;
+type Bounds = ([f32; 3], [f32; 3]);
+const EMPTY_BOUNDS: Bounds = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+
+fn grow(bounds: &mut Bounds, t: &Triangle) {
+    for p in t.p {
+        for (axis, value) in [p.x as f32, p.y as f32, p.z as f32].into_iter().enumerate() {
+            bounds.0[axis] = bounds.0[axis].min(value);
+            bounds.1[axis] = bounds.1[axis].max(value);
+        }
+    }
+}
+
+fn merge(bounds: &mut Bounds, other: &Bounds) {
+    for axis in 0..3 {
+        bounds.0[axis] = bounds.0[axis].min(other.0[axis]);
+        bounds.1[axis] = bounds.1[axis].max(other.1[axis]);
+    }
+}
+
+fn half_area(bounds: &Bounds) -> f64 {
+    let [x, y, z] = [0, 1, 2].map(|axis| f64::from((bounds.1[axis] - bounds.0[axis]).max(0.0)));
+    x * y + y * z + z * x
+}
+
+// Depth a median split adds below a node of `count` triangles.
+fn median_levels(mut count: usize) -> usize {
+    let mut levels = 0;
+    while count > 4 {
+        count = count.div_ceil(2);
+        levels += 1;
+    }
+    levels
+}
+
+// Binned surface-area heuristic over triangle centres. A split is accepted only
+// if a median split of its larger side still fits MAX_BVH_DEPTH, so the median
+// fallback always remains available. Returns the left count after partitioning.
+fn sah_split(triangles: &mut [Triangle], depth: usize) -> Option<usize> {
+    let mut centre_lo = [f64::INFINITY; 3];
+    let mut centre_hi = [f64::NEG_INFINITY; 3];
     for t in triangles.iter() {
-        for p in t.p {
-            for ((low, high), value) in lo.iter_mut().zip(hi.iter_mut()).zip([p.x as f32, p.y as f32, p.z as f32]) {
-                *low = low.min(value);
-                *high = high.max(value);
+        for axis in 0..3 {
+            centre_lo[axis] = centre_lo[axis].min(t.centre(axis));
+            centre_hi[axis] = centre_hi[axis].max(t.centre(axis));
+        }
+    }
+    let bin = |t: &Triangle, axis: usize| {
+        let scaled = (t.centre(axis) - centre_lo[axis]) / (centre_hi[axis] - centre_lo[axis]) * SAH_BINS as f64;
+        (scaled as usize).min(SAH_BINS - 1)
+    };
+    let mut best: Option<(f64, usize, usize)> = None;
+    for axis in 0..3 {
+        if centre_hi[axis] - centre_lo[axis] <= 0.0 {
+            continue;
+        }
+        let mut counts = [0usize; SAH_BINS];
+        let mut boxes = [EMPTY_BOUNDS; SAH_BINS];
+        for t in triangles.iter() {
+            let b = bin(t, axis);
+            counts[b] += 1;
+            grow(&mut boxes[b], t);
+        }
+        let mut right_area = [0.0; SAH_BINS];
+        let mut right_count = [0usize; SAH_BINS];
+        let mut accumulated = EMPTY_BOUNDS;
+        let mut count = 0;
+        for b in (1..SAH_BINS).rev() {
+            merge(&mut accumulated, &boxes[b]);
+            count += counts[b];
+            right_area[b] = half_area(&accumulated);
+            right_count[b] = count;
+        }
+        accumulated = EMPTY_BOUNDS;
+        count = 0;
+        for b in 1..SAH_BINS {
+            merge(&mut accumulated, &boxes[b - 1]);
+            count += counts[b - 1];
+            let right = right_count[b];
+            if count == 0 || right == 0 || depth + 1 + median_levels(count.max(right)) > MAX_BVH_DEPTH {
+                continue;
+            }
+            let cost = half_area(&accumulated) * count as f64 + right_area[b] * right as f64;
+            if best.is_none_or(|(lowest, _, _)| cost < lowest) {
+                best = Some((cost, axis, b));
             }
         }
     }
+    let (_, axis, split) = best?;
+    let mut middle = 0;
+    for i in 0..triangles.len() {
+        if bin(&triangles[i], axis) < split {
+            triangles.swap(i, middle);
+            middle += 1;
+        }
+    }
+    Some(middle)
+}
+
+fn build(triangles: &mut [Triangle], offset: usize, nodes: &mut Vec<Node>, index: usize, depth: usize, cancel: &CancelToken) -> Result<()> {
+    cancel.check()?;
+    let mut bounds = EMPTY_BOUNDS;
+    for t in triangles.iter() {
+        grow(&mut bounds, t);
+    }
+    let (lo, hi) = bounds;
     let mut node = Node { lo, hi, first: offset as u32, count: triangles.len() as u32 };
     if triangles.is_empty() {
         node = Node { first: u32::MAX, ..Default::default() };
     }
     if triangles.len() > 4 {
-        let axis = (0..3).max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b]))).unwrap_or(0);
-        let middle = triangles.len() / 2;
-        triangles.select_nth_unstable_by(middle, |a, b| a.centre(axis).total_cmp(&b.centre(axis)));
+        let middle = match sah_split(triangles, depth) {
+            Some(middle) => middle,
+            None => {
+                let axis = (0..3).max_by(|&a, &b| (hi[a] - lo[a]).total_cmp(&(hi[b] - lo[b]))).unwrap_or(0);
+                let middle = triangles.len() / 2;
+                triangles.select_nth_unstable_by(middle, |a, b| a.centre(axis).total_cmp(&b.centre(axis)));
+                middle
+            }
+        };
         let first = nodes.len();
         nodes.push(Node::default());
         nodes.push(Node::default());
         node.first = first as u32;
         node.count = 0;
         let (left, right) = triangles.split_at_mut(middle);
-        build(left, offset, nodes, first, cancel)?;
-        build(right, offset + middle, nodes, first + 1, cancel)?;
+        build(left, offset, nodes, first, depth + 1, cancel)?;
+        build(right, offset + middle, nodes, first + 1, depth + 1, cancel)?;
     }
     *nodes.get_mut(index).ok_or_else(|| invalid("missing BVH node"))? = node;
     Ok(())
@@ -418,3 +520,7 @@ pub(super) fn vector(bytes: &mut Vec<u8>, v: Vec3, w: f32) {
 #[cfg(test)]
 #[path = "scene_weld_tests.rs"]
 mod weld_tests;
+
+#[cfg(test)]
+#[path = "scene_bvh_tests.rs"]
+mod bvh_tests;

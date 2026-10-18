@@ -68,8 +68,15 @@ through explicit job inputs. They do not add saved document fields. Denoising,
 texture LOD/mipmap selection, EXR and Final mode remain unimplemented by this
 executor; a path-traced preview does not declare those capabilities.
 
-Each job builds a balanced median-split BVH over its immutable captured meshes;
-there is no cross-document cache to confuse scene generations. Positions are
+Each job builds a BVH over its immutable captured meshes with a sixteen-bin
+surface-area heuristic on triangle centres; there is no cross-document cache to
+confuse scene generations. A split is accepted only when a median split of its
+larger side would still keep the tree within 30 levels, the shader's 32-entry
+traversal stack; otherwise that node falls back to the median split. Traversal
+tests both child boxes at their parent and visits the nearer first. On the
+exploded coffee machine at 1080p and 8 samples per pixel, this halves render
+time on an NVIDIA GB10 (opaque 4.95 s to 2.49 s, closed glass 5.65 s to
+2.79 s) with bit-identical images. Positions are
 rebased around the camera target before f32 upload. The upload packs indexed 32-byte position/normal vertices, 16-byte triangle records
 (including material IDs), 64-byte resolved materials, four-byte planar patch IDs
 and 32-byte BVH nodes. Geometry arrays share one buffer. The progressive executor

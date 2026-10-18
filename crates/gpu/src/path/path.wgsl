@@ -246,22 +246,20 @@ fn ray_segment_precise(o: vec3<f32>, o_low: vec3<f32>, previous: vec3<f32>, prev
 }
 
 // Explicit parallel slab handling avoids 0*infinity/NaN at box boundaries.
-fn box_hit(node: Node, o: vec3<f32>, d: vec3<f32>, limit: f32) -> bool {
-    return box_hit_padded(node,o,d,limit,u.lighting.x);
-}
-fn box_hit_padded(node: Node, o: vec3<f32>, d: vec3<f32>, limit: f32, pad: f32) -> bool {
+// Returns the entry distance into the padded box within [0, limit], or -1.
+fn box_entry_padded(node: Node, o: vec3<f32>, d: vec3<f32>, limit: f32, pad: f32) -> f32 {
     var near = 0.0;
     var far = limit;
     for (var k = 0u; k < 3u; k += 1u) {
         if abs(d[k]) < 1e-20 {
-            if o[k] < node.lo[k]-pad || o[k] > node.hi[k]+pad { return false; }
+            if o[k] < node.lo[k]-pad || o[k] > node.hi[k]+pad { return -1.0; }
         } else {
             let a = (node.lo[k]-pad-o[k])/d[k];
             let b = (node.hi[k]+pad-o[k])/d[k];
             near = max(near, min(a,b)); far = min(far, max(a,b));
         }
     }
-    return far >= near;
+    return select(-1.0,near,far >= near);
 }
 // A strictly positive ray cannot reach a triangle when any coordinate starts
 // on/outside its exact stored bound and moves away. These comparisons introduce
@@ -321,18 +319,32 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
     let scale=max(max(abs(rounded.x),max(abs(rounded.y),abs(rounded.z))),1.0);
     let pad=u.lighting.x+scale*(1.0/1048576.0);
     let near_radius=scale*(1.0/256.0);
-    // A balanced tree over <= 2^20 triangles needs <= 21 pending nodes.
+    // Children are tested at their parent and visited near-first. The build
+    // bounds tree depth to 30, so at most 31 nodes are pending.
     var stack: array<u32, 32>;
+    var entry: array<f32, 32>;
+    if nodes[0].first == 0xffffffffu { return hit; }
+    entry[0] = box_entry_padded(nodes[0], rounded, d, hit.distance, pad);
+    if entry[0] < 0.0 { return hit; }
     stack[0] = 0u;
     var size = 1u;
     loop {
         if size == 0u { break; }
         size -= 1u;
+        if entry[size] > hit.distance { continue; }
         let node = nodes[stack[size]];
-        if node.first == 0xffffffffu || !box_hit_padded(node, rounded, d, hit.distance, pad) { continue; }
         if node.count == 0u {
             if size + 2u > 32u { break; }
-            stack[size] = node.first; stack[size+1u] = node.first+1u; size += 2u;
+            let left = box_entry_padded(nodes[node.first], rounded, d, hit.distance, pad);
+            let right = box_entry_padded(nodes[node.first+1u], rounded, d, hit.distance, pad);
+            var near_child = node.first; var near_entry = left;
+            var far_child = node.first+1u; var far_entry = right;
+            if right >= 0.0 && (left < 0.0 || right < left) {
+                near_child = node.first+1u; near_entry = right;
+                far_child = node.first; far_entry = left;
+            }
+            if far_entry >= 0.0 { stack[size] = far_child; entry[size] = far_entry; size += 1u; }
+            if near_entry >= 0.0 { stack[size] = near_child; entry[size] = near_entry; size += 1u; }
             continue;
         }
         for (var i = node.first; i < node.first + node.count; i += 1u) {
@@ -406,18 +418,32 @@ fn trace_ordered(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minim
     let shear=vec3<f32>(d[kx]/d[kz],d[ky]/d[kz],1.0/d[kz]);
     let order=select(-1.0,1.0,d[kz]>0.0);
     var best=FAR;
-    // A balanced tree over <= 2^20 triangles needs <= 21 pending nodes.
+    // Children are tested at their parent and visited near-first. The build
+    // bounds tree depth to 30, so at most 31 nodes are pending.
     var stack: array<u32, 32>;
+    var entry: array<f32, 32>;
+    if nodes[0].first == 0xffffffffu { return hit; }
+    entry[0] = box_entry_padded(nodes[0], o, d, hit.distance, u.lighting.x);
+    if entry[0] < 0.0 { return hit; }
     stack[0] = 0u;
     var size = 1u;
     loop {
         if size == 0u { break; }
         size -= 1u;
+        if entry[size] > hit.distance { continue; }
         let node = nodes[stack[size]];
-        if node.first == 0xffffffffu || !box_hit(node, o, d, hit.distance) { continue; }
         if node.count == 0u {
             if size + 2u > 32u { break; }
-            stack[size] = node.first; stack[size+1u] = node.first+1u; size += 2u;
+            let left = box_entry_padded(nodes[node.first], o, d, hit.distance, u.lighting.x);
+            let right = box_entry_padded(nodes[node.first+1u], o, d, hit.distance, u.lighting.x);
+            var near_child = node.first; var near_entry = left;
+            var far_child = node.first+1u; var far_entry = right;
+            if right >= 0.0 && (left < 0.0 || right < left) {
+                near_child = node.first+1u; near_entry = right;
+                far_child = node.first; far_entry = left;
+            }
+            if far_entry >= 0.0 { stack[size] = far_child; entry[size] = far_entry; size += 1u; }
+            if near_entry >= 0.0 { stack[size] = near_child; entry[size] = near_entry; size += 1u; }
             continue;
         }
         for (var i = node.first; i < node.first + node.count; i += 1u) {
