@@ -5,7 +5,7 @@
 # those. Changes to the lockfile, root manifest, toolchain/cargo/nextest config, .github/,
 # vendor/, tests/, scripts/ or any file no package owns select the whole workspace, as do
 # pushes to main, the nightly run and Run workflow.
-# Tests are built once and run in 4 shards. A few heavy tests (see .config/nextest.toml) are
+# Tests are built once and run in shards. A few heavy tests (see .config/nextest.toml) are
 # skipped on pull requests and run on pushes to main and nightly. The Windows jobs (D3D12 shaders
 # and app startup) run on pull requests only when what they test changes (the GPU crate, the app,
 # the viewport's GPU glue, the graphics dependencies, their scripts or this file); main and
@@ -363,45 +363,46 @@ jobs:
       - name: Run tests
         env:
           EVENT_NAME: ${{ github.event_name }}
+          GOLDENS: ${{ needs.changes.outputs.goldens }}
           LOCAL: ${{ needs.changes.outputs.local }}
           FULL: ${{ needs.changes.outputs.full }}
           PACKAGES: ${{ needs.changes.outputs.packages }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ github.event_name == 'pull_request' && 2 || 4 }}
+          # The robustness golden seeds a pull request skips: each takes one to twenty minutes under
+          # CI load, together about four fifths of the goldens' time. Pushes to main, the merge
+          # queue and the nightly run every seed.
+          SLOW_SEEDS: 81|45|20|24|95|02|57|40|18|48|32|46|85|61|77|34|14
         run: |
           # Pull requests skip the heavy tests (default-filter in .config/nextest.toml).
-          all=()
-          # The boolean property tests draw new random inputs every run; they run only in the
-          # nightly property-tests job, so a known kernel bug cannot turn main red at random.
+          filter=()
           if [ "$EVENT_NAME" != pull_request ]; then
-            all=(--ignore-default-filter -E 'not (package(solidcraft-kernel) & binary(boolean_props))')
+            # The boolean property tests draw new random inputs every run; they run only in the
+            # nightly property-tests job, so a known kernel bug cannot turn main red at random.
+            filter=(--ignore-default-filter -E 'not (package(solidcraft-kernel) & binary(boolean_props))')
+          elif [ "$GOLDENS" = true ]; then
+            # A pull request that can change a robustness golden (tests/robustness/goldens.json)
+            # also checks every seed but the slow ones, in the same run so they share its cores.
+            filter=(--ignore-default-filter -E "default() | (package(solidcraft-engine) & test(/^tests::robustness_goldens::/) & not test(/^tests::robustness_goldens::seed_($SLOW_SEEDS)\$/))")
           fi
+          junit=${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml
+          # The warm build directory keeps the last run's junit.xml: never upload that one.
+          rm -f "$junit"
           if [ "$LOCAL" = true ]; then
             scope=(--workspace)
             if [ "$FULL" != true ]; then scope=(); for p in $PACKAGES; do scope+=(-p "$p"); done; fi
-            # The warm build directory keeps the last run's junit.xml: never upload that one.
-            rm -f "$CARGO_TARGET_DIR/nextest/ci/junit.xml"
-            cargo nextest run "${scope[@]}" --cargo-profile ci --locked \
-              --profile ci --partition "slice:$SHARD/$SHARDS" --no-tests=pass "${all[@]}"
+            run=(cargo nextest run "${scope[@]}" --cargo-profile ci --locked)
           else
             # Extract into ./target: tests that run a built binary (env!("CARGO_BIN_EXE_*")) have
             # the build job's path, which is the same checkout path here.
-            cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
-              --profile ci --partition "slice:$SHARD/$SHARDS" --no-tests=pass "${all[@]}"
+            run=(cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite)
           fi
-      - name: Robustness goldens (pull requests that change geometry)
-        # Every seed of tests/robustness/goldens.json (each seed is a test), split over the shards;
-        # pushes to main and the nightly run them in the step above.
-        if: github.event_name == 'pull_request' && needs.changes.outputs.goldens == 'true'
-        env:
-          SHARD: ${{ matrix.shard }}
-          SHARDS: ${{ github.event_name == 'pull_request' && 2 || 4 }}
-        run: |
-          if ! cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
-            --profile ci --ignore-default-filter --partition "slice:$SHARD/$SHARDS" --no-tests=pass \
-            -E 'package(solidcraft-engine) & test(/^tests::robustness_goldens::/)'; then
-            echo "::error::A robustness golden changed. If the new result is intended, re-record it in this pull request and say why:"
-            echo "::error::ROBUSTNESS_GOLDENS_BLESS=\"why it changed\" cargo test --profile ci -p solidcraft-engine --lib robustness_goldens::   (see docs/robustness.md)"
+          if ! "${run[@]}" --profile ci --partition "slice:$SHARD/$SHARDS" --no-tests=pass "${filter[@]}"; then
+            # A failed golden gets the hint to re-record it (junit.xml lists the failures).
+            if [ -f "$junit" ] && tr '\n' ' ' < "$junit" | grep -q '<testcase name="tests::robustness_goldens::[^"]*"[^>]*>[[:space:]]*<failure'; then
+              echo "::error::A robustness golden changed. If the new result is intended, re-record it in this pull request and say why:"
+              echo "::error::ROBUSTNESS_GOLDENS_BLESS=\"why it changed\" cargo test --profile ci -p solidcraft-engine --lib robustness_goldens::   (see docs/robustness.md)"
+            fi
             exit 1
           fi
       - name: Upload test timings
