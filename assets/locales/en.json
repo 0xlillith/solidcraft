@@ -1295,6 +1295,8 @@
   "recovery.never_saved": "never saved",
   "render.background": "Scene background",
   "render.fit": "Fit Product",
+  "render.gpu_path_failed": "GPU path tracer unavailable",
+  "render.gpu_path_preparing": "GPU path tracer preparing…",
   "render.image_cancelled": "Render cancelled",
   "render.image_cancelling": "Cancelling",
   "render.image_completed": "Image ready to export",
