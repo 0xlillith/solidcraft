@@ -294,10 +294,16 @@ fn tie_preferred(t: Triangle, d: vec3<f32>, inside: bool) -> bool {
     return front!=inside;
 }
 fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool) -> Hit {
+    return trace_precise_within(o,o_low,d,any_hit,excluded,minimum,inside,FAR,-1.0);
+}
+// Only hits closer than `limit` are reported, and nodes beyond it are culled.
+// An opaque or shadow-blocking hit closer than `blocker` ends traversal at once:
+// a shadow connection is blocked whichever such hit is closest.
+fn trace_precise_within(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool, limit: f32, blocker: f32) -> Hit {
     // Dispatch once before traversal. Ordinary rays keep the original lean BVH
     // loop, without precision-helper branches inside every candidate/node test.
-    if all(o_low==vec3<f32>(0.0)) { return trace_ordered(o,d,any_hit,excluded,minimum,inside); }
-    var hit = Hit(FAR, 0xffffffffu, vec3<f32>(0.0));
+    if all(o_low==vec3<f32>(0.0)) { return trace_ordered_within(o,d,any_hit,excluded,minimum,inside,limit,blocker); }
+    var hit = Hit(limit, 0xffffffffu, vec3<f32>(0.0));
     // Project every candidate into the same ray-aligned 2D coordinate system.
     // Shared edges then use identical products with opposite signs, avoiding the
     // independently rounded barycentric comparisons of Moller-Trumbore.
@@ -371,9 +377,9 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
                 let far_depth=surface_ray_depth(t,far_bary,rounded,kz);
                 let far_distance=far_depth*shear.z;
                 let far_key=far_depth*order;
-                if far_distance > minimum && (far_key < best || (far_key == best && tie_preferred(t,d,inside))) {
+                if far_distance > minimum && far_distance < limit && (far_key < best || (far_key == best && tie_preferred(t,d,inside))) {
                     hit = Hit(far_distance,i,far_bary); best=far_key;
-                    if any_hit { return hit; }
+                    if any_hit || (far_distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
                 }
                 continue;
             }
@@ -394,9 +400,9 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
             let depth=surface_ray_depth_precise(t,bary,o,o_low,kz);
             let distance=depth*shear.z;
             let key=depth*order;
-            if distance > minimum && (key < best || (key == best && tie_preferred(t,d,inside))) {
+            if distance > minimum && distance < limit && (key < best || (key == best && tie_preferred(t,d,inside))) {
                 hit = Hit(distance,i,bary); best=key;
-                if any_hit { return hit; }
+                if any_hit || (distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
             }
         }
     }
@@ -404,10 +410,10 @@ fn trace_precise(o: vec3<f32>, o_low: vec3<f32>, d: vec3<f32>, any_hit: bool, ex
 }
 
 fn trace_bounded(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32) -> Hit {
-    return trace_ordered(o,d,any_hit,excluded,minimum,false);
+    return trace_ordered_within(o,d,any_hit,excluded,minimum,false,FAR,-1.0);
 }
-fn trace_ordered(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool) -> Hit {
-    var hit = Hit(FAR, 0xffffffffu, vec3<f32>(0.0));
+fn trace_ordered_within(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minimum: f32, inside: bool, limit: f32, blocker: f32) -> Hit {
+    var hit = Hit(limit, 0xffffffffu, vec3<f32>(0.0));
     // Project every candidate into the same ray-aligned 2D coordinate system.
     // Shared edges then use identical products with opposite signs, avoiding the
     // independently rounded barycentric comparisons of Moller-Trumbore.
@@ -468,9 +474,9 @@ fn trace_ordered(o: vec3<f32>, d: vec3<f32>, any_hit: bool, excluded: u32, minim
             let depth=surface_ray_depth(t,bary,o,kz);
             let distance=depth*shear.z;
             let key=depth*order;
-            if distance > minimum && (key < best || (key == best && tie_preferred(t,d,inside))) {
+            if distance > minimum && distance < limit && (key < best || (key == best && tie_preferred(t,d,inside))) {
                 hit = Hit(distance,i,bary); best=key;
-                if any_hit { return hit; }
+                if any_hit || (distance < blocker && (t.base.w<=0.0 || t.coat.w<=0.0)) { return hit; }
             }
         }
     }
