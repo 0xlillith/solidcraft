@@ -6293,7 +6293,8 @@ mod grid_plane_tests {
             let under = grid(&app);
             assert!(!under.is_empty(), "the open sketch shows a grid (follows the view: {follows})");
             // Each line is 32 bytes: two f32 points, a colour and a width; the XZ plane is Y = 0.
-            let ys: Vec<f32> = under.chunks_exact(32).flat_map(|l| [&l[4..8], &l[16..20]]).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
+            let ys: Vec<f32> =
+                under.as_chunks::<32>().0.iter().flat_map(|l| [&l[4..8], &l[16..20]]).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect();
             assert!(ys.iter().all(|y| y.abs() < 1e-3), "the grid lies on the sketch plane");
         }
         app.ui.show_grid = true;
