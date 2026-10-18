@@ -565,6 +565,10 @@ pub struct FrameInfo {
     pub height: u32,
     pub encoding: ColourEncoding,
     pub alpha: AlphaConvention,
+    /// Exact encoded PNG length, not pixel storage or reserved Vec capacity.
+    pub png_bytes: u64,
+    /// Cached lowercase SHA-256 of those encoded bytes, computed before completion.
+    pub png_sha256: String,
 }
 #[cfg(test)]
 mod runtime_request_roundtrip_tests {

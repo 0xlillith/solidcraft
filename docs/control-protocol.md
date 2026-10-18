@@ -152,7 +152,7 @@ labels; `prefs:measure_axis_distances` identifies the checkbox.
 | `ui.home` | `open?`: bool; `sample?`: index | the start page: show or hide it, open a built-in sample (once built); returns `open` and the recent designs |
 | `ui.shortcut` | `command`, `key?`, `replace?` | a command's key, or rebinds it (`""` clears; a key another command uses is refused unless `replace`) |
 | `ui.help` | `item?`: `about`, `shortcuts` (read only), `report` (opens a report draft for review), `crashes` (the Crash Reports window) | the version, commit, build date and diagnostic text |
-| `ui.prefs` | any of `default_units`, `nav` (`fusion`, `solidworks`, `inventor`, `alias`, `blender`, `tinkercad`, `openscad`, `touchpad`), `zoom_reverse`, `zoom_to_cursor`, `smooth_wheel_zoom` (default true), `trackpad_pan` (default true: two-finger scroll pans, except Touchpad always zooms; pinch zooms), `orbit_around` (`view_centre` (default: what Pan moves and Fit frames), `origin` (the world origin stays still on screen), `cursor` (the model point under the pointer when the drag began); the older `orbit_cursor` boolean still sets `cursor` when true), `look_at_anim`, `look_at_speed`, `middle_double_click` (`home` (default), `fit`, `off`), `msaa`, `show_frame_rate` (default false: frames per second in the view's bottom-right corner; the view redraws every frame while it is on), `length_decimals`, `angle_decimals`, `theme` (`dark`, `light`, `system`), `language` (`en`, `ja`, `de`, `fr`, `ko`, `ru`, `uk`, `zh`; see [localization](localization.md)), `ui_scale`, `ui_font` (an installed font family or a font file for the interface; empty for the built-in font), `up_axis` (`z`, `y`), `offer_stand_up`, `color_vision` (`off` (default), `protan`, `deutan`, `tritan`: colour vision modes, #778), `check_updates` (default true; [updates](book/src/guide/updates.md)); `open` (a page: General, Navigation, Keyboard Shortcuts, Design, Graphics, Sketch, Selection, AI) opens the Preferences dialog there; `button`: `ok`, `cancel`, `apply`, `defaults`; `stand_up: true` stands up a just-opened Y-up file, `stand_up: false` leaves it as it is ("Leave it": the offer closes and `offer_stand_up` stays on); the offer's buttons are the handles `stand_up:stand`, `stand_up:leave` and `stand_up:never` | sets preferences (kept between runs), returns them all plus `dialog` (the open page or null), `dark` and `stand_up_offer` |
+| `ui.prefs` | any of `default_units`, `nav` (`fusion`, `solidworks`, `inventor`, `alias`, `blender`, `tinkercad`, `openscad`, `touchpad`), `zoom_reverse`, `pan_reverse_x` (default false: horizontal scrolling pans the other way), `zoom_to_cursor`, `smooth_wheel_zoom` (default true), `trackpad_pan` (default true: two-finger scroll pans, except Touchpad always zooms; pinch zooms), `orbit_around` (`view_centre` (default: what Pan moves and Fit frames), `origin` (the world origin stays still on screen), `cursor` (the model point under the pointer when the drag began); the older `orbit_cursor` boolean still sets `cursor` when true), `look_at_anim`, `look_at_speed`, `middle_double_click` (`home` (default), `fit`, `off`), `msaa`, `show_frame_rate` (default false: frames per second in the view's bottom-right corner; the view redraws every frame while it is on), `length_decimals`, `angle_decimals`, `theme` (`dark`, `light`, `system`), `language` (`en`, `ja`, `de`, `fr`, `ko`, `ru`, `uk`, `zh`; see [localization](localization.md)), `ui_scale`, `ui_font` (an installed font family or a font file for the interface; empty for the built-in font), `up_axis` (`z`, `y`), `offer_stand_up`, `color_vision` (`off` (default), `protan`, `deutan`, `tritan`: colour vision modes, #778), `check_updates` (default true; [updates](book/src/guide/updates.md)); `open` (a page: General, Navigation, Keyboard Shortcuts, Design, Graphics, Sketch, Selection, AI) opens the Preferences dialog there; `button`: `ok`, `cancel`, `apply`, `defaults`; `stand_up: true` stands up a just-opened Y-up file, `stand_up: false` leaves it as it is ("Leave it": the offer closes and `offer_stand_up` stays on); the offer's buttons are the handles `stand_up:stand`, `stand_up:leave` and `stand_up:never` | sets preferences (kept between runs), returns them all plus `dialog` (the open page or null), `dark` and `stand_up_offer` |
 | `ui.capture` | `action?`: `capture`, `revert`, `cancel` | answers the Capture Position question (asked when a command starts or the design is saved while components were moved without capturing); without `action`, what waits |
 | `ui.window` | `action`: minimize, maximize, restore, toggle, close | what the title bar's caption buttons do (on Windows and Linux the application bar is the title bar); close asks about unsaved designs first |
 | `ui.agent_cursor` | `show` (bool), `speed`: a number from 1 to 5 (times the normal speed) or `"instant"` (no animation: the command runs at once and the pointer jumps to where it acted), `follow_camera` (bool); all optional | the settings. While the cursor is shown, `engine.execute` first glides to the command's toolbar button and to each pick, then runs and replies; later requests wait their turn. `"animate": false` on a call skips it |
@@ -163,6 +163,37 @@ labels; `prefs:measure_axis_distances` identifies the checkbox.
 `ui.workspace {workspace?: "design" | "render"}` reads or changes the active workspace.
 Entering Render requires finishing the current modelling operation; returning restores
 the Design camera. See [the integrated Render workspace](render-workspace.md).
+
+### Render Image inspection
+
+`ui.inspect` includes an additive `render_image` object with `schema_version: 1`:
+
+- `draft_request` is the current Render Image command input, or null with a
+  `draft_error` string when the host or draft is unavailable. It is not a submitted job
+  or a fresh preflight acceptance; Check and Start perform their normal validation.
+- `checked` is null unless the last successful **Check Render Request** still matches
+  the document, revision, visibility, camera, options and installed host. When current,
+  it contains `params` (the original input) and `result` (the actual preflight reply,
+  including the resolved typed `request` and `scene_generation`).
+- `active_job` is the ID returned by the UI's last successful **Start Render**;
+  `completed_job` is the older or current completed candidate used by **Export PNG**.
+  Each is null before it exists. A draft edit does not rewrite a captured request or
+  discard the previous completed candidate. Failed/cancelled work can leave that
+  candidate available; terminal metadata alone does not guarantee retained image bytes.
+
+Inspection does not capture a scene, preflight, reserve work, pump jobs, read pixels or
+change the editor. To observe a UI-created job, pass its returned ID to the existing
+`render.status` command through `engine.execute`; its typed request, captured revision,
+progress and frame metadata describe that job rather than the current draft. Use the
+returned completed ID with `render.export` for a scoped automation export. Ownership,
+retention, path scope and overwrite checks still apply. This command export does not
+exercise the native **Export PNG** file picker. No job ID should be inferred from counters
+or from another session. New/opened documents do not inherit the old session's jobs.
+
+The panel publishes `render:check`, `render:start`, `render:cancel` (while busy) and
+`render:export` handles for its existing buttons, alongside `render:method` and
+`render:aa` with their options. Handles locate controls; they do not bypass disabled
+buttons or supply native file-picker answers. Re-read handles after layout changes.
 
 ### Continuous camera motion
 

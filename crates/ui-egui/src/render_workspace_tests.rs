@@ -2,6 +2,141 @@ use super::*;
 use crate::scenario::Harness;
 use solidcraft_engine::Session;
 
+// Use the public handler without Harness::call's subsequent frame/pump, so the
+// inspection's own effects are measured independently of ordinary UI scheduling.
+fn inspect_without_frame(h: &mut Harness) -> serde_json::Value {
+    let (request, _) = crate::control::ControlRequest::new("ui.inspect", json!({}));
+    let crate::control::Outcome::Done(reply) = crate::control::handle(&mut h.app, &h.ctx, &request) else {
+        panic!("inspection must answer synchronously");
+    };
+    assert_eq!(reply["ok"], true);
+    reply["result"].clone()
+}
+
+#[test]
+fn render_image_inspection_keeps_the_actual_check_reply_without_starting_work() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":1400}));
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.draft.width = 16;
+    h.app.render_workspace.view.draft.height = 16;
+    h.app.render_workspace.view.dirty = true;
+    h.frames(3);
+    let before = inspect_without_frame(&mut h);
+    assert_eq!(before["render_image"]["schema_version"], 1);
+    assert!(before["render_image"]["checked"].is_null());
+    assert!(before["render_image"]["active_job"].is_null());
+    assert!(before["render_image"]["completed_job"].is_null());
+    h.step(&json!({"click":{"handle":"render:check"}})).unwrap();
+    let checked = inspect_without_frame(&mut h)["render_image"].clone();
+    assert_eq!(checked["checked"]["params"], checked["draft_request"]);
+    assert_eq!(checked["checked"]["result"]["request"]["width"], 16);
+    assert_eq!(checked["checked"]["result"]["request"]["height"], 16);
+    assert_eq!(checked["checked"]["result"]["scene_generation"], h.app.session.revision);
+    assert!(checked["checked"]["result"]["admission"].is_object());
+    assert!(checked["active_job"].is_null() && checked["completed_job"].is_null());
+    let doc = h.app.session.doc.clone();
+    let model = h.app.session.model.state();
+    let history = (h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.is_dirty());
+    let physical = h.app.session.execute("component.properties", &json!({})).unwrap();
+    let host = h.app.session.render_job_host().unwrap().clone();
+    for _ in 0..3 {
+        let inspected = inspect_without_frame(&mut h);
+        assert_eq!(inspected["render_image"], checked);
+        for key in ["ui", "camera", "visibility", "viewport", "renderer", "documents"] {
+            assert_eq!(inspected[key], before[key], "existing inspection field {key}");
+        }
+        assert_eq!(host.admitted_bytes(), 0, "inspection and Check reserve no image work");
+    }
+    h.app.cam.yaw += 0.1;
+    let changed = inspect_without_frame(&mut h)["render_image"].clone();
+    assert!(changed["checked"].is_null());
+    assert_ne!(changed["draft_request"], checked["draft_request"]);
+    assert!(h.app.render_workspace.view.checked_image.is_some(), "inspection does not clear private editor state");
+    h.app.session.set_render_job_host(None).unwrap();
+    let unavailable = inspect_without_frame(&mut h)["render_image"].clone();
+    assert!(unavailable["draft_request"].is_null() && unavailable["draft_error"].is_string());
+    assert!(unavailable["checked"].is_null());
+    assert!(h.app.session.render_job_host().is_none(), "inspection must not reinstall a missing host");
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert!(Arc::ptr_eq(&model, &h.app.session.model.state()));
+    assert_eq!(history, (h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.is_dirty()));
+    assert_eq!(h.app.session.execute("component.properties", &json!({})).unwrap(), physical);
+}
+
+#[test]
+fn render_image_inspection_does_not_settle_stale_geometry() {
+    let mut h = Harness::new();
+    for (command, params) in [
+        ("sketch.create", json!({"plane":"XY"})),
+        ("sketch.rectangle.two_point", json!({"p0":[5,5],"p1":[25,20]})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance":5})),
+        ("sketch.edit", json!({"sketch":"Sketch1"})),
+        ("sketch.drag", json!({"entity":"l1.start","from":[5,5],"to":[4,5],"live":true})),
+    ] {
+        h.app.run(command, params).unwrap();
+    }
+    assert!(h.app.session.model.is_stale());
+    let doc = h.app.session.doc.clone();
+    let model = h.app.session.model.state();
+    let history = (h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.is_dirty());
+    let host = h.app.session.render_job_host().unwrap().clone();
+    let admitted = host.admitted_bytes();
+    for _ in 0..3 {
+        let inspected = inspect_without_frame(&mut h)["render_image"].clone();
+        assert!(inspected["draft_request"].is_null());
+        assert!(inspected["draft_error"].is_string());
+        assert!(inspected["checked"].is_null() && inspected["active_job"].is_null() && inspected["completed_job"].is_null());
+    }
+    assert!(h.app.session.model.is_stale());
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert!(Arc::ptr_eq(&model, &h.app.session.model.state()));
+    assert_eq!(history, (h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.is_dirty()));
+    assert_eq!(host.admitted_bytes(), admitted);
+}
+
+#[test]
+fn render_image_inspection_keeps_captured_job_separate_from_draft_and_new_document() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":1400}));
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.draft.width = 16;
+    h.app.render_workspace.view.draft.height = 16;
+    h.app.render_workspace.view.dirty = true;
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:start"}})).unwrap();
+    let started = inspect_without_frame(&mut h)["render_image"].clone();
+    assert!(started["active_job"].is_object());
+    let id = started["active_job"].clone();
+    let mut status = serde_json::Value::Null;
+    for _ in 0..100 {
+        h.frames(1);
+        let reply = h.call("engine.execute", json!({"command":"render.status","params":{"job":id}}));
+        assert_eq!(reply["ok"], true);
+        status = reply["result"].clone();
+        if status["progress"]["phase"] == "completed" {
+            break;
+        }
+    }
+    assert_eq!(status["progress"]["phase"], "completed");
+    h.frames(2);
+    assert_eq!(inspect_without_frame(&mut h)["render_image"]["completed_job"], id);
+    h.app.render_workspace.view.draft.width = 17;
+    let changed = inspect_without_frame(&mut h)["render_image"].clone();
+    assert_eq!(changed["draft_request"]["settings"]["width"], 17);
+    assert_eq!(changed["active_job"], id);
+    assert_eq!(changed["completed_job"], id, "draft changes do not discard the older completed export candidate");
+    let old = h.call("engine.execute", json!({"command":"render.status","params":{"job":changed["completed_job"]}}));
+    assert_eq!(old["result"]["request"]["width"], 16);
+    h.call("engine.execute", json!({"command":"file.new","params":{"name":"Another document"}}));
+    let fresh = inspect_without_frame(&mut h)["render_image"].clone();
+    assert!(fresh["checked"].is_null() && fresh["active_job"].is_null() && fresh["completed_job"].is_null());
+    assert_eq!(h.call("engine.execute", json!({"command":"render.status","params":{"job":id}}))["ok"], false);
+}
+
 #[test]
 fn image_method_defaults_and_request_building_leave_document_and_physics_unchanged() {
     let mut h = Harness::new();
@@ -45,30 +180,30 @@ fn image_method_rejects_missing_and_cooperative_hosts_without_fallback() {
 fn image_check_invalidates_on_request_visibility_revision_or_host_change() {
     let mut h = Harness::new();
     let params = image_params(&h.app).unwrap();
-    remember_image_check(&mut h.app, params.clone());
+    remember_image_check(&mut h.app, params.clone(), json!({}));
     invalidate_image_check(&mut h.app, Some(&params));
     assert!(h.app.render_workspace.view.checked_image.is_some());
     h.app.cam.yaw += 0.1;
     let changed = image_params(&h.app).unwrap();
     invalidate_image_check(&mut h.app, Some(&changed));
     assert!(h.app.render_workspace.view.checked_image.is_none());
-    remember_image_check(&mut h.app, changed.clone());
+    remember_image_check(&mut h.app, changed.clone(), json!({}));
     h.app.session.visibility.hidden_bodies.push("Product".into());
     invalidate_image_check(&mut h.app, Some(&changed));
     assert!(h.app.render_workspace.view.checked_image.is_none());
-    remember_image_check(&mut h.app, changed.clone());
+    remember_image_check(&mut h.app, changed.clone(), json!({}));
     h.app.session.revision += 1;
     invalidate_image_check(&mut h.app, Some(&changed));
     assert!(h.app.render_workspace.view.checked_image.is_none());
-    remember_image_check(&mut h.app, changed.clone());
+    remember_image_check(&mut h.app, changed.clone(), json!({}));
     h.app.session.set_render_job_host(Some(CpuHost::cooperative())).unwrap();
     invalidate_image_check(&mut h.app, Some(&changed));
     assert!(h.app.render_workspace.view.checked_image.is_none());
-    remember_image_check(&mut h.app, changed.clone());
+    remember_image_check(&mut h.app, changed.clone(), json!({}));
     h.app.session.doc = Arc::new((*h.app.session.doc).clone());
     invalidate_image_check(&mut h.app, Some(&changed));
     assert!(h.app.render_workspace.view.checked_image.is_none(), "equal contents in a different document invalidate Check");
-    remember_image_check(&mut h.app, changed);
+    remember_image_check(&mut h.app, changed, json!({}));
     invalidate_image_check(&mut h.app, None);
     assert!(h.app.render_workspace.view.checked_image.is_none());
 }
@@ -78,7 +213,7 @@ fn image_method_document_reset_clears_runtime_options_and_keeps_existing_host() 
     let mut h = Harness::new();
     let host = h.app.session.render_job_host().unwrap().clone();
     let params = image_params(&h.app).unwrap();
-    remember_image_check(&mut h.app, params);
+    remember_image_check(&mut h.app, params, json!({}));
     h.app.render_workspace.view.integrator = Integrator::Raytrace;
     h.app.render_workspace.view.raytrace.exposure_ev = 4.0;
     h.app.render_workspace.view.raytrace.shadows = false;
@@ -117,7 +252,7 @@ fn cpu_image_request_uses_actual_host_and_refuses_unsupported_ui_options() {
     assert_eq!(params["raytrace"]["exposure_ev"], 2.0);
     let preflight = h.app.session.execute("render.preflight", &params).unwrap();
     assert_eq!(preflight["resolved"]["executor"], "cpu-raytrace");
-    remember_image_check(&mut h.app, params);
+    remember_image_check(&mut h.app, params, json!({}));
     h.app.render_workspace.view.raytrace.shadows = true;
     let changed = image_params(&h.app).unwrap();
     invalidate_image_check(&mut h.app, Some(&changed));
@@ -880,7 +1015,7 @@ fn selecting_raster_discards_cpu_aa_and_check_without_changing_the_document() {
     let doc = h.app.session.doc.clone();
     let history = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.is_dirty());
     let initial = image_params(&h.app).unwrap();
-    remember_image_check(&mut h.app, initial);
+    remember_image_check(&mut h.app, initial, json!({}));
     h.app.render_workspace.view.integrator = Integrator::Raytrace;
     h.app.render_workspace.view.raytrace.primary_samples = 16;
     h.app.render_workspace.view.raytrace.exposure_ev = 3.0;
@@ -941,7 +1076,7 @@ fn cpu_aa_invalid_counts_refuse_and_changes_invalidate_check_without_reserving()
         let options: RaytraceOptions = serde_json::from_value(params["raytrace"].clone()).unwrap();
         assert_eq!(options.primary_samples, samples);
         h.app.session.execute("render.preflight", &params).unwrap();
-        remember_image_check(&mut h.app, params);
+        remember_image_check(&mut h.app, params, json!({}));
         h.app.render_workspace.view.raytrace.primary_samples = if samples == 16 { 1 } else { 16 };
         let changed = image_params(&h.app).unwrap();
         invalidate_image_check(&mut h.app, Some(&changed));
@@ -1015,12 +1150,18 @@ fn clicked_cpu_aa_check_and_start_forward_four_and_sixteen_to_native_work() {
         assert_unchanged(&mut h);
         let check = h.app.tr("render.image_check").to_string();
         h.step(&json!({"widget":check})).unwrap();
-        let params = h.app.render_workspace.view.checked_image.as_ref().unwrap().params.clone();
+        let inspected = h.call("ui.inspect", json!({}))["result"]["render_image"].clone();
+        let params = inspected["checked"]["params"].clone();
+        assert_eq!(inspected["schema_version"], 1);
+        assert_eq!(inspected["draft_request"], params);
+        assert_eq!(inspected["checked"]["result"]["request"]["raytrace"]["primary_samples"], samples);
+        assert_eq!(inspected["checked"]["result"]["scene_generation"], revision);
         assert_eq!(image_params(&h.app).unwrap(), params);
         assert_unchanged(&mut h);
         let start = h.app.tr("render.image_start").to_string();
         h.step(&json!({"widget":start})).unwrap();
-        let id = h.app.render_workspace.view.job.unwrap();
+        let inspected = h.call("ui.inspect", json!({}))["result"]["render_image"].clone();
+        let id = serde_json::from_value(inspected["active_job"].clone()).unwrap();
         let handle = h.app.session.render_job_handle(id).unwrap();
         let status = handle.wait_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert_eq!(status.progress.phase, solidcraft_engine::render::job::Phase::Completed);
@@ -1038,6 +1179,11 @@ fn clicked_cpu_aa_check_and_start_forward_four_and_sixteen_to_native_work() {
         h.frames(3);
         assert_eq!(h.app.render_workspace.view.job, Some(id));
         assert_eq!(h.app.render_workspace.view.completed, Some(id));
+        let inspected = h.call("ui.inspect", json!({}))["result"]["render_image"].clone();
+        assert_eq!(inspected["completed_job"], json!(id));
+        let public_status = h.call("engine.execute", json!({"command":"render.status","params":{"job":inspected["completed_job"]}}));
+        assert_eq!(public_status["result"]["job"], json!(id));
+        assert_eq!(public_status["result"]["request"]["raytrace"]["primary_samples"], samples);
         let frame = handle.frame().unwrap().unwrap();
         assert_eq!(frame.info.job, id);
         assert_eq!(frame.info.scene_generation, revision);
@@ -1090,7 +1236,7 @@ fn cpu_aa_check_start_cancel_keeps_captured_request_and_refuses_stale_recheck() 
     let history = (h.app.session.undo.len(), h.app.session.redo.len(), h.app.session.is_dirty());
     let params = image_params(&h.app).unwrap();
     h.app.run("render.preflight", params.clone()).unwrap();
-    remember_image_check(&mut h.app, params.clone());
+    remember_image_check(&mut h.app, params.clone(), json!({}));
     let revision = h.app.session.revision;
     let current = image_params(&h.app).unwrap();
     let reply = h.app.run("render.start", current).unwrap();

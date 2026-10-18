@@ -59,6 +59,10 @@ Changes:
   back to the seam at the other end of the period and fold its parameter polygon over itself (no
   intersection loop then lay inside the face). `crates/kernel/src/seam_faces_tests.rs` holds it
   to a cone read from STEP.
+- `nurbs/bspsurface.rs`: `uuder` and `vvder` multiply by p·(p − 1), as `BSplineCurve::der2`
+  does. They multiplied by p only, so the second derivatives of every B-spline and NURBS surface
+  of degree p ≥ 3 were 1/(p − 1) of their value (a cubic surface's curvature read as half, #763).
+  `crates/kernel/src/surface_second_derivative_tests.rs` holds them to finite differences.
 
 ## truck-stepio 0.3.0 (Apache-2.0, © RICOS Co. Ltd., https://github.com/ricosjp/truck)
 
@@ -83,6 +87,15 @@ Changes:
 ## truck-meshalgo 0.4.0 (Apache-2.0, © RICOS Co. Ltd., https://github.com/ricosjp/truck)
 
 Changes:
+- `tessellation/triangulation.rs`: ordinary native and serial shell meshes retain a finite
+  interior sample on shared edges of a face's sole two-edge boundary when its midpoint evaluates finitely,
+  including angle-relaxed regeneration.
+  A flat root interval may bisect once within the existing stack, 20,000-point and depth-24
+  limits; chord/angle tolerances and grid budgets are unchanged. The public standalone curve
+  sampler retains its default policy. Compressed-shell and provisional-preview paths are
+  unchanged. The U1 workspace regression records the old sampling policy and checks coarse
+  face coverage, finite attributes and shared-edge consistency.
+
 - `tessellation/triangulation.rs`, `closed.rs`: retry nearest trim projections outside a
   spline's knot domain without the preceding point's hint, preferring a bounded fit within
   the caller's chord tolerance, with a bounded damped least-squares fallback where

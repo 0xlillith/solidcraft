@@ -72,6 +72,7 @@ struct CheckedImage {
     revision: u64,
     visibility: u64,
     params: serde_json::Value,
+    result: serde_json::Value,
     host: CpuHost,
 }
 
@@ -323,12 +324,14 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.render_workspace.view.checked_image.is_some() {
         ui.small(app.tr("render.image_supported"));
     }
-    if ui.add_enabled(params.is_ok(), egui::Button::new(app.tr("render.image_check"))).clicked()
+    let check = ui.add_enabled(params.is_ok(), egui::Button::new(app.tr("render.image_check")));
+    crate::scenario::publish_handle("render:check", check.rect.center());
+    if check.clicked()
         && let Ok(params) = &params
     {
         app.render_workspace.view.checked_image = None;
-        if app.run("render.preflight", params.clone()).is_ok() {
-            remember_image_check(app, params.clone());
+        if let Ok(result) = app.run("render.preflight", params.clone()) {
+            remember_image_check(app, params.clone(), result);
             app.set_status(app.tr("render.image_supported").to_string(), false);
         }
     }
@@ -363,7 +366,9 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let total = status["progress"]["total"].as_u64().unwrap_or(1).max(1);
                     ui.add(egui::ProgressBar::new((done as f64 / total as f64).clamp(0.0, 1.0) as f32));
                     ui.ctx().request_repaint();
-                    if ui.button(app.tr("render.image_cancel")).clicked() {
+                    let cancel = ui.button(app.tr("render.image_cancel"));
+                    crate::scenario::publish_handle("render:cancel", cancel.rect.center());
+                    if cancel.clicked() {
                         let _ = app.run("render.cancel", json!({"job":job}));
                     }
                 }
@@ -379,7 +384,9 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
     }
     // Rebuild from the current draft; a successful Check reserves nothing.
-    if ui.add_enabled(!busy && params.is_ok(), egui::Button::new(app.tr("render.image_start"))).clicked()
+    let start = ui.add_enabled(!busy && params.is_ok(), egui::Button::new(app.tr("render.image_start")));
+    crate::scenario::publish_handle("render:start", start.rect.center());
+    if start.clicked()
         && let Ok(params) = image_params(app)
         && let Ok(reply) = app.run("render.start", params)
     {
@@ -388,7 +395,9 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     let overwrite_label = app.tr("render.image_overwrite").to_string();
     ui.checkbox(&mut app.render_workspace.view.overwrite, overwrite_label);
-    if ui.add_enabled(app.render_workspace.view.completed.is_some(), egui::Button::new(app.tr("render.image_export"))).clicked()
+    let export = ui.add_enabled(app.render_workspace.view.completed.is_some(), egui::Button::new(app.tr("render.image_export")));
+    crate::scenario::publish_handle("render:export", export.rect.center());
+    if export.clicked()
         && let Some(job) = app.render_workspace.view.completed
     {
         export_image(app, job, app.render_workspace.view.overwrite);
@@ -439,27 +448,54 @@ fn image_visibility(app: &SolveApp) -> u64 {
     hash.finish()
 }
 
-fn remember_image_check(app: &mut SolveApp, params: serde_json::Value) {
+fn remember_image_check(app: &mut SolveApp, params: serde_json::Value, result: serde_json::Value) {
     app.render_workspace.view.checked_image = app.session.render_job_host().map(|host| CheckedImage {
         document: Arc::downgrade(&app.session.doc),
         revision: app.session.revision,
         visibility: image_visibility(app),
         params,
+        result,
         host: host.clone(),
     });
 }
 
-fn invalidate_image_check(app: &mut SolveApp, params: Option<&serde_json::Value>) {
-    let valid = app.render_workspace.view.checked_image.as_ref().is_some_and(|checked| {
+fn image_check_is_current(app: &SolveApp, params: Option<&serde_json::Value>) -> bool {
+    app.render_workspace.view.checked_image.as_ref().is_some_and(|checked| {
         checked.document.ptr_eq(&Arc::downgrade(&app.session.doc))
             && checked.revision == app.session.revision
             && checked.visibility == image_visibility(app)
             && params == Some(&checked.params)
             && app.session.render_job_host().is_some_and(|host| host.same_host(&checked.host) && host.is_available())
-    });
-    if !valid {
+    })
+}
+
+fn invalidate_image_check(app: &mut SolveApp, params: Option<&serde_json::Value>) {
+    if !image_check_is_current(app, params) {
         app.render_workspace.view.checked_image = None;
     }
+}
+
+/// Inspect the editor without capture, preflight, polling work or changing its state.
+/// Draft inputs and a previous completed candidate need not describe the same image.
+pub(crate) fn inspect_image(app: &SolveApp) -> serde_json::Value {
+    let params = image_params(app);
+    let checked = if image_check_is_current(app, params.as_ref().ok()) {
+        app.render_workspace.view.checked_image.as_ref().map(|checked| json!({"params":checked.params,"result":checked.result}))
+    } else {
+        None
+    };
+    let (draft_request, draft_error) = match params {
+        Ok(params) => (Some(params), None),
+        Err(error) => (None, Some(error)),
+    };
+    json!({
+        "schema_version":1,
+        "draft_request":draft_request,
+        "draft_error":draft_error,
+        "checked":checked,
+        "active_job":app.render_workspace.view.job,
+        "completed_job":app.render_workspace.view.completed,
+    })
 }
 
 fn image_method_controls(app: &mut SolveApp, ui: &mut egui::Ui) {

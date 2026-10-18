@@ -306,6 +306,9 @@ fn native_raytrace_preflight_start_and_frame_preserve_document_and_roundtrip_req
     assert_eq!(frame.info.executor.as_str(), "cpu-raytrace");
     assert_eq!((frame.info.width, frame.info.height), (32, 32));
     assert!(frame.png().starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(frame.info.png_bytes, frame.png().len() as u64);
+    assert_eq!(frame.info.png_sha256.len(), 64);
+    assert_eq!(status.frame.unwrap().png_sha256, frame.info.png_sha256);
     assert!(Arc::ptr_eq(&doc, &s.doc));
     assert_eq!(before, (s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len()));
 }
@@ -458,4 +461,59 @@ fn spatial_aa_invalid_or_compiled_out_requests_refuse_before_stale_capture_and_r
             assert_eq!(host.admitted_bytes(), 0);
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn completed_png_content_identity_matches_status_and_exact_retained_export() {
+    let (mut s, host) = session();
+    s.execute("solid.box", &json!({"body_name":"Digest specimen","length":10,"width":20,"height":5})).unwrap();
+    s.execute("render.scene", &json!({})).unwrap();
+    let physical = s.execute("component.properties", &json!({})).unwrap();
+    let doc = s.doc.clone();
+    let history = (s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len());
+    // The ID is the actual command reply, not a fabricated counter.
+    let id = start(&mut s);
+    finish(&host);
+    let before_export = s.execute("render.status", &json!({"job":id})).unwrap();
+    assert_eq!(before_export["progress"]["phase"], "completed");
+    let metadata = before_export["frame"].clone();
+    let frame = s.render_jobs.frame(id).unwrap();
+    assert_eq!(metadata["job"], json!(id));
+    assert_eq!(metadata["scene_generation"], history.0);
+    assert_eq!(metadata["png_bytes"], frame.png().len() as u64);
+    let digest = metadata["png_sha256"].as_str().unwrap();
+    assert_eq!(digest.len(), 64);
+    assert!(digest.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("solidcraft-frame-digest-{}-{nonce}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("retained.png");
+    assert!(!path.exists());
+    let exported = s.execute("render.export", &json!({"job":id,"path":path})).unwrap();
+    assert_eq!(exported["frame"], metadata);
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(bytes, frame.png(), "export must write these exact already-hashed retained bytes");
+    assert_eq!(bytes.len() as u64, metadata["png_bytes"].as_u64().unwrap());
+    assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), 16);
+    assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), 16);
+    assert_eq!(s.execute("render.status", &json!({"job":id})).unwrap(), before_export);
+    assert!(s.execute("render.export", &json!({"job":id,"path":path})).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(s.execute("component.properties", &json!({})).unwrap(), physical);
+    assert!(Arc::ptr_eq(&doc, &s.doc));
+    assert_eq!((s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len()), history);
+    // A later completed image has a different identity. An evicted old ID must
+    // never export the newer PNG, even while this test retains its old Arc.
+    let replacement: JobId =
+        serde_json::from_value(s.execute("render.start", &json!({"settings":{"width":8,"height":8}})).unwrap()["job"].clone()).unwrap();
+    finish(&host);
+    let newer = s.execute("render.status", &json!({"job":replacement})).unwrap();
+    assert_ne!(newer["frame"]["png_sha256"], metadata["png_sha256"]);
+    let evicted = dir.join("evicted.png");
+    assert!(s.execute("render.export", &json!({"job":id,"path":evicted})).is_err());
+    assert!(!evicted.exists());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_dir_all(dir).unwrap();
 }

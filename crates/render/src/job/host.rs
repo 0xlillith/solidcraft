@@ -10,6 +10,7 @@ use std::sync::{
 };
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use super::{
     Admission, AlphaConvention, CancelToken, ColourEncoding, ErrorCode, FrameInfo, ImageRequest, ImageTask, Integrator, JobError, JobId, Phase,
@@ -302,8 +303,52 @@ struct Work {
     handle: JobHandle,
     reservation: Reservation,
 }
+// One host advance hashes at most four 16 KiB chunks, independently of the
+// integrator's quantum. The unchanged work reservation covers the sole PNG and
+// this fixed state until publication; it is not another image task or pool.
+const PNG_HASH_CHUNK_BYTES: usize = 16_384;
+const PNG_HASH_CHUNKS_PER_ADVANCE: usize = 4;
+const FRAME_METADATA_BYTES: u64 = 1024;
+
+struct PendingPng {
+    png: Vec<u8>,
+    digest: Sha256,
+    hashed: usize,
+}
+// Keep the new fixed completion state within the existing metadata allowance
+// even if the hashing dependency's representation changes on another target.
+const _: [(); 1] = [(); (std::mem::size_of::<PendingPng>() <= 256) as usize];
+const _: [(); 1] = [(); (std::mem::size_of::<Running>() + std::mem::size_of::<RenderFrame>() + 64 + 2 * crate::MAX_RENDER_ID_BYTES + 32
+    <= FRAME_METADATA_BYTES as usize) as usize];
+
+impl PendingPng {
+    fn new(png: Vec<u8>) -> Self {
+        Self { png, digest: Sha256::new(), hashed: 0 }
+    }
+
+    fn step(&mut self, units: usize, cancel: &CancelToken) -> Result<bool> {
+        cancel.check()?;
+        for _ in 0..units.min(PNG_HASH_CHUNKS_PER_ADVANCE) {
+            if self.hashed == self.png.len() {
+                break;
+            }
+            let end = self.hashed.saturating_add(PNG_HASH_CHUNK_BYTES).min(self.png.len());
+            let chunk = self.png.get(self.hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing PNG digest chunk"))?;
+            self.digest.update(chunk);
+            self.hashed = end;
+            cancel.check()?;
+        }
+        Ok(self.hashed == self.png.len())
+    }
+
+    fn progress(&self) -> Progress {
+        Progress { phase: Phase::Encoding, done: self.hashed as u64, total: self.png.len() as u64 }
+    }
+}
+
 struct Running {
     task: Option<WorkTask>,
+    pending_png: Option<PendingPng>,
     handle: JobHandle,
     reservation: Option<Reservation>,
 }
@@ -399,7 +444,7 @@ impl Running {
         }
         let task = WorkTask::new(work.scene, work.handle.0.request.clone(), work.handle.0.cancel.clone(), work.environment);
         match task {
-            Ok(task) => Some(Self { task: Some(task), handle: work.handle, reservation: Some(work.reservation) }),
+            Ok(task) => Some(Self { task: Some(task), pending_png: None, handle: work.handle, reservation: Some(work.reservation) }),
             Err(e) => {
                 terminal(&work.handle, e);
                 None
@@ -408,6 +453,10 @@ impl Running {
     }
 
     fn advance(&mut self, units: usize) -> Result<bool> {
+        self.handle.0.cancel.check()?;
+        if self.pending_png.is_some() {
+            return self.advance_png(units);
+        }
         let result = self.task.as_mut().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render task"))?.step(units)?;
         let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         // The final publication check is under the same lock as cancellation.
@@ -423,27 +472,58 @@ impl Running {
                 Ok(true)
             }
             TaskPoll::Complete(png) => {
-                // Release all integrator scratch before shrinking the shared lease
-                // to the completed PNG. Retained task metadata also owns memory.
+                // Drop every integrator-owned capture/scratch buffer first, but
+                // keep the original admission lease while hashing the sole PNG.
                 self.task = None;
-                let mut reservation = self.reservation.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render reservation"))?;
-                reservation.shrink(png.capacity() as u64 + 1024)?;
-                let info = FrameInfo {
-                    job: self.handle.0.id,
-                    scene_generation: self.handle.0.scene_generation,
-                    backend: self.handle.0.resolved.backend.clone(),
-                    executor: self.handle.0.resolved.executor.clone(),
-                    width: self.handle.0.request.width,
-                    height: self.handle.0.request.height,
-                    encoding: ColourEncoding::Srgb,
-                    alpha: AlphaConvention::Straight,
-                };
-                data.frame = Some(Arc::new(RenderFrame { info, png, _reservation: reservation }));
-                data.progress = Progress { phase: Phase::Completed, done: 1, total: 1 };
-                self.handle.0.notify();
-                Ok(false)
+                let pending = PendingPng::new(png);
+                data.progress = pending.progress();
+                self.pending_png = Some(pending);
+                Ok(true)
             }
         }
+    }
+
+    fn advance_png(&mut self, units: usize) -> Result<bool> {
+        // No status/data lock is held while scanning the encoded image.
+        let pending = self.pending_png.as_mut().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing pending PNG"))?;
+        if !pending.step(units, &self.handle.0.cancel)? {
+            let progress = pending.progress();
+            let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
+            self.handle.0.cancel.check()?;
+            data.progress = progress;
+            return Ok(true);
+        }
+        let PendingPng { png, digest, .. } =
+            self.pending_png.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed PNG digest"))?;
+        let info = FrameInfo {
+            job: self.handle.0.id,
+            scene_generation: self.handle.0.scene_generation,
+            backend: self.handle.0.resolved.backend.clone(),
+            executor: self.handle.0.resolved.executor.clone(),
+            width: self.handle.0.request.width,
+            height: self.handle.0.request.height,
+            encoding: ColourEncoding::Srgb,
+            alpha: AlphaConvention::Straight,
+            png_bytes: png.len() as u64,
+            png_sha256: format!("{:x}", digest.finalize()),
+        };
+        // Include the working digest/Vec metadata, completed frame layout,
+        // actual hex allocation, bounded copied IDs and Arc/header allowance.
+        // The PNG allocation itself is retained once and billed by capacity below.
+        let fixed_metadata = std::mem::size_of::<Running>() + std::mem::size_of::<RenderFrame>() + 2 * crate::MAX_RENDER_ID_BYTES + 32;
+        if fixed_metadata.checked_add(info.png_sha256.capacity()).is_none_or(|bytes| bytes > FRAME_METADATA_BYTES as usize) {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "PNG digest metadata exceeds its existing admission allowance"));
+        }
+        let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
+        // Cancellation shares this lock; a late cancel must win before frame
+        // installation. The digest state and all task scratch are already gone.
+        self.handle.0.cancel.check()?;
+        let mut reservation = self.reservation.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render reservation"))?;
+        reservation.shrink(png.capacity() as u64 + FRAME_METADATA_BYTES)?;
+        data.frame = Some(Arc::new(RenderFrame { info, png, _reservation: reservation }));
+        data.progress = Progress { phase: Phase::Completed, done: 1, total: 1 };
+        self.handle.0.notify();
+        Ok(false)
     }
 
     fn guarded_step(&mut self, units: usize) -> bool {
