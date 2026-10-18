@@ -67,7 +67,7 @@ impl Pipelines {
             cache: None,
         });
         checked(error_scopes)?;
-        warm_up(device, &context.queue, &guide, &placeholder_bind(device, &context.layout, 6)?)?;
+        warm_up(device, &context.queue, &guide, &placeholder_bind(device, &context.layout, 7)?)?;
         warm_up(device, &context.queue, &filter, &placeholder_bind(device, &filter_layout, 4)?)?;
         Ok(Self { guide, filter, filter_layout })
     }
@@ -96,7 +96,7 @@ impl Resources {
     pub(super) fn new(
         context: &Context,
         path_uniform: &wgpu::Buffer,
-        scene: [&wgpu::Buffer; 4],
+        scene: [&wgpu::Buffer; 5],
         accumulation: &wgpu::Buffer,
         size: u64,
     ) -> Result<Self> {
@@ -114,8 +114,8 @@ impl Resources {
         let guides = buffer("denoise first-hit guides", size * 3);
         let output = buffer("denoise filtered colour", size);
         let temporary = buffer("denoise intermediate colour", size);
-        let [triangles, nodes, environment, textures] = scene;
-        let entries: Vec<_> = [path_uniform, triangles, nodes, &guides, environment, textures]
+        let [triangles, nodes, environment, textures, failures] = scene;
+        let entries: Vec<_> = [path_uniform, triangles, nodes, &guides, environment, textures, failures]
             .into_iter()
             .enumerate()
             .map(|(binding, value)| wgpu::BindGroupEntry { binding: binding as u32, resource: value.as_entire_binding() })

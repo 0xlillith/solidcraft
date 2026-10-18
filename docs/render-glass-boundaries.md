@@ -1,8 +1,21 @@
 # Closed-glass ray boundaries
 
 Closed dielectrics use the uploaded triangle boundary for medium transitions.
-They still reject camera-inside, open, overlapping or inconsistent medium paths;
-a numerical failure is not silently converted into transparent background.
+A path that cannot classify its medium (an escape while inside glass, an exit
+with no matching entry, or an entry while already inside) ends there, keeping
+only the light it had already gathered; it is never converted into transparent
+background. Each job counts these paths. A handful at the limits of f32
+geometry (a few per billion on the captured 69-body tumbler scene) are logged
+and tolerated; more than one in a million paths fails the job with the first
+failure's pixel, bounce, sample and code. A camera inside glass, open meshes or
+overlapping solids fail every affected path and therefore the job.
+
+Surfaces may touch closed glass, as a tumbler resting on a table does. The
+offset launch from such a surface can start inside the glass, so its first
+crossing is an exit. A ray launched from an opaque or thin-sheet surface whose
+first crossing exits a closed body starts in that body's medium, with Beer
+absorption from the launch point; shadow connections do the same. Camera rays
+and closed-glass continuations that meet an unmatched exit are still errors.
 
 A scene-wide normal offset and positive minimum distance are unsuitable for a
 closed volume: near a sharp rim they can jump across the next face or discard a
@@ -90,9 +103,17 @@ true ray reaches at depth `t` lies in the grown box along the rounded ray at the
 same `t`, so box rejection stays conservative. A triangle whose stored bounds
 are separated from the rounded origin by more than `2^-8` of that magnitude on
 some axis (about 4 mm at 1 m) uses the ordinary intersection from the rounded
-origin: a one-ULP origin error cannot change the sign or order of a hit that
-far away. Only the remaining nearby triangles, which include every sharp-rib
-exit, use the integer-defined deltas. On the exploded coffee machine at 1080p
+origin: an origin error of a few ULPs cannot reorder a hit that far away.
+It can still move the ray across an edge. In a concave rib, a ray leaving
+through one face can re-enter the next face within micrometres of their shared
+edge. The far face, tested from the rounded origin, then reported a miss
+just outside that edge, while the nearby face across it, tested exactly from
+the true origin, correctly missed too, so the re-entry was lost (captured at
+256 spp: bounce 5, code 2). Far
+candidates whose bound or edge decision lies within `2^-20` of the origin
+magnitude, scaled by the projected edge length, therefore also take the exact
+path. Only those and the nearby triangles, which include every sharp-rib exit,
+use the integer-defined deltas. On the exploded coffee machine at 1080p
 and 8 samples per pixel this cuts closed-glass time on an NVIDIA GB10 from
 43.5 s to 5.7 s (opaque: 5.2 s); 3 of 2,073,600 pixels differ from the
 all-exact result, by at most 6/255. For a finite emitter, it first subtracts the
@@ -107,6 +128,15 @@ edge projection, barycentric evaluation, and local-offset construction also
 retain ordinary floating arithmetic. Acceptance requires the integer bit oracle,
 captured rib/corner regressions, and production renders on each supported
 backend. These candidate notes do not claim those checks have passed.
+
+A closed-glass continuation within `1e-6` of tangent to its producing face
+ends the path. It skims that face, and the rounding of its reconstructed start
+point (a few `1e-8` mm on the captured 69-body tumbler scene) then decides
+which side of the neighbouring faces it is on. The captured ray left a face at
+a cosine of `4e-8` while inside a glass, and then entered the adjacent face of
+the same glass from outside at a shared edge. Those directions carry about a
+millionth of the hemisphere's projected solid angle; ending them removes
+negligible energy, not a classified medium error.
 
 The bounded opt-in glass shadow connection uses the same unshifted, zero-minimum continuation and exact producing-plane exclusion at closed interfaces. Thin-sheet shadow traversal retains its existing offset policy. A corner oracle checks a real exit shorter than the old global minimum while retaining both Fresnel interface factors and Beer attenuation.
 
