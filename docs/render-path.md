@@ -80,8 +80,8 @@ time on an NVIDIA GB10 (opaque 4.95 s to 2.49 s, closed glass 5.65 s to
 rebased around the camera target before f32 upload. The upload packs indexed 32-byte position/normal vertices, 16-byte triangle records
 (including material IDs), 64-byte resolved materials, four-byte planar patch IDs
 and 32-byte BVH nodes. Geometry arrays share one buffer. The progressive executor
-requires five storage buffers per stage for geometry, BVH, accumulation,
-environment and textures; raster device requirements remain unchanged.
+requires six storage buffers per stage for geometry, BVH, accumulation,
+environment, textures and medium-failure counts; raster device requirements remain unchanged.
 Geometry must be within 1e7 mm of the camera target. Opaque and thin-sheet ray
 offsets use max(1e-5 mm, extent × 1e-7); closed glass instead retains an anchor
 and local displacement with strictly positive intersections, as described in

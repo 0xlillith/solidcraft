@@ -1663,14 +1663,14 @@ fn gpu_finite_emitter_inside_solid_retains_entry_radiance_eta() {
 }
 
 #[test]
-fn path_device_limits_require_five_storage_buffers_without_changing_raster_defaults() {
+fn path_device_limits_require_six_storage_buffers_without_changing_raster_defaults() {
     let mut supported = wgpu::Limits::downlevel_defaults();
     assert_eq!(supported.max_storage_buffers_per_shader_stage, 4);
     assert!(device_limits(supported.clone()).is_err());
     supported.max_storage_buffers_per_shader_stage = 8;
     let requested = device_limits(supported.clone()).unwrap();
     let mut expected = wgpu::Limits::downlevel_defaults().using_resolution(supported);
-    expected.max_storage_buffers_per_shader_stage = 5;
+    expected.max_storage_buffers_per_shader_stage = 6;
     assert_eq!(requested, expected);
 }
 
@@ -2000,6 +2000,133 @@ fn assert_entry_before_exit(context: &Arc<Context>, origin: Vec3, direction: Vec
             }
         }
     }
+}
+#[test]
+fn gpu_far_rib_reentry_near_an_edge_is_not_lost_between_paths() {
+    let Some(executor) = executor() else { return };
+    let context = &executor.context;
+    let shader = context
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("rib re-entry oracle"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&context.layout)],
+        immediate_size: 0,
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("continuation_reference"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bits = |x: u32, y: u32, z: u32| Vec3::new(f64::from(f32::from_bits(x)), f64::from(f32::from_bits(y)), f64::from(f32::from_bits(z)));
+    // Captured stored-f32 faces of the coffee bin's ribbed wall: the producing
+    // face, its nearby neighbour, the far re-entry face sharing the neighbour's
+    // edge, and the next exit. The ray leaves the producing face and truly
+    // re-enters 2.615 mm later, inside the re-entry face but very close to the
+    // shared edge; it then exits 17.529 mm along.
+    let faces = [
+        [bits(0x438a6e62, 0x4175ca91, 0xc2860000), bits(0x4389b018, 0x416145f8, 0x42c80000), bits(0x438a6e62, 0x4175ca91, 0x42c80000)],
+        [bits(0x438b2463, 0x4185b9d0, 0xc2860000), bits(0x438a6e62, 0x4175ca91, 0x42c80000), bits(0x438b2463, 0x4185b9d0, 0x42c80000)],
+        [bits(0x438b2463, 0x4185b9d0, 0xc2860000), bits(0x438b2463, 0x4185b9d0, 0x42c80000), bits(0x438bd1ab, 0x419119e4, 0xc2860000)],
+        [bits(0x43906f8f, 0x41d4ebca, 0xc28e0000), bits(0x43906f8f, 0x41d4ebca, 0x42c80000), bits(0x438ff618, 0x41c5d6eb, 0xc28e0000)],
+    ];
+    let mut mesh = Mesh::default();
+    for face in faces {
+        let n = (face[1] - face[0]).cross(face[2] - face[0]).normalized().unwrap();
+        let i = mesh.positions.len() as u32;
+        mesh.positions.extend(face);
+        mesh.normals.extend([n; 3]);
+        mesh.triangles.push([i, i + 1, i + 2]);
+        mesh.tri_face.push(0);
+    }
+    let mut scene = sphere_grid(white(), 2, 3);
+    scene.bounds = mesh.bounds();
+    scene.meshes[0].mesh = Arc::new(mesh);
+    let mut task = Task::new(context.clone(), scene, request(2), JobOptions::default(), CancelToken::default()).unwrap();
+    let mut params = vec![0; 32];
+    scene::vector(&mut params, bits(0x438a6e62, 0x4175ca91, 0xc2860000), 0.);
+    scene::vector(&mut params, bits(0xbedb21b8, 0xbebd05fd, 0x4295df13), 0.);
+    scene::vector(&mut params, bits(0x3f3519ed, 0x3f28acac, 0xbe82f446), 0.);
+    context.queue.write_buffer(&task.uniform, 0, &params);
+    let mut encoder = context.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &task.bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    context.queue.submit([encoder.finish()]);
+    task.sample = 1;
+    let values = task.read_linear().unwrap();
+    assert_eq!(values[0][0], 2.0, "hit/distance={:?}", values[0]);
+    assert!((f64::from(values[0][1]) - 2.615).abs() < 0.01, "hit/distance={:?}", values[0]);
+}
+#[test]
+fn gpu_entry_at_a_shared_edge_does_not_reenter_the_adjacent_face() {
+    let Some(executor) = executor() else { return };
+    let context = &executor.context;
+    let shader = context
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("edge entry oracle"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&context.layout)],
+        immediate_size: 0,
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("continuation_reference"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let bits = |x: u32, y: u32, z: u32| Vec3::new(f64::from(f32::from_bits(x)), f64::from(f32::from_bits(y)), f64::from(f32::from_bits(z)));
+    // Captured tumbler faces: a refracted ray entered the glass through the first
+    // face 8e-9 (barycentric) from its edge with the second. Its reconstructed
+    // start is 6.5e-9 mm outside both planes, so it met the second face from
+    // outside 1.1e-8 mm later: an "entry" while already inside. A cone to an
+    // apex behind both faces closes the captured pair into valid closed glass.
+    let a = bits(0x43050000, 0x42095be6, 0x42140000);
+    let b = bits(0x4304aef7, 0x4218aea0, 0x41b80000);
+    let c = bits(0x4303bd40, 0x4205b1dd, 0x41b80000);
+    let e = bits(0x4305c374, 0x421b114d, 0x42140000);
+    let f = Vec3::new(140.75, 34.75, 29.5);
+    let faces = [[c, a, b], [e, b, a], [a, c, f], [e, a, f], [b, e, f], [c, b, f]];
+    let mut mesh = Mesh::default();
+    for face in faces {
+        let n = (face[1] - face[0]).cross(face[2] - face[0]).normalized().unwrap();
+        let i = mesh.positions.len() as u32;
+        mesh.positions.extend(face);
+        mesh.normals.extend([n; 3]);
+        mesh.triangles.push([i, i + 1, i + 2]);
+        mesh.tri_face.push(0);
+    }
+    let mut scene = glass_slab(false);
+    scene.bounds = mesh.bounds();
+    scene.meshes[0].mesh = Arc::new(mesh);
+    let mut task = Task::new(context.clone(), scene, request(2), JobOptions::default(), CancelToken::default()).unwrap();
+    let mut params = vec![0; 32];
+    scene::vector(&mut params, bits(0x43050000, 0x42095be6, 0x42140000), 1.);
+    scene::vector(&mut params, bits(0xbda74978, 0x3f7d0fd4, 0xc06735c3), 0.);
+    scene::vector(&mut params, bits(0x3f4ff9cf, 0x3f0c3c0f, 0xbe4c997d), 0.);
+    context.queue.write_buffer(&task.uniform, 0, &params);
+    let mut encoder = context.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &task.bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    context.queue.submit([encoder.finish()]);
+    task.sample = 1;
+    let values = task.read_linear().unwrap();
+    // The ray must leave through one of the closing faces, at a real distance.
+    assert!(values[0][0] >= 2.0 && values[0][0] < 6.0, "hit/distance={:?}", values[0]);
+    assert!(values[0][1] > 1e-3, "hit/distance={:?}", values[0]);
 }
 #[test]
 fn gpu_long_ray_near_corner_refraction_keeps_real_exit() {
@@ -2419,4 +2546,16 @@ fn gpu_integer_relative_fast_paths_match_ordered_rounding() {
         assert_eq!(reference, expected, "reference index={i} input={quad:08x?}");
         assert_eq!(candidate, expected, "candidate index={i} input={quad:08x?}");
     }
+}
+
+#[test]
+fn medium_failures_are_tolerated_only_when_rare() {
+    // One failure in one path (a camera inside glass) is never tolerated.
+    assert!(!medium_failures_tolerated(1, 1));
+    assert!(medium_failures_tolerated(0, 1));
+    assert!(medium_failures_tolerated(1, 1_000_000));
+    assert!(!medium_failures_tolerated(2, 1_000_000));
+    // 1080p at 256 spp tolerates up to 530 isolated paths.
+    assert!(medium_failures_tolerated(530, 1920 * 1080 * 256));
+    assert!(!medium_failures_tolerated(531, 1920 * 1080 * 256));
 }
