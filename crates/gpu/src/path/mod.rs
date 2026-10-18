@@ -15,6 +15,7 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+mod denoise;
 mod scene;
 #[cfg(test)]
 mod tests;
@@ -188,12 +189,13 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     // Peak preparation: f64 triangles + nodes + serialized upload. After preparation:
     // serialized + device geometry + accumulation/readback/RGBA/PNG. These phases don't overlap.
     let pixels = u64::from(request.width) * u64::from(request.height);
-    admission.pixel_scratch_bytes = pixels * 64;
+    let denoise_bytes = pixels * if options.denoise { denoise::BYTES_PER_PIXEL } else { 0 };
+    admission.pixel_scratch_bytes = pixels * 64 + denoise_bytes;
     let vertex_bytes = scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
     let triangle_preparation =
         (admission.triangles * 400_u64.max(scene::planar_preparation_bytes_per_triangle() as u64)).max(scene::medium_preparation_bytes(scene));
     admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8)
-        .max(admission.triangles * 232 + vertex_bytes * 2 + pixels * 32)
+        .max(admission.triangles * 232 + vertex_bytes * 2 + pixels * 32 + denoise_bytes)
         .max(admission.triangles * 116 + vertex_bytes + admission.pixel_scratch_bytes)
         + 1_048_576;
     admission.preparation_bytes += request.environment.as_ref().map_or(0, |source| source.admitted_bytes());
@@ -226,6 +228,7 @@ impl ImageExecutor for Executor {
             || environment_bytes > limit
             || geometry_bytes > limit
             || u64::from(request.width) * u64::from(request.height) * 16 > limit
+            || (options.denoise && u64::from(request.width) * u64::from(request.height) * 48 > limit)
         {
             return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path storage buffer exceeds this device's limit"));
         }
@@ -246,6 +249,7 @@ struct Task {
     accumulation: wgpu::Buffer,
     readback: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    denoiser: Option<denoise::Resources>,
     sample: u32,
     offset: u32,
     epsilon: f32,
@@ -324,6 +328,11 @@ impl Task {
             .collect();
         entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-path"), layout: &context.layout, entries: &entries });
+        let denoiser = if options.denoise {
+            Some(denoise::Resources::new(&context, &uniform, [&triangles, &nodes, &environment, &texture_buffer], &accumulation, size)?)
+        } else {
+            None
+        };
         let mut error = None;
         for scope in scopes.into_iter().rev() {
             if let Some(e) = pollster::block_on(scope.pop()) {
@@ -347,6 +356,7 @@ impl Task {
             accumulation,
             readback,
             bind,
+            denoiser,
             sample: 0,
             offset: 0,
             epsilon: upload.epsilon,
@@ -443,11 +453,14 @@ impl Task {
         Ok(())
     }
     fn read_linear(&self) -> Result<Vec<[f32; 4]>> {
+        self.read_linear_buffer(&self.accumulation)
+    }
+    fn read_linear_buffer(&self, source: &wgpu::Buffer) -> Result<Vec<[f32; 4]>> {
         self.cancel.check()?;
         let context = &self.context;
         let scopes = scopes(&context.device);
         let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path readback") });
-        encoder.copy_buffer_to_buffer(&self.accumulation, 0, &self.readback, 0, self.accumulation.size());
+        encoder.copy_buffer_to_buffer(source, 0, &self.readback, 0, self.accumulation.size());
         let submission = context.queue.submit([encoder.finish()]);
         checked(scopes)?;
         let slice = self.readback.slice(..);
@@ -522,7 +535,14 @@ impl ImageWork for Task {
             return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.options.samples) }));
         }
         log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
-        let linear = self.read_linear()?;
+        let mut linear = self.read_linear()?;
+        if let Some(denoiser) = &self.denoiser {
+            // Diagnose the raw path buffer before filtering: never hide invalid media
+            // or nonfinite radiance by replacing a pixel with neighbouring values.
+            drop(linear);
+            denoiser.run(self)?;
+            linear = self.read_linear_buffer(denoiser.output())?;
+        }
         let mut rgba = scene::reserved(linear.len() * 4)?;
         rgba.resize(linear.len() * 4, 0);
         let display = Display {
