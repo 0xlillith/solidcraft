@@ -40,7 +40,7 @@ and these limitations. The job options retain the explicit flag. A job admits
 two colour buffers. The 512 MiB job estimate and each device storage-binding
 limit apply. At 1920x1080 the guide buffer is 99,532,800 bytes; larger dimensions
 may be rejected before allocation rather than silently reducing resolution.
-The guide pass reuses the existing five-storage-buffer path layout; the filter
+The guide pass reuses the existing six-storage-buffer path layout; the filter
 needs three storage buffers. Cancellation is checked between bounded tiles.
 
 Regression coverage includes an independent f64 gather oracle, constant-image
