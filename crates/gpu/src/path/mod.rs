@@ -25,6 +25,10 @@ const MAX_TRIANGLES: u64 = 1_048_576;
 const PARAMETER_BYTES: usize = 448;
 const TILE: u32 = 262_144;
 const TIMEOUT: Duration = Duration::from_secs(30);
+// Software Vulkan drivers can compile a pipeline at its first dispatch, which on a cold
+// shader cache exceeds the per-dispatch hang timeout. Setup dispatches once with no work
+// and allows this longer wait, so jobs keep the short one.
+const SETUP_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn gpu(e: impl std::fmt::Display) -> JobError {
     JobError::new(ErrorCode::HostUnavailable, e.to_string())
@@ -98,6 +102,8 @@ struct Context {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
+    // Built and warmed by the first denoised job, then shared by later ones.
+    denoise: std::sync::OnceLock<denoise::Pipelines>,
     layout: wgpu::BindGroupLayout,
 }
 struct Executor {
@@ -137,8 +143,48 @@ impl Executor {
             cache: None,
         });
         checked(scopes)?;
-        Ok(Self { context: Arc::new(Context { device, queue, pipeline, layout }) })
+        warm_up(&device, &queue, &pipeline, &placeholder_bind(&device, &layout, 6)?)?;
+        Ok(Self { context: Arc::new(Context { device, queue, pipeline, layout, denoise: std::sync::OnceLock::new() }) })
     }
+}
+
+// Small zeroed bindings: binding 0 is a uniform whose zero work count makes every
+// invocation return at once; the others are storage buffers.
+fn placeholder_bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, count: u32) -> Result<wgpu::BindGroup> {
+    let scopes = scopes(device);
+    let buffers: Vec<_> = (0..count)
+        .map(|binding| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("gpu-path warm-up"),
+                size: if binding == 0 { PARAMETER_BYTES as u64 } else { 256 },
+                usage: if binding == 0 { wgpu::BufferUsages::UNIFORM } else { wgpu::BufferUsages::STORAGE },
+                mapped_at_creation: false,
+            })
+        })
+        .collect();
+    let entries: Vec<_> = buffers
+        .iter()
+        .enumerate()
+        .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: binding as u32, resource: buffer.as_entire_binding() })
+        .collect();
+    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-path warm-up"), layout, entries: &entries });
+    checked(scopes)?;
+    Ok(bind)
+}
+
+fn warm_up(device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &wgpu::ComputePipeline, bind: &wgpu::BindGroup) -> Result<()> {
+    let scopes = scopes(device);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("gpu-path warm-up") });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("gpu-path warm-up"), timestamp_writes: None });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    let submission = queue.submit([encoder.finish()]);
+    checked(scopes)?;
+    device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(SETUP_TIMEOUT) }).map_err(gpu)?;
+    Ok(())
 }
 
 fn descriptor() -> Result<ExecutorDescriptor> {
