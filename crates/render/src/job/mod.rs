@@ -34,11 +34,13 @@ pub struct JobOptions {
     pub lens: Option<ThinLens>,
     pub lighting: Option<StudioLighting>,
     pub tone_map: ToneMap,
+    /// Optional final spatial filter. Raw progressive accumulation remains unchanged.
+    pub denoise: bool,
 }
 
 impl Default for JobOptions {
     fn default() -> Self {
-        Self { samples: 64, max_depth: 8, seed: 0, exposure_ev: 0.0, lens: None, lighting: None, tone_map: ToneMap::default() }
+        Self { samples: 64, max_depth: 8, seed: 0, exposure_ev: 0.0, lens: None, lighting: None, tone_map: ToneMap::default(), denoise: false }
     }
 }
 
