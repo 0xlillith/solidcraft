@@ -228,9 +228,20 @@ fn gpu_camera_inside_volume_fails_without_publishing_fake_radiance() {
     scene.meshes[0].transmission = Some(clear_glass());
     let mut request = request(1);
     request.camera.distance = 0.1;
-    let mut task = Task::new(executor.context.clone(), scene, request, JobOptions::default(), CancelToken::default()).unwrap();
+    let mut task = Task::new(executor.context.clone(), scene.clone(), request.clone(), JobOptions::default(), CancelToken::default()).unwrap();
     task.dispatch().unwrap();
     assert_eq!(task.read_linear().unwrap_err().code, ErrorCode::InvalidScene);
+    drop(task);
+    // Seed just below the 32-bit wrap: the next real failed path must carry
+    // into the high word, rather than clearing diagnostics and publishing black.
+    let mut task = Task::new(executor.context.clone(), scene, request, JobOptions::default(), CancelToken::default()).unwrap();
+    let mut failures = [0; FAILURE_BYTES as usize];
+    failures[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+    task.context.queue.write_buffer(&task.failures, 0, &failures);
+    task.dispatch().unwrap();
+    let error = task.read_linear().unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidScene);
+    assert!(error.message.contains("4294967296 of 1 paths"), "{error}");
 }
 
 #[test]
@@ -1287,8 +1298,14 @@ fn gpu_shadow_sheets_solids_endpoints_and_invalid_crossings_match_oracles() {
             for (a, b) in inside[0].iter().zip([expected.x, expected.y, expected.z]) {
                 assert!((f64::from(*a) - b).abs() < 2e-5);
             }
-            // An unmatched exit is fail-closed even if caller bypassed admission.
-            assert_eq!(shadow_probe(context, scene.clone(), Vec3::ZERO, Vec3::Z, 8.0)[0], [0.0, 0.0, 0.0, 1.0]);
+            // Shadow rays start at shading points, which may touch or lie inside
+            // glass. A first exit infers that medium and absorbs from the origin.
+            let from_inside = shadow_probe(context, scene.clone(), Vec3::ZERO, Vec3::Z, 8.0);
+            let expected = optics.attenuation(0.5).unwrap() * 0.96;
+            for (a, b) in from_inside[0].iter().zip([expected.x, expected.y, expected.z]) {
+                assert!((f64::from(*a) - b).abs() < 2e-5, "{from_inside:?} vs {expected:?}");
+            }
+            assert_eq!(from_inside[1][1], 1.0);
         }
         scene.meshes[0].transmission = Some(optics.with_shadow_transmission(false));
         assert_eq!(shadow_probe(context, scene, Vec3::new(0.0, 0.0, 2.0), -Vec3::Z, 8.0)[0], [0.0, 0.0, 0.0, 1.0]);
@@ -2558,4 +2575,5 @@ fn medium_failures_are_tolerated_only_when_rare() {
     // 1080p at 256 spp tolerates up to 530 isolated paths.
     assert!(medium_failures_tolerated(530, 1920 * 1080 * 256));
     assert!(!medium_failures_tolerated(531, 1920 * 1080 * 256));
+    assert!(!medium_failures_tolerated(1_u64 << 32, 1_u64 << 32));
 }
