@@ -959,6 +959,8 @@
   "recovery.never_saved": "从未保存",
   "render.background": "场景背景",
   "render.fit": "适配产品视图",
+  "render.gpu_path_failed": "GPU 路径追踪器不可用",
+  "render.gpu_path_preparing": "GPU 路径追踪器正在准备…",
   "render.image_cancelled": "渲染已取消",
   "render.image_cancelling": "正在取消",
   "render.image_completed": "图像可导出",

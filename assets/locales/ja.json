@@ -959,6 +959,8 @@
   "recovery.never_saved": "未保存",
   "render.background": "シーンの背景",
   "render.fit": "製品を画面に合わせる",
+  "render.gpu_path_failed": "GPUパストレーサーを利用できません",
+  "render.gpu_path_preparing": "GPUパストレーサーを準備中…",
   "render.image_cancelled": "レンダリングをキャンセルしました",
   "render.image_cancelling": "キャンセル中",
   "render.image_completed": "画像をエクスポートできます",
