@@ -23,7 +23,7 @@ mod textures;
 const SHADER: &str = concat!(include_str!("path.wgsl"), "\n", include_str!("shadows.wgsl"), "\n", include_str!("textures.wgsl"));
 const MAX_TRIANGLES: u64 = 1_048_576;
 const PARAMETER_BYTES: usize = 448;
-// Eight u32 words: failed path count, then pixel, bounce, sample and code of the first.
+// Eight u32 words: count low, pixel, bounce, sample, code, count high, first-writer flag, spare.
 const FAILURE_BYTES: u64 = 32;
 // A path that cannot classify its glass medium ends there. Isolated paths at the
 // limits of f32 geometry are tolerated and logged; more than this fraction of all
@@ -197,8 +197,8 @@ fn warm_up(device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &wgpu::ComputeP
     Ok(())
 }
 
-fn medium_failures_tolerated(failed: u32, paths: u64) -> bool {
-    f64::from(failed) <= paths as f64 * FAILURE_FRACTION
+fn medium_failures_tolerated(failed: u64, paths: u64) -> bool {
+    failed as f64 <= paths as f64 * FAILURE_FRACTION
 }
 
 fn descriptor() -> Result<ExecutorDescriptor> {
@@ -377,7 +377,11 @@ impl Task {
             mapped_at_creation: false,
         });
         // Inconsistent-medium path count and the first such path's location (see read_linear).
-        let failures = make("path medium failures", &[0; FAILURE_BYTES as usize], wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let failures = make(
+            "path medium failures",
+            &[0; FAILURE_BYTES as usize],
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        );
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("path readback"),
             size: size + FAILURE_BYTES,
@@ -539,7 +543,7 @@ impl Task {
         let data = slice.get_mapped_range().map_err(gpu)?;
         let (pixels, failures) = data.split_at(data.len().saturating_sub(FAILURE_BYTES as usize));
         let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
-        let failed = word(0);
+        let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
         if failed > 0 {
             let paths = u64::from(self.request.width) * u64::from(self.request.height) * u64::from(self.sample.max(1));
             let detail = format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
