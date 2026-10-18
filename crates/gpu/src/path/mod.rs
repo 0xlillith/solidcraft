@@ -6,7 +6,7 @@ use solidcraft_render::{
     RenderProfile, ScratchLayout,
     job::{
         Admission, CancelToken, ErrorCode, ImageExecutor, ImageHost, ImageRequest, ImageWork, JobError, JobOptions, Phase, PngTask, Progress, Result,
-        TaskPoll, admit_geometry,
+        TaskPoll, ToneMap, admit_geometry,
     },
 };
 use std::{
@@ -485,6 +485,32 @@ impl Task {
         Ok(values)
     }
 }
+#[derive(Clone, Copy)]
+struct Display {
+    exposure: f64,
+    tone_map: ToneMap,
+    background: [f64; 3],
+    transparent: bool,
+}
+impl Display {
+    fn encode(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken) -> Result<()> {
+        for (index, (pixel, rgba)) in input.iter().zip(output.as_chunks_mut::<4>().0).enumerate() {
+            if index % 4096 == 0 {
+                cancel.check()?;
+            }
+            let alpha = f64::from(pixel[3]).clamp(0.0, 1.0);
+            for ((radiance, background), out) in pixel.iter().take(3).zip(self.background).zip(rgba.iter_mut()) {
+                let c = if alpha > 0.0 { f64::from(*radiance) * self.exposure / alpha } else { 0.0 };
+                let mapped = self.tone_map.map(c);
+                let value = if self.transparent { mapped } else { mapped * alpha + background * (1.0 - alpha) };
+                let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
+                *out = (encoded.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            rgba[3] = if self.transparent { (alpha * 255.0).round() as u8 } else { 255 };
+        }
+        Ok(())
+    }
+}
 impl ImageWork for Task {
     fn step(&mut self, units: usize) -> Result<TaskPoll> {
         self.cancel.check()?;
@@ -498,25 +524,26 @@ impl ImageWork for Task {
         log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
         let linear = self.read_linear()?;
         let mut rgba = scene::reserved(linear.len() * 4)?;
-        let exposure = 2.0f64.powf(self.options.exposure_ev);
-        for (index, pixel) in linear.iter().enumerate() {
-            if index % 4096 == 0 {
-                self.cancel.check()?;
-            }
-            let alpha = f64::from(pixel[3]).clamp(0.0, 1.0);
-            for (radiance, background) in pixel.iter().take(3).zip(self.request.background) {
-                let c = if alpha > 0.0 { f64::from(*radiance) * exposure / alpha } else { 0.0 };
-                let mapped = self.options.tone_map.map(c);
-                let value = if self.request.transparent_background {
-                    mapped
-                } else {
-                    mapped * alpha + solidcraft_render::surface::srgb8_to_linear(background) * (1.0 - alpha)
-                };
-                let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
-                rgba.push((encoded.clamp(0.0, 1.0) * 255.0).round() as u8);
-            }
-            rgba.push(if self.request.transparent_background { (alpha * 255.0).round() as u8 } else { 255 });
-        }
+        rgba.resize(linear.len() * 4, 0);
+        let display = Display {
+            exposure: 2.0f64.powf(self.options.exposure_ev),
+            tone_map: self.options.tone_map,
+            background: self.request.background.map(solidcraft_render::surface::srgb8_to_linear),
+            transparent: self.request.transparent_background,
+        };
+        // Pixels are independent: encode contiguous chunks on every core.
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 16);
+        let chunk = linear.len().div_ceil(workers).max(1);
+        let cancel = &self.cancel;
+        std::thread::scope(|scope| {
+            let jobs: Vec<_> = linear
+                .chunks(chunk)
+                .zip(rgba.chunks_mut(chunk * 4))
+                .map(|(input, output)| scope.spawn(move || display.encode(input, output, cancel)))
+                .collect();
+            jobs.into_iter()
+                .try_for_each(|job| job.join().unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "display encoding worker failed"))))
+        })?;
         self.png = Some(PngTask::new(&self.request, rgba, self.cancel.clone())?);
         Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }))
     }
