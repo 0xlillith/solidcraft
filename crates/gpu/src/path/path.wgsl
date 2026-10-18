@@ -33,13 +33,14 @@ struct Params {
 struct EnvironmentTexel { rgb: vec3<f32>, pdf: f32, threshold: f32, alternate: u32, padding: vec2<f32> };
 struct EnvironmentData { header: vec4<u32>, texels: array<EnvironmentTexel> };
 @group(0) @binding(4) var<storage, read> environment_data: EnvironmentData;
-// Count of paths ended at an unclassifiable glass medium, then the pixel, bounce,
-// sample and code of the first one. The host fails jobs where this is not rare.
+// Count low, first pixel/bounce/sample/code, count high, first-writer flag, spare.
+// Two atomic words count jobs with more than 2^32 paths without wrapping to zero.
 @group(0) @binding(6) var<storage, read_write> failures: array<atomic<u32>>;
 // Codes: 1 escaped inside a medium, 2 exit with no medium, 3 exit from another
 // medium, 4 entry while inside a medium or beyond 16 nested media.
 fn medium_failure(radiance: vec3<f32>, coverage: f32, pixel: u32, bounce: u32, code: u32) -> vec4<f32> {
-    if atomicAdd(&failures[0],1u)==0u {
+    if atomicAdd(&failures[0],1u)==0xffffffffu { atomicAdd(&failures[5],1u); }
+    if atomicExchange(&failures[6],1u)==0u {
         atomicStore(&failures[1],pixel); atomicStore(&failures[2],bounce);
         atomicStore(&failures[3],u.image.z); atomicStore(&failures[4],code);
     }
@@ -916,8 +917,8 @@ fn sample_path(pixel: u32) -> vec4<f32> {
                 // A finite normal offset can cross the next face near a closed
                 // corner. Launch on the reconstructed boundary, suppress only
                 // the producing triangle, and retain every strictly positive exit.
-                // Medium-order errors are still rejected; no neighboring faces
-                // are skipped by angular or distance heuristics.
+                // Consistent medium crossings retain even arbitrarily short
+                // exits; repeated adjacent crossings are handled by traversal.
                 // A continuation within 1e-6 of tangent skims its producing face:
                 // the reconstructed point's rounding then decides which side of
                 // the neighbouring faces it is on, so its medium cannot be
@@ -1109,7 +1110,7 @@ fn refracted_corner_reference() {
     let position=surface_point(t,entry.bary);
     let outward=unit(cross(t.p1.xyz-t.p0.xyz,t.p2.xyz-t.p0.xyz));
     let inside=refract(u.right.xyz,outward,1.0/t.parameters.z);
-    let exit=trace_bounded(position,inside,false,entry.triangle,0.0);
+    let exit=trace_ordered_within(position,inside,false,entry.triangle,0.0,true,FAR,-1.0);
     var valid_exit=false;
     if exit.triangle!=0xffffffffu {
         let other=triangle(exit.triangle);
