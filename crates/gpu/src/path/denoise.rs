@@ -1,5 +1,5 @@
 //! Optional output filtering; never writes the Monte Carlo accumulation buffer.
-use super::{Context, Result, SHADER, TILE, TIMEOUT, Task, checked, gpu, scopes};
+use super::{Context, Result, SHADER, TILE, TIMEOUT, Task, checked, gpu, placeholder_bind, scopes, warm_up};
 use wgpu::util::DeviceExt;
 
 pub(super) const BYTES_PER_PIXEL: u64 = 80; // three guide vec4s and two colour vec4s
@@ -9,46 +9,18 @@ const GUIDES: &str = include_str!("denoise_guides.wgsl");
 #[path = "denoise_tests.rs"]
 mod tests;
 
-pub(super) struct Resources {
-    guide_pipeline: wgpu::ComputePipeline,
-    guide_bind: wgpu::BindGroup,
-    filter_pipeline: wgpu::ComputePipeline,
-    filter_uniform: wgpu::Buffer,
-    filter_binds: Vec<wgpu::BindGroup>,
-    output: wgpu::Buffer,
-    // Retained for diagnostic tests; bind groups also retain the guide allocation.
-    _guides: wgpu::Buffer,
+// Shared by every denoised job on a device: the guide pipeline compiles the whole
+// path shader, so it is built and warmed once rather than per job.
+pub(super) struct Pipelines {
+    guide: wgpu::ComputePipeline,
+    filter: wgpu::ComputePipeline,
+    filter_layout: wgpu::BindGroupLayout,
 }
 
-impl Resources {
-    pub(super) fn new(
-        context: &Context,
-        path_uniform: &wgpu::Buffer,
-        scene: [&wgpu::Buffer; 4],
-        accumulation: &wgpu::Buffer,
-        size: u64,
-    ) -> Result<Self> {
+impl Pipelines {
+    fn new(context: &Context) -> Result<Self> {
         let device = &context.device;
         let error_scopes = scopes(device);
-        let buffer = |label, bytes| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: bytes,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
-        let guides = buffer("denoise first-hit guides", size * 3);
-        let output = buffer("denoise filtered colour", size);
-        let temporary = buffer("denoise intermediate colour", size);
-        let [triangles, nodes, environment, textures] = scene;
-        let entries: Vec<_> = [path_uniform, triangles, nodes, &guides, environment, textures]
-            .into_iter()
-            .enumerate()
-            .map(|(binding, value)| wgpu::BindGroupEntry { binding: binding as u32, resource: value.as_entire_binding() })
-            .collect();
-        let guide_bind =
-            device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("denoise guides"), layout: &context.layout, entries: &entries });
         let guide_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("denoise guides"),
             source: wgpu::ShaderSource::Wgsl(format!("{SHADER}\n{GUIDES}").into()),
@@ -58,18 +30,13 @@ impl Resources {
             bind_group_layouts: &[Some(&context.layout)],
             immediate_size: 0,
         });
-        let guide_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let guide = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("denoise guides"),
             layout: Some(&guide_layout),
             module: &guide_shader,
             entry_point: Some("denoise_guides"),
             compilation_options: Default::default(),
             cache: None,
-        });
-        let filter_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("denoise parameters"),
-            contents: &[0; 32],
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let entries: Vec<_> = (0..4)
             .map(|binding| wgpu::BindGroupLayoutEntry {
@@ -91,13 +58,74 @@ impl Resources {
         });
         let shader = device
             .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("denoise filter"), source: wgpu::ShaderSource::Wgsl(FILTER.into()) });
-        let filter_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let filter = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("denoise filter"),
             layout: Some(&layout),
             module: &shader,
             entry_point: Some("atrous"),
             compilation_options: Default::default(),
             cache: None,
+        });
+        checked(error_scopes)?;
+        warm_up(device, &context.queue, &guide, &placeholder_bind(device, &context.layout, 6)?)?;
+        warm_up(device, &context.queue, &filter, &placeholder_bind(device, &filter_layout, 4)?)?;
+        Ok(Self { guide, filter, filter_layout })
+    }
+
+    fn shared(context: &Context) -> Result<&Self> {
+        if let Some(pipelines) = context.denoise.get() {
+            return Ok(pipelines);
+        }
+        let built = Self::new(context)?;
+        Ok(context.denoise.get_or_init(|| built))
+    }
+}
+
+pub(super) struct Resources {
+    guide_pipeline: wgpu::ComputePipeline,
+    guide_bind: wgpu::BindGroup,
+    filter_pipeline: wgpu::ComputePipeline,
+    filter_uniform: wgpu::Buffer,
+    filter_binds: Vec<wgpu::BindGroup>,
+    output: wgpu::Buffer,
+    // Retained for diagnostic tests; bind groups also retain the guide allocation.
+    _guides: wgpu::Buffer,
+}
+
+impl Resources {
+    pub(super) fn new(
+        context: &Context,
+        path_uniform: &wgpu::Buffer,
+        scene: [&wgpu::Buffer; 4],
+        accumulation: &wgpu::Buffer,
+        size: u64,
+    ) -> Result<Self> {
+        let pipelines = Pipelines::shared(context)?;
+        let device = &context.device;
+        let error_scopes = scopes(device);
+        let buffer = |label, bytes| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let guides = buffer("denoise first-hit guides", size * 3);
+        let output = buffer("denoise filtered colour", size);
+        let temporary = buffer("denoise intermediate colour", size);
+        let [triangles, nodes, environment, textures] = scene;
+        let entries: Vec<_> = [path_uniform, triangles, nodes, &guides, environment, textures]
+            .into_iter()
+            .enumerate()
+            .map(|(binding, value)| wgpu::BindGroupEntry { binding: binding as u32, resource: value.as_entire_binding() })
+            .collect();
+        let guide_bind =
+            device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("denoise guides"), layout: &context.layout, entries: &entries });
+        let filter_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("denoise parameters"),
+            contents: &[0; 32],
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let filter_binds = [(accumulation, &output), (&output, &temporary), (&temporary, &output)]
             .into_iter()
@@ -107,11 +135,23 @@ impl Resources {
                     .enumerate()
                     .map(|(binding, value)| wgpu::BindGroupEntry { binding: binding as u32, resource: value.as_entire_binding() })
                     .collect();
-                device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("denoise filter"), layout: &filter_layout, entries: &entries })
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("denoise filter"),
+                    layout: &pipelines.filter_layout,
+                    entries: &entries,
+                })
             })
             .collect();
         checked(error_scopes)?;
-        Ok(Self { guide_pipeline, guide_bind, filter_pipeline, filter_uniform, filter_binds, output, _guides: guides })
+        Ok(Self {
+            guide_pipeline: pipelines.guide.clone(),
+            guide_bind,
+            filter_pipeline: pipelines.filter.clone(),
+            filter_uniform,
+            filter_binds,
+            output,
+            _guides: guides,
+        })
     }
 
     pub(super) fn output(&self) -> &wgpu::Buffer {
