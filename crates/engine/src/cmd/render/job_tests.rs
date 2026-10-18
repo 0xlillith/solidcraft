@@ -43,7 +43,10 @@ fn additional_executor_routes_by_capability_and_survives_document_adoption() {
             options: JobOptions,
         ) -> solidcraft_render::job::Result<Admission> {
             options.validate()?;
-            solidcraft_render::job::admit_geometry(scene, request, 262_144)
+            // admit_geometry counts source geometry only; this executor renders through the
+            // CPU task, which ignores the environment and textures, so budget its pixels and
+            // PNG with the CPU estimate for the same frame.
+            solidcraft_render::job::admit(scene, &ImageRequest { environment: None, textures: None, ..request.clone() })
         }
         fn begin(
             &self,
