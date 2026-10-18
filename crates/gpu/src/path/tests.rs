@@ -1456,6 +1456,17 @@ fn gpu_hdr_and_sun_shadow_mis_preserve_index_matched_energy() {
         let l = Vec3::new((1.0 - z * z).sqrt(), 0.0, z);
         sun_expected += white().brdf(Vec3::Z, Vec3::Z, l).unwrap().x * z * 3.0 * sun.solid_angle() / 4096.0;
     }
+    // The original HDR has unit radiance everywhere, so the receiver returns
+    // its directional albedo: about 0.952 for this GGX surface, not 1.
+    let mut hdr_expected = 0.0;
+    for i in 0..256 {
+        let z = (f64::from(i) + 0.5) / 256.0;
+        for j in 0..256 {
+            let phi = (f64::from(j) + 0.5) / 256.0 * std::f64::consts::TAU;
+            let l = Vec3::new((1.0 - z * z).sqrt() * phi.cos(), (1.0 - z * z).sqrt() * phi.sin(), z);
+            hdr_expected += white().brdf(Vec3::Z, Vec3::Z, l).unwrap().x * z * std::f64::consts::TAU / 65536.0;
+        }
+    }
     for solar in [false, true] {
         for (thin, depth) in [(true, 2), (true, 4), (false, 1), (false, 4)] {
             let mut scene = glass_slab(thin);
@@ -1487,7 +1498,7 @@ fn gpu_hdr_and_sun_shadow_mis_preserve_index_matched_energy() {
                 task.dispatch().unwrap();
             }
             let actual = f64::from(task.read_linear().unwrap()[0][0]);
-            let expected = if solar { sun_expected } else { 1.0 };
+            let expected = if solar { sun_expected } else { hdr_expected };
             assert!((actual - expected).abs() < 0.07 * expected, "sun={solar}, thin={thin}, depth={depth}: {actual} vs {expected}");
         }
     }
