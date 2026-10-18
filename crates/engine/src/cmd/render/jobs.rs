@@ -23,6 +23,7 @@ struct Start {
     lighting: Option<solidcraft_render::job::StudioLighting>,
     tone_map: Option<solidcraft_render::job::ToneMap>,
     environment: Option<super::environment::Input>,
+    denoise: bool,
 }
 
 struct Prepared {
@@ -47,11 +48,12 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
             || input.lens.is_some()
             || input.lighting.is_some()
             || input.tone_map.is_some()
-            || input.environment.is_some())
+            || input.environment.is_some()
+            || input.denoise)
     {
         return Err(bad(
             command,
-            "runtime transmission, clear-coat, texture, lens, environment, lighting and tone-map controls require progressive rendering",
+            "runtime transmission, clear-coat, texture, lens, environment, lighting, tone-map and denoise controls require progressive rendering",
         ));
     }
     super::transmission::apply(&mut scene, &input.raytrace.dielectrics, command)?;
@@ -90,6 +92,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     options.lens = input.lens;
     options.lighting = input.lighting;
     options.tone_map = input.tone_map.unwrap_or_default();
+    options.denoise = input.denoise;
     options.validate().map_err(job_error)?;
     let environment = input.environment.as_ref().map(|source| source.capture(command)).transpose()?;
     let mut features = scene.required_features();
@@ -116,6 +119,9 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         },
     )
     .map_err(|e| bad(command, e.to_string()))?;
+    if options.denoise && resolved.executor.as_str() != "gpu-path" {
+        return Err(bad(command, "denoise requires the native gpu-path executor"));
+    }
     let host = s.render_jobs.host_for(&resolved.executor).ok_or_else(|| bad(command, "resolved executor is not installed as an image job host"))?;
     if !host.is_available() {
         return Err(bad(command, "image host is unavailable"));
@@ -132,6 +138,16 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     let admission = host.admit(&scene, &request, options).map_err(job_error)?;
     let refraction = input.progressive && scene.has_transmission();
     let reply = json!({"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
+    let mut reply = reply;
+    if options.denoise {
+        reply["denoising"] = json!({
+            "method":"edge_aware_atrous", "passes":3, "steps":[1,2,4],
+            "guides":"deterministic_center_ray_albedo_normal_position_depth",
+            "bypass":"glass, smooth metal/coat, emitter, background and partial coverage first hits",
+            "limitation":"first-hit guides do not reconstruct reflection/refraction or depth-of-field correspondences",
+            "raw_linear_accumulator_preserved":true, "output_stage":"linear_before_tone_map"
+        });
+    }
     Ok(Prepared { input, scene, request, reply, executor: resolved.executor, options })
 }
 
