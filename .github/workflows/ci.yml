@@ -94,7 +94,9 @@ jobs:
       # Whether the other Linux jobs use the self-hosted runners too.
       # Trusted self-hosted runs only: a fork PR's checks run on the untrusted pool and must never
       # route the jobs after them to the trusted runners.
-      local: ${{ runner.environment == 'self-hosted' && !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
+      # The fast self-hosted runners are kept for main and the merge queue (the pre-merge gate);
+      # pull requests, same-repo ones included, take the GitHub-hosted or untrusted paths.
+      local: ${{ runner.environment == 'self-hosted' && github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
