@@ -171,6 +171,19 @@ fn report(info: &wgpu::AdapterInfo) -> AdapterReport {
 fn instance() -> wgpu::Instance {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
     desc.backends = native_backends();
+    desc.backend_options.dx12.shader_compiler = viewport_dx12_compiler();
+    wgpu::Instance::new(desc)
+}
+
+/// The native backends with D3D12 compiling through [`dxc`]; without DXC, no D3D12 at all.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dxc_instance() -> wgpu::Instance {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    desc.backends = native_backends();
+    match dxc() {
+        Some(compiler) => desc.backend_options.dx12.shader_compiler = compiler,
+        None => desc.backends.remove(wgpu::Backends::DX12),
+    }
     wgpu::Instance::new(desc)
 }
 
@@ -204,13 +217,17 @@ pub fn survey(policy: Policy) -> Survey {
 /// The adapter `policy` picks, with its report; `None` when no adapter qualifies.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pick(policy: Policy) -> Option<(wgpu::Adapter, AdapterReport)> {
-    pick_where(policy, |_| true)
+    pick_on(&instance(), policy, |_| true)
 }
 
-/// The adapter `policy` picks among those `keep` accepts, with its report.
+/// The adapter `policy` picks on `instance` among those `keep` accepts, with its report.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn pick_where(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) -> Option<(wgpu::Adapter, AdapterReport)> {
-    adapters(&instance())
+pub(crate) fn pick_on(
+    instance: &wgpu::Instance,
+    policy: Policy,
+    keep: impl Fn(&wgpu::AdapterInfo) -> bool,
+) -> Option<(wgpu::Adapter, AdapterReport)> {
+    adapters(instance)
         .into_iter()
         .filter(|a| keep(&a.get_info()))
         .map(|a| {
@@ -220,25 +237,45 @@ pub fn pick_where(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) -> 
         .find(|(_, r)| policy.admits(r.tier))
 }
 
-/// Whether D3D12 devices in this process compile shaders with DXC. wgpu uses DXC when
-/// `dxcompiler.dll` loads and FXC otherwise, unless `WGPU_DX12_COMPILER` names one. FXC is
-/// fine for the viewport's shaders but needs hours for large ones (#3217). Probed once.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn dx12_uses_dxc() -> bool {
-    static DXC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DXC.get_or_init(|| {
-        let compiler = match wgpu::Dx12Compiler::from_env() {
-            None | Some(wgpu::Dx12Compiler::Auto) => wgpu::Dx12Compiler::default_dynamic_dxc(),
-            Some(wgpu::Dx12Compiler::Fxc) => return false,
-            Some(compiler) => compiler,
+/// The D3D12 shader compiler for the viewport and headless pictures: `WGPU_DX12_COMPILER`, else
+/// `dxcompiler.dll` when it loads, else FXC. This is wgpu's own choice without the DXC that x64
+/// Windows builds link in for the path tracer (#3217): linked-in DXC would also hide adapters
+/// without shader model 6, which FXC still drives. Probed once.
+pub fn viewport_dx12_compiler() -> wgpu::Dx12Compiler {
+    static COMPILER: std::sync::OnceLock<wgpu::Dx12Compiler> = std::sync::OnceLock::new();
+    COMPILER
+        .get_or_init(|| match wgpu::Dx12Compiler::from_env() {
+            Some(wgpu::Dx12Compiler::Auto) | None if cfg!(target_os = "windows") => {
+                if dx12_loads(wgpu::Dx12Compiler::default_dynamic_dxc()) {
+                    wgpu::Dx12Compiler::default_dynamic_dxc()
+                } else {
+                    wgpu::Dx12Compiler::Fxc
+                }
+            }
+            chosen => chosen.unwrap_or_default(),
+        })
+        .clone()
+}
+
+/// DXC for large shaders such as the path tracer's: the one `WGPU_DX12_COMPILER` names, else
+/// the one linked in (x64 Windows builds), else `dxcompiler.dll`. `None` leaves only FXC, which
+/// needs about two hours for the path shader (#3217). Probed once.
+pub fn dxc() -> Option<wgpu::Dx12Compiler> {
+    static DXC: std::sync::OnceLock<Option<wgpu::Dx12Compiler>> = std::sync::OnceLock::new();
+    DXC.get_or_init(|| {
+        let candidates = match wgpu::Dx12Compiler::from_env() {
+            _ if !cfg!(target_os = "windows") => vec![],
+            Some(wgpu::Dx12Compiler::Fxc) => vec![],
+            Some(wgpu::Dx12Compiler::Auto) | None => vec![wgpu::Dx12Compiler::StaticDxc, wgpu::Dx12Compiler::default_dynamic_dxc()],
+            Some(named) => vec![named],
         };
-        cfg!(target_os = "windows") && dx12_loads(compiler)
+        candidates.into_iter().find(|c| dx12_loads(c.clone()))
     })
+    .clone()
 }
 
 /// A D3D12 instance restricted to `compiler` fails to start when that compiler doesn't load,
 /// and then offers no adapters.
-#[cfg(not(target_arch = "wasm32"))]
 fn dx12_loads(compiler: wgpu::Dx12Compiler) -> bool {
     let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
     desc.backends = wgpu::Backends::DX12;

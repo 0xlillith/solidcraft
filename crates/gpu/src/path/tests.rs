@@ -514,15 +514,16 @@ fn shader_validates_without_a_device() {
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).unwrap();
 }
 
-/// #3217: D3D12 counts only with DXC; every other backend compiles the shader quickly.
+/// #3217: the path tracer's instance offers D3D12 only with DXC, and never DXC off Windows.
 #[test]
-fn d3d12_needs_dxc() {
-    let info = |backend| wgpu::AdapterInfo::new(wgpu::DeviceType::DiscreteGpu, backend);
-    assert!(compiles_quickly(&info(wgpu::Backend::Vulkan)));
-    assert!(compiles_quickly(&info(wgpu::Backend::Metal)));
-    assert_eq!(compiles_quickly(&info(wgpu::Backend::Dx12)), crate::select::dx12_uses_dxc());
+fn path_instance_offers_d3d12_only_with_dxc() {
+    let dxc = crate::select::dxc();
     if !cfg!(target_os = "windows") {
-        assert!(!crate::select::dx12_uses_dxc());
+        assert!(dxc.is_none());
+    }
+    let adapters = pollster::block_on(crate::select::dxc_instance().enumerate_adapters(wgpu::Backends::all()));
+    if dxc.is_none() {
+        assert!(adapters.iter().all(|a| a.get_info().backend != wgpu::Backend::Dx12));
     }
 }
 
