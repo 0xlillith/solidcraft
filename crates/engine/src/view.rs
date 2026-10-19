@@ -352,6 +352,20 @@ pub fn scene_with_section(s: &Session, cam: &Camera, section: Option<(Vec3, Vec3
     scene_with_guides(s, cam, section, Guides::default())
 }
 
+/// The plane of the sketch that is open, if any: it always shows a grid, whatever the Grid switch
+/// says (outside a sketch the grid is the user's choice).
+pub fn open_sketch_plane(s: &Session) -> Option<Plane> {
+    let id = s.active_sketch?;
+    s.world_state().sketch(id).map(|ss| ss.plane)
+}
+
+/// The grid on a sketch plane: its centre (the view target's foot on the plane, snapped to the
+/// major step in the plane's own axes) and the plane's x and y directions.
+pub fn sketch_grid_frame(plane: &Plane, target: Vec3, major: f64) -> (Vec3, Vec3, Vec3) {
+    let snap = |d: Vec3| d * (((target - plane.origin).dot(d) / major).round() * major);
+    (plane.origin + snap(plane.x) + snap(plane.y), plane.x, plane.y)
+}
+
 /// What a headless render draws besides the model: the ground grid and the origin's axes.
 /// Both are on by default; the grid lies on Z 0, so it cuts through a model that straddles it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,12 +451,17 @@ fn build_scene(
     if guides.grid {
         let (minor, major) = grid_step(cam.half_height());
         let ext = (cam.half_height() * 3.0 / major).ceil() * major;
-        let tf = cam.to_frame(cam.target);
-        // Headless pictures keep the grid on the ground, the viewport's default.
-        let (u, v) = (Vec3::X, Vec3::Y);
-        let snap = |a: Vec3| a * ((tf.dot(a) / major).round() * major);
-        let c = snap(u) + snap(v);
-        let w = |p: Vec3| cam.from_frame(p);
+        // Headless pictures keep the grid on the ground, the viewport's default; an open sketch
+        // has its own plane's grid (world coordinates, no camera frame).
+        let (c, u, v, w): (Vec3, Vec3, Vec3, Box<dyn Fn(Vec3) -> Vec3>) = if let Some(pl) = open_sketch_plane(s) {
+            let (c, u, v) = sketch_grid_frame(&pl, cam.target, major);
+            (c, u, v, Box::new(|p| p))
+        } else {
+            let tf = cam.to_frame(cam.target);
+            let (u, v) = (Vec3::X, Vec3::Y);
+            let snap = |a: Vec3| a * ((tf.dot(a) / major).round() * major);
+            (snap(u) + snap(v), u, v, Box::new(|p| cam.from_frame(p)))
+        };
         let n = ((ext / minor) as i64).clamp(1, 400);
         for i in -n..=n {
             let t = i as f64 * minor;
