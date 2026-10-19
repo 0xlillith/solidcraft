@@ -1278,8 +1278,11 @@ fn chip(ui: &mut egui::Ui, thumbs: &mut std::collections::HashMap<u64, egui::Tex
                         ui.image((tex.id(), size * (22.0 / size.x.max(size.y).max(1.0)))).rect.width()
                     }
                     None => {
-                        let (r, _) = ui.allocate_exact_size(vec2(16.0, 20.0), Sense::hover());
-                        ui.painter().rect_stroke(r.shrink2(vec2(2.0, 3.0)), 2.0, Stroke::new(1.2, t.text_dim), egui::StrokeKind::Inside);
+                        // A page marked with the file's type.
+                        let (r, _) = ui.allocate_exact_size(vec2(28.0, 20.0), Sense::hover());
+                        let color = if matches!(f.content, attach::Content::Pdf { .. }) { t.error } else { t.text_dim };
+                        ui.painter().rect_stroke(r.shrink2(vec2(1.0, 1.0)), 2.0, Stroke::new(1.2, color), egui::StrokeKind::Inside);
+                        ui.painter().text(r.center(), Align2::CENTER_CENTER, f.mark(), egui::FontId::proportional(8.5), color);
                         r.width()
                     }
                 };
