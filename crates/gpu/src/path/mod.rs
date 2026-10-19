@@ -70,9 +70,26 @@ pub fn host_on_adapter(adapter: &wgpu::Adapter) -> Result<ImageHost> {
     if !policy.admits(crate::select::tier_of(info.device_type)) {
         return Err(gpu(format!("viewport adapter does not satisfy SOLIDCRAFT_GPU={}", policy.name())));
     }
+    if !compiles_quickly(&info) {
+        // The same GPU through Vulkan, whose driver compiles the shader in minutes at most.
+        let (vulkan, _) =
+            crate::select::pick_where(policy, |i| i.backend == wgpu::Backend::Vulkan && i.vendor == info.vendor && i.device == info.device)
+                .ok_or_else(|| gpu(FXC_UNSUPPORTED))?;
+        let (device, queue) = open_device(&vulkan)?;
+        log::info!("gpu-path: {} through Vulkan; D3D12 here has only FXC (#3217)", info.name);
+        return ImageHost::with_executor(Arc::new(Executor::new(device, queue)?));
+    }
     let (device, queue) = open_device(adapter)?;
     log::info!("gpu-path viewport adapter: {} ({:?})", info.name, info.device_type);
     ImageHost::with_executor(Arc::new(Executor::new(device, queue)?))
+}
+
+const FXC_UNSUPPORTED: &str =
+    "gpu-path needs DXC on D3D12 (FXC takes hours to compile its shader): put dxcompiler.dll beside SolidCraft, or use a Vulkan adapter";
+
+/// D3D12 without DXC compiles the path shader with FXC, which takes about two hours (#3217).
+fn compiles_quickly(info: &wgpu::AdapterInfo) -> bool {
+    info.backend != wgpu::Backend::Dx12 || crate::select::dx12_uses_dxc()
 }
 
 // Path resources need six storage buffers (geometry, BVH, accumulation, HDRI,
@@ -99,7 +116,10 @@ fn open_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
 }
 fn open_headless() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let policy = crate::select::Policy::from_env().map_err(gpu)?;
-    let (adapter, _) = crate::select::pick(policy).ok_or_else(|| gpu(format!("no gpu-path adapter satisfies {}", policy.name())))?;
+    let (adapter, _) = crate::select::pick_where(policy, compiles_quickly).ok_or_else(|| {
+        let fxc_only = crate::select::pick(policy).is_some_and(|(a, _)| !compiles_quickly(&a.get_info()));
+        gpu(if fxc_only { FXC_UNSUPPORTED.to_string() } else { format!("no gpu-path adapter satisfies {}", policy.name()) })
+    })?;
     let (device, queue) = open_device(&adapter)?;
     Ok((adapter, device, queue))
 }

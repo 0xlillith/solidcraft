@@ -12,6 +12,11 @@ create the compute pipeline does not register an available path executor.
 The native UI opens its independent job device on the viewport's selected adapter,
 so software fallback and safe mode do not rediscover a failing hardware driver.
 An incompatible explicit GPU policy leaves progressive rendering unavailable there.
+On D3D12 the path tracer needs DXC (`dxcompiler.dll` beside SolidCraft or on the
+`PATH`): FXC, the fallback compiler, needs about two hours for the path shader
+(#3217). Without DXC, discovery skips D3D12 adapters, and the UI renders on the
+viewport's GPU through Vulkan; with no such Vulkan adapter the path executor
+reports why it is unavailable instead of compiling.
 
 In the Render workspace, enable **Progressive rendering** and select samples per
 pixel before checking or starting an image. These controls are transient image-job

@@ -204,13 +204,47 @@ pub fn survey(policy: Policy) -> Survey {
 /// The adapter `policy` picks, with its report; `None` when no adapter qualifies.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pick(policy: Policy) -> Option<(wgpu::Adapter, AdapterReport)> {
+    pick_where(policy, |_| true)
+}
+
+/// The adapter `policy` picks among those `keep` accepts, with its report.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pick_where(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) -> Option<(wgpu::Adapter, AdapterReport)> {
     adapters(&instance())
         .into_iter()
+        .filter(|a| keep(&a.get_info()))
         .map(|a| {
             let r = report(&a.get_info());
             (a, r)
         })
         .find(|(_, r)| policy.admits(r.tier))
+}
+
+/// Whether D3D12 devices in this process compile shaders with DXC. wgpu uses DXC when
+/// `dxcompiler.dll` loads and FXC otherwise, unless `WGPU_DX12_COMPILER` names one. FXC is
+/// fine for the viewport's shaders but needs hours for large ones (#3217). Probed once.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn dx12_uses_dxc() -> bool {
+    static DXC: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DXC.get_or_init(|| {
+        let compiler = match wgpu::Dx12Compiler::from_env() {
+            None | Some(wgpu::Dx12Compiler::Auto) => wgpu::Dx12Compiler::default_dynamic_dxc(),
+            Some(wgpu::Dx12Compiler::Fxc) => return false,
+            Some(compiler) => compiler,
+        };
+        cfg!(target_os = "windows") && dx12_loads(compiler)
+    })
+}
+
+/// A D3D12 instance restricted to `compiler` fails to start when that compiler doesn't load,
+/// and then offers no adapters.
+#[cfg(not(target_arch = "wasm32"))]
+fn dx12_loads(compiler: wgpu::Dx12Compiler) -> bool {
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::DX12;
+    desc.flags = wgpu::InstanceFlags::empty();
+    desc.backend_options.dx12.shader_compiler = compiler;
+    !pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(wgpu::Backends::DX12)).is_empty()
 }
 
 #[cfg(test)]

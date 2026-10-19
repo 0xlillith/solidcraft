@@ -514,6 +514,18 @@ fn shader_validates_without_a_device() {
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).unwrap();
 }
 
+/// #3217: D3D12 counts only with DXC; every other backend compiles the shader quickly.
+#[test]
+fn d3d12_needs_dxc() {
+    let info = |backend| wgpu::AdapterInfo::new(wgpu::DeviceType::DiscreteGpu, backend);
+    assert!(compiles_quickly(&info(wgpu::Backend::Vulkan)));
+    assert!(compiles_quickly(&info(wgpu::Backend::Metal)));
+    assert_eq!(compiles_quickly(&info(wgpu::Backend::Dx12)), crate::select::dx12_uses_dxc());
+    if !cfg!(target_os = "windows") {
+        assert!(!crate::select::dx12_uses_dxc());
+    }
+}
+
 #[test]
 fn admission_rejects_hostile_parameters_and_transparency() {
     let mut scene = sphere(white());
