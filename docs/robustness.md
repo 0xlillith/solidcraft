@@ -42,8 +42,10 @@ rejected before any jobs or output directories are created. The maximum seed
 its steps, how it ended (ok, or the kind and the start of the error it was refused with), and
 for the design it left the bodies' total volume and area (within a relative 1e-6) and their
 face, edge and shell counts (exact). `tests::robustness_goldens` fails on any change, better or
-worse, so a kernel change shows every seed it moves. Pull requests that touch `crates/kernel`
-run every 8th seed; pushes to `main` and the nightly run them all. Each seed is its own test
+worse, so a kernel change shows every seed it moves. Pull requests that can change them (the
+kernel, engine, doc, sketch and geom crates) run every seed but the slowest few (`SLOW_SEEDS` in
+`.github/workflows/ci.yml`, about four fifths of their time); the merge queue, pushes to `main`
+and the nightly run them all. Each seed is its own test
 (`seed_00` … `seed_95`), so the CI shards and their cores share them out.
 
 Explicit `platforms.<os>.seeds` records override only the listed seeds on that
