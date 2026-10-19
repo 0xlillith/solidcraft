@@ -528,7 +528,7 @@ pub fn section_segments(m: &solidcraft_geom::Mesh, o: Vec3, n: Vec3) -> Vec<(Vec
 }
 
 /// Is a sketch drawn? The active one is; others unless hidden. Finished sketches are hidden
-/// once a feature uses them, like Fusion's default, unless shown one by one.
+/// once a feature uses them, by default, unless shown one by one.
 pub fn sketch_shown(s: &Session, id: u64) -> bool {
     sketch_drawn(s, id, true)
 }

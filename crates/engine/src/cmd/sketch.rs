@@ -1435,7 +1435,7 @@ fn keep_size(sk: &Sketch, e: Ent) -> Vec<ConstraintKind> {
     }
 }
 
-/// Satisfy a just-added constraint the way Fusion applies it: the first-picked entities stay
+/// Satisfy a just-added constraint the way a dimensional-constraint tool applies it: the first-picked entities stay
 /// put and only the second moves (first keeping its size, so it turns and slides, then also
 /// resizing).
 /// If the second can't move (fixed, projected or fully determined), the first moves instead;

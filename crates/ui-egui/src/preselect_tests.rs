@@ -898,7 +898,7 @@ fn shell_direction_and_tangent_chain_round_trip() {
     let mut app = boxed();
     let top = face(&app, Vec3::new(20.0, 15.0, 20.0));
     let mut d = start(&mut app, vec![top], "solid.shell");
-    // Tangent Chain is on, as in Fusion; Direction Outside.
+    // Tangent Chain is on; Direction Outside.
     assert_eq!(d.extra.get("tangent_chain"), Some(&json!(true)));
     d.extra.insert("direction".into(), json!("outside"));
     let p = apply_commands(&app, &d).unwrap().remove(0).1;
