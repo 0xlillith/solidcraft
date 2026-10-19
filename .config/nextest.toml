@@ -69,3 +69,13 @@ filter = """
 ))
 """
 priority = 100
+
+# Each nextest test has its own process/device. Concurrent cold lavapipe path
+# compiles contend for CPU and can exhaust the 600 s pipeline setup budget.
+# Serialize this module per CI shard; other tests retain their normal parallelism.
+[test-groups.gpu-path]
+max-threads = 1
+
+[[profile.ci.overrides]]
+filter = "package(=solidcraft-gpu) & test(/^path::/)"
+test-group = "gpu-path"
