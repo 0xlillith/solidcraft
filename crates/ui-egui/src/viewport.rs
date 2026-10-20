@@ -646,7 +646,7 @@ fn push_block(
     made.insert(key, block);
 }
 
-fn build_scene(app: &SolveApp) -> GpuScene {
+pub(crate) fn build_scene(app: &SolveApp) -> GpuScene {
     let tk = Tokens::get();
     let mut sc = GpuScene::default();
     let s = &app.session;
@@ -1977,7 +1977,7 @@ struct HoverBlock {
 }
 
 /// The highlight scene: origin widget, construction planes, selection and hover.
-fn build_highlight(app: &SolveApp) -> GpuScene {
+pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
     let t = Tokens::get();
     let mut sc = GpuScene::default();
     let st = crate::open_meshing::shown_world(app);
