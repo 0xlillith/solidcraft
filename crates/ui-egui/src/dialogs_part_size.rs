@@ -6,9 +6,10 @@ use serde_json::{Value, json};
 use solidcraft_engine::{Sel, doc::Document};
 
 use crate::SolveApp;
-use crate::dialogs::{Kind, combo, form_row};
+use crate::dialogs::Kind;
 use crate::dialogs_parts::Family;
 use crate::selection::SelInput;
+use crate::ui_kit::{choice_row, row};
 
 /// The active catalogue configuration belongs to the shared part, not its placements.
 pub(crate) fn configuration(app: &SolveApp, component: u64) -> Option<String> {
@@ -168,24 +169,24 @@ pub fn open(app: &mut SolveApp, component: u64) {
 }
 
 pub fn rows(app: &SolveApp, ui: &mut egui::Ui, k: &mut Resize) -> bool {
-    form_row(ui, "Type", |ui| {
+    row(ui, "Type", |ui| {
         ui.add(egui::Label::new(format!("{} ({})", k.family.name, k.family.standard)).wrap());
     });
     let sizes: Vec<&str> = k.family.sizes.iter().map(|s| s.0.as_str()).collect();
-    form_row(ui, "Size", |ui| combo(ui, "part_resize_size", &sizes, &mut k.size));
+    choice_row(ui, "Size", "part_resize_size", &mut k.size, &sizes);
     if let Some(lengths) = k.lengths() {
         let mut index = k.length.and_then(|l| lengths.iter().position(|x| *x == l)).unwrap_or(0);
         let labels: Vec<String> = lengths.iter().map(|l| crate::prefs::show_mm(app, *l, 1)).collect();
         let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
-        form_row(ui, "Length", |ui| combo(ui, "part_resize_length", &labels, &mut index));
+        choice_row(ui, "Length", "part_resize_length", &mut index, &labels);
         k.length = lengths.get(index).copied();
     }
     if let Some((size, _)) = k.family.sizes.get(k.size) {
-        form_row(ui, "Configuration", |ui| {
+        row(ui, "Configuration", |ui| {
             ui.label(configuration_name(size, k.length));
         });
     }
-    crate::ui_kit::hint(ui, "part_size_shared", crate::i18n::tr("ui.part_size_shared"));
+    crate::ui_kit::text(ui, crate::i18n::tr("ui.part_size_shared"), crate::ui_kit::Text::Hint("part_size_shared"));
     false
 }
 

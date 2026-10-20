@@ -6,6 +6,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::geom::Vec2;
 
 use crate::scenario::Harness;
+use crate::test_support::play;
 
 #[test]
 fn text_move_drag_is_one_editable_unit_and_escape_restores_the_gesture() {
@@ -83,13 +84,6 @@ fn press_and_move(h: &mut Harness, path: &[egui::Pos2]) {
 fn release(h: &mut Harness, at: egui::Pos2) {
     h.app.synthetic.push(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() });
     play(h);
-}
-
-fn play(h: &mut Harness) {
-    while !h.app.synthetic.is_empty() {
-        h.frame();
-    }
-    h.frames(2);
 }
 
 /// Points from `a` to `b` in `n` equal moves (without `a`).
