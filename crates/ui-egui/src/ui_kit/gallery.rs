@@ -30,8 +30,8 @@ macro_rules! element {
 const ELEMENTS: &[Element] = &[
     element!("command_search", |ui, _| {
         let mut query = "fillet".to_owned();
-        CommandSearch::field(ui, &mut query, false, true, 4096);
-        Menu::show(ui, ui.available_width(), |ui| {
+        CommandSearch::field(ui, &mut query, false, true, true, Tokens::get().control_height + Tokens::get().space_12, 4096);
+        CommandSearch::sheet(ui, ui.available_width(), 1.0, false, |ui| {
             CommandSearch::heading(ui, "search.commands", 1);
             let c = solidcraft_engine::find_command("solid.fillet").unwrap();
             let mut row = MenuItem::new(c.id, c.label, c.icon);
@@ -39,7 +39,6 @@ const ELEMENTS: &[Element] = &[
             row.shortcut = "F";
             row.search_row(ui, &query, "MODEL › MODIFY", None);
             CommandSearch::detail(ui, "radius  6 mm");
-            CommandSearch::footer(ui, false);
         });
     }),
     element!("menu", |ui, _| {
@@ -1141,7 +1140,12 @@ fn command_search_board_in_both_themes() {
             let popup = scenario::rect_of("ribbon:search_popup").unwrap();
             let field = scenario::rect_of("shortcut:search").unwrap();
             assert_eq!(field.height(), 40.0);
+            assert_eq!(field.width(), 520.0);
             assert_eq!(popup.width(), 520.0);
+            assert_eq!(popup.top(), field.bottom());
+            assert_eq!(popup.x_range(), field.x_range());
+            let footer = scenario::rect_of("ribbon:search_footer").unwrap();
+            assert_eq!(footer, egui::Rect::from_min_max(egui::pos2(popup.left(), footer.top()), popup.right_bottom()));
             assert!(bounds.contains_rect(popup), "{state}: {popup:?}");
             match state {
                 "matches" => {
@@ -1288,6 +1292,89 @@ fn confirm_radial_and_menu_danger_keep_multitone_artwork() {
         }
         for (group, count) in [("confirm", 3), ("radial", 5), ("radial_hover", 5)] {
             assert_eq!(dominant_accents[group].len(), count, "{group}, dark={dark}: dominant accent pixels must differ across mappings");
+        }
+    }
+    crate::theme::set_dark(previous);
+}
+
+/// Run the application UI, including the ribbon, and optionally save each transition.
+#[test]
+fn command_search_ribbon_transition_clips_content_in_both_themes() {
+    use super::checks::tests::{raster, textures_update};
+    use std::collections::HashMap;
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let ctx = crate::fonts::test_context();
+        ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        let mut app = crate::test_support::sample_app();
+        app.home.open = false;
+        app.ui.dark = dark;
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1600.0, 1000.0));
+        let mut textures = HashMap::new();
+        let mut closed = egui::Rect::NOTHING;
+        for frame in 0..26 {
+            if frame == 3 {
+                crate::shortcut_box::open(&mut app, None);
+                app.sbox.text = "fillet".into();
+            } else if frame == 14 {
+                app.ui.palette_open = false;
+                app.sbox.text.clear();
+            }
+            scenario::clear_handles();
+            let mut output = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(bounds), time: Some(f64::from(frame) / 60.0), focused: true, ..Default::default() },
+                |ui| {
+                    app.logic(ui.ctx());
+                    app.ui(ui);
+                },
+            );
+            textures_update(&mut textures, &output.textures_delta);
+            output.textures_delta.clear();
+            let field = scenario::rect_of("ribbon:search").unwrap();
+            if frame == 2 {
+                closed = field;
+            }
+            if (3..14).contains(&frame) {
+                let sheet = scenario::rect_of("ribbon:search_popup").unwrap();
+                assert_eq!(sheet.top(), field.bottom());
+                // Actual result text is painted with the unfolding sheet's clip,
+                // rather than relying on a smaller background hiding overflow.
+                let mut result_texts = 0;
+                for shape in &output.shapes {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.job.text.contains("Fillet")
+                        && text.pos.y >= sheet.top()
+                        && text.pos.x >= sheet.left()
+                        && text.pos.x < sheet.right()
+                    {
+                        result_texts += 1;
+                        assert!(shape.clip_rect.bottom() <= sheet.bottom() + 0.5, "{frame}: {:?} vs {sheet:?}", shape.clip_rect);
+                    }
+                }
+                if frame == 12 {
+                    assert!(result_texts > 0);
+                }
+            }
+            let state = match frame {
+                2 => Some("closed"),
+                4 => Some("opening"),
+                12 => Some("open"),
+                15 => Some("closing"),
+                25 => Some("closed-again"),
+                _ => None,
+            };
+            if frame == 12 {
+                assert_eq!(field.size(), vec2(520.0, 40.0));
+                assert_eq!(field.right(), closed.right());
+            } else if frame == 25 {
+                assert_eq!(field, closed);
+            }
+            if let (Some(state), Ok(dir)) = (state, std::env::var("SOLIDCRAFT_SEARCH_EVIDENCE")) {
+                std::fs::create_dir_all(&dir).unwrap();
+                let image = raster(&ctx, output.shapes, output.pixels_per_point, bounds, &textures);
+                image.save(std::path::Path::new(&dir).join(format!("ribbon-{state}-{}.png", if dark { "dark" } else { "light" }))).unwrap();
+            }
         }
     }
     crate::theme::set_dark(previous);

@@ -794,29 +794,9 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
         pos2((row.right() - search_width - inset).max(row.left()), row.top() + inset),
         vec2(search_width, TAB_ROW_HEIGHT - 2.0 * inset),
     );
-    let resp = ui.interact(search, ui.id().with("ribbon_search"), Sense::click());
-    crate::scenario::publish_target("ribbon:search", search);
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_ribbon_search"), search));
-    ui.painter().rect(search, corner, t.field, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-    // The existing zoom glyph is the icon system's magnifier; no new artwork.
-    icons::paint_icon(ui.painter(), Rect::from_center_size(search.left_center() + vec2(12.0, 0.0), vec2(16.0, 16.0)), "zoom", 1.0);
-    let label = app.tr_label("Search commands");
-    if search_width > 24.0 {
-        ui.painter().text(
-            search.left_center() + vec2(29.0, 0.0),
-            Align2::LEFT_CENTER,
-            label,
-            FontId::proportional(crate::theme::Tokens::get().font_label),
-            t.text_dim,
-        );
-        let cap = Rect::from_center_size(search.right_center() - vec2(14.0, 0.0), vec2(16.0, 16.0));
-        ui.painter().rect(cap, 3.0, t.toolbar, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-        ribbon_text(ui, cap.center(), "S", t.font_small, t.text_dim, false);
-    }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    if resp.on_hover_text(label).clicked() {
-        app.start("ui.palette");
-    }
+    // The single editor is drawn on the foreground layer by shortcut_box::show, so it
+    // can grow over the ribbon without being clipped to the tab row.
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_ribbon_search"), search.with_max_y(search.top() + t.control_height)));
     let changed = ui.ctx().data_mut(|d| {
         let id = egui::Id::new("sc_ribbon_visible_tab");
         let state = (app.ui.tab.clone(), row.width());

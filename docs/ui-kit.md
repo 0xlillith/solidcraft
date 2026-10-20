@@ -57,7 +57,7 @@ table. Panel/Window/Confirm compositions also have dedicated geometry and intera
 
 | Module / element | Use and options | Main tokens |
 | --- | --- | --- |
-| search: `CommandSearch`, `MenuItem::search_row` | Ribbon search composition: 40 pt bounded field, magnifier and S/Esc keycap, 38 pt two-line menu row with 26 pt icon tile, accent bold substring, path, shortcut/kind keycap, counts, JSON detail box and footer. The ordinary 30 pt menu row cannot fit a second line; this variant keeps its enabled/selected states and scenario IDs. Ranking and dispatch stay with the caller. | `form_card_width × 2 − space_8` (520 pt), `control_height`, `space_2/3/4/6/8/10/12/16/24`, `radius_xl/control_radius`, `control_fill`, `dialog_body/footer/rule/border`, `form_ink/dim/primary/error/error_fill/success/success_fill`, `selected_ink`, `accent_soft`, typography |
+| search: `CommandSearch`, `MenuItem::search_row` | Ribbon search composition: one persistent ribbon editor expands from 28 to 40 pt and to 520 pt wide with its right edge anchored, magnifier and S/Esc keycap, 38 pt two-line menu row with 26 pt icon tile, accent bold substring, path, shortcut/kind keycap, counts, JSON detail box and footer. The ordinary 30 pt menu row cannot fit a second line; this variant keeps its enabled/selected states and scenario IDs. Ranking and dispatch stay with the caller. | `form_card_width × 2 − space_8` (520 pt), `control_height`, `space_2/3/4/6/8/10/12/14/16/24`, `radius_xl/control_radius`, `control_fill`, `dialog_body/footer/rule/border`, `form_ink/dim/primary/error/error_fill/success/success_fill`, `selected_ink`, `accent_soft`, typography |
 | menu: `Menu`, `MenuItem` | Shared popup, 30 pt rows, 28 pt icon column, clipped labels, right-aligned mono shortcuts, submenu chevrons, checked/unchecked and document swatches, inert 40% disabled rows and danger ink; headings and separators; ribbon drag/pin targets retained | `dialog_body/border/rule`, `radius_xl`, `control_height/radius`, `form_ink/dim/primary/error`, `accent_soft`, typography and spacing |
 | radial: `radial_menu` | Eight rounded annular sectors, parallel 4 pt gaps, 9 pt circular corner joins, tab-accent artwork and hover, centre label/key; existing hold/flick/release dispatch | `dialog_body/border`, `form_ink/dim`, `TabAccent`, icon palette, font/spacing tokens |
 | panel: `Window`, `WindowPage` | Shared card frame, header, optional page list, bounded content and footer with a left action | `form_header/footer_height`, `form_card_width`, `form_label_width`, `control_height`, `dialog_footer/rule`, `selected_bg/ink`, spacing |
@@ -341,3 +341,18 @@ actual side endpoints at both radii and sample all four rounded corners. Optiona
 CPU-rendered menu evidence can be produced without a window with
 `SOLIDCRAFT_MENU_EVIDENCE=/tmp/menus cargo test -p solidcraft-ui-egui --lib menu_board_in_both_themes`.
 Desktop interaction and visual acceptance still require a reviewer capture.
+
+Command search uses the ribbon field itself (`sc_sbox_text`); `ribbon:search`,
+`shortcut:search` and `palette:search` all identify that same field. Opening gives
+it the accent focus ring, cursor and Esc keycap. The field and the attached results
+sheet unfold in 120 ms with egui cubic ease-out, capped by egui's animation time
+so instant settings remain instant. Esc, click away and command dispatch reverse
+the animation. Only the visible sheet height participates in layout and hit testing;
+result content is clipped while unfolding. The sheet's `ribbon:search_popup` /
+`palette:outer` handles exclude the field. Its footer (`ribbon:search_footer`)
+fills the bottom strip edge to edge, with rounded bottom corners and a 1 pt top
+rule. Ranking, command mode and keyboard routing remain with the caller.
+
+Generate CPU-rendered evidence of all five search states and the actual ribbon's
+closed/opening/open/closing transition in both themes with
+`SOLIDCRAFT_SEARCH_EVIDENCE=/tmp/search cargo test -p solidcraft-ui-egui --lib command_search`.

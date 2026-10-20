@@ -29,6 +29,8 @@ pub struct ShortcutBox {
     pub recent: Vec<String>,
     pub pinned: Vec<String>,
     design: Option<(u64, Vec<DesignRow>)>,
+    /// Retained paint content while closing; the public query still clears immediately.
+    closing_text: String,
 }
 
 impl ShortcutBox {
@@ -276,27 +278,48 @@ fn close(app: &mut SolveApp) {
 }
 
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
-    if !app.ui.palette_open {
-        app.sbox.at = None;
-        app.sbox.focus = false;
-        return;
-    }
     let t = Tokens::get();
     let screen = ctx.content_rect();
-    if app.sbox.at.is_none() {
-        app.sbox.focus = true;
-    }
-    let fallback = *app.sbox.at.get_or_insert(screen.center());
-    let anchor =
-        ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("sc_ribbon_search"))).map(|r| r.left_bottom() + vec2(0.0, t.space_6)).unwrap_or(fallback);
-    let anchor = if anchor.x.is_finite() && anchor.y.is_finite() { anchor } else { screen.center() };
-    app.sbox.text = bounded(&app.sbox.text);
-    let width = ui_kit::CommandSearch::width().min((screen.width() - t.space_8).max(t.space_24));
-    let height = (screen.height() - anchor.y - t.space_8).max(t.space_24 * 4.0);
-    let pos = pos2(
-        anchor.x.clamp(screen.left() + t.space_4, (screen.right() - width - t.space_4).max(screen.left() + t.space_4)),
-        anchor.y.max(screen.top() + t.space_4),
+    let open = app.ui.palette_open;
+    // Respect egui's instant/reduced animation policy, with a 120 ms upper bound.
+    let progress = ctx.animate_bool_with_time_and_easing(
+        egui::Id::new("sc_search_expansion"),
+        open,
+        ctx.global_style().animation_time.clamp(0.0, 0.12),
+        egui::emath::easing::cubic_out,
     );
+    let ribbon = ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("sc_ribbon_search")));
+    if !open {
+        app.sbox.focus = false;
+        ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("sc_sbox_text")));
+        if progress == 0.0 {
+            app.sbox.at = None;
+        }
+        if ribbon.is_none() && progress == 0.0 {
+            return;
+        }
+    }
+    let fallback = app.sbox.at.filter(|p| p.x.is_finite() && p.y.is_finite()).unwrap_or(screen.center());
+    let width = ui_kit::CommandSearch::width().min((screen.width() - t.space_8).max(t.space_24));
+    let closed = ribbon.unwrap_or_else(|| {
+        Rect::from_min_size(
+            pos2(
+                fallback.x.clamp(screen.left() + t.space_4, (screen.right() - width - t.space_4).max(screen.left() + t.space_4)),
+                fallback.y.max(screen.top() + t.space_4),
+            ),
+            vec2(width, t.control_height),
+        )
+    });
+    let field_size = egui::lerp(closed.size()..=vec2(width, t.control_height + t.space_12), progress);
+    let pos = pos2(closed.right() - field_size.x, closed.top());
+    let height = (screen.bottom() - pos.y - field_size.y - t.space_8).max(t.space_24 * 4.0);
+    let mut query = if open {
+        bounded(&app.sbox.text)
+    } else if progress > 0.0 {
+        app.sbox.closing_text.clone()
+    } else {
+        String::new()
+    };
     let (up, down, enter, esc, tab, keep) = ctx.input(|i| {
         (
             i.key_pressed(egui::Key::ArrowUp),
@@ -312,158 +335,184 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut rows = Vec::new();
     let mut design = Vec::new();
     let mut mode = None;
-    let response = crate::frame::area(egui::Id::new("sc_sbox")).fixed_pos(pos).order(egui::Order::Foreground).fade_in(false).show(ctx, |ui| {
-        ui.set_width(width);
-        ui.spacing_mut().item_spacing.y = t.space_6;
-        ui_kit::scope(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = t.space_6;
-            let invalid = typed(&app.sbox.text).is_some_and(|(_, result)| result.is_err());
-            let field = ui_kit::CommandSearch::field(ui, &mut app.sbox.text, invalid, std::mem::take(&mut app.sbox.focus), MAX_QUERY);
-            if field.changed() {
-                app.sbox.index = 0;
-            }
-            mode = typed(&app.sbox.text).map(|(id, result)| (id.to_owned(), result));
-            if mode.is_none() {
-                rows = search(app, &app.sbox.text)
-                    .into_iter()
-                    .filter(|r| {
-                        !app.sbox.text.trim().is_empty()
-                            || (app.sbox.recent.is_empty() && app.sbox.pinned.is_empty())
-                            || app.sbox.recent.iter().chain(&app.sbox.pinned).any(|id| id == r.0)
-                    })
-                    .take(if app.sbox.text.trim().is_empty() {
-                        if app.sbox.recent.is_empty() && app.sbox.pinned.is_empty() { 8 } else { MAX_RESULTS }
-                    } else {
-                        56
-                    })
-                    .collect();
-                design = if app.sbox.text.trim().is_empty() { Vec::new() } else { design_rows(app, &app.sbox.text.clone()) };
-            }
-            let enabled: Vec<_> = rows
-                .iter()
-                .map(|r| solidcraft_engine::find_command(r.0).is_some_and(|c| c.info(&app.session).enabled))
-                .chain(design.iter().map(|_| true))
-                .take(MAX_RESULTS)
-                .collect();
-            if down || up {
-                let step = if down { 1 } else { enabled.len().saturating_sub(1) };
-                for _ in 0..enabled.len() {
-                    app.sbox.index = (app.sbox.index + step) % enabled.len().max(1);
-                    if enabled.get(app.sbox.index).copied().unwrap_or(false) {
-                        break;
-                    }
-                }
-            }
-            app.sbox.index = app.sbox.index.min(enabled.len().saturating_sub(1));
-            if !enabled.get(app.sbox.index).copied().unwrap_or(false) {
-                app.sbox.index = enabled.iter().position(|v| *v).unwrap_or(0);
-            }
-            ui_kit::Menu::show(ui, width, |ui| {
-                egui::ScrollArea::vertical().max_height((height - t.control_height * 4.0).max(t.control_height)).show(ui, |ui| {
-                    if let Some((id, result)) = &mode {
-                        let mut row = ui_kit::MenuItem::new(
-                            "search:run",
-                            crate::i18n::tr("search.run"),
-                            solidcraft_engine::find_command(id).map_or("", |c| c.icon),
-                        );
-                        row.enabled = result.is_ok();
-                        row.highlighted = true;
-                        let badge = crate::i18n::tr(if result.is_ok() { "search.valid" } else { "search.invalid" });
-                        row.shortcut = badge;
-                        if row
-                            .search_row(ui, "", id, Some(if result.is_ok() { ui_kit::SearchBadge::Valid } else { ui_kit::SearchBadge::Invalid }))
-                            .clicked()
+    let response =
+        crate::frame::area(egui::Id::new("sc_sbox")).fixed_pos(pos).order(egui::Order::Foreground).fade_in(false).constrain(false).show(ctx, |ui| {
+            // Area rounds its origin; place the child at the exact interpolated bounds
+            // so the field's right edge does not drift during expansion.
+            ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos, vec2(field_size.x, height + field_size.y))), |ui| {
+                ui.set_width(field_size.x);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui_kit::scope(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let invalid = typed(&query).is_some_and(|(_, result)| result.is_err());
+                    let field =
+                        ui_kit::CommandSearch::field(ui, &mut query, invalid, std::mem::take(&mut app.sbox.focus), open, field_size.y, MAX_QUERY);
+                    if !open && progress == 0.0 {
+                        if field.clicked()
+                            || ui.interact(Rect::from_min_size(pos, field_size), ui.id().with("search_open"), egui::Sense::click()).clicked()
                         {
-                            picked = Some(0);
+                            app.start("ui.palette");
+                            ctx.request_repaint();
                         }
-                        match result {
-                            Ok(params) => {
-                                ui_kit::CommandSearch::detail(ui, &format!("{id}\n{}", serde_json::to_string_pretty(params).unwrap_or_default()))
-                            }
-                            Err(error) => {
-                                ui_kit::text(ui, error, ui_kit::Text::Error("command_parameters"));
-                            }
-                        }
-                    } else {
-                        let empty = app.sbox.text.trim().is_empty();
-                        let mut last_recent = None;
-                        for (index, (id, label, icon, place)) in rows.iter().enumerate() {
-                            let recent = empty && app.sbox.recent.iter().any(|r| r == id);
-                            if last_recent != Some(recent) {
-                                let count = rows.iter().filter(|r| (empty && app.sbox.recent.iter().any(|id| id == r.0)) == recent).count();
-                                ui_kit::CommandSearch::heading(ui, if recent { "search.recent" } else { "search.commands" }, count);
-                                last_recent = Some(recent);
-                            }
-                            let mut item = ui_kit::MenuItem::new(id, label, icon);
-                            item.enabled = enabled.get(index).copied().unwrap_or(false);
-                            item.highlighted = index == app.sbox.index;
-                            let shortcut = crate::keymap::effective(app, id).unwrap_or_default();
-                            item.shortcut = &shortcut;
-                            let path = place.map_or_else(|| id.to_string(), |(tab, panel)| format!("{tab} › {panel}"));
-                            let response = item.search_row(ui, &app.sbox.text, &path, None);
-                            if item.highlighted && (up || down) {
-                                ui.scroll_to_rect(response.rect, None);
-                            }
-                            if response.clicked() {
-                                picked = Some(index);
-                            }
-                            if response.secondary_clicked() {
-                                menu = Some((response.rect.left_bottom(), (*id).to_owned()));
-                            }
-                        }
-                        if !design.is_empty() {
-                            ui_kit::CommandSearch::heading(ui, "search.design", design.len());
-                        }
-                        for (index, row) in design.iter().enumerate() {
-                            let handle = format!("search:design:{index}");
-                            let mut item = ui_kit::MenuItem::new(&handle, &row.label, row.icon);
-                            item.highlighted = app.sbox.index == rows.len() + index;
-                            let badge = crate::i18n::tr(match row.target {
-                                DesignTarget::Feature(_) => "search.feature",
-                                DesignTarget::Parameter(_) => "search.parameter",
-                            });
-                            item.shortcut = badge;
-                            let response = item.search_row(ui, &app.sbox.text, &row.detail, Some(ui_kit::SearchBadge::Kind));
-                            if item.highlighted && (up || down) {
-                                ui.scroll_to_rect(response.rect, None);
-                            }
-                            if response.clicked() {
-                                picked = Some(rows.len() + index);
+                        return;
+                    }
+                    if field.changed() {
+                        app.sbox.index = 0;
+                    }
+                    mode = typed(&query).map(|(id, result)| (id.to_owned(), result));
+                    if mode.is_none() {
+                        rows = search(app, &query)
+                            .into_iter()
+                            .filter(|r| {
+                                !query.trim().is_empty()
+                                    || (app.sbox.recent.is_empty() && app.sbox.pinned.is_empty())
+                                    || app.sbox.recent.iter().chain(&app.sbox.pinned).any(|id| id == r.0)
+                            })
+                            .take(if query.trim().is_empty() {
+                                if app.sbox.recent.is_empty() && app.sbox.pinned.is_empty() { 8 } else { MAX_RESULTS }
+                            } else {
+                                56
+                            })
+                            .collect();
+                        design = if query.trim().is_empty() { Vec::new() } else { design_rows(app, &query) };
+                    }
+                    let enabled: Vec<_> = rows
+                        .iter()
+                        .map(|r| solidcraft_engine::find_command(r.0).is_some_and(|c| c.info(&app.session).enabled))
+                        .chain(design.iter().map(|_| true))
+                        .take(MAX_RESULTS)
+                        .collect();
+                    if down || up {
+                        let step = if down { 1 } else { enabled.len().saturating_sub(1) };
+                        for _ in 0..enabled.len() {
+                            app.sbox.index = (app.sbox.index + step) % enabled.len().max(1);
+                            if enabled.get(app.sbox.index).copied().unwrap_or(false) {
+                                break;
                             }
                         }
-                        if rows.is_empty() && design.is_empty() {
-                            ui.add_space(t.space_16);
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                                ui_kit::text(
-                                    ui,
-                                    &crate::i18n::format("search.no_match", &[("query", &app.sbox.text)]),
-                                    ui_kit::Text::Heading("search_no_match"),
-                                );
-                                if let Some(label) = closest(&app.sbox.text) {
-                                    ui_kit::text(
-                                        ui,
-                                        &crate::i18n::format("search.suggest", &[("label", label)]),
-                                        ui_kit::Text::Report("search_suggest", false),
+                    }
+                    app.sbox.index = app.sbox.index.min(enabled.len().saturating_sub(1));
+                    if !enabled.get(app.sbox.index).copied().unwrap_or(false) {
+                        app.sbox.index = enabled.iter().position(|v| *v).unwrap_or(0);
+                    }
+                    ui.add_enabled_ui(open, |ui| {
+                        ui_kit::CommandSearch::sheet(ui, field_size.x, progress, mode.is_some(), |ui| {
+                            egui::ScrollArea::vertical().max_height((height - t.control_height * 4.0).max(t.control_height)).show(ui, |ui| {
+                                if let Some((id, result)) = &mode {
+                                    let mut row = ui_kit::MenuItem::new(
+                                        "search:run",
+                                        crate::i18n::tr("search.run"),
+                                        solidcraft_engine::find_command(id).map_or("", |c| c.icon),
                                     );
+                                    row.enabled = result.is_ok();
+                                    row.highlighted = true;
+                                    let badge = crate::i18n::tr(if result.is_ok() { "search.valid" } else { "search.invalid" });
+                                    row.shortcut = badge;
+                                    if row
+                                        .search_row(
+                                            ui,
+                                            "",
+                                            id,
+                                            Some(if result.is_ok() { ui_kit::SearchBadge::Valid } else { ui_kit::SearchBadge::Invalid }),
+                                        )
+                                        .clicked()
+                                    {
+                                        picked = Some(0);
+                                    }
+                                    match result {
+                                        Ok(params) => ui_kit::CommandSearch::detail(
+                                            ui,
+                                            &format!("{id}\n{}", serde_json::to_string_pretty(params).unwrap_or_default()),
+                                        ),
+                                        Err(error) => {
+                                            ui_kit::text(ui, error, ui_kit::Text::Error("command_parameters"));
+                                        }
+                                    }
+                                } else {
+                                    let empty = query.trim().is_empty();
+                                    let mut last_recent = None;
+                                    for (index, (id, label, icon, place)) in rows.iter().enumerate() {
+                                        let recent = empty && app.sbox.recent.iter().any(|r| r == id);
+                                        if last_recent != Some(recent) {
+                                            let count =
+                                                rows.iter().filter(|r| (empty && app.sbox.recent.iter().any(|id| id == r.0)) == recent).count();
+                                            ui_kit::CommandSearch::heading(ui, if recent { "search.recent" } else { "search.commands" }, count);
+                                            last_recent = Some(recent);
+                                        }
+                                        let mut item = ui_kit::MenuItem::new(id, label, icon);
+                                        item.enabled = enabled.get(index).copied().unwrap_or(false);
+                                        item.highlighted = index == app.sbox.index;
+                                        let shortcut = crate::keymap::effective(app, id).unwrap_or_default();
+                                        item.shortcut = &shortcut;
+                                        let path = place.map_or_else(|| id.to_string(), |(tab, panel)| format!("{tab} › {panel}"));
+                                        let response = item.search_row(ui, &query, &path, None);
+                                        if item.highlighted && (up || down) {
+                                            ui.scroll_to_rect(response.rect, None);
+                                        }
+                                        if response.clicked() {
+                                            picked = Some(index);
+                                        }
+                                        if response.secondary_clicked() {
+                                            menu = Some((response.rect.left_bottom(), (*id).to_owned()));
+                                        }
+                                    }
+                                    if !design.is_empty() {
+                                        ui_kit::CommandSearch::heading(ui, "search.design", design.len());
+                                    }
+                                    for (index, row) in design.iter().enumerate() {
+                                        let handle = format!("search:design:{index}");
+                                        let mut item = ui_kit::MenuItem::new(&handle, &row.label, row.icon);
+                                        item.highlighted = app.sbox.index == rows.len() + index;
+                                        let badge = crate::i18n::tr(match row.target {
+                                            DesignTarget::Feature(_) => "search.feature",
+                                            DesignTarget::Parameter(_) => "search.parameter",
+                                        });
+                                        item.shortcut = badge;
+                                        let response = item.search_row(ui, &query, &row.detail, Some(ui_kit::SearchBadge::Kind));
+                                        if item.highlighted && (up || down) {
+                                            ui.scroll_to_rect(response.rect, None);
+                                        }
+                                        if response.clicked() {
+                                            picked = Some(rows.len() + index);
+                                        }
+                                    }
+                                    if rows.is_empty() && design.is_empty() {
+                                        ui.add_space(t.space_16);
+                                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                            ui_kit::text(
+                                                ui,
+                                                &crate::i18n::format("search.no_match", &[("query", &query)]),
+                                                ui_kit::Text::Heading("search_no_match"),
+                                            );
+                                            if let Some(label) = closest(&query) {
+                                                ui_kit::text(
+                                                    ui,
+                                                    &crate::i18n::format("search.suggest", &[("label", label)]),
+                                                    ui_kit::Text::Report("search_suggest", false),
+                                                );
+                                            }
+                                        });
+                                        ui.add_space(t.space_8);
+                                    }
+                                    if empty {
+                                        ui_kit::text(
+                                            ui,
+                                            &crate::i18n::format("search.try", &[("example", r#"solid.extrude {"distance": 20}"#)]),
+                                            ui_kit::Text::Note("search_try"),
+                                        );
+                                    }
                                 }
                             });
-                            ui.add_space(t.space_8);
-                        }
-                        if empty {
-                            ui_kit::text(
-                                ui,
-                                &crate::i18n::format("search.try", &[("example", r#"solid.extrude {"distance": 20}"#)]),
-                                ui_kit::Text::Note("search_try"),
-                            );
-                        }
-                    }
+                        });
+                    });
                 });
-                ui_kit::CommandSearch::footer(ui, mode.is_some());
             });
         });
-    });
-    crate::scenario::publish_target("ribbon:search_popup", response.response.rect);
-    crate::scenario::publish_target("palette:outer", response.response.rect);
+    if !open {
+        return;
+    }
+    app.sbox.text = query;
+    app.sbox.closing_text = app.sbox.text.clone();
     if let Some((at, id)) = menu {
         crate::context_menu::open_for(app, at, crate::context_menu::Target::ToolbarCommand { id });
         return;
@@ -515,6 +564,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let outside = ctx.input(|i| i.pointer.any_pressed()) && !response.response.contains_pointer();
     if esc || outside {
         close(app);
+    }
+    if app.ui.palette_open != open {
+        ctx.request_repaint();
     }
 }
 
@@ -740,6 +792,82 @@ mod tests {
         h.call("ui.palette", json!({"open":false}));
         assert!(!h.app.ui.palette_open);
     }
+    #[test]
+    fn ribbon_field_is_one_editor_and_interpolates_with_anchored_right_edge() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.frames(3);
+        let closed = crate::scenario::rect_of("ribbon:search").unwrap();
+        assert_eq!(closed.height(), 28.0);
+        assert!(closed.width() < 520.0);
+        h.call("ui.palette", json!({}));
+        h.frame();
+        let middle = crate::scenario::rect_of("ribbon:search").unwrap();
+        assert!(middle.width() > closed.width() && middle.width() < 520.0, "{closed:?} -> {middle:?}");
+        assert!(middle.height() > 28.0 && middle.height() < 40.0, "{middle:?}");
+        let width_fraction = (middle.width() - closed.width()) / (520.0 - closed.width());
+        let height_fraction = (middle.height() - 28.0) / 12.0;
+        assert!((width_fraction - height_fraction).abs() < 0.001);
+        assert_eq!(middle.right(), closed.right());
+        let unfolding = crate::scenario::rect_of("ribbon:search_popup").unwrap();
+        assert_eq!(unfolding.top(), middle.bottom());
+        h.frames(10);
+        let field = crate::scenario::rect_of("ribbon:search").unwrap();
+        assert_eq!(field.size(), vec2(520.0, 40.0));
+        assert_eq!(field.right(), closed.right());
+        assert_eq!(Some(field), crate::scenario::rect_of("shortcut:search"));
+        assert_eq!(Some(field), crate::scenario::rect_of("palette:search"));
+        let sheet = crate::scenario::rect_of("ribbon:search_popup").unwrap();
+        assert_eq!(sheet.top(), field.bottom());
+        assert_eq!(sheet.x_range(), field.x_range());
+        assert!(sheet.height() > unfolding.height());
+        let footer = crate::scenario::rect_of("ribbon:search_footer").unwrap();
+        assert_eq!(footer, Rect::from_min_max(pos2(sheet.left(), footer.top()), sheet.right_bottom()));
+        // Inspect native accessibility widgets, not just aliases or painted labels.
+        let nodes = &h.output.accesskit_update.as_ref().unwrap().nodes;
+        let search_edit = h.ctx.read_response(egui::Id::new("sc_sbox_text")).unwrap().rect;
+        let fields: Vec<_> = nodes
+            .iter()
+            .filter(|(_, n)| n.role() == egui::accesskit::Role::TextInput)
+            .filter(|(_, n)| n.bounds().is_some_and(|b| b.y0 >= f64::from(field.top()) && b.y1 <= f64::from(sheet.bottom())))
+            .collect();
+        assert_eq!(fields.len(), 1, "one editor in the field and sheet: {fields:?}");
+        assert!(field.contains_rect(search_edit));
+        let editor_id = fields[0].0;
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.frame();
+        let shrinking = crate::scenario::rect_of("ribbon:search").unwrap();
+        assert!(shrinking.width() > closed.width() && shrinking.width() < field.width());
+        assert!(shrinking.height() > 28.0 && shrinking.height() < 40.0);
+        assert_eq!(shrinking.right(), closed.right());
+        h.frames(10);
+        assert_eq!(crate::scenario::rect_of("ribbon:search").unwrap(), closed);
+        h.step(&json!({"click":{"handle":"ribbon:search"}})).unwrap();
+        h.frames(10);
+        assert!(h.app.ui.palette_open);
+        let nodes = &h.output.accesskit_update.as_ref().unwrap().nodes;
+        assert!(nodes.iter().any(|(id, n)| *id == editor_id && n.role() == egui::accesskit::Role::TextInput));
+    }
+
+    #[test]
+    fn search_respects_instant_animation_and_click_away_reverses_it() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.ctx.global_style_mut(|style| style.animation_time = 0.0);
+        h.frames(3);
+        let closed = crate::scenario::rect_of("ribbon:search").unwrap();
+        h.step(&json!({"click":{"handle":"ribbon:search"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.ui.palette_open);
+        let field = crate::scenario::rect_of("ribbon:search").unwrap();
+        assert_eq!(field.size(), vec2(520.0, 40.0));
+        assert_eq!(field.right(), closed.right());
+        h.step(&json!({"click":[10,600]})).unwrap();
+        h.frames(2);
+        assert!(!h.app.ui.palette_open);
+        assert_eq!(crate::scenario::rect_of("ribbon:search").unwrap(), closed);
+    }
+
     #[test]
     fn saved_pins_remain_visible_without_a_query_or_recent_commands() {
         let mut h = crate::scenario::Harness::new();

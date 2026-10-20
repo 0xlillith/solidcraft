@@ -1,4 +1,4 @@
-//! Command-search composition: a taller editor and two-line MenuItem variant.
+//! Command-search composition: one expanding ribbon editor and a clipped results sheet.
 //! Domain ranking and command dispatch stay with the caller.
 use crate::{icons, theme::Tokens};
 use egui::{FontId, Rect, Response, Sense, Stroke, Ui, pos2, vec2};
@@ -18,11 +18,10 @@ impl CommandSearch {
         t.form_card_width * 2.0 - t.space_8
     }
 
-    pub(crate) fn field(ui: &mut Ui, value: &mut String, invalid: bool, focus: bool, limit: usize) -> Response {
+    pub(crate) fn field(ui: &mut Ui, value: &mut String, invalid: bool, focus: bool, open: bool, height: f32, limit: usize) -> Response {
         let t = Tokens::get();
-        let height = t.control_height + t.space_12;
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-        let focused = focus || ui.memory(|m| m.has_focus(egui::Id::new("sc_sbox_text")));
+        let focused = open && (focus || ui.memory(|m| m.has_focus(egui::Id::new("sc_sbox_text"))));
         let ink = if invalid {
             t.form_error
         } else if focused {
@@ -36,21 +35,28 @@ impl CommandSearch {
         ui.painter().rect(r, t.radius_xl, t.control_fill, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
         icons::paint_icon(
             ui.painter(),
-            Rect::from_center_size(r.left_center() + vec2(t.space_12 + t.space_8, 0.0), vec2(t.space_16, t.space_16)),
+            Rect::from_center_size(r.left_center() + vec2((t.space_12 + t.space_8).min(r.width() / 2.0), 0.0), vec2(t.space_16, t.space_16)),
             "zoom",
             1.0,
         );
-        let cap = if value.is_empty() { "S" } else { "Esc" };
-        Self::key(ui, r.right_center() - vec2(t.space_10, 0.0), cap);
-        let editor = Rect::from_min_max(r.min + vec2(t.space_24 + t.space_16, 0.0), r.max - vec2(t.space_24 * 2.0, 0.0));
+        let cap = if open { "Esc" } else { "S" };
+        if r.width() > t.space_24 {
+            Self::key(ui, r.right_center() - vec2(t.space_10, 0.0), cap);
+        }
+        let editor = Rect::from_min_max(
+            pos2((r.left() + t.space_24 + t.space_16).min(r.right()), r.top()),
+            pos2((r.right() - t.space_24 * 2.0).max((r.left() + t.space_24 + t.space_16).min(r.right())), r.bottom()),
+        );
         let mono = value.contains('{');
         let response = ui
             .scope_builder(egui::UiBuilder::new().max_rect(editor), |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(editor));
                 ui.add_sized(
                     editor.size(),
                     super::fields::text_input(egui::TextEdit::singleline(value))
                         .id(egui::Id::new("sc_sbox_text"))
                         .char_limit(limit)
+                        .interactive(open)
                         .frame(egui::Frame::NONE)
                         .hint_text(crate::i18n::tr_label("Search commands"))
                         .font(if mono { FontId::monospace(t.font_label) } else { FontId::proportional(t.font_button) }),
@@ -60,6 +66,7 @@ impl CommandSearch {
         if focus {
             response.request_focus();
         }
+        crate::scenario::publish_target("ribbon:search", r);
         crate::scenario::publish_target("shortcut:search", r);
         crate::scenario::publish_target("palette:search", r);
         response
@@ -89,14 +96,59 @@ impl CommandSearch {
         );
     }
 
-    pub(crate) fn footer(ui: &mut Ui, command: bool) {
+    /// Lay out the full sheet, but allocate and paint only its unfolding height. The
+    /// remembered natural height is refreshed with a sizing pass when results change.
+    pub(crate) fn sheet(ui: &mut Ui, width: f32, progress: f32, command: bool, add: impl FnOnce(&mut Ui)) -> Rect {
         let t = Tokens::get();
-        ui.add_space(t.space_6);
-        ui.painter().hline(ui.available_rect_before_wrap().x_range(), ui.cursor().top(), Stroke::new(1.0, t.dialog_rule));
-        egui::Frame::NONE.fill(t.dialog_footer).inner_margin(t.space_6).show(ui, |ui| {
-            ui.set_min_width((ui.available_width() - t.space_12).max(0.0));
+        let id = ui.id().with("search_sheet_height");
+        let known = ui.ctx().data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+        let origin = ui.cursor().min;
+        let clip = Rect::from_min_size(origin, vec2(width, known * progress));
+        let background = ui.painter().add(egui::Shape::Noop);
+        let mut child =
+            ui.new_child(egui::UiBuilder::new().id_salt("search_sheet").max_rect(Rect::from_min_size(origin, vec2(width, ui.available_height()))));
+        child.set_clip_rect(ui.clip_rect().intersect(clip));
+        child.spacing_mut().item_spacing.y = 0.0;
+        egui::Frame::NONE.inner_margin(egui::Margin { left: t.space_6 as i8, right: t.space_6 as i8, top: t.space_4 as i8, bottom: 0 }).show(
+            &mut child,
+            |ui| {
+                ui.set_width((width - t.space_12).max(0.0));
+                add(ui);
+            },
+        );
+        child.add_space(t.space_6);
+        Self::footer(&mut child, command);
+        let natural = child.min_rect().height();
+        ui.ctx().data_mut(|d| d.insert_temp(id, natural));
+        if (known - natural).abs() > 0.5 {
+            ui.ctx().request_discard("command search sheet resized");
+        }
+        let sheet = Rect::from_min_size(origin, vec2(width, natural * progress));
+        let frame = super::Menu::frame().inner_margin(0);
+        ui.painter().set(background, frame.paint(sheet.shrink(frame.stroke.width)));
+        // The edge-to-edge footer shares the card silhouette; keep the outer rule
+        // above its fill, as an overflow-clipped footer would in the board.
+        ui.painter().rect_stroke(sheet, t.radius_xl, frame.stroke, egui::StrokeKind::Inside);
+        ui.allocate_rect(sheet, Sense::hover());
+        crate::scenario::publish_target("ribbon:search_popup", sheet);
+        crate::scenario::publish_target("palette:outer", sheet);
+        sheet
+    }
+
+    fn footer(ui: &mut Ui, command: bool) {
+        let t = Tokens::get();
+        let start = ui.cursor().min;
+        let width = ui.available_width();
+        let background = ui.painter().add(egui::Shape::Noop);
+        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(t.space_14 as i8, t.space_3 as i8)).show(ui, |ui| {
+            ui.set_width((width - t.space_14 * 2.0).max(0.0));
             super::text(ui, crate::i18n::tr(if command { "search.command_keys" } else { "search.keys" }), super::Text::Note("search_keys"));
         });
+        let r = Rect::from_min_max(start, pos2(start.x + width, ui.min_rect().bottom()));
+        ui.painter()
+            .set(background, egui::Shape::rect_filled(r, egui::CornerRadius { nw: 0, ne: 0, sw: t.radius_xl, se: t.radius_xl }, t.dialog_footer));
+        ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, t.dialog_rule));
+        crate::scenario::publish_rect("ribbon:search_footer", r);
     }
 }
 
