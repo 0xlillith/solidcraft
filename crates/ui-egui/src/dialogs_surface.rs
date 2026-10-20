@@ -304,13 +304,13 @@ pub fn rows(ui: &mut egui::Ui, k: &mut Surf) -> bool {
                 combo(ui, "bl_cont0", &BLEND_CONTINUITY.map(|(label, _)| label), from);
             });
             form_row(ui, "Start bulge", |ui| {
-                ui_kit::bulge_field(ui, from_bulge);
+                ui_kit::scalar_field(ui, from_bulge, -0.9..=3.0);
             });
             form_row(ui, "End continuity", |ui| {
                 combo(ui, "bl_cont1", &BLEND_CONTINUITY.map(|(label, _)| label), to);
             });
             form_row(ui, "End bulge", |ui| {
-                ui_kit::bulge_field(ui, to_bulge);
+                ui_kit::scalar_field(ui, to_bulge, -0.9..=3.0);
             });
             ui_kit::options(ui, "blend_options", &mut [("Stitch to both bodies", stitch)]);
         }

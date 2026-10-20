@@ -13,6 +13,8 @@ pub mod agent_chat;
 pub mod agent_cursor;
 pub mod bom_panel;
 pub mod browser;
+pub mod browser_canvas;
+pub mod browser_prompts;
 pub mod canvas;
 #[cfg(test)]
 mod colour_tokens_tests;
@@ -78,6 +80,8 @@ mod linked_source;
 mod loft_rails_dialog_tests;
 #[cfg(test)]
 mod look_at_tests;
+#[cfg(test)]
+mod manage_dialogs_tests;
 mod material_card_review;
 
 #[cfg(test)]
@@ -89,6 +93,8 @@ pub mod messages;
 mod pattern_arrow_tests;
 #[cfg(test)]
 mod scale_tests;
+#[cfg(test)]
+mod prompt_cards_tests;
 #[cfg(test)]
 mod surface_clamp_tests;
 #[cfg(test)]
@@ -143,6 +149,7 @@ pub(crate) mod pick_buffer;
 pub(crate) mod pick_index;
 pub(crate) mod plugins;
 pub mod prefs;
+pub mod prefs_notice;
 #[cfg(test)]
 mod preselect_tests;
 pub mod preview;
@@ -1594,7 +1601,7 @@ impl SolveApp {
         material_card_review::show(self, ui.ctx());
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());
-        prefs::show_reset_notice(self, ui.ctx());
+        prefs_notice::show(self, ui.ctx());
         context_menu::show(self, ui.ctx());
         mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
