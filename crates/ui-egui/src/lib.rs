@@ -136,7 +136,6 @@ mod fillet_spline_handle_tests;
 pub mod mouse_gesture;
 pub(crate) mod navigation;
 pub(crate) mod open_meshing;
-pub mod palette;
 pub mod params_dialog;
 pub(crate) mod pick_buffer;
 pub(crate) mod pick_index;
@@ -354,7 +353,6 @@ pub struct SolveApp {
     /// The Bill of Materials window, when open.
     pub bom: Option<bom_panel::BomPanel>,
     material_card_review: Option<material_card_review::ReviewWindow>,
-    pub palette: palette::Palette,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
     /// Mouse gestures: the ring of tools and its customization window.
@@ -508,7 +506,6 @@ impl SolveApp {
             design_properties: None,
             bom: None,
             material_card_review: None,
-            palette: palette::Palette::default(),
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
             tree: browser::TreeState::default(),
@@ -1001,7 +998,8 @@ impl SolveApp {
             Some(d) => self.dialog = Some(d),
             None => {
                 let _ = dialogs::roll_marker(self, marker);
-                self.palette.text = format!("timeline.edit {{\"feature\": {id}, \"set\": {{}}}}");
+                // No dialog for this feature: open the search box with the command to edit it.
+                self.sbox.text = format!("timeline.edit {{\"feature\": {id}, \"set\": {{}}}}");
                 self.ui.palette_open = true;
             }
         }
@@ -1500,23 +1498,30 @@ impl SolveApp {
             toolbar::toolbar(self, ui);
         }
         theme::TabAccent::publish(self, ui.ctx());
-        if show_timeline && !left_timeline {
+        if !floating && show_timeline && !left_timeline {
             timeline::timeline(self, ui);
         }
-        palette::palette_bar(self, ui);
         // A floating browser keeps the workspace the whole width and covers viewport input.
-        let browser_float = self.ui.show_browser && self.preferences.browser_float;
+        let browser_float = self.ui.show_browser && (self.preferences.browser_float || (floating && !left_timeline));
         if !browser_float {
             self.shell.browser = None;
         }
+        self.shell.history = None;
         let full = ui.available_rect_before_wrap();
         if floating {
             let cards = shell::Cards::new(full, self.ui.layout);
             self.shell.cards = vec![cards.workspace, cards.ribbon];
+            self.shell.history = (show_timeline && !left_timeline).then(|| timeline::floating_rect(full));
             // Draw the scene first, then let the unchanged panel layouts cover it. The
             // viewport keeps its full projection even underneath the browser and cards.
             preview::update(self, ui.ctx());
-            let blocked = ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| shell::covered(self, p));
+            // A camera drag that began on the model keeps capture across cards. New
+            // gestures over chrome are blocked, as are selection drags into the ribbon.
+            let continuing_navigation = ui.input(|i| {
+                (i.pointer.middle_down() || i.pointer.secondary_down())
+                    && i.pointer.press_origin().is_some_and(|p| full.contains(p) && !shell::covered(self, p))
+            });
+            let blocked = !continuing_navigation && ui.input(|i| i.pointer.latest_pos()).is_some_and(|p| shell::covered(self, p));
             let mut viewport_ui = ui.new_child(egui::UiBuilder::new().max_rect(full).id_salt("floating_viewport"));
             if blocked {
                 // Disabled only to shield the scene from input under a card or menu; it must
@@ -1528,6 +1533,9 @@ impl SolveApp {
             shell::paint_top_corners(ui.painter(), full, theme::Tokens::get().app_bar);
             toolbar::toolbar(self, ui);
             theme::TabAccent::publish(self, ui.ctx());
+        }
+        if floating && show_timeline && !left_timeline {
+            timeline::timeline(self, ui);
         }
         if self.ui.show_browser && !browser_float {
             if left_timeline {
@@ -1549,11 +1557,18 @@ impl SolveApp {
         }
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             if floating {
-                let content = ui.max_rect();
+                let panel_content = ui.max_rect();
+                let mut content = panel_content;
+                if let Some(history) = self.shell.history {
+                    content.max.y = (history.top() - shell::SHELL_GAP).max(content.top());
+                }
+                if let Some(browser) = self.shell.browser {
+                    content.min.x = (browser.right() + shell::SHELL_GAP).min(content.right());
+                }
                 self.shell.content = Some(content);
                 self.shell.panels = [
-                    egui::Rect::from_min_max(egui::pos2(full.left(), content.top()), egui::pos2(content.left(), full.bottom())),
-                    egui::Rect::from_min_max(egui::pos2(content.right(), content.top()), full.max),
+                    egui::Rect::from_min_max(egui::pos2(full.left(), panel_content.top()), egui::pos2(panel_content.left(), full.bottom())),
+                    egui::Rect::from_min_max(egui::pos2(panel_content.right(), panel_content.top()), full.max),
                 ]
                 .into_iter()
                 .filter(|r| r.is_positive())
