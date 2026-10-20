@@ -798,15 +798,21 @@ mod tests {
         h.app.home.open = false;
         h.frames(3);
         let closed = crate::scenario::rect_of("ribbon:search").unwrap();
-        assert_eq!(closed.height(), 28.0);
-        assert!(closed.width() < 520.0);
+        // Parent bba2183a: 30 pt tab row, 4 pt inset on every side.
+        let toolbar = crate::scenario::rect_of("toolbar").unwrap();
+        assert_eq!(crate::toolbar::TAB_ROW_HEIGHT, 30.0);
+        assert_eq!(crate::toolbar::RIBBON_HEIGHT, 117.0);
+        assert_eq!(closed.size(), vec2(188.0, 22.0));
+        assert_eq!(closed.right(), toolbar.right() - 4.0);
+        assert_eq!(closed.top(), toolbar.top() + 4.0);
+        assert_eq!(closed.center().y, toolbar.top() + 15.0);
         h.call("ui.palette", json!({}));
         h.frame();
         let middle = crate::scenario::rect_of("ribbon:search").unwrap();
         assert!(middle.width() > closed.width() && middle.width() < 520.0, "{closed:?} -> {middle:?}");
-        assert!(middle.height() > 28.0 && middle.height() < 40.0, "{middle:?}");
+        assert!(middle.height() > closed.height() && middle.height() < 40.0, "{middle:?}");
         let width_fraction = (middle.width() - closed.width()) / (520.0 - closed.width());
-        let height_fraction = (middle.height() - 28.0) / 12.0;
+        let height_fraction = (middle.height() - closed.height()) / (40.0 - closed.height());
         assert!((width_fraction - height_fraction).abs() < 0.001);
         assert_eq!(middle.right(), closed.right());
         let unfolding = crate::scenario::rect_of("ribbon:search_popup").unwrap();
@@ -838,7 +844,7 @@ mod tests {
         h.frame();
         let shrinking = crate::scenario::rect_of("ribbon:search").unwrap();
         assert!(shrinking.width() > closed.width() && shrinking.width() < field.width());
-        assert!(shrinking.height() > 28.0 && shrinking.height() < 40.0);
+        assert!(shrinking.height() > closed.height() && shrinking.height() < 40.0);
         assert_eq!(shrinking.right(), closed.right());
         h.frames(10);
         assert_eq!(crate::scenario::rect_of("ribbon:search").unwrap(), closed);
@@ -847,6 +853,26 @@ mod tests {
         assert!(h.app.ui.palette_open);
         let nodes = &h.output.accesskit_update.as_ref().unwrap().nodes;
         assert!(nodes.iter().any(|(id, n)| *id == editor_id && n.role() == egui::accesskit::Role::TextInput));
+    }
+
+    #[test]
+    fn hovering_the_closed_and_open_search_field_uses_the_text_cursor() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.frames(3);
+        for open in [false, true] {
+            if open {
+                h.call("ui.palette", json!({}));
+                h.frames(10);
+            }
+            let field = crate::scenario::rect_of("ribbon:search").unwrap();
+            // Cover the icon, editor and keycap, including the closed click overlay.
+            for x in [field.left() + 12.0, field.center().x, field.right() - 12.0] {
+                h.step(&json!({"move": [x, field.center().y]})).unwrap();
+                h.frames(2);
+                assert_eq!(h.output.cursor_icon, egui::CursorIcon::Text, "open={open}, x={x}");
+            }
+        }
     }
 
     #[test]

@@ -796,7 +796,7 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
     );
     // The single editor is drawn on the foreground layer by shortcut_box::show, so it
     // can grow over the ribbon without being clipped to the tab row.
-    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_ribbon_search"), search.with_max_y(search.top() + t.control_height)));
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_ribbon_search"), search));
     let changed = ui.ctx().data_mut(|d| {
         let id = egui::Id::new("sc_ribbon_visible_tab");
         let state = (app.ui.tab.clone(), row.width());

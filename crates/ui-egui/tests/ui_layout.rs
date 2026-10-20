@@ -92,7 +92,11 @@ fn docked_ribbon_geometry_and_search() {
             assert_eq!(workspace.width(), 88.0);
             assert_eq!(workspace.top(), ribbon.top());
             assert_eq!(workspace.bottom(), ribbon.bottom() - 1.0);
-            assert_eq!(search.height(), 28.0);
+            assert_eq!(toolbar::TAB_ROW_HEIGHT, 30.0);
+            assert_eq!(search.height(), 22.0);
+            assert_eq!(search.top(), ribbon.top() + 4.0);
+            assert_eq!(search.right(), ribbon.right() - 4.0);
+            assert_eq!(search.center().y, ribbon.top() + 15.0);
             assert_eq!(search.width(), if width == 1600.0 { 188.0 } else { 24.0 });
             assert!(ribbon.contains_rect(search));
             assert!(search.left() > workspace.right());

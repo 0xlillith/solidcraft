@@ -54,6 +54,7 @@ impl CommandSearch {
                 ui.add_sized(
                     editor.size(),
                     super::fields::text_input(egui::TextEdit::singleline(value))
+                        .min_size(vec2(0.0, height))
                         .id(egui::Id::new("sc_sbox_text"))
                         .char_limit(limit)
                         .interactive(open)
@@ -65,6 +66,9 @@ impl CommandSearch {
             .inner;
         if focus {
             response.request_focus();
+        }
+        if ui.rect_contains_pointer(r) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
         crate::scenario::publish_target("ribbon:search", r);
         crate::scenario::publish_target("shortcut:search", r);
