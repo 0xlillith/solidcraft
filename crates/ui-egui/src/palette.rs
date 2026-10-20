@@ -70,7 +70,7 @@ pub fn palette_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui,
         |ui| {
             ui.horizontal_centered(|ui| {
-                ui.label(RichText::new("›").strong().color(t.accent));
+                ui.label(RichText::new(">").strong().color(t.accent));
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut app.palette.text)
                         // The JSON example keeps its braces here rather than in the catalog, so the
