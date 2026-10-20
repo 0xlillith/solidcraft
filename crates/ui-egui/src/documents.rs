@@ -761,6 +761,7 @@ mod tests {
         assert_eq!(a.docs.closing, Some(0), "the first unsaved design is asked about first");
         assert_eq!(a.docs.active, 0, "and shown");
         answer_prompt(&mut a, Answer::Save);
+        crate::save_job::tick(&mut a, true);
         assert!(!dirty(&a, 0), "saved");
         assert_eq!(
             std::fs::read(&file).ok().and_then(|b| solidcraft_engine::io::read_design(&b).ok()).map(|d| d.features.len()),
@@ -802,6 +803,7 @@ mod tests {
         answer_prompt(&mut a, Answer::Save);
         assert!(!a.quit_requested && a.file_picker_busy());
         crate::file_picker::tick(&mut a, &egui::Context::default());
+        crate::save_job::tick(&mut a, true);
         assert!(a.quit_requested && file.exists());
         let _ = std::fs::remove_file(&file);
     }
