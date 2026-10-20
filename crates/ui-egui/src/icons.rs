@@ -20,9 +20,16 @@ pub(crate) mod navigation;
 #[path = "../../../assets/icons/ui/source/pointer.rs"]
 pub(crate) mod pointer;
 
-/// Textures already rasterised: one per (master, look, pixel size).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Finish {
+    Artwork,
+    Ink(Color32),
+    Danger,
+}
+
+/// Textures already rasterised: one per (master, look, pixel size, finish).
 #[derive(Clone, Default)]
-struct Cache(Arc<Mutex<HashMap<(&'static str, Look, u32, Option<Color32>), TextureHandle>>>);
+struct Cache(Arc<Mutex<HashMap<(&'static str, Look, u32, Finish), TextureHandle>>>);
 
 /// Draw the icon `name` in `r`. The ink, fill and accent colours the callers pass are no longer
 /// used: the palette decides. Only the ink's opacity is kept, so a dimmed (disabled) button dims
@@ -59,19 +66,47 @@ pub(crate) fn paint_ink_flipped(p: &Painter, r: Rect, name: &str, ink: Color32) 
 
 fn paint_with_ink(p: &Painter, r: Rect, name: &str, dark: Option<bool>, opacity: f32, ink: Option<Color32>, flip_y: bool) {
     let ctx = p.ctx();
+    let resolved = icon_svg::resolve(name);
+    let look = Look { dark: dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode), accent: resolved.accent, vision: crate::theme::vision() };
+    paint_resolved(p, r, resolved, look, opacity, ink.map_or(Finish::Artwork, Finish::Ink), flip_y);
+}
+
+/// Draw with a named palette ramp, preserving outlines, passive faces and transparency.
+/// `None` explicitly selects base blue; an unknown name retains the icon's own accent.
+/// Existing painters continue to select the icon's semantic accent.
+pub fn paint_accented(p: &Painter, r: Rect, name: &str, accent: Option<&str>, opacity: f32) {
+    let resolved = icon_svg::resolve(name);
+    let accent = match accent {
+        Some(name) => icon_svg::accent_index(name).or(resolved.accent),
+        None => None,
+    };
+    let look = Look { dark: p.ctx().global_style().visuals.dark_mode, accent, vision: crate::theme::vision() };
+    paint_resolved(p, r, resolved, look, opacity, Finish::Artwork, false);
+}
+
+/// Shared destructive-action artwork: red shaded faces, normal outlines and cutouts.
+/// Unlike a single-colour mask, this also tints a master's passive faces through
+/// the constraint ramp without flattening the lid, handle or other details.
+pub(crate) fn paint_danger(p: &Painter, r: Rect, name: &str, opacity: f32) {
+    let resolved = icon_svg::resolve(name);
+    let look = Look { dark: p.ctx().global_style().visuals.dark_mode, accent: icon_svg::accent_index("constraint"), vision: crate::theme::vision() };
+    paint_resolved(p, r, resolved, look, opacity, Finish::Danger, false);
+}
+
+fn paint_resolved(p: &Painter, r: Rect, resolved: icon_svg::Resolved, look: Look, opacity: f32, finish: Finish, flip_y: bool) {
+    let ctx = p.ctx();
     let ppp = ctx.pixels_per_point().max(0.5);
     let side = r.width().min(r.height());
     let px = (side * ppp).round().clamp(8.0, 512.0) as u32;
-    let resolved = icon_svg::resolve(name);
-    let look = Look { dark: dark.unwrap_or_else(|| ctx.global_style().visuals.dark_mode), accent: resolved.accent, vision: crate::theme::vision() };
     let cache = ctx.data_mut(|d| d.get_temp_mut_or_insert_with(egui::Id::new("sc_icon_cache"), Cache::default).clone());
     let Ok(mut map) = cache.0.lock() else { return };
-    let key = (resolved.master, look, px, ink);
+    let key = (resolved.master, look, px, finish);
     if let std::collections::hash_map::Entry::Vacant(slot) = map.entry(key) {
         let Some(doc) = icon_svg::doc_for(resolved.master, px) else { return };
-        let Some(pm) = icon_svg::render(doc, look, px) else { return };
+        let pm = if finish == Finish::Danger { icon_svg::render_tinted(doc, look, px) } else { icon_svg::render(doc, look, px) };
+        let Some(pm) = pm else { return };
         let mut image = egui::ColorImage::from_rgba_premultiplied([px as usize, px as usize], pm.data());
-        if let Some(ink) = ink {
+        if let Finish::Ink(ink) = finish {
             for pixel in &mut image.pixels {
                 *pixel = ink.gamma_multiply(f32::from(pixel.a()) / 255.0);
             }
@@ -153,5 +188,127 @@ mod tests {
             }
         }
         theme::set_vision(previous);
+    }
+
+    #[test]
+    fn per_call_accents_preserve_roles_and_share_the_existing_cache() {
+        let previous = theme::vision();
+        for dark in [false, true] {
+            for vision in ColorVision::ALL {
+                theme::set_vision(vision);
+                let ctx = crate::fonts::test_context();
+                ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+                let mut textures = HashMap::new();
+                let mut ids = HashMap::new();
+                let mut silhouette = None;
+                for accent in [
+                    Some("construction"),
+                    Some("constraint"),
+                    None,
+                    Some("sketch"),
+                    Some("surface"),
+                    Some("form"),
+                    Some("mesh"),
+                    Some("unknown"),
+                    Some(""),
+                    None,
+                ] {
+                    let expected_accent = match accent {
+                        Some("unknown" | "") => icon_svg::resolve("surface_extrude").accent,
+                        Some(name) => icon_svg::accent_index(name),
+                        None => None,
+                    };
+                    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        paint_accented(ui.painter(), Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(64.0, 64.0)), "surface_extrude", accent, 0.42);
+                    });
+                    let texture = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Mesh(mesh) => {
+                                assert!(mesh.vertices.iter().all(|vertex| vertex.color == Color32::from_white_alpha(107)));
+                                Some(mesh.texture_id)
+                            }
+                            _ => None,
+                        })
+                        .unwrap();
+                    for (id, deltas) in &output.textures_delta.set {
+                        for delta in deltas {
+                            let egui::ImageData::Color(image) = &delta.image;
+                            if delta.pos.is_none() {
+                                textures.insert(*id, image.clone());
+                            }
+                        }
+                    }
+                    if let Some(previous_id) = ids.insert(expected_accent, texture) {
+                        assert_eq!(texture, previous_id, "repeat and unknown-name fallback reuse the same accent texture");
+                        assert!(!output.textures_delta.set.contains_key(&texture));
+                    }
+                    let image = textures.get(&texture).unwrap();
+                    let look = Look { dark, accent: expected_accent, vision };
+                    for role in ["ink", "passive-2", "passive-3", "active-1", "active-2", "active-3"] {
+                        assert!(image.pixels.contains(&icon_svg::role_colour(role, look)), "{accent:?}/{role}, {dark}/{vision:?}");
+                    }
+                    let alpha: Vec<_> = image.pixels.iter().map(|pixel| pixel.a()).collect();
+                    if let Some(previous) = &silhouette {
+                        assert_eq!(&alpha, previous, "a ramp override must preserve all geometry and knockouts");
+                    } else {
+                        silhouette = Some(alpha);
+                    }
+                    output.textures_delta.clear();
+                }
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    paint_icon(ui.painter(), Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(64.0, 64.0)), "surface_extrude", 1.0);
+                });
+                let texture = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) => Some(mesh.texture_id),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    ids.get(&icon_svg::resolve("surface_extrude").accent),
+                    Some(&texture),
+                    "the old painter retains semantic selection and shares the cache"
+                );
+                output.textures_delta.clear();
+            }
+        }
+        theme::set_vision(previous);
+    }
+
+    #[test]
+    fn danger_and_accent_only_textures_do_not_share_a_cache_entry() {
+        for dark in [false, true] {
+            let ctx = crate::fonts::test_context();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let mut textures = HashMap::new();
+            for danger in [false, true, false, true] {
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(20.0, 20.0));
+                    if danger {
+                        paint_danger(ui.painter(), rect, "delete", 1.0);
+                    } else {
+                        paint_accented(ui.painter(), rect, "delete", Some("constraint"), 1.0);
+                    }
+                });
+                let id = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) => Some(mesh.texture_id),
+                        _ => None,
+                    })
+                    .unwrap();
+                if let Some(previous) = textures.insert(danger, id) {
+                    assert_eq!(id, previous, "repeated danger painting reuses its texture");
+                    assert!(!output.textures_delta.set.contains_key(&id));
+                }
+                output.textures_delta.clear();
+            }
+            assert_ne!(textures[&false], textures[&true], "matching Look values must not mix ordinary gray bins with shaded red bins");
+        }
     }
 }

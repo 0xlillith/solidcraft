@@ -95,7 +95,9 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("radial_menu", |ui, _| {
         let (r, _) = ui.allocate_exact_size(vec2(360.0, 360.0), egui::Sense::hover());
-        let app = crate::test_support::sample_app();
+        let mut app = crate::test_support::sample_app();
+        app.ui.tab = "SURFACE".into();
+        crate::theme::TabAccent::publish(&app, ui.ctx());
         radial_menu(ui, r.center(), &crate::context_menu::radial_items(&app), Some(3));
     }),
     element!("workspace_menu", |ui, _| {
@@ -1158,6 +1160,134 @@ fn command_search_board_in_both_themes() {
                 std::fs::create_dir_all(&dir).unwrap();
                 image.save(std::path::Path::new(&dir).join(format!("search-{state}-{}.png", if dark { "dark" } else { "light" }))).unwrap();
             }
+        }
+    }
+    crate::theme::set_dark(previous);
+}
+
+/// Exercise the actual surface painters, including deliberately shared artwork whose
+/// own accent differs from its tone or tab.
+#[test]
+fn confirm_radial_and_menu_danger_keep_multitone_artwork() {
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let mut cases = vec![
+            ("warning", "extrude", "MODEL", Some("construction"), 20),
+            ("danger", "extrude", "MODEL", Some("constraint"), 20),
+            ("info", "extrude", "MODEL", None, 20),
+            ("warning", "status_warning", "MODEL", Some("construction"), 20),
+            ("danger", "delete", "MODEL", Some("constraint"), 20),
+            ("danger_menu", "delete", "MODEL", Some("constraint"), 16),
+            ("info", "surface_extrude", "MODEL", None, 20),
+        ];
+        for (tab, ramp) in [
+            ("SKETCH", Some("sketch")),
+            ("SURFACE", Some("surface")),
+            ("MESH", Some("mesh")),
+            ("FORM", Some("form")),
+            ("MODEL", None),
+            ("SHEET METAL", None),
+            ("RENDER", None),
+            ("unknown", None),
+        ] {
+            for surface in ["radial", "radial_hover"] {
+                cases.push((surface, "extrude", tab, ramp, 24));
+            }
+        }
+        let mut dominant_accents: std::collections::HashMap<&str, std::collections::HashSet<egui::Color32>> = std::collections::HashMap::new();
+        for (surface, icon, tab, ramp, side) in cases {
+            let ctx = crate::fonts::test_context();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let mut app = crate::SolveApp::new(Default::default(), Default::default());
+            app.ui.tab = tab.into();
+            crate::theme::TabAccent::publish(&app, &ctx);
+            let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(600.0, 360.0));
+            let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(bounds), ..Default::default() }, |ui| {
+                ui.painter().rect_filled(bounds, 0.0, Tokens::get().panel);
+                match surface {
+                    "radial" | "radial_hover" => {
+                        radial_menu(
+                            ui,
+                            egui::pos2(180.0, 180.0),
+                            &[crate::context_menu::Item::action("solid.extrude", "Extrude", icon)],
+                            (surface == "radial_hover").then_some(0),
+                        );
+                    }
+                    "danger_menu" => {
+                        let mut item = MenuItem::new("gallery:danger", "Delete", icon);
+                        item.danger = true;
+                        item.show(ui);
+                    }
+                    _ => {
+                        let tone = match surface {
+                            "warning" => Tone::Warning,
+                            "danger" => Tone::Danger,
+                            _ => Tone::Info,
+                        };
+                        Confirm::new(ui.id().with("confirm"), icon, "Confirm").tone(tone).content(ui, true, |_| {});
+                    }
+                }
+            });
+            let image = output
+                .textures_delta
+                .set
+                .values()
+                .flatten()
+                .find_map(|delta| match &delta.image {
+                    egui::ImageData::Color(image) if image.size == [side, side] => Some(image),
+                    _ => None,
+                })
+                .expect("the surface must upload its icon texture");
+            let colours: std::collections::HashSet<_> = image.pixels.iter().filter(|pixel| pixel.a() == 255).copied().collect();
+            assert!(colours.len() >= 2, "{surface}/{icon}/{tab}, dark={dark}: opaque artwork is a silhouette");
+            let resolved = crate::icon_svg::resolve(icon);
+            assert!(!resolved.placeholder, "{icon} needs a master");
+            let look = crate::icon_svg::Look { dark, accent: ramp.and_then(crate::icon_svg::accent_index), vision: crate::theme::vision() };
+            let doc = crate::icon_svg::doc_for(resolved.master, side as u32).unwrap();
+            let expected = if matches!(surface, "danger" | "danger_menu") {
+                crate::icon_svg::render_tinted(doc, look, side as u32)
+            } else {
+                crate::icon_svg::render(doc, look, side as u32)
+            }
+            .unwrap();
+            if icon == "delete" {
+                assert!(colours.len() >= 3, "{surface}, dark={dark}: preserve the lid, faces and outline colours");
+                let dominant = colours.iter().max_by_key(|colour| image.pixels.iter().filter(|pixel| *pixel == *colour).count()).unwrap();
+                assert!(
+                    dominant.r() > dominant.g() && dominant.r() > dominant.b(),
+                    "{surface}, dark={dark}: dominant bin colour must be red, got {dominant:?}"
+                );
+            }
+            assert_eq!(
+                image.as_ref(),
+                &egui::ColorImage::from_rgba_premultiplied([side, side], expected.data()),
+                "{surface}/{tab}: preserve roles with {ramp:?}"
+            );
+            if icon == "extrude" {
+                let dominant = ["active-1", "active-2", "active-3"]
+                    .map(|role| {
+                        let colour = crate::icon_svg::role_colour(role, look);
+                        (image.pixels.iter().filter(|pixel| **pixel == colour).count(), colour)
+                    })
+                    .into_iter()
+                    .max_by_key(|(count, _)| *count)
+                    .unwrap();
+                assert!(dominant.0 > 0, "{surface}/{tab}: missing accent pixels");
+                let group = if matches!(surface, "warning" | "danger" | "info") { "confirm" } else { surface };
+                dominant_accents.entry(group).or_default().insert(dominant.1);
+            }
+            if let Ok(dir) = std::env::var("SOLIDCRAFT_ICON_SURFACE_EVIDENCE") {
+                let mut textures = std::collections::HashMap::new();
+                super::checks::tests::textures_update(&mut textures, &output.textures_delta);
+                let capture = super::checks::tests::raster(&ctx, output.shapes.clone(), output.pixels_per_point, bounds, &textures);
+                std::fs::create_dir_all(&dir).unwrap();
+                capture.save(std::path::Path::new(&dir).join(format!("{surface}-{icon}-{tab}-{}.png", if dark { "dark" } else { "light" }))).unwrap();
+            }
+            output.textures_delta.clear();
+        }
+        for (group, count) in [("confirm", 3), ("radial", 5), ("radial_hover", 5)] {
+            assert_eq!(dominant_accents[group].len(), count, "{group}, dark={dark}: dominant accent pixels must differ across mappings");
         }
     }
     crate::theme::set_dark(previous);

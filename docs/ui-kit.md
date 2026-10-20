@@ -31,7 +31,9 @@ preferences, manager cards, prompts, context menus and the sketch palette. Impor
   existing window behavior. Empty action labels omit the footer.
 - `Confirm` is an input-blocking modal using the same card frame and footer controls.
   It shows a 36 pt icon disc in warning, danger or info tone, a title, caller-supplied
-  message and optional monospace `detail`, above a 52 pt footer. `actions(primary, cancel, left_ghost)`
+  message and optional monospace `detail`, above a 52 pt footer. Glyphs use the construction
+  ramp for warning, the shared shaded danger treatment for danger, and base blue for info;
+  the disc keeps its tint. `actions(primary, cancel, left_ghost)`
   places the optional third action at the left. Danger uses `form_error` with a
   contrast-selected on-colour; other primaries use blue. Enter invokes the selected
   answer (primary by default) when valid; Esc cancels. It retains close, answer and
@@ -57,7 +59,7 @@ table. Panel/Window/Confirm compositions also have dedicated geometry and intera
 | --- | --- | --- |
 | search: `CommandSearch`, `MenuItem::search_row` | Ribbon search composition: 40 pt bounded field, magnifier and S/Esc keycap, 38 pt two-line menu row with 26 pt icon tile, accent bold substring, path, shortcut/kind keycap, counts, JSON detail box and footer. The ordinary 30 pt menu row cannot fit a second line; this variant keeps its enabled/selected states and scenario IDs. Ranking and dispatch stay with the caller. | `form_card_width × 2 − space_8` (520 pt), `control_height`, `space_2/3/4/6/8/10/12/16/24`, `radius_xl/control_radius`, `control_fill`, `dialog_body/footer/rule/border`, `form_ink/dim/primary/error/error_fill/success/success_fill`, `selected_ink`, `accent_soft`, typography |
 | menu: `Menu`, `MenuItem` | Shared popup, 30 pt rows, 28 pt icon column, clipped labels, right-aligned mono shortcuts, submenu chevrons, checked/unchecked and document swatches, inert 40% disabled rows and danger ink; headings and separators; ribbon drag/pin targets retained | `dialog_body/border/rule`, `radius_xl`, `control_height/radius`, `form_ink/dim/primary/error`, `accent_soft`, typography and spacing |
-| radial: `radial_menu` | Eight rounded annular sectors, parallel 4 pt gaps, 9 pt circular corner joins, accent hover, centre label/key; existing hold/flick/release dispatch | `dialog_body/border`, `form_ink/dim/primary`, `accent_soft`, font/spacing tokens |
+| radial: `radial_menu` | Eight rounded annular sectors, parallel 4 pt gaps, 9 pt circular corner joins, tab-accent artwork and hover, centre label/key; existing hold/flick/release dispatch | `dialog_body/border`, `form_ink/dim`, `TabAccent`, icon palette, font/spacing tokens |
 | panel: `Window`, `WindowPage` | Shared card frame, header, optional page list, bounded content and footer with a left action | `form_header/footer_height`, `form_card_width`, `form_label_width`, `control_height`, `dialog_footer/rule`, `selected_bg/ink`, spacing |
 | confirm: `Confirm`, `Tone` | Modal warning/danger/info, title/message, mono detail and ghost/cancel/primary actions | `warning`, `form_error/fill`, `accent_soft`, `form_primary`, `on_accent`, `tab_on_fill_dark`, `font_subtitle`, spacing |
 | metrics: `row_height`, `table_row_height`, `header_height` | Shared control/header heights | `control_height`, `space_8`, `form_header_height` |
@@ -130,6 +132,17 @@ button(ui, "Add", Button::Enabled(valid));
 footer(ui, "OK", "Cancel", valid, Footer { apply: Some("Apply"), ..Default::default() });
 text(ui, report, Text::Report("validation", invalid));
 ```
+
+Icon surfaces that explicitly choose a palette ramp use `icons::paint_accented`.
+`None` selects base blue, while unknown names retain the icon's semantic accent.
+Only active roles change: ink/line outlines, passive faces, guides and knockouts keep
+normal artwork colours. Existing icon painters retain their semantic-accent behaviour.
+Danger menu items and danger confirmation glyphs both use `icons::paint_danger`.
+It additionally maps passive-1/2/3 faces to constraint active-1/2/3, retaining the
+shading steps, ink outlines, handle and transparent slat details. The cache distinguishes
+this whole-glyph treatment from ordinary accent selection and monochrome ink masks.
+Radial icons follow the active tab (Sketch, Surface, Mesh, Form; other tabs use base blue)
+in both normal and hovered sectors; the hovered background retains its tab tint.
 
 ## Extending and checking the kit
 

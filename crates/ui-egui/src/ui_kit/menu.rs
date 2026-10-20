@@ -199,7 +199,9 @@ impl<'a> MenuItem<'a> {
         } else if let Some(color) = self.swatch {
             painter.rect(icon, t.radius_sm, color, Stroke::new(1.0, t.control_border), egui::StrokeKind::Inside);
         } else if !self.icon.is_empty() {
-            if self.danger || hot {
+            if self.danger {
+                icons::paint_danger(&painter, icon, self.icon, 1.0);
+            } else if hot {
                 icons::paint_ink(&painter, icon, self.icon, dim);
             } else {
                 icons::paint_icon(&painter, icon, self.icon, 1.0);

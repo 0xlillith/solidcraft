@@ -49,6 +49,17 @@ pub(crate) struct TabAccent {
     pub soft: Color32,
 }
 
+/// Palette ramp for icons on a surface explicitly accented by its active tab.
+pub(crate) fn icon_accent_for_tab(tab: &str) -> Option<&'static str> {
+    match tab {
+        "SKETCH" => Some("sketch"),
+        "SURFACE" => Some("surface"),
+        "MESH" => Some("mesh"),
+        "FORM" => Some("form"),
+        _ => None,
+    }
+}
+
 /// WCAG contrast of two opaque sRGB colours.
 pub(crate) fn contrast_ratio(a: Color32, b: Color32) -> f64 {
     let luminance = |c: Color32| {
@@ -86,10 +97,15 @@ impl TabAccent {
         ctx.data(|d| d.get_temp::<Self>(egui::Id::new("sc_tab_accent"))).unwrap_or_else(|| Self::for_tab(&Tokens::get(), "MODEL"))
     }
 
+    pub fn current_icon_accent(ctx: &egui::Context) -> Option<&'static str> {
+        ctx.data(|d| d.get_temp::<Option<&'static str>>(egui::Id::new("sc_tab_icon_accent"))).flatten()
+    }
+
     pub fn publish(app: &crate::SolveApp, ctx: &egui::Context) {
         let accent = Self::for_tab(&Tokens::get(), &app.ui.tab);
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::new("sc_tab_accent"), accent);
+            d.insert_temp(egui::Id::new("sc_tab_icon_accent"), icon_accent_for_tab(&app.ui.tab));
             d.insert_temp(egui::Id::new("sc_sketch_open"), app.session.active_sketch.is_some());
             d.insert_temp(egui::Id::new("sc_tool_accent"), app.tool.is_some() || app.dialog.is_some());
         });
@@ -694,10 +710,13 @@ mod tests {
         super::TabAccent::publish(app, &first);
         assert_eq!(super::TabAccent::current(&first).color, super::Tokens::get().surface_fill);
         assert_eq!(super::TabAccent::current(&second).color, super::Tokens::get().accent);
+        assert_eq!(super::TabAccent::current_icon_accent(&first), Some("surface"));
+        assert_eq!(super::TabAccent::current_icon_accent(&second), None);
         assert_eq!(first.style_of(egui::Theme::Dark).visuals, before, "dialog OK, checkboxes and status styles must not inherit the tab");
         app.ui.tab = "MODEL".into();
         super::TabAccent::publish(app, &first);
         assert_eq!(super::TabAccent::current(&first).soft, super::Tokens::get().accent_soft);
+        assert_eq!(super::TabAccent::current_icon_accent(&first), None);
     }
 
     #[test]

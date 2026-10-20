@@ -88,6 +88,7 @@ fn paint_sector(p: &egui::Painter, center: Pos2, k: usize, fill: Color32, stroke
 
 pub(crate) fn radial_menu(ui: &mut Ui, center: Pos2, items: &[Item], hot: Option<usize>) -> Option<Item> {
     let t = Tokens::get();
+    let accent = crate::theme::TabAccent::current(ui.ctx());
     let mut picked = None;
     for (k, item) in items.iter().take(8).enumerate() {
         let enabled = item.enabled && ui.is_enabled();
@@ -100,16 +101,22 @@ pub(crate) fn radial_menu(ui: &mut Ui, center: Pos2, items: &[Item], hot: Option
             &painter,
             center,
             k,
-            if lit { t.accent_soft } else { t.dialog_body },
-            Stroke::new(if lit { 1.6 } else { 1.0 }, if lit { t.form_primary } else { t.dialog_border }),
+            if lit { accent.soft } else { t.dialog_body },
+            Stroke::new(if lit { 1.6 } else { 1.0 }, if lit { accent.color } else { t.dialog_border }),
         );
         let a = -FRAC_PI_2 + k as f32 * FRAC_PI_4;
         let at = center + unit(a) * 104.0;
         let target = Rect::from_center_size(at, vec2(t.space_24 * 2.0 + t.space_12, t.space_24 + t.space_16 + t.space_2));
         let response = ui.interact(target, ui.id().with(("radial", k)), Sense::hover());
         crate::scenario::publish_target(&format!("radial:{}", item.id), target);
-        let ink = if lit { t.form_primary } else { t.form_ink };
-        crate::icons::paint_ink(&painter, Rect::from_center_size(at - vec2(0.0, t.space_6), vec2(t.space_24, t.space_24)), &item.icon, ink);
+        let ink = if lit { accent.ink } else { t.form_ink };
+        crate::icons::paint_accented(
+            &painter,
+            Rect::from_center_size(at - vec2(0.0, t.space_6), vec2(t.space_24, t.space_24)),
+            &item.icon,
+            crate::theme::TabAccent::current_icon_accent(ui.ctx()),
+            1.0,
+        );
         let label = crate::i18n::tr_label(&item.label);
         let mut job = egui::text::LayoutJob::simple_singleline(label.to_string(), FontId::proportional(t.font_small), ink);
         job.wrap.max_width = 74.0;

@@ -85,13 +85,17 @@ impl<'a> Confirm<'a> {
                     ui.horizontal_top(|ui| {
                         let diameter = t.control_height + t.space_8;
                         let (disc, _) = ui.allocate_exact_size(vec2(diameter, diameter), egui::Sense::hover());
-                        let (fill, ink) = match self.tone {
-                            Tone::Warning => (t.warning.gamma_multiply(0.15), t.warning),
-                            Tone::Danger => (t.form_error_fill, t.form_error),
-                            Tone::Info => (t.accent_soft, t.form_primary),
+                        let (fill, accent) = match self.tone {
+                            Tone::Warning => (t.warning.gamma_multiply(0.15), Some("construction")),
+                            Tone::Danger => (t.form_error_fill, Some("constraint")),
+                            Tone::Info => (t.accent_soft, None),
                         };
                         ui.painter().circle_filled(disc.center(), diameter / 2.0, fill);
-                        crate::icons::paint_ink(ui.painter(), disc.shrink(t.space_8), self.icon, ink);
+                        if matches!(self.tone, Tone::Danger) {
+                            crate::icons::paint_danger(ui.painter(), disc.shrink(t.space_8), self.icon, 1.0);
+                        } else {
+                            crate::icons::paint_accented(ui.painter(), disc.shrink(t.space_8), self.icon, accent, 1.0);
+                        }
                         scenario::publish_rect("confirm:disc", disc);
                         ui.vertical(|ui| {
                             ui.set_width(ui.available_width().max(0.0));
