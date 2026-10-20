@@ -13,8 +13,8 @@ These specialised surfaces remain in their owners:
 | Start page: `home.rs` | Painted start tiles, thumbnails and links rather than form cards |
 | Assistant transcript/composer containers, gallery and docking: `agent_chat/panel.rs` | Conversation/media layout, rich selectable content, drag/docking behavior; matching controls use the kit |
 | Native file/program pickers: `file_picker.rs`, host services | Host-native sheets have no egui control surface; load/progress cards use the kit |
-| Help menu and command-result ranking/list/pins: `help.rs`, `shortcut_box.rs` | Menu/search layout; search editor uses the kit |
-| Ribbon, browser/timeline rows, context menus: `toolbar.rs`, `browser.rs`, `context_menu.rs`, `timeline_left.rs` | Specialised navigation, painting, menus and inline rename interactions |
+| Command-result ranking/list/pins: `shortcut_box.rs` | Search layout and ranking; popup shell and matching controls use the kit |
+| Ribbon and browser/timeline rows: `toolbar.rs`, `browser.rs`, `timeline_left.rs` | Specialised navigation, canvas painting, drag/drop and inline rename placement; context/overflow menus, their rows and floating rename now use the kit |
 | Motion transport, key strips and chart: `dialogs_motion.rs`, `dialogs_motion_plot.rs` | Playback/chart interaction; matching form controls use the kit |
 | Generated part thumbnails: `dialogs_parts.rs` | Cached images rather than controls |
 | Joint-browser glyphs and flat-pattern canvas: `dialogs_assembly.rs`, `dialogs_sheet.rs` | Model navigation and geometry; dialog/export actions use the kit |
@@ -29,3 +29,12 @@ Immediate commands such as `parameters.graph`, `parameters.move`, `config.rules`
 related controls live in Parameters, Configurations and Appearance; the kit creates
 no extra command dialogs. Command IDs, model operations and scenario handles are
 unchanged by cleanup.
+
+Context menus are covered by `Menu`/`MenuItem`, including browser and history targets,
+workspace popup chrome, Appearance submenus, section headings, separators, checks,
+disabled/danger rows and ribbon pin rows. The optional marking menu uses the kit's
+rounded-sector renderer; its command choices and hold/flick behavior remain owned
+by `context_menu.rs`. Floating rename uses kit fields and actions; Properties already
+uses the shared Window. No menu-frame or raw-control allowances were added.
+The light/dark gallery and CPU evidence cover representative row states and radial
+geometry; desktop captures of the live menus remain part of reviewer acceptance.

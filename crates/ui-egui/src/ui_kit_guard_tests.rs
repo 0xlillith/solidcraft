@@ -789,6 +789,10 @@ fn disclosure_guard_distinguishes_overflow_and_playback_from_conditional_folds()
 
 /// System windows and confirms may compose content, but never define another card frame.
 fn window_frame_violations(source: &str) -> Vec<String> {
+    parsed_frame_violations(&syn::parse_file(source).unwrap())
+}
+
+fn parsed_frame_violations(ast: &syn::File) -> Vec<String> {
     #[derive(Default)]
     struct Frames {
         found: Vec<String>,
@@ -826,7 +830,6 @@ fn window_frame_violations(source: &str) -> Vec<String> {
             visit::visit_expr_path(self, expr);
         }
     }
-    let ast = syn::parse_file(source).unwrap();
     let mut frames = Frames::default();
     // Collect aliases first, including imports below a caller.
     for item in &ast.items {
@@ -834,7 +837,7 @@ fn window_frame_violations(source: &str) -> Vec<String> {
             frames.visit_use_tree(&u.tree);
         }
     }
-    frames.visit_file(&ast);
+    frames.visit_file(ast);
     frames.found
 }
 
@@ -883,4 +886,49 @@ fn window_guard_rejects_frames_aliases_and_native_windows_but_accepts_kit_compos
     "#,
     );
     assert_eq!(found.len(), 6, "{found:?}");
+}
+
+#[test]
+fn context_and_history_menus_only_use_kit_surfaces_without_allowances() {
+    for file in ["context_menu.rs", "timeline.rs", "timeline_left.rs", "toolbar.rs"] {
+        let source = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file)).unwrap();
+        let mut ast = syn::parse_file(&source).unwrap();
+        ast.items.retain(|item| match item {
+            syn::Item::Use(_) => true,
+            syn::Item::Fn(function) => {
+                let name = function.sig.ident.to_string();
+                file == "context_menu.rs" || name.contains("menu") || name == "dropdown_row" || name == "section_frame"
+            }
+            _ => false,
+        });
+        let found = parsed_frame_violations(&ast);
+        assert!(found.is_empty(), "{file}: caller-defined menu frame: {found:?}");
+        #[derive(Default)]
+        struct NativeMenus(Vec<String>);
+        impl<'ast> Visit<'ast> for NativeMenus {
+            fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+                if !item.attrs.iter().any(|a| a.path().is_ident("cfg") && a.parse_args::<syn::Path>().is_ok_and(|p| p.is_ident("test"))) {
+                    visit::visit_item_mod(self, item);
+                }
+            }
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                if matches!(call.method.to_string().as_str(), "context_menu" | "menu_button") {
+                    self.0.push(call.method.to_string());
+                }
+                visit::visit_expr_method_call(self, call);
+            }
+            fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+                if expr.path.segments.iter().any(|s| s.ident == "Frame")
+                    && expr.path.segments.last().is_some_and(|s| s.ident == "popup" || s.ident == "menu")
+                {
+                    self.0.push("raw popup frame".into());
+                }
+                visit::visit_expr_path(self, expr);
+            }
+        }
+        let mut guard = NativeMenus::default();
+        guard.visit_file(&syn::parse_file(&source).unwrap());
+        assert!(guard.0.is_empty(), "{file}: native menu bypasses: {:?}", guard.0);
+    }
+    assert!(ALLOWED.is_empty());
 }

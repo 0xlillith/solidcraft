@@ -478,7 +478,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
         .fixed_pos(pos2(ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_x"))).unwrap_or(100.0), APP_BAR_HEIGHT))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
+            crate::ui_kit::Menu::frame().show(ui, |ui| {
                 ui.set_min_width(190.0);
                 ui.visuals_mut().widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
                 ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
@@ -501,7 +501,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     });
                     close = true;
                 }
-                ui.menu_button(app.tr("ui.open_recent"), |ui| {
+                crate::ui_kit::Menu::button(ui, app.tr("ui.open_recent"), |ui| {
                     for path in app.home.recent.clone() {
                         let missing = !solidcraft_engine::io::vfs::exists(&path);
                         let label = format!("{path}{}", if missing { " (missing)" } else { "" });
@@ -1369,9 +1369,9 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if !overflow.is_empty() {
             let at = Rect::from_min_size(pos2(px.min(right - finish_width - 40.0), top + 4.0), vec2(38.0, BUTTON_HEIGHT));
             ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
-                let response = ui.menu_button("»", |ui| {
+                let response = crate::ui_kit::Menu::button(ui, "»", |ui| {
                     for (panel, cmds) in &overflow {
-                        ui.menu_button(*panel, |ui| {
+                        crate::ui_kit::Menu::button(ui, *panel, |ui| {
                             if tab == "SKETCH" && *panel == "CREATE" {
                                 sketch_create_menu(app, ui, cmds, &mut menu, &mut toggle);
                                 return;
@@ -1553,9 +1553,8 @@ fn ribbon_tooltip(app: &SolveApp, response: egui::Response, command: &solidcraft
     })
 }
 
-fn section_frame(ui: &egui::Ui) -> egui::Frame {
-    let t = Tokens::get();
-    egui::Frame::popup(ui.style()).fill(t.panel).stroke(Stroke::new(1.0, t.border)).corner_radius(8.0)
+fn section_frame(_ui: &egui::Ui) -> egui::Frame {
+    crate::ui_kit::Menu::frame()
 }
 
 fn section_heading(ui: &mut egui::Ui, label: &str, width: f32) {
@@ -1629,24 +1628,15 @@ fn dropdown_row(app: &SolveApp, ui: &mut egui::Ui, c: &'static solidcraft_engine
     crate::scenario::publish_handle(&format!("toolbar:{}", c.id), rect.center());
     crate::scenario::publish_handle(&format!("dropdown:{}", c.id), rect.center());
     let hot = info.enabled && (pointer_on || resp.has_focus());
-    let p = ui.painter();
+    let mut row = crate::ui_kit::MenuItem::new(c.id, &label, c.icon);
+    row.enabled = info.enabled;
+    row.highlighted = hot;
+    row.shortcut = c.shortcut.unwrap_or("");
+    row.paint(ui, rect, &resp, 26.0);
     if hot {
-        p.rect_filled(rect, 3.0, t.hover);
         crate::scenario::publish_handle(&format!("dropdown_hot:{}", c.id), rect.center());
     }
-    // The icon keeps its semantic accent in a drop-down as well as on the ribbon.
-    let (ink, fill, acc, text) = if info.enabled {
-        let acc = command_accent(c.icon);
-        (t.icon, t.icon_fill, acc, t.text)
-    } else {
-        (t.border, t.panel_header, t.border, t.text_dim)
-    };
-    let ir = Rect::from_center_size(pos2(rect.left() + 6.0 + 10.0, rect.center().y), vec2(20.0, 20.0));
-    icons::paint(p, ir, c.icon, ink, fill, acc);
-    p.text(pos2(ir.right() + 8.0, rect.center().y), Align2::LEFT_CENTER, &label, FontId::proportional(t.font_button), text);
-    if let Some(k) = c.shortcut {
-        p.text(pos2(pr.left() - 4.0, rect.center().y), Align2::RIGHT_CENTER, k, FontId::monospace(t.font_button), t.text_dim);
-    }
+    let p = ui.painter();
     if pointer_on || resp.has_focus() {
         if pin.hovered() {
             p.rect_filled(pr, 3.0, t.border.gamma_multiply(0.6));
@@ -1684,7 +1674,7 @@ fn sketch_create_menu(
         for f in crate::sketch_families::FAMILIES {
             let variants: Vec<_> = f.commands.iter().filter_map(|id| cmds.iter().find(|c| c.id == *id).copied()).collect();
             if !variants.is_empty() {
-                let response = ui.menu_button(app.tr_label(f.label).to_string(), |ui| {
+                let response = crate::ui_kit::Menu::button(ui, app.tr_label(f.label).to_string(), |ui| {
                     dropdown_keys(app, ui, &variants);
                     sketch_menu_rows(app, ui, &variants, menu, toggle);
                 });

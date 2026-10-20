@@ -25,7 +25,7 @@ pub struct Look {
 }
 
 /// Built-in looks, used until the engine offers a library (`appearance.library`).
-fn builtin() -> Vec<Look> {
+pub(crate) fn builtin() -> Vec<Look> {
     let l = |cat: &str, name: &str, c: [u8; 3], o: f64| Look { name: name.into(), category: cat.into(), color: c, opacity: o, pbr: None };
     vec![
         l("Metal", "Aluminum - Satin", [196, 199, 204], 1.0),

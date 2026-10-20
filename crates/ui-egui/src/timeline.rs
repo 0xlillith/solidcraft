@@ -448,7 +448,7 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                     edit = Some(*id);
                 }
                 let sketch_of = kind.profile_sketch();
-                resp.context_menu(|ui| {
+                crate::ui_kit::Menu::context(&resp, |ui| {
                     if crate::context_menu::button(ui, crate::i18n::tr_label("Edit Feature"), "edit").clicked() {
                         edit = Some(*id);
                         ui.close();

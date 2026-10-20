@@ -28,6 +28,66 @@ macro_rules! element {
 
 // One entry per element/variant: names, rendering and geometry expectations stay together.
 const ELEMENTS: &[Element] = &[
+    element!("menu", |ui, _| {
+        Menu::show(ui, 268.0, |ui| {
+            Menu::heading(ui, "Body");
+            MenuItem::new("gallery:normal", "Properties", "measure").show(ui);
+            let mut item = MenuItem::new("gallery:hover", "Hide", "eye");
+            item.highlighted = true;
+            item.shortcut = "H";
+            item.show(ui);
+            item = MenuItem::new("gallery:open", "Appearance", "appearance");
+            item.submenu = true;
+            item.highlighted = true;
+            item.show(ui);
+            item = MenuItem::new("gallery:disabled", "Paste", "paste");
+            item.enabled = false;
+            item.shortcut = "Ctrl+V";
+            item.show(ui);
+            item = MenuItem::new("gallery:checked", "Show Origin", "origin");
+            item.checked = Some(true);
+            item.show(ui);
+            item.checked = Some(false);
+            item.id = "gallery:unchecked";
+            item.show(ui);
+            item = MenuItem::new("gallery:swatch", "Aluminum - Satin", "appearance");
+            item.swatch = Some(Tokens::get().control_border);
+            item.show(ui);
+            Menu::separator(ui);
+            item = MenuItem::new("gallery:danger", "Delete", "delete");
+            item.danger = true;
+            item.shortcut = "Del";
+            item.show(ui);
+        });
+    }),
+    element!("menu_submenu", |ui, _| {
+        ui.horizontal_top(|ui| {
+            Menu::show(ui, 244.0, |ui| {
+                let mut item = MenuItem::new("parent", "Appearance", "appearance");
+                item.submenu = true;
+                item.highlighted = true;
+                item.show(ui);
+            });
+            Menu::show(ui, 236.0, |ui| {
+                Menu::heading(ui, "Appearance");
+                let mut item = MenuItem::new("look", "Aluminum - Satin", "appearance");
+                item.swatch = Some(Tokens::get().control_border);
+                item.show(ui);
+            });
+        });
+    }),
+    element!("rename_menu", |ui, s| {
+        rename_menu(ui, &mut s.value, &mut false);
+    }),
+    element!("radial_menu", |ui, _| {
+        let (r, _) = ui.allocate_exact_size(vec2(360.0, 360.0), egui::Sense::hover());
+        let app = crate::test_support::sample_app();
+        radial_menu(ui, r.center(), &crate::context_menu::radial_items(&app), Some(3));
+    }),
+    element!("workspace_menu", |ui, _| {
+        let app = crate::test_support::sample_app();
+        workspace_menu(ui, &crate::context_menu::items(&app, &crate::context_menu::Target::Workspace), None, 550.0);
+    }),
     element!("window", "dialog:footer", Some("dialog:ok"), |ui, _| {
         Window::new(ui.id().with("window"), "settings", "Preferences").content(
             ui,
@@ -622,6 +682,11 @@ const ELEMENTS: &[Element] = &[
 fn example(ui: &mut Ui, element: &Element) -> (&'static str, Option<&'static str>) {
     let mut sample = Sample { value: "12 mm".into(), second: "25 mm".into(), selected: 0, checked: true };
     let rect = ui.scope(|ui| (element.draw)(ui, &mut sample)).response.rect;
+    if matches!(element.name, "menu" | "menu_submenu" | "rename_menu" | "workspace_menu") {
+        // A popup's elevation is painted outside its layout rectangle. Reserve those
+        // actual shadow bounds as part of the gallery sample, keeping the paint guard strict.
+        ui.expand_to_include_rect(rect + Menu::frame().shadow.margin());
+    }
     scenario::publish_rect("gallery:allocation", rect);
     (element.rect, element.handle)
 }
@@ -951,7 +1016,9 @@ fn gallery_covers_every_inline_element() {
         "disclosure.rs",
         "fields.rs",
         "layout.rs",
+        "menu.rs",
         "metrics.rs",
+        "radial.rs",
         "reports.rs",
         "status.rs",
         "table.rs",
@@ -970,4 +1037,47 @@ fn gallery_covers_every_inline_element() {
             }
         }
     }
+}
+
+/// Render actual egui geometry without a desktop window. Opt-in PNGs are reviewer evidence.
+#[test]
+fn menu_board_in_both_themes() {
+    use super::checks::tests::{raster, textures_update};
+    use std::collections::HashMap;
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let ctx = crate::fonts::test_context();
+        ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+        let mut textures = HashMap::new();
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(1100.0, 760.0));
+        let mut app = crate::test_support::sample_app();
+        app.last_command = Some(("solid.extrude".into(), "Extrude".into()));
+        let items = crate::context_menu::radial_items(&app);
+        let mut image = None;
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(bounds), ..Default::default() }, |ui| {
+                ui.painter().rect_filled(bounds, 0.0, Tokens::get().panel);
+                for (name, at) in
+                    [("menu", egui::pos2(30.0, 30.0)), ("menu_submenu", egui::pos2(30.0, 430.0)), ("rename_menu", egui::pos2(630.0, 430.0))]
+                {
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(at, vec2(550.0, 350.0))), |ui| {
+                        example(ui, ELEMENTS.iter().find(|e| e.name == name).unwrap());
+                    });
+                }
+                ui.allocate_rect(egui::Rect::from_min_size(egui::pos2(630.0, 30.0), vec2(360.0, 360.0)), egui::Sense::hover());
+                radial_menu(ui, egui::pos2(810.0, 210.0), &items, Some(3));
+            });
+            textures_update(&mut textures, &output.textures_delta);
+            output.textures_delta.clear();
+            image = Some(raster(&ctx, output.shapes, output.pixels_per_point, bounds, &textures));
+        }
+        let image = image.unwrap();
+        assert!(image.pixels().any(|p| p.0[3] != 0));
+        if let Ok(dir) = std::env::var("SOLIDCRAFT_MENU_EVIDENCE") {
+            std::fs::create_dir_all(&dir).unwrap();
+            image.save(std::path::Path::new(&dir).join(if dark { "menus-dark.png" } else { "menus-light.png" })).unwrap();
+        }
+    }
+    crate::theme::set_dark(previous);
 }

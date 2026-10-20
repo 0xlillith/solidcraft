@@ -11,7 +11,7 @@ pub(super) fn box_at(ui: &Ui, center: egui::Pos2) -> Rect {
 }
 
 /// One path for every tick, including menu rows. Mixed state uses a horizontal bar.
-fn paint_check_glyph(painter: &egui::Painter, square: Rect, mixed: bool, ink: egui::Color32) {
+pub(super) fn paint_check_glyph(painter: &egui::Painter, square: Rect, mixed: bool, ink: egui::Color32) {
     let t = Tokens::get();
     let mark = square.shrink(t.space_3);
     let points = if mixed { vec![mark.left_center(), mark.right_center()] } else { vec![mark.left_center(), mark.center_bottom(), mark.right_top()] };
@@ -76,4 +76,4 @@ pub(crate) fn checkbox_indeterminate(ui: &mut Ui, label: &str, value: &mut bool,
 
 #[cfg(test)]
 #[path = "checks_tests.rs"]
-mod tests;
+pub(super) mod tests;

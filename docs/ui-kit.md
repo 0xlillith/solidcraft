@@ -1,7 +1,7 @@
 # SolidCraft UI kit
 
 `crates/ui-egui/src/ui_kit/` contains the tokenised controls used by feature dialogs,
-preferences, manager cards, prompts and the sketch palette. Import through
+preferences, manager cards, prompts, context menus and the sketch palette. Import through
 `crate::ui_kit::{...}`. The API is crate-visible; implementation modules are private.
 
 ## Composition and rules
@@ -55,6 +55,8 @@ table. Panel/Window/Confirm compositions also have dedicated geometry and intera
 
 | Module / element | Use and options | Main tokens |
 | --- | --- | --- |
+| menu: `Menu`, `MenuItem` | Shared popup, 30 pt rows, 28 pt icon column, clipped labels, right-aligned mono shortcuts, submenu chevrons, checked/unchecked and document swatches, inert 40% disabled rows and danger ink; headings and separators; ribbon drag/pin targets retained | `dialog_body/border/rule`, `radius_xl`, `control_height/radius`, `form_ink/dim/primary/error`, `accent_soft`, typography and spacing |
+| radial: `radial_menu` | Eight rounded annular sectors, parallel 4 pt gaps, 9 pt circular corner joins, accent hover, centre label/key; existing hold/flick/release dispatch | `dialog_body/border`, `form_ink/dim/primary`, `accent_soft`, font/spacing tokens |
 | panel: `Window`, `WindowPage` | Shared card frame, header, optional page list, bounded content and footer with a left action | `form_header/footer_height`, `form_card_width`, `form_label_width`, `control_height`, `dialog_footer/rule`, `selected_bg/ink`, spacing |
 | confirm: `Confirm`, `Tone` | Modal warning/danger/info, title/message, mono detail and ghost/cancel/primary actions | `warning`, `form_error/fill`, `accent_soft`, `form_primary`, `on_accent`, `tab_on_fill_dark`, `font_subtitle`, spacing |
 | metrics: `row_height`, `table_row_height`, `header_height` | Shared control/header heights | `control_height`, `space_8`, `form_header_height` |
@@ -307,3 +309,21 @@ of the approved fills. It only styles tab pills; global primary actions still us
 `on_accent`. Built-in palette tests require WCAG contrast of at least 4.5:1 for
 ink on the card and panel, ink on soft, and pill text on fill in both themes.
 Only Mesh separates ink from fill in the light theme.
+
+Context menu adapters retain item IDs, enabled logic and command parameters. `Menu`
+owns popup elevation (10 pt corners, 1 pt border), headings, separators, adjacent
+submenus and bounded arrow navigation. Enter opens a submenu or chooses its row;
+Right opens, Left returns, and Esc dismisses the menu. Appearance includes document
+swatches and Remove override through `appearance.assign`; its original action still
+opens the full editor. Workspace retains its descriptive cards and scenario handles
+on the shared surface. Ribbon rows reuse `MenuItem::paint` while owning drag, focus
+and pin interactions. History context menus and ribbon overflow use kit popup chrome.
+Rename uses the shared caption, field policy and Cancel/OK actions with its stable
+editor ID. No additional translation keys or colour roles are needed.
+
+The menu gallery includes normal, hovered, open, disabled, checked/unchecked,
+swatch and danger rows, a submenu and rename. Radial geometry tests measure the
+actual side endpoints at both radii and sample all four rounded corners. Optional
+CPU-rendered menu evidence can be produced without a window with
+`SOLIDCRAFT_MENU_EVIDENCE=/tmp/menus cargo test -p solidcraft-ui-egui --lib menu_board_in_both_themes`.
+Desktop interaction and visual acceptance still require a reviewer capture.

@@ -82,7 +82,7 @@ pub fn left_timeline(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let count = selected_feature_ids(app).len() + app.tree.picked_timeline_groups.len();
             if count > 0 {
-                ui.menu_button(format!("{count} selected"), |ui| selection_actions(app, ui, &groups));
+                crate::ui_kit::Menu::button(ui, format!("{count} selected"), |ui| selection_actions(app, ui, &groups));
             }
         });
     });
@@ -600,7 +600,7 @@ fn vertical_group_row(
     if response.secondary_clicked() && !selected {
         select_only(app, TimelineItem::Group(group.id));
     }
-    response.context_menu(|ui| {
+    crate::ui_kit::Menu::context(&response, |ui| {
         if crate::context_menu::button(ui, "Rename Folder", "rename").clicked() {
             crate::context_menu::start_rename(app, crate::context_menu::RenameWhat::TimelineGroup(group.id), rect.center());
             ui.close();
@@ -775,7 +775,7 @@ fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui) {
         if response.secondary_clicked() && !selected {
             select_only(app, TimelineItem::Feature(*id));
         }
-        response.context_menu(|ui| {
+        crate::ui_kit::Menu::context(&response, |ui| {
             if crate::context_menu::button(ui, "Edit Feature", "edit").clicked() {
                 edit = Some(*id);
                 ui.close();

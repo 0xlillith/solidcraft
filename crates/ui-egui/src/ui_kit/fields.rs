@@ -9,7 +9,7 @@ use egui::{Response, RichText, Ui, vec2};
 
 /// One alignment policy for every kit text input. Align the galley itself rather than
 /// approximating font metrics with integer margins (Plex Mono and Sans differ).
-fn text_input(edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
+pub(super) fn text_input(edit: egui::TextEdit<'_>) -> egui::TextEdit<'_> {
     let t = Tokens::get();
     edit.vertical_align(egui::Align::Center).margin(vec2(t.form_inset, 0.0)).min_size(vec2(0.0, t.control_height))
 }

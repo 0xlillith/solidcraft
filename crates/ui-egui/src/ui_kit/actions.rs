@@ -291,7 +291,7 @@ fn publish_button(ui: &Ui, response: &Response, label: &str) {
 
 /// Nested action menu in a dense table. Tokens: scope control/font tokens.
 pub(crate) fn action_menu<R>(ui: &mut Ui, label: &str, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<Option<R>> {
-    let response = ui.menu_button(crate::i18n::tr_label(label), |ui| super::scope(ui, add));
+    let response = super::Menu::button(ui, crate::i18n::tr_label(label), |ui| super::scope(ui, add));
     scenario::publish_target(&format!("dialog:menu:{label}"), response.response.rect);
     response
 }
@@ -374,17 +374,11 @@ pub(crate) fn icon_label_button(ui: &mut Ui, label: &str, icon: &str, enabled: b
     response
 }
 
-/// Ribbon overflow action; keeps its native atom identity, shortcut, accessibility and behaviour.
-/// Tokens: space_16 and the existing icon palette; button chrome inherits the menu style.
+/// Ribbon overflow action on the shared menu row, retaining shortcut, accessibility and enabled state.
+/// Tokens: MenuItem's typography, spacing and semantic icon palette.
 pub(crate) fn command_menu_button(ui: &mut Ui, id: &str, label: &str, icon: &str, shortcut: &str, enabled: bool) -> Response {
-    ui.add_enabled_ui(enabled, |ui| {
-        let atom = ui.id().with(("overflow_icon", id));
-        let side = Tokens::get().space_16;
-        let row = egui::Button::new((egui::Atom::custom(atom, vec2(side, side)), label)).shortcut_text(shortcut).atom_ui(ui);
-        if let Some(rect) = row.rect(atom) {
-            crate::icons::paint_icon(ui.painter(), rect, icon, if enabled { 1.0 } else { 0.35 });
-        }
-        row.response
-    })
-    .inner
+    let mut item = super::MenuItem::new(id, label, icon);
+    item.shortcut = shortcut;
+    item.enabled = enabled;
+    item.show(ui)
 }

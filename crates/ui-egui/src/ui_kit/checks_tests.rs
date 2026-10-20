@@ -76,7 +76,7 @@ fn checkbox_shapes(output: &egui::FullOutput) -> Vec<(Rect, Vec<egui::epaint::Cl
 
 /// Small CPU rasteriser for egui's actual tessellated triangles, including the font/icon atlas.
 /// This keeps screenshots and pixel comparisons deterministic without requiring a display/GPU.
-fn raster(
+pub(crate) fn raster(
     ctx: &egui::Context,
     mut shapes: Vec<egui::epaint::ClippedShape>,
     ppp: f32,
@@ -162,7 +162,7 @@ fn raster(
     pixels
 }
 
-fn textures_update(textures: &mut HashMap<egui::TextureId, egui::ColorImage>, delta: &egui::TexturesDelta) {
+pub(crate) fn textures_update(textures: &mut HashMap<egui::TextureId, egui::ColorImage>, delta: &egui::TexturesDelta) {
     for (id, deltas) in &delta.set {
         for delta in deltas {
             let egui::ImageData::Color(image) = &delta.image;

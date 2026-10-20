@@ -62,6 +62,18 @@ fn menu(h: &mut Harness, target: Value, surface: &str, requested: &mut BTreeMap<
         let intentional = id == "-" || id.starts_with('#') || (id == "ui.workspace" && item["shortcut"] == "coming later");
         assert!(!blank || intentional, "{surface}: icon-less menu item {item}");
         assert_eq!(item["placeholder"], false, "{surface}: {item}");
+        if let Some(children) = item["children"].as_array() {
+            for child in children {
+                let id = child["id"].as_str().unwrap();
+                assert!(!id.is_empty(), "{surface}: child has no identity");
+                if id == "-" || id.starts_with('#') {
+                    continue;
+                }
+                let icon = child["icon"].as_str().unwrap();
+                assert!(!icon.is_empty(), "{surface}: submenu row has no icon: {child}");
+                assert!(!solidcraft_ui_egui::icon_svg::resolve(icon).placeholder, "{surface}: submenu placeholder {icon}");
+            }
+        }
     }
     collect(h, surface, requested);
     escape(h);
@@ -157,6 +169,7 @@ fn requested_menu_icons_have_artwork_and_match_manifest() {
         json!({"type":"viewport"}),
         json!({"type":"body","name":body}),
         json!({"type":"sketch","id":sketch}),
+        json!({"type":"feature","id":sketch}),
         json!({"type":"component","id":0}),
         json!({"type":"origin"}),
         json!({"type":"origin_plane","name":"XY"}),

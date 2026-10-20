@@ -11,15 +11,12 @@
 //! state; [`items`] lists them and [`run_item`] runs one, so the control channel (`ui.menu`,
 //! `ui.menuPick`) and tests reach everything a click does.
 
-use crate::fonts::RichTextExt as _;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2, pos2, vec2};
+use egui::{Color32, Pos2, Rect, Sense, Vec2, pos2, vec2};
 use serde::Serialize;
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
 
-use crate::theme::Tokens;
-
-use crate::{SolveApp, icons};
+use crate::SolveApp;
 
 /// What a menu is about.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
@@ -104,6 +101,10 @@ pub struct Item {
     pub icon: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Item>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swatch: Option<[u8; 3]>,
 }
 
 impl Item {
@@ -112,10 +113,28 @@ impl Item {
         act(id, label, icon)
     }
     pub fn sep() -> Item {
-        Item { id: "-".into(), label: String::new(), shortcut: String::new(), enabled: false, icon: String::new(), params: None }
+        Item {
+            id: "-".into(),
+            label: String::new(),
+            shortcut: String::new(),
+            enabled: false,
+            icon: String::new(),
+            params: None,
+            children: Vec::new(),
+            swatch: None,
+        }
     }
     fn heading(label: &str) -> Item {
-        Item { id: format!("#{label}"), label: label.into(), shortcut: String::new(), enabled: false, icon: String::new(), params: None }
+        Item {
+            id: format!("#{label}"),
+            label: label.into(),
+            shortcut: String::new(),
+            enabled: false,
+            icon: String::new(),
+            params: None,
+            children: Vec::new(),
+            swatch: None,
+        }
     }
     fn is_sep(&self) -> bool {
         self.id == "-"
@@ -155,12 +174,23 @@ pub(crate) fn cmd(app: &SolveApp, id: &str, label: &str) -> Item {
         enabled: info.as_ref().is_some_and(|i| i.enabled),
         icon: info.map(|i| i.icon.to_string()).unwrap_or_default(),
         params: None,
+        children: Vec::new(),
+        swatch: None,
     }
 }
 
 /// A view action (`ui.*`).
 pub(crate) fn act(id: &str, label: &str, icon: &str) -> Item {
-    Item { id: id.into(), label: label.into(), shortcut: String::new(), enabled: true, icon: icon.into(), params: None }
+    Item {
+        id: id.into(),
+        label: label.into(),
+        shortcut: String::new(),
+        enabled: true,
+        icon: icon.into(),
+        params: None,
+        children: Vec::new(),
+        swatch: None,
+    }
 }
 
 /// Menu state kept between frames. The anchor is `app.viewport.context_menu`.
@@ -169,6 +199,8 @@ pub struct MenuState {
     pub target: Target,
     /// The list row chosen with the arrow keys (Enter runs it).
     pub key_row: Option<usize>,
+    submenu: Option<usize>,
+    submenu_key: Option<usize>,
     /// The radial ring is shown (viewport menus).
     pub radial: bool,
     /// The right button is held through the menu: releasing over a direction picks it.
@@ -215,8 +247,8 @@ pub struct Rename {
 /// Radial slots, clockwise from the top.
 const DIRS: usize = 8;
 /// Half axes of the ring of radial items.
-const RX: f32 = 118.0;
-const RY: f32 = 84.0;
+const RX: f32 = crate::ui_kit::RADIAL_RADIUS;
+const RY: f32 = crate::ui_kit::RADIAL_RADIUS;
 
 // ---------------------------------------------------------------------------------------------
 // What the menus offer
@@ -310,8 +342,8 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Body { name } => body_items(app, std::slice::from_ref(name), true),
         Target::Sketch { id } => sketch_items(app, *id),
         Target::Feature { id } => vec![
-            act("ui.editFeature", "Edit Feature", "").with(json!({"feature":id})).on(app.session.doc.feature(*id).is_some()),
-            act("ui.findTimeline", "Find in Timeline", "").with(json!({"feature":id})).on(app.session.doc.feature(*id).is_some()),
+            act("ui.editFeature", "Edit Feature", "edit").with(json!({"feature":id})).on(app.session.doc.feature(*id).is_some()),
+            act("ui.findTimeline", "Find in Timeline", "rollback").with(json!({"feature":id})).on(app.session.doc.feature(*id).is_some()),
         ],
         Target::Plane { id } => plane_items(app, *id),
         Target::OriginPlane { name } => origin_plane_items(app, name),
@@ -353,6 +385,43 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
     if let Some(p) = crate::browser::selection_group(app, target) {
         v.push(Item::sep());
         v.push(act("ui.groupSelected", "Group Selected", "folder").with(p));
+    }
+    for item in &mut v {
+        if item.id != "ui.appearance" {
+            continue;
+        }
+        let original = item.clone();
+        let params = item.params.clone().unwrap_or_else(|| {
+            let faces: Vec<_> = app
+                .session
+                .selection
+                .iter()
+                .filter_map(|s| match s {
+                    Sel::Face { body, point, .. } => Some(json!({"body":body,"point":[point.x, point.y, point.z]})),
+                    _ => None,
+                })
+                .collect();
+            if faces.is_empty() { json!({"bodies": touched_bodies(app)}) } else { json!({"faces":faces}) }
+        });
+        let targets = if let Some(component) = params.get("component").and_then(Value::as_u64).filter(|id| *id != 0) {
+            json!({"components": [component.to_string()]})
+        } else {
+            params
+        };
+        item.children.push(original);
+        if ["bodies", "components", "faces"].iter().any(|key| targets.get(key).and_then(Value::as_array).is_some_and(|v| !v.is_empty())) {
+            for look in crate::dialogs_appearance::builtin() {
+                let mut params = targets.clone();
+                params["appearance"] = json!(look.name);
+                params["color"] = json!(crate::dialogs_appearance::hex(look.color));
+                params["opacity"] = json!(look.opacity);
+                let mut child = cmd(app, "appearance.assign", &look.name).with(params);
+                child.swatch = Some(look.color);
+                item.children.push(child);
+            }
+            item.children.push(Item::sep());
+            item.children.push(cmd(app, "appearance.assign", "Remove override").with(targets));
+        }
     }
     v
 }
@@ -1421,6 +1490,8 @@ pub fn open(app: &mut SolveApp, at: Pos2) {
 /// Open a menu for a target (the radial ring only for the viewport).
 pub fn open_for(app: &mut SolveApp, at: Pos2, target: Target) {
     app.menu.key_row = None;
+    app.menu.submenu = None;
+    app.menu.submenu_key = None;
     app.menu.radial = target == Target::Viewport && app.preferences.radial_context_menu;
     app.menu.target = target;
     app.menu.flick = false;
@@ -1483,7 +1554,9 @@ pub fn pick(app: &mut SolveApp, key: &str) -> Result<Value, String> {
     let Some(at) = app.viewport.context_menu else { return Err("no menu is open".into()) };
     let target = app.menu.target.clone();
     let mut all = if app.menu.radial { radial_items(app) } else { Vec::new() };
-    all.extend(items(app, &target));
+    let roots = items(app, &target);
+    all.extend(roots.iter().cloned());
+    all.extend(roots.into_iter().flat_map(|item| item.children));
     let item =
         all.into_iter().find(|i| !i.is_sep() && !i.is_heading() && (i.id == key || i.label == key)).ok_or_else(|| format!("no menu item `{key}`"))?;
     if !item.enabled {
@@ -1496,8 +1569,8 @@ pub fn pick(app: &mut SolveApp, key: &str) -> Result<Value, String> {
 
 /// Where the radial menu goes so its ring stays on screen.
 fn radial_center(at: Pos2, screen: Rect) -> Pos2 {
-    let mx = RX + 165.0;
-    let my = RY + 34.0;
+    let mx = RX + 4.0;
+    let my = RY + 4.0;
     let x = if screen.width() > 2.0 * mx { at.x.clamp(screen.left() + mx, screen.right() - mx) } else { screen.center().x };
     let y = if screen.height() > 2.0 * my { at.y.clamp(screen.top() + my, screen.bottom() - my) } else { screen.center().y };
     pos2(x, y)
@@ -1505,15 +1578,15 @@ fn radial_center(at: Pos2, screen: Rect) -> Pos2 {
 
 /// Height of a list of items as [`list_row`] draws them in [`menu_frame`] (margins and border).
 fn list_height(items: &[Item]) -> f32 {
-    10.0 + items
+    14.0 + items
         .iter()
         .map(|i| {
             if i.is_sep() {
-                7.0
+                11.0
             } else if i.is_heading() {
-                20.0
-            } else {
                 24.0
+            } else {
+                30.0
             }
         })
         .sum::<f32>()
@@ -1522,16 +1595,16 @@ fn list_height(items: &[Item]) -> f32 {
 /// Where the list goes next to a ring centred at `c`: below it when it fits, otherwise beside
 /// it (right, else left), kept on screen.
 fn list_place(c: Pos2, h: f32, screen: Rect) -> Pos2 {
-    let below = c.y + RY + 26.0;
+    let below = c.y + RY + 12.0;
     if below + h <= screen.bottom() - 4.0 {
         return pos2((c.x - LIST_W / 2.0).clamp(screen.left() + 4.0, (screen.right() - LIST_W - 4.0).max(screen.left())), below);
     }
     let y = (c.y - h / 2.0).clamp(screen.top() + 4.0, (screen.bottom() - h - 4.0).max(screen.top()));
-    let right = c.x + RX + 170.0;
+    let right = c.x + RX + 12.0;
     if right + LIST_W <= screen.right() - 4.0 {
         return pos2(right, y);
     }
-    pos2((c.x - RX - 170.0 - LIST_W).max(screen.left() + 4.0), y)
+    pos2((c.x - RX - 12.0 - LIST_W).max(screen.left() + 4.0), y)
 }
 
 /// Width of list menus.
@@ -1563,28 +1636,6 @@ fn sector(d: Vec2) -> Option<usize> {
     let a = d.x.atan2(-d.y).to_degrees();
     let k = ((a + 360.0 + 22.5) / 45.0).floor() as i64;
     Some((k.rem_euclid(DIRS as i64)) as usize)
-}
-
-/// The rectangle of radial slot `k` with a label of `size`.
-fn slot_rect(c: Pos2, k: usize, size: Vec2) -> Rect {
-    let a = (k as f32 * 45.0).to_radians();
-    let p = c + vec2(a.sin() * RX, -a.cos() * RY);
-    let (sx, sy) = (a.sin(), -a.cos());
-    let ax = if sx > 0.3 {
-        0.0
-    } else if sx < -0.3 {
-        1.0
-    } else {
-        0.5
-    };
-    let ay = if sy > 0.9 {
-        0.0
-    } else if sy < -0.9 {
-        1.0
-    } else {
-        0.5
-    };
-    Rect::from_min_size(p - vec2(size.x * ax, size.y * ay), size)
 }
 
 /// Press-and-hold of the right button in the viewport opens the menu; releasing over a
@@ -1650,7 +1701,6 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     show_rename(app, ctx);
     crate::design_properties::show_object(app, ctx);
     let Some(at) = app.viewport.context_menu else { return };
-    let t = Tokens::get();
     let screen = ctx.content_rect();
     let target = app.menu.target.clone();
     let list = items(app, &target);
@@ -1663,43 +1713,12 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     } else if app.menu.radial {
         let c = radial_center(at, screen);
         let radial = radial_items(app);
-        let area = Rect::from_center_size(c, vec2(2.0 * (RX + 165.0), 2.0 * (RY + 34.0)));
+        let area = Rect::from_center_size(c, vec2(2.0 * (RX + 4.0), 2.0 * (RY + 4.0)));
         inside |= pointer.is_some_and(|p| area.contains(p));
         let hot = pointer.and_then(|p| sector(p - c));
         let resp = crate::frame::area(egui::Id::new("sc_marking_menu")).fixed_pos(area.min).order(egui::Order::Foreground).show(ctx, |ui| {
-            let (r, _) = ui.allocate_exact_size(area.size(), Sense::hover());
-            let painter = ui.painter_at(r.expand(4.0));
-            let font = FontId::proportional(crate::theme::Tokens::get().font_button);
-            // Centre: a ring with a pointer toward the hot direction.
-            let direction = hot.zip(pointer).map(|(k, p)| ((p - c).normalized(), radial.get(k).is_some_and(|i| i.enabled)));
-            crate::icons::glyphs::radial_centre(&painter, c, direction, t);
-            for (k, item) in radial.iter().enumerate() {
-                let display_label = crate::i18n::tr_label(&item.label);
-                let galley = painter.layout_no_wrap(display_label.to_string(), font.clone(), if item.enabled { t.text } else { t.text_dim });
-                let size = vec2(galley.size().x + 40.0, 28.0);
-                let rr = slot_rect(c, k, size);
-                let resp = ui.interact(rr, ui.id().with(("radial", k)), Sense::click());
-                let lit = item.enabled && (resp.hovered() || hot == Some(k));
-                painter.rect(
-                    rr,
-                    14.0,
-                    if lit { t.accent_soft } else { t.panel },
-                    Stroke::new(1.0, if lit { t.accent } else { t.border }),
-                    egui::StrokeKind::Inside,
-                );
-                let ir = Rect::from_center_size(pos2(rr.left() + 16.0, rr.center().y), vec2(16.0, 16.0));
-                let ink = if item.enabled { t.icon } else { t.border };
-                if !item.icon.is_empty() {
-                    icons::paint(&painter, ir, &item.icon, ink, t.icon_fill, t.accent);
-                }
-                painter.galley(pos2(rr.left() + 30.0, rr.center().y - galley.size().y / 2.0), galley, t.text);
-                if resp.clicked() && item.enabled {
-                    picked = Some(item.clone());
-                }
-                if item.enabled {
-                    resp.on_hover_text(crate::i18n::tr_label(&item.shortcut).to_string());
-                }
-            }
+            let _ = ui.allocate_exact_size(area.size(), Sense::hover());
+            picked = crate::ui_kit::radial_menu(ui, c, &radial, hot).or(picked.take());
         });
         inside |= resp.response.contains_pointer();
         list_place(c, list_height(&list), screen)
@@ -1707,38 +1726,90 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         place(at, Vec2::ZERO, vec2(LIST_W, list_height(&list)), screen)
     };
 
-    // Up/Down choose a row of the list, Enter runs it.
-    let (up, down, enter) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter)));
-    let usable: Vec<usize> = list.iter().enumerate().filter(|(_, i)| i.enabled && !i.is_sep() && !i.is_heading()).map(|(k, _)| k).collect();
-    if up || down {
-        let at = app.menu.key_row.and_then(|r| usable.iter().position(|u| *u == r));
-        let next = match (at, down) {
-            (None, true) => Some(0),
-            (None, false) => usable.len().checked_sub(1),
-            (Some(k), true) => Some((k + 1) % usable.len().max(1)),
-            (Some(k), false) => Some((k + usable.len().max(1) - 1) % usable.len().max(1)),
-        };
-        app.menu.key_row = next.and_then(|k| usable.get(k).copied());
+    let had_submenu = app.menu.submenu.is_some();
+    let enabled: Vec<_> = list.iter().map(|i| i.enabled && !i.is_sep() && !i.is_heading()).collect();
+    if app.menu.submenu.is_none() {
+        let enter = crate::ui_kit::Menu::navigate(ctx, &enabled, &mut app.menu.key_row);
+        let right = ctx.input(|i| i.key_pressed(egui::Key::ArrowRight));
+        if let Some(k) = app.menu.key_row
+            && let Some(item) = list.get(k)
+        {
+            if (right || enter) && !item.children.is_empty() {
+                app.menu.submenu = Some(k);
+                app.menu.submenu_key = item.children.iter().position(|c| c.enabled);
+            } else if enter {
+                picked = Some(item.clone());
+            }
+        }
+    } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+        app.menu.submenu = None;
+        app.menu.submenu_key = None;
     }
-    if enter && let Some(item) = app.menu.key_row.and_then(|r| list.get(r)) {
-        picked = Some(item.clone());
-    }
+    let mut submenu_row = None;
     let key_row = app.menu.key_row;
     let resp =
         crate::frame::area(egui::Id::new("sc_context_menu")).fixed_pos(list_at).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
             if target == Target::Workspace {
-                picked = workspace_menu(ui, &list, key_row, (screen.bottom() - list_at.y).max(160.0)).or(picked.take());
+                picked = crate::ui_kit::workspace_menu(ui, &list, key_row, (screen.bottom() - list_at.y).max(160.0)).or(picked.take());
             } else {
                 menu_frame(ui, |ui| {
                     for (k, item) in list.iter().enumerate() {
-                        if let Some(p) = list_row_lit(ui, item, key_row == Some(k)) {
-                            picked = Some(p);
+                        if item.children.is_empty() {
+                            if let Some(p) = list_row_lit(ui, item, key_row == Some(k)) {
+                                picked = Some(p);
+                            }
+                        } else {
+                            let row = kit_item(item, key_row == Some(k) || app.menu.submenu == Some(k)).show(ui);
+                            if item.enabled && ((row.hovered() && ctx.input(|i| i.pointer.delta() != Vec2::ZERO)) || row.clicked()) {
+                                if app.menu.submenu != Some(k) {
+                                    app.menu.submenu_key = None;
+                                }
+                                app.menu.submenu = Some(k);
+                            }
+                            if app.menu.submenu == Some(k) {
+                                submenu_row = Some((k, row.rect));
+                            }
                         }
                     }
                 });
             }
         });
     inside |= resp.response.contains_pointer() || resp.response.rect.contains(pointer.unwrap_or(Pos2::ZERO));
+
+    if let Some((k, row)) = submenu_row
+        && let Some(parent) = list.get(k)
+    {
+        let enabled: Vec<_> = parent.children.iter().map(|i| i.enabled && !i.is_sep() && !i.is_heading()).collect();
+        if had_submenu
+            && crate::ui_kit::Menu::navigate(ctx, &enabled, &mut app.menu.submenu_key)
+            && let Some(child) = app.menu.submenu_key.and_then(|r| parent.children.get(r))
+        {
+            picked = Some(child.clone());
+        }
+        let sub = crate::ui_kit::Menu::submenu(ctx, egui::Id::new("sc_context_submenu"), row, list_height(&parent.children), |ui| {
+            egui::ScrollArea::vertical().max_height((screen.height() - 28.0).max(30.0)).show(ui, |ui| {
+                for (n, child) in parent.children.iter().enumerate() {
+                    if child.is_sep() {
+                        crate::ui_kit::Menu::separator(ui);
+                        continue;
+                    }
+                    if child.is_heading() {
+                        crate::ui_kit::Menu::heading(ui, &child.label);
+                        continue;
+                    }
+                    // Child commands may share an id (swatches); preserve the parent handle
+                    // and publish a distinct identity for every adjacent submenu action.
+                    let handle = format!("{}:{}", child.id, child.label);
+                    let mut row = kit_item(child, app.menu.submenu_key == Some(n));
+                    row.id = &handle;
+                    if row.show(ui).clicked() && child.enabled {
+                        picked = Some(child.clone());
+                    }
+                }
+            });
+        });
+        inside |= sub.response.contains_pointer() || pointer.is_some_and(|p| sub.response.rect.contains(p));
+    }
 
     let (primary, secondary, esc) = ctx.input(|i| {
         (
@@ -1759,221 +1830,51 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
-/// Workspace cards retain the context-menu items and dispatch, including keyboard and
-/// control-channel picks. Only the presentation differs from ordinary command lists.
-fn workspace_menu(ui: &mut egui::Ui, items: &[Item], key_row: Option<usize>, height: f32) -> Option<Item> {
-    let t = Tokens::get();
-    let mut picked = None;
-    egui::Frame::popup(ui.style()).fill(t.panel).stroke(Stroke::new(1.0, t.border)).corner_radius(10.0).inner_margin(9).show(ui, |ui| {
-        ui.set_width(450.0);
-        ui.spacing_mut().item_spacing.y = 0.0;
-        ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(crate::i18n::tr("ui.ribbon_workspace").to_uppercase())
-                .size(crate::theme::Tokens::get().font_small)
-                .semibold()
-                .color(t.text_dim),
-        );
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical().id_salt("workspace_menu_rows").max_height((height - 116.0).max(60.0)).show(ui, |ui| {
-            for (k, item) in items.iter().enumerate() {
-                let (slug, description, tabs) = match item.label.as_str() {
-                    "Design" => ("design", "ui.workspace_design_description", Some("ui.workspace_design_tabs")),
-                    "Render" => ("render", "ui.workspace_render_description", Some("ui.workspace_render_tabs")),
-                    "Animation" => ("animation", "ui.workspace_animation_description", None),
-                    "Simulation" => ("simulation", "ui.workspace_simulation_description", None),
-                    "Manufacture" => ("manufacture", "ui.workspace_manufacture_description", None),
-                    "Drawing" => ("drawing", "ui.workspace_drawing_description", None),
-                    _ => continue,
-                };
-                let planned = tabs.is_none();
-                let current = item.shortcut == "current";
-                let (accent, soft) = if !planned && slug == "render" {
-                    (t.render_fill, t.render_soft)
-                } else {
-                    let accent = if planned { t.text_dim } else { t.accent };
-                    (accent, t.panel.lerp_to_gamma(accent, 0.10))
-                };
-                let (r, resp) = ui
-                    .allocate_exact_size(vec2(450.0, if planned { 60.0 } else { 72.0 }), if item.enabled { Sense::click() } else { Sense::hover() });
-                for handle in [format!("menu:{}", item.id), format!("workspace:menu:{slug}")] {
-                    crate::scenario::publish_target(&handle, r);
-                }
-                if current || (item.enabled && (resp.hovered() || key_row == Some(k))) {
-                    ui.painter().rect_filled(r, 5.0, soft);
-                }
-                ui.painter().rect_filled(Rect::from_min_max(r.min + vec2(2.0, 7.0), pos2(r.left() + 6.0, r.bottom() - 7.0)), 2.0, accent);
-                let tile = Rect::from_center_size(pos2(r.left() + 40.0, r.center().y), vec2(44.0, 44.0));
-                ui.painter().rect_filled(tile, 9.0, if planned { t.panel_header } else { soft });
-                if !item.icon.is_empty() {
-                    icons::paint_icon(ui.painter(), tile.shrink(7.0), &item.icon, if item.enabled { 1.0 } else { 0.35 });
-                }
-                let text = if item.enabled { t.text } else { t.text_dim };
-                let name = crate::i18n::tr_label(&item.label);
-                let x = r.left() + 74.0;
-                let y = r.top() + 17.0;
-                let galley = egui::WidgetText::from(egui::RichText::new(name).semibold().size(crate::theme::Tokens::get().font_heading).color(text))
-                    .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Button);
-                let badge_x = x + galley.size().x + 9.0;
-                let origin = pos2(x, y - galley.size().y / 2.0);
-                let ppp = ui.ctx().pixels_per_point().max(0.5);
-                let origin = pos2((origin.x * ppp).round() / ppp, (origin.y * ppp).round() / ppp);
-                ui.painter().galley(origin, galley, text);
-                let badge = crate::i18n::tr(if planned {
-                    "ui.workspace_planned"
-                } else if current {
-                    "ui.workspace_current"
-                } else {
-                    "ui.workspace_available"
-                });
-                let badge = ui.painter().layout_no_wrap(
-                    badge.to_string(),
-                    FontId::proportional(crate::theme::Tokens::get().font_small),
-                    if current { t.on_accent } else { accent },
-                );
-                let badge_rect = Rect::from_min_size(pos2(badge_x, y - 8.0), badge.size() + vec2(12.0, 3.0));
-                ui.painter().rect_filled(badge_rect, 8.0, if current { accent } else { soft });
-                ui.painter().galley(badge_rect.min + vec2(6.0, 1.5), badge, accent);
-                let line = |content: String, y: f32| {
-                    let mut job =
-                        egui::text::LayoutJob::simple_singleline(content, FontId::proportional(crate::theme::Tokens::get().font_body), text);
-                    job.wrap.max_width = r.right() - x - 6.0;
-                    job.wrap.max_rows = 1;
-                    job.wrap.break_anywhere = false;
-                    let galley = ui.painter().layout_job(job);
-                    ui.painter().galley(pos2(x, y), galley, text);
-                };
-                line(crate::i18n::tr(description).to_string(), r.top() + 29.0);
-                if let Some(tabs) = tabs {
-                    // Translate each tab even when this composed message falls back to English.
-                    let labels = crate::i18n::tr(tabs).split('·').map(|label| crate::i18n::tr_label(label.trim())).collect::<Vec<_>>().join(" · ");
-                    line(labels, r.top() + 47.0);
-                }
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, item.enabled, name));
-                if resp.clicked() && item.enabled {
-                    picked = Some(item.clone());
-                }
-            }
-        });
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(6.0);
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(crate::i18n::tr("ui.workspace_footer")).size(crate::theme::Tokens::get().font_small).color(t.text_dim),
-            )
-            .wrap(),
-        );
-        ui.add_space(4.0);
-    });
-    picked
-}
-
-/// The frame every menu uses.
+/// Shared kit surface; legacy callers retain their menu positioning and dispatch.
 pub fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let t = Tokens::get();
-    egui::Frame::new()
-        .fill(t.panel)
-        .stroke(Stroke::new(1.0, t.border))
-        .corner_radius(6.0)
-        .inner_margin(egui::Margin::symmetric(4, 4))
-        .shadow(egui::Shadow {
-            offset: [0, 3],
-            blur: 12,
-            spread: 0,
-            color: Color32::from_black_alpha(if crate::theme::is_dark() { 110 } else { 50 }),
-        })
-        .show(ui, |ui| {
-            ui.set_width(LIST_W - 10.0);
-            ui.spacing_mut().item_spacing.y = 0.0;
-            add(ui)
-        })
-        .inner
+    crate::ui_kit::Menu::show(ui, LIST_W, add)
 }
 
-/// A compact menu button with an explicit semantic icon, for native egui popup menus.
 pub fn button(ui: &mut egui::Ui, label: &str, icon: &str) -> egui::Response {
     button_enabled(ui, label, icon, true)
 }
 
-/// The disabled form keeps its icon visible and dims it with the menu row.
 pub fn button_enabled(ui: &mut egui::Ui, label: &str, icon: &str, enabled: bool) -> egui::Response {
-    let response = ui
-        .add_enabled_ui(enabled, |ui| {
-            let icon_id = ui.id().with(("menu_icon", label));
-            let row = egui::Button::new((egui::Atom::custom(icon_id, vec2(16.0, 16.0)), label)).min_size(vec2(180.0, 22.0)).atom_ui(ui);
-            if let Some(rect) = row.rect(icon_id) {
-                icons::paint_icon(ui.painter(), rect, icon, if enabled { 1.0 } else { 0.35 });
-            }
-            row.response
-        })
-        .inner;
-    crate::scenario::publish_handle(&format!("menu:{label}"), response.rect.center());
-    response
+    let mut item = crate::ui_kit::MenuItem::new(label, label, icon);
+    item.enabled = enabled;
+    item.show(ui)
 }
 
-/// One list row; the item when it was clicked.
 pub fn list_row(ui: &mut egui::Ui, item: &Item) -> Option<Item> {
     list_row_lit(ui, item, false)
 }
 
-/// A list row, drawn highlighted when `lit` (the keyboard's choice).
 pub fn list_row_lit(ui: &mut egui::Ui, item: &Item, lit: bool) -> Option<Item> {
-    let t = Tokens::get();
-    let w = LIST_W - 10.0;
     if item.is_sep() {
-        let (r, _) = ui.allocate_exact_size(vec2(w, 7.0), Sense::hover());
-        ui.painter().hline(r.x_range().shrink(6.0), r.center().y, Stroke::new(1.0, t.border));
+        crate::ui_kit::Menu::separator(ui);
         return None;
     }
     if item.is_heading() {
-        let text = ui.painter().layout(
-            crate::i18n::tr_label(&item.label).to_uppercase(),
-            FontId::proportional(crate::theme::Tokens::get().font_panel),
-            t.text_dim,
-            w - 16.0,
-        );
-        let (r, _) = ui.allocate_exact_size(vec2(w, (text.size().y + 8.0).max(20.0)), Sense::hover());
-        ui.painter().galley(pos2(r.left() + 8.0, r.top() + 4.0), text, t.text_dim);
+        crate::ui_kit::Menu::heading(ui, &item.label);
         return None;
     }
-    let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), if item.enabled { Sense::click() } else { Sense::hover() });
-    crate::scenario::publish_handle(&format!("menu:{}", item.id), r.center());
-    if item.enabled && (resp.hovered() || lit) {
-        ui.painter().rect_filled(r.shrink2(vec2(2.0, 1.0)), 4.0, t.hover);
+    let row = kit_item(item, lit);
+    (row.show(ui).clicked() && item.enabled).then(|| item.clone())
+}
+
+fn kit_item(item: &Item, lit: bool) -> crate::ui_kit::MenuItem<'_> {
+    crate::ui_kit::MenuItem {
+        id: &item.id,
+        label: &item.label,
+        icon: &item.icon,
+        shortcut: if item.shortcut == "current" { "" } else { &item.shortcut },
+        enabled: item.enabled,
+        highlighted: lit,
+        danger: item.icon == "delete",
+        checked: (item.shortcut == "current").then_some(true),
+        swatch: item.swatch.map(|c| Color32::from_rgb(c[0], c[1], c[2])),
+        submenu: !item.children.is_empty(),
     }
-    let ink = if item.enabled { t.icon } else { t.border };
-    if !item.icon.is_empty() {
-        icons::paint(
-            ui.painter(),
-            Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(16.0, 16.0)),
-            &item.icon,
-            ink,
-            t.icon_fill,
-            t.accent,
-        );
-    }
-    let text = if item.enabled { t.text } else { t.text_dim.gamma_multiply(0.75) };
-    let display_label = crate::i18n::tr_label(&item.label);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, item.enabled, display_label));
-    ui.painter().text(
-        pos2(r.left() + 32.0, r.center().y),
-        Align2::LEFT_CENTER,
-        display_label,
-        FontId::proportional(crate::theme::Tokens::get().font_button),
-        text,
-    );
-    if !item.shortcut.is_empty() {
-        let display_shortcut = crate::i18n::tr_label(&item.shortcut);
-        ui.painter().text(
-            pos2(r.right() - 10.0, r.center().y),
-            Align2::RIGHT_CENTER,
-            display_shortcut,
-            FontId::proportional(crate::theme::Tokens::get().font_caption),
-            t.text_dim,
-        );
-    }
-    (item.enabled && resp.clicked()).then(|| item.clone())
 }
 
 fn show_rename(app: &mut SolveApp, ctx: &egui::Context) {
@@ -1983,31 +1884,9 @@ fn show_rename(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let Some(mut r) = app.menu.rename.take() else { return };
-    let t = Tokens::get();
     let mut done: Option<bool> = None;
     let resp = crate::frame::area(egui::Id::new("sc_rename")).fixed_pos(r.at).constrain(true).order(egui::Order::Foreground).show(ctx, |ui| {
-        menu_frame(ui, |ui| {
-            ui.add_space(2.0);
-            ui.label(egui::RichText::new(crate::i18n::tr_label("Rename")).size(crate::theme::Tokens::get().font_small).color(t.text_dim));
-            let te = ui.add(egui::TextEdit::singleline(&mut r.text).desired_width(200.0).id(egui::Id::new("sc_rename_text")));
-            if !r.focused {
-                // Start with the whole name selected, ready to type over.
-                let id = egui::Id::new("sc_rename_text");
-                if let Some(mut st) = egui::TextEdit::load_state(ui.ctx(), id) {
-                    let n = r.text.chars().count();
-                    st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
-                    st.store(ui.ctx(), id);
-                }
-                te.request_focus();
-                r.focused = true;
-            }
-            if te.lost_focus() {
-                done = Some(ui.input(|i| i.key_pressed(egui::Key::Enter)));
-            }
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                done = Some(false);
-            }
-        })
+        done = crate::ui_kit::rename_menu(ui, &mut r.text, &mut r.focused);
     });
     if ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer() && r.focused {
         done = Some(true);
@@ -2103,7 +1982,7 @@ mod tests {
             let p = list_place(c, 400.0, screen);
             let r = Rect::from_min_size(p, vec2(LIST_W, 400.0));
             assert!(screen.contains_rect(r), "{at:?}: {r:?}");
-            let ring = Rect::from_center_size(c, vec2(2.0 * (RX + 160.0), 2.0 * RY));
+            let ring = Rect::from_center_size(c, vec2(2.0 * RX, 2.0 * RY));
             assert!(!ring.intersects(r), "{at:?}: list {r:?} over ring {ring:?}");
         }
     }
@@ -2125,10 +2004,7 @@ mod tests {
         let screen = Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 800.0));
         for at in [pos2(2.0, 2.0), pos2(1199.0, 799.0), pos2(600.0, 400.0), pos2(-50.0, 900.0)] {
             let c = radial_center(at, screen);
-            for k in 0..DIRS {
-                let r = slot_rect(c, k, vec2(160.0, 28.0));
-                assert!(screen.contains_rect(r), "{at:?} slot {k}: {r:?}");
-            }
+            assert!(screen.contains_rect(Rect::from_center_size(c, vec2(2.0 * RX, 2.0 * RY))));
         }
     }
 }
@@ -2144,7 +2020,7 @@ mod workspace_menu_tests {
         let app = SolveApp::new(Default::default(), Default::default());
         let list = items(&app, &Target::Workspace);
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            workspace_menu(ui, &list, None, 1000.0);
+            crate::ui_kit::workspace_menu(ui, &list, None, 1000.0);
         });
         output.textures_delta.clear();
         let titles: Vec<_> = output
