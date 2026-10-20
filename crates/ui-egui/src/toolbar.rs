@@ -869,9 +869,9 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
                         &ribbon_label(app, tab),
                         t.font_button,
                         if contextual {
-                            t.on_accent
+                            accent.on_fill(&t)
                         } else if active {
-                            selected_ink(&accent)
+                            accent.ink
                         } else {
                             t.text
                         },
@@ -913,11 +913,6 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
 /// The dropdown chevron every ribbon menu shares.
 fn dropdown_arrow(painter: &egui::Painter, at: egui::Pos2, ink: Color32) {
     crate::ui_kit::dropdown_indicator(painter, Rect::from_center_size(at, vec2(10.0, 10.0)), ink);
-}
-
-/// The label colour on a selected tab or open section.
-fn selected_ink(accent: &crate::theme::TabAccent) -> Color32 {
-    crate::theme::selected_ink(&Tokens::get(), accent.color)
 }
 
 pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -1191,17 +1186,21 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let info = c.info(&app.session);
                     let resp = ui.interact(cell, ui.id().with(("cmd", c.id)), Sense::click_and_drag());
                     let active = running.as_deref() == Some(c.id);
+                    let accent = crate::theme::TabAccent::for_tab(&t, &tab);
                     painter.rect(
                         cell,
                         4.0,
                         if active {
-                            t.panel.lerp_to_gamma(command_accent(c.icon), 0.18)
+                            if accent.color == t.accent { t.panel.lerp_to_gamma(command_accent(c.icon), 0.18) } else { accent.soft }
                         } else if resp.hovered() && info.enabled {
                             t.hover
                         } else {
                             t.panel
                         },
-                        Stroke::new(1.0, if active { command_accent(c.icon) } else { t.border }),
+                        Stroke::new(
+                            1.0,
+                            if active { if accent.color == t.accent { command_accent(c.icon) } else { accent.color } } else { t.border },
+                        ),
                         egui::StrokeKind::Inside,
                     );
                     icons::paint_icon(
@@ -1254,7 +1253,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 FontId::proportional(crate::theme::Tokens::get().font_caption)
             };
             let label_width = painter.layout_no_wrap(label.clone(), font, t.text_dim).size().x;
-            let ink = if panel_open { selected_ink(&accent) } else { t.text_dim };
+            let ink = if panel_open { accent.ink } else { t.text_dim };
             ribbon_text(ui, lr.center() - vec2(if finish { 0.0 } else { 6.0 }, 0.0), &label, t.font_caption, ink, panel_open || hot);
             if !finish {
                 dropdown_arrow(&painter, pos2(lr.center().x + label_width / 2.0 + 1.0, lr.center().y + 0.5), ink);

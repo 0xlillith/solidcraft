@@ -249,3 +249,48 @@ Dropdown arrows always point down; submenu arrows point right. Playback, reorder
 window management and overflow controls are not disclosures. The source guard scans
 UI, apps and compiled asset glyphs without caller allowances; render tests inspect
 the actual icon textures used by sections, card folds and window folds.
+
+## Per-tab accent tokens
+
+`TabAccent::for_tab` supplies three independent theme colours: `color` (fill) for
+pills, active-tool borders and the history marker; `ink` for small text and selected
+rows; `soft` for tinted selection/tool backgrounds. These are palette entries, not
+blends. Browser rows and selected ribbon labels use `ink` directly.
+
+| Tab id | Fill token | Ink token | Soft token |
+| --- | --- | --- | --- |
+| `MODEL` / default | `accent` | `selected_ink` | `accent_soft` |
+| `SKETCH` | `sketch_accent` | `sketch_ink` | `sketch_soft` |
+| `SURFACE` | `surface_fill` | `surface_ink` | `surface_soft` |
+| `MESH` | `mesh_fill` | `mesh_ink` | `mesh_soft` |
+| `FORM` | `form_fill` | `form_tab_ink` | `form_soft` |
+| `SHEET METAL` | `sheet_fill` | `sheet_ink` | `sheet_soft` |
+| `RENDER` | `render_fill` | `render_ink` | `render_soft` |
+
+`form_tab_ink` is separate from the existing `form_ink` used for form controls.
+Sketch reuses its existing fill in both themes. Surface and Form fills match their
+existing accents in light mode but need independent dark values; Mesh and Render
+fills also differ from their existing `mesh_accent` and `render_accent` values.
+All existing tokens, including Model's fill, ink and tint, retain their values.
+The Model/default mapping preserves its existing appearance rather than adopting
+the proposed Model colours from the board.
+
+The new palette entries (fill / ink / soft) are:
+
+| Tab | Light | Dark |
+| --- | --- | --- |
+| Sketch | `#057F45` / `#057F45` / `#EDF7F1` | `#128D45` / `#46BE78` / `#1F3B2B` |
+| Surface | `#A45000` / `#A45000` / `#FBEBD8` | `#B26A14` / `#E0914A` / `#45331E` |
+| Mesh | `#E0B200` / `#8A6D00` / `#FFF8DC` | `#C6A800` / `#D4B726` / `#41391A` |
+| Form | `#7349CD` / `#7349CD` / `#EEE8FA` | `#8A6FCC` / `#B39BEE` / `#372F4F` |
+| Sheet Metal | `#1E6F96` / `#1E6F96` / `#E1F0F7` | `#2A7FA8` / `#4FB3D9` / `#1F3A47` |
+| Render | `#A8326E` / `#A8326E` / `#F8E6EF` | `#C8588F` / `#E074AE` / `#402336` |
+
+Each key is supported by `solidcraft-theme/1` import/export, including
+`tab_on_fill_dark` (`#000000` in both themes). `TabAccent::on_fill` uses `on_accent`
+(white in the built-in palettes) when it reaches 4.5:1, otherwise that dark ink.
+The fallback is black because the board's dark ink does not reach 4.5:1 on several
+of the approved fills. It only styles tab pills; global primary actions still use
+`on_accent`. Built-in palette tests require WCAG contrast of at least 4.5:1 for
+ink on the card and panel, ink on soft, and pill text on fill in both themes.
+Only Mesh separates ink from fill in the light theme.

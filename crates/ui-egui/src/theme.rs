@@ -45,34 +45,41 @@ pub fn set_custom(custom: Option<Custom>) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TabAccent {
     pub color: Color32,
+    pub ink: Color32,
     pub soft: Color32,
 }
 
-/// The foreground of a selected element on its tinted background: light blue in the dark theme,
-/// a darker blue in the light theme. Other accents (Sketch green…) get the same treatment.
-pub(crate) fn selected_ink(t: &Tokens, accent: Color32) -> Color32 {
-    if accent == t.accent {
-        t.selected_ink
-    } else if is_dark() {
-        accent.lerp_to_gamma(t.on_accent, 0.5)
-    } else {
-        accent.lerp_to_gamma(Color32::BLACK, 0.3)
-    }
+/// WCAG contrast of two opaque sRGB colours.
+fn contrast_ratio(a: Color32, b: Color32) -> f64 {
+    let luminance = |c: Color32| {
+        let linear = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * linear(c.r()) + 0.7152 * linear(c.g()) + 0.0722 * linear(c.b())
+    };
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 impl TabAccent {
     pub fn for_tab(t: &Tokens, tab: &str) -> Self {
-        let color = match tab {
-            "SKETCH" => t.sketch_accent,
-            "SURFACE" => t.surface_accent,
-            "MESH" => t.mesh_accent,
-            "FORM" => t.form_accent,
-            _ => t.accent,
+        let (color, ink, soft) = match tab {
+            "SKETCH" => (t.sketch_accent, t.sketch_ink, t.sketch_soft),
+            "SURFACE" => (t.surface_fill, t.surface_ink, t.surface_soft),
+            "MESH" => (t.mesh_fill, t.mesh_ink, t.mesh_soft),
+            "FORM" => (t.form_fill, t.form_tab_ink, t.form_soft),
+            "SHEET METAL" => (t.sheet_fill, t.sheet_ink, t.sheet_soft),
+            "RENDER" => (t.render_fill, t.render_ink, t.render_soft),
+            // Model and shared utility tabs retain their existing selection exactly.
+            _ => (t.accent, t.selected_ink, t.accent_soft),
         };
-        // Preserve the existing Solid selection exactly. Other tabs blend against the same
-        // panel surface in either theme rather than introducing independent palette entries.
-        let soft = if color == t.accent { t.accent_soft } else { t.panel.lerp_to_gamma(color, 0.18) };
-        Self { color, soft }
+        Self { color, ink, soft }
+    }
+
+    /// Small text on a tab's solid pill. Brighter fills need dark ink in either theme.
+    pub fn on_fill(self, t: &Tokens) -> Color32 {
+        if contrast_ratio(t.on_accent, self.color) >= 4.5 { t.on_accent } else { t.tab_on_fill_dark }
     }
 
     pub fn current(ctx: &egui::Context) -> Self {
@@ -331,6 +338,27 @@ pub struct Tokens {
     pub mesh_accent: Color32,
     pub form_accent: Color32,
     pub render_accent: Color32,
+    /// Per-tab fills, small-text inks and selected-row tints. Sketch reuses sketch_accent.
+    /// The other fill keys preserve the legacy *_accent values used by other surfaces.
+    pub sketch_ink: Color32,
+    pub sketch_soft: Color32,
+    pub surface_fill: Color32,
+    pub surface_ink: Color32,
+    pub surface_soft: Color32,
+    pub mesh_fill: Color32,
+    pub mesh_ink: Color32,
+    pub mesh_soft: Color32,
+    pub form_fill: Color32,
+    pub form_tab_ink: Color32,
+    pub form_soft: Color32,
+    pub sheet_fill: Color32,
+    pub sheet_ink: Color32,
+    pub sheet_soft: Color32,
+    pub render_fill: Color32,
+    pub render_ink: Color32,
+    pub render_soft: Color32,
+    /// Dark text for tab pills whose fill has insufficient contrast with on_accent.
+    pub tab_on_fill_dark: Color32,
     /// Ink on accent-filled buttons and selection chips.
     pub on_accent: Color32,
     /// Agent status on the dark application bar, in either theme.
@@ -580,20 +608,74 @@ pub fn apply(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn tab_accents_map_tokens_and_derive_selection_without_changing_solid() {
+    fn tab_accents_map_explicit_tokens_without_changing_model() {
         for dark in [false, true] {
             for vision in super::ColorVision::ALL {
                 let t = super::Tokens::themed(dark, vision);
-                for (tab, color) in [("SKETCH", t.sketch_accent), ("SURFACE", t.surface_accent), ("MESH", t.mesh_accent), ("FORM", t.form_accent)] {
+                // Explicit palette tints and text replace the old gamma lerps. They can be
+                // overridden independently by theme files and hold small-text contrast.
+                for (tab, color, ink, soft) in [
+                    ("SKETCH", t.sketch_accent, t.sketch_ink, t.sketch_soft),
+                    ("SURFACE", t.surface_fill, t.surface_ink, t.surface_soft),
+                    ("MESH", t.mesh_fill, t.mesh_ink, t.mesh_soft),
+                    ("FORM", t.form_fill, t.form_tab_ink, t.form_soft),
+                    ("SHEET METAL", t.sheet_fill, t.sheet_ink, t.sheet_soft),
+                    ("RENDER", t.render_fill, t.render_ink, t.render_soft),
+                ] {
                     let accent = super::TabAccent::for_tab(&t, tab);
-                    assert_eq!(accent.color, color);
-                    assert_eq!(accent.soft, t.panel.lerp_to_gamma(color, 0.18));
+                    assert_eq!(accent, super::TabAccent { color, ink, soft });
                     assert_ne!(accent.soft, color);
                     assert_ne!(accent.soft, t.panel);
                 }
-                for tab in ["MODEL", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "VIEW", "SHEET METAL", "RENDER", "unknown"] {
-                    assert_eq!(super::TabAccent::for_tab(&t, tab), super::TabAccent { color: t.accent, soft: t.accent_soft });
+                for tab in ["MODEL", "SOLID", "ASSEMBLE", "INSERT", "INSPECT", "MANAGE", "VIEW", "unknown"] {
+                    assert_eq!(super::TabAccent::for_tab(&t, tab), super::TabAccent { color: t.accent, ink: t.selected_ink, soft: t.accent_soft });
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn tab_accents_match_approved_palette() {
+        let rgb = |hex: u32| egui::Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8);
+        for (tab, light, dark) in [
+            ("SKETCH", [0x057f45, 0x057f45, 0xedf7f1], [0x128d45, 0x46be78, 0x1f3b2b]),
+            ("SURFACE", [0xa45000, 0xa45000, 0xfbebd8], [0xb26a14, 0xe0914a, 0x45331e]),
+            ("MESH", [0xe0b200, 0x8a6d00, 0xfff8dc], [0xc6a800, 0xd4b726, 0x41391a]),
+            ("FORM", [0x7349cd, 0x7349cd, 0xeee8fa], [0x8a6fcc, 0xb39bee, 0x372f4f]),
+            ("SHEET METAL", [0x1e6f96, 0x1e6f96, 0xe1f0f7], [0x2a7fa8, 0x4fb3d9, 0x1f3a47]),
+            ("RENDER", [0xa8326e, 0xa8326e, 0xf8e6ef], [0xc8588f, 0xe074ae, 0x402336]),
+        ] {
+            for (t, values) in [(super::Tokens::light(), light), (super::Tokens::dark(), dark)] {
+                let [color, ink, soft] = values.map(rgb);
+                assert_eq!(super::TabAccent::for_tab(&t, tab), super::TabAccent { color, ink, soft }, "{tab}");
+            }
+            let accent = super::TabAccent::for_tab(&super::Tokens::light(), tab);
+            assert_eq!(accent.ink != accent.color, tab == "MESH", "only light Mesh separates ink from fill");
+        }
+        // These existing Model values intentionally take precedence over the board's proposal.
+        for (t, values) in [(super::Tokens::light(), [0x2678da, 0x1a507f, 0xd6e6fa]), (super::Tokens::dark(), [0x3a88ee, 0x9cc7f5, 0x2a466e])] {
+            let [color, ink, soft] = values.map(rgb);
+            assert_eq!(super::TabAccent::for_tab(&t, "MODEL"), super::TabAccent { color, ink, soft });
+        }
+    }
+
+    #[test]
+    fn tab_accents_hold_wcag_small_text_contrast_in_both_themes() {
+        for (dark, t) in [(false, super::Tokens::light()), (true, super::Tokens::dark())] {
+            for tab in ["MODEL", "SKETCH", "SURFACE", "MESH", "FORM", "SHEET METAL", "RENDER"] {
+                let accent = super::TabAccent::for_tab(&t, tab);
+                let card = if dark { t.panel } else { egui::Color32::WHITE };
+                for (name, ink, ground) in [
+                    ("ink on card", accent.ink, card),
+                    ("ink on panel", accent.ink, t.panel),
+                    ("ink on soft", accent.ink, accent.soft),
+                    ("text on fill", accent.on_fill(&t), accent.color),
+                ] {
+                    let ratio = super::contrast_ratio(ink, ground);
+                    assert!(ratio >= 4.5, "{tab} dark={dark}: {name} is {ratio:.4}:1 ({ink:?} on {ground:?})");
+                }
+                let white_ok = super::contrast_ratio(t.on_accent, accent.color) >= 4.5;
+                assert_eq!(accent.on_fill(&t), if white_ok { t.on_accent } else { t.tab_on_fill_dark });
             }
         }
     }
@@ -607,7 +689,7 @@ mod tests {
         let before = first.style_of(egui::Theme::Dark).visuals.clone();
         app.ui.tab = "SURFACE".into();
         super::TabAccent::publish(app, &first);
-        assert_eq!(super::TabAccent::current(&first).color, super::Tokens::get().surface_accent);
+        assert_eq!(super::TabAccent::current(&first).color, super::Tokens::get().surface_fill);
         assert_eq!(super::TabAccent::current(&second).color, super::Tokens::get().accent);
         assert_eq!(first.style_of(egui::Theme::Dark).visuals, before, "dialog OK, checkboxes and status styles must not inherit the tab");
         app.ui.tab = "MODEL".into();

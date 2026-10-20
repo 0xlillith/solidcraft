@@ -45,28 +45,33 @@ fn browser_card_shrinks_and_scrolls_without_covering_history() {
 
 #[test]
 fn selected_row_paints_tab_soft_fill_and_accent_text_in_both_layouts() {
-    for mode in [LayoutMode::Floating, LayoutMode::Docked] {
-        for tab in ["MODEL", "SURFACE", "SKETCH"] {
-            let ctx = crate::fonts::test_context();
-            let mut app = SolveApp::new(Default::default(), Default::default());
-            app.ui.layout = mode;
-            app.ui.tab = tab.into();
-            crate::theme::TabAccent::publish(&app, &ctx);
-            let accent = crate::theme::TabAccent::for_tab(&Tokens::get(), tab);
-            let mut row_rect = Rect::NOTHING;
-            let out = crate::test_support::frame(&ctx, egui::RawInput::default(), |ui| {
-                let row = Row { selected: true, label: "Selected body", dim: true, color: Some(Tokens::get().error), ..Default::default() };
-                row_rect = draw_row(ui, egui::Id::new("selected-row"), &row).rect.unwrap();
-            });
-            assert_eq!(row_rect.height(), 26.0);
-            assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.rect == row_rect && r.fill == accent.soft)));
-            assert!(
-                out.shapes
-                    .iter()
-                    .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Selected body" && t.fallback_color == crate::theme::selected_ink(&Tokens::get(), accent.color)))
-            );
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        for mode in [LayoutMode::Floating, LayoutMode::Docked] {
+            for tab in ["MODEL", "SKETCH", "SURFACE", "MESH", "FORM", "SHEET METAL", "RENDER"] {
+                let ctx = crate::fonts::test_context();
+                let mut app = SolveApp::new(Default::default(), Default::default());
+                app.ui.layout = mode;
+                app.ui.tab = tab.into();
+                crate::theme::TabAccent::publish(&app, &ctx);
+                let accent = crate::theme::TabAccent::for_tab(&Tokens::get(), tab);
+                let mut row_rect = Rect::NOTHING;
+                let out = crate::test_support::frame(&ctx, egui::RawInput::default(), |ui| {
+                    let row = Row { selected: true, label: "Selected body", dim: true, color: Some(Tokens::get().error), ..Default::default() };
+                    row_rect = draw_row(ui, egui::Id::new("selected-row"), &row).rect.unwrap();
+                });
+                assert_eq!(row_rect.height(), 26.0);
+                assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.rect == row_rect && r.fill == accent.soft)));
+                assert!(
+                    out.shapes
+                        .iter()
+                        .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Selected body" && t.fallback_color == accent.ink))
+                );
+            }
         }
     }
+    crate::theme::set_dark(previous);
 }
 
 #[test]

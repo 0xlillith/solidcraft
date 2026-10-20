@@ -81,6 +81,24 @@ impl Tokens {
             mesh_accent: Color32::from_rgb(130, 103, 0),
             form_accent: Color32::from_rgb(115, 73, 205),
             render_accent: Color32::from_rgb(174, 45, 113),
+            sketch_ink: Color32::from_rgb(5, 127, 69),
+            sketch_soft: Color32::from_rgb(237, 247, 241),
+            surface_fill: Color32::from_rgb(164, 80, 0),
+            surface_ink: Color32::from_rgb(164, 80, 0),
+            surface_soft: Color32::from_rgb(251, 235, 216),
+            mesh_fill: Color32::from_rgb(224, 178, 0),
+            mesh_ink: Color32::from_rgb(138, 109, 0),
+            mesh_soft: Color32::from_rgb(255, 248, 220),
+            form_fill: Color32::from_rgb(115, 73, 205),
+            form_tab_ink: Color32::from_rgb(115, 73, 205),
+            form_soft: Color32::from_rgb(238, 232, 250),
+            sheet_fill: Color32::from_rgb(30, 111, 150),
+            sheet_ink: Color32::from_rgb(30, 111, 150),
+            sheet_soft: Color32::from_rgb(225, 240, 247),
+            render_fill: Color32::from_rgb(168, 50, 110),
+            render_ink: Color32::from_rgb(168, 50, 110),
+            render_soft: Color32::from_rgb(248, 230, 239),
+            tab_on_fill_dark: Color32::BLACK,
             on_accent: Color32::WHITE,
             agent_ok: Color32::from_rgb(76, 194, 122),
             agent_busy: Color32::from_rgb(108, 180, 240),
@@ -256,6 +274,24 @@ impl Tokens {
         t.mesh_accent = Color32::from_rgb(133, 113, 0);
         t.form_accent = Color32::from_rgb(123, 99, 166);
         t.render_accent = Color32::from_rgb(224, 116, 174);
+        t.sketch_ink = Color32::from_rgb(70, 190, 120);
+        t.sketch_soft = Color32::from_rgb(31, 59, 43);
+        t.surface_fill = Color32::from_rgb(178, 106, 20);
+        t.surface_ink = Color32::from_rgb(224, 145, 74);
+        t.surface_soft = Color32::from_rgb(69, 51, 30);
+        t.mesh_fill = Color32::from_rgb(198, 168, 0);
+        t.mesh_ink = Color32::from_rgb(212, 183, 38);
+        t.mesh_soft = Color32::from_rgb(65, 57, 26);
+        t.form_fill = Color32::from_rgb(138, 111, 204);
+        t.form_tab_ink = Color32::from_rgb(179, 155, 238);
+        t.form_soft = Color32::from_rgb(55, 47, 79);
+        t.sheet_fill = Color32::from_rgb(42, 127, 168);
+        t.sheet_ink = Color32::from_rgb(79, 179, 217);
+        t.sheet_soft = Color32::from_rgb(31, 58, 71);
+        t.render_fill = Color32::from_rgb(200, 88, 143);
+        t.render_ink = Color32::from_rgb(224, 116, 174);
+        t.render_soft = Color32::from_rgb(64, 35, 54);
+        t.tab_on_fill_dark = Color32::BLACK;
         t.dialog_body = Color32::from_rgb(59, 68, 83);
         t.dialog_footer = Color32::from_rgb(47, 52, 62);
         t.dialog_rule = Color32::from_rgb(53, 59, 71);

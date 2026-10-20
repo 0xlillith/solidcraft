@@ -424,11 +424,8 @@ pub(crate) fn draw_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
         icons::paint_icon(ui.painter(), ir, row.icon, if row.dim { DIM_ICON_OPACITY } else { 1.0 });
         x += 21.0;
     }
-    let col = if row.selected {
-        crate::theme::selected_ink(&t, crate::theme::TabAccent::current(ui.ctx()).color)
-    } else {
-        row.color.unwrap_or(if row.dim { t.text_dim } else { t.text })
-    };
+    let col =
+        if row.selected { crate::theme::TabAccent::current(ui.ctx()).ink } else { row.color.unwrap_or(if row.dim { t.text_dim } else { t.text }) };
     let label_display = if row.name { crate::i18n::tr_name(row.label) } else { crate::i18n::tr_dyn(row.label) };
     let font = if row.selected { crate::fonts::semibold(t.font_label) } else { FontId::proportional(t.font_label) };
     let galley = ui.painter().layout_no_wrap(label_display, font, col);

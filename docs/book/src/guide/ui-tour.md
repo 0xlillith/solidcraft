@@ -106,6 +106,16 @@ colours by name:
 Colours are `#rrggbb`, or `#rrggbbaa` for translucent ones. A few colours, such as the view
 triad's X, Y and Z, take a list. Any colour the file leaves out keeps the base palette's value.
 
+Tab accents also have separate fill, small-text ink and tint keys. Sketch uses
+`sketch_accent`, `sketch_ink`, `sketch_soft`; Surface, Mesh, Sheet Metal and Render
+use `<tab>_fill`, `<tab>_ink`, `<tab>_soft` (`sheet` for Sheet Metal). Form uses
+`form_fill`, `form_tab_ink`, `form_soft` because `form_ink` names the general form
+text. Model keeps `accent`, `selected_ink`, `accent_soft`. The older
+`surface_accent`, `mesh_accent`, `form_accent` and `render_accent` keys retain their
+existing roles and values. `tab_on_fill_dark` is the dark text fallback for tab
+pills when `on_accent` has less than 4.5:1 contrast with the fill. See the
+[per-tab token reference](../dev/ui-kit.md#per-tab-accent-tokens) for all pairs.
+
 - **Import…** adds a theme file and turns it on. Importing a file with the same name again updates
   that theme. A file with an unknown colour name or a malformed colour is refused, and the message
   names every problem.

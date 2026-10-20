@@ -367,6 +367,29 @@ fn groups(t: &Tokens) -> Vec<Group> {
         group("agent status", &[("agent_ok", t.agent_ok), ("agent_busy", t.agent_busy)], &[("app_bar", t.app_bar)]),
         group("logo", &[("logo[0]", t.logo[0]), ("logo[1]", t.logo[1]), ("logo[2]", t.logo[2])], &[("app_bar", t.app_bar)]),
     ];
+    // Tab fills and small-text inks have distinct jobs: compare each with its actual
+    // grounds, rather than with the same-hue fill/ink. WCAG text ratios are also guarded
+    // in theme::tests::tab_accents_hold_wcag_small_text_contrast_in_both_themes.
+    for (name, ink_name, ink, soft_name, soft) in [
+        ("sketch tab text", "sketch_ink", t.sketch_ink, "sketch_soft", t.sketch_soft),
+        ("surface tab text", "surface_ink", t.surface_ink, "surface_soft", t.surface_soft),
+        ("mesh tab text", "mesh_ink", t.mesh_ink, "mesh_soft", t.mesh_soft),
+        ("form tab text", "form_tab_ink", t.form_tab_ink, "form_soft", t.form_soft),
+        ("sheet tab text", "sheet_ink", t.sheet_ink, "sheet_soft", t.sheet_soft),
+        ("render tab text", "render_ink", t.render_ink, "render_soft", t.render_soft),
+    ] {
+        out.push(group(name, &[(ink_name, ink)], &[(soft_name, soft), ("panel", t.panel)]));
+    }
+    for (name, key, fill) in [
+        ("surface tab fill", "surface_fill", t.surface_fill),
+        ("mesh tab fill", "mesh_fill", t.mesh_fill),
+        ("form tab fill", "form_fill", t.form_fill),
+        ("sheet tab fill", "sheet_fill", t.sheet_fill),
+        ("render tab fill", "render_fill", t.render_fill),
+    ] {
+        out.push(group(name, &[(key, fill)], &[("panel", t.panel)]));
+    }
+    out.push(group("dark pill text", &[("tab_on_fill_dark", t.tab_on_fill_dark)], &[("mesh_fill", t.mesh_fill)]));
     // The removed part of a cut preview is translucent over the body.
     if let Some(sel) = out.iter_mut().find(|g| g.name == "selection") {
         sel.members.push(("preview_cut", over(t.preview_cut, t.body)));
