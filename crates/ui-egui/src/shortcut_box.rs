@@ -345,8 +345,19 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ui_kit::scope(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     let invalid = typed(&query).is_some_and(|(_, result)| result.is_err());
-                    let field =
-                        ui_kit::CommandSearch::field(ui, &mut query, invalid, std::mem::take(&mut app.sbox.focus), open, field_size.y, MAX_QUERY);
+                    let field = ui_kit::CommandSearch::field(
+                        ui,
+                        &mut query,
+                        invalid,
+                        std::mem::take(&mut app.sbox.focus),
+                        open,
+                        ui_kit::SearchFieldGeometry {
+                            height: field_size.y,
+                            progress,
+                            radius: ui_kit::CommandSearch::field_radius(progress, app.ui.layout == crate::shell::LayoutMode::Floating),
+                        },
+                        MAX_QUERY,
+                    );
                     if !open && progress == 0.0 {
                         if field.clicked()
                             || ui.interact(Rect::from_min_size(pos, field_size), ui.id().with("search_open"), egui::Sense::click()).clicked()
@@ -395,6 +406,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     if !enabled.get(app.sbox.index).copied().unwrap_or(false) {
                         app.sbox.index = enabled.iter().position(|v| *v).unwrap_or(0);
                     }
+                    ui.add_space(t.space_6 * progress);
                     ui.add_enabled_ui(open, |ui| {
                         ui_kit::CommandSearch::sheet(ui, field_size.x, progress, mode.is_some(), |ui| {
                             egui::ScrollArea::vertical().max_height((height - t.control_height * 4.0).max(t.control_height)).show(ui, |ui| {
@@ -802,7 +814,7 @@ mod tests {
         let toolbar = crate::scenario::rect_of("toolbar").unwrap();
         assert_eq!(crate::toolbar::TAB_ROW_HEIGHT, 30.0);
         assert_eq!(crate::toolbar::RIBBON_HEIGHT, 117.0);
-        assert_eq!(closed.size(), vec2(188.0, 22.0));
+        assert_eq!(closed.size(), vec2(ui_kit::CommandSearch::closed_width(&h.ctx), 22.0));
         assert_eq!(closed.right(), toolbar.right() - 4.0);
         assert_eq!(closed.top(), toolbar.top() + 4.0);
         assert_eq!(closed.center().y, toolbar.top() + 15.0);
@@ -816,7 +828,7 @@ mod tests {
         assert!((width_fraction - height_fraction).abs() < 0.001);
         assert_eq!(middle.right(), closed.right());
         let unfolding = crate::scenario::rect_of("ribbon:search_popup").unwrap();
-        assert_eq!(unfolding.top(), middle.bottom());
+        assert!((unfolding.top() - middle.bottom() - egui::emath::GuiRounding::round_ui(Tokens::get().space_6 * width_fraction)).abs() < 0.001);
         h.frames(10);
         let field = crate::scenario::rect_of("ribbon:search").unwrap();
         assert_eq!(field.size(), vec2(520.0, 40.0));
@@ -824,7 +836,7 @@ mod tests {
         assert_eq!(Some(field), crate::scenario::rect_of("shortcut:search"));
         assert_eq!(Some(field), crate::scenario::rect_of("palette:search"));
         let sheet = crate::scenario::rect_of("ribbon:search_popup").unwrap();
-        assert_eq!(sheet.top(), field.bottom());
+        assert_eq!(sheet.top(), field.bottom() + Tokens::get().space_6);
         assert_eq!(sheet.x_range(), field.x_range());
         assert!(sheet.height() > unfolding.height());
         let footer = crate::scenario::rect_of("ribbon:search_footer").unwrap();

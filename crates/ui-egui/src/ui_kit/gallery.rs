@@ -30,7 +30,20 @@ macro_rules! element {
 const ELEMENTS: &[Element] = &[
     element!("command_search", |ui, _| {
         let mut query = "fillet".to_owned();
-        CommandSearch::field(ui, &mut query, false, true, true, Tokens::get().control_height + Tokens::get().space_12, 4096);
+        CommandSearch::field(
+            ui,
+            &mut query,
+            false,
+            true,
+            true,
+            SearchFieldGeometry {
+                height: Tokens::get().control_height + Tokens::get().space_12,
+                radius: CommandSearch::field_radius(1.0, true),
+                progress: 1.0,
+            },
+            4096,
+        );
+        ui.add_space(Tokens::get().space_6);
         CommandSearch::sheet(ui, ui.available_width(), 1.0, false, |ui| {
             CommandSearch::heading(ui, "search.commands", 1);
             let c = solidcraft_engine::find_command("solid.fillet").unwrap();
@@ -1142,7 +1155,7 @@ fn command_search_board_in_both_themes() {
             assert_eq!(field.height(), 40.0);
             assert_eq!(field.width(), 520.0);
             assert_eq!(popup.width(), 520.0);
-            assert_eq!(popup.top(), field.bottom());
+            assert_eq!(popup.top(), field.bottom() + Tokens::get().space_6);
             assert_eq!(popup.x_range(), field.x_range());
             let footer = scenario::rect_of("ribbon:search_footer").unwrap();
             assert_eq!(footer, egui::Rect::from_min_max(egui::pos2(popup.left(), footer.top()), popup.right_bottom()));
@@ -1337,7 +1350,7 @@ fn command_search_ribbon_transition_clips_content_in_both_themes() {
             }
             if (3..14).contains(&frame) {
                 let sheet = scenario::rect_of("ribbon:search_popup").unwrap();
-                assert_eq!(sheet.top(), field.bottom());
+                assert!(sheet.top() > field.bottom() && sheet.top() <= field.bottom() + Tokens::get().space_6);
                 // Actual result text is painted with the unfolding sheet's clip,
                 // rather than relying on a smaller background hiding overflow.
                 let mut result_texts = 0;

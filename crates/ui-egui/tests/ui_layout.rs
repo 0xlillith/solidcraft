@@ -97,7 +97,22 @@ fn docked_ribbon_geometry_and_search() {
             assert_eq!(search.top(), ribbon.top() + 4.0);
             assert_eq!(search.right(), ribbon.right() - 4.0);
             assert_eq!(search.center().y, ribbon.top() + 15.0);
-            assert_eq!(search.width(), if width == 1600.0 { 188.0 } else { 24.0 });
+            let t = solidcraft_ui_egui::theme::Tokens::get();
+            let (hint_width, key_width) = h.ctx.fonts_mut(|fonts| {
+                (
+                    fonts
+                        .layout_no_wrap(
+                            solidcraft_ui_egui::i18n::tr_label("Search commands").to_owned(),
+                            egui::FontId::proportional(t.font_button),
+                            t.form_dim,
+                        )
+                        .size()
+                        .x,
+                    fonts.layout_no_wrap("S".to_owned(), egui::FontId::monospace(t.font_small), t.form_dim).size().x,
+                )
+            });
+            // Two outer paddings, two item gaps, and total keycap padding.
+            assert_eq!(search.width(), (hint_width + key_width + t.space_16 + t.space_4 * 5.0 + t.space_2).ceil());
             assert!(ribbon.contains_rect(search));
             assert!(search.left() > workspace.right());
             assert!(h.app.viewport.rect.unwrap().top() >= toolbar::APP_BAR_HEIGHT + toolbar::RIBBON_HEIGHT);
@@ -111,7 +126,7 @@ fn docked_ribbon_geometry_and_search() {
             assert_eq!(Some(field), rect_of("shortcut:search"));
             assert_eq!(Some(field), rect_of("palette:search"));
             let popup = rect_of("ribbon:search_popup").unwrap();
-            assert_eq!(popup.top(), field.bottom());
+            assert_eq!(popup.top(), field.bottom() + solidcraft_ui_egui::theme::Tokens::get().space_6);
             assert_eq!(popup.x_range(), field.x_range());
             assert!(popup.top() >= search.bottom());
             assert!(popup.left() <= search.left());

@@ -10,6 +10,36 @@ pub(crate) enum SearchBadge {
     Invalid,
 }
 
+/// Geometry uses the same already-eased progress as the field bounds.
+pub(crate) struct SearchFieldGeometry {
+    pub height: f32,
+    pub radius: f32,
+    pub progress: f32,
+}
+
+struct FieldSpacing {
+    left: f32,
+    right: f32,
+    icon_gap: f32,
+    key_gap: f32,
+    key_padding: f32,
+    editor_margin: f32,
+}
+
+impl FieldSpacing {
+    fn at(progress: f32) -> Self {
+        let t = Tokens::get();
+        Self {
+            left: egui::lerp(t.space_4..=t.space_12, progress),
+            right: egui::lerp(t.space_4..=t.space_10, progress),
+            icon_gap: egui::lerp(t.space_4..=t.space_12, progress),
+            key_gap: egui::lerp(t.space_4..=t.space_10, progress),
+            key_padding: egui::lerp(t.space_4..=t.space_10, progress),
+            editor_margin: egui::lerp(0.0..=t.form_inset, progress),
+        }
+    }
+}
+
 pub(crate) struct CommandSearch;
 
 impl CommandSearch {
@@ -18,8 +48,45 @@ impl CommandSearch {
         t.form_card_width * 2.0 - t.space_8
     }
 
-    pub(crate) fn field(ui: &mut Ui, value: &mut String, invalid: bool, focus: bool, open: bool, height: f32, limit: usize) -> Response {
+    /// Reserve the translated hint at the exact editor font, plus compact controls.
+    /// The small text allowance covers pixel rounding and the editor's caret.
+    pub(crate) fn closed_width(ctx: &egui::Context) -> f32 {
         let t = Tokens::get();
+        let spacing = FieldSpacing::at(0.0);
+        let (hint, key) = ctx.fonts_mut(|fonts| {
+            (
+                fonts.layout_no_wrap(crate::i18n::tr_label("Search commands").to_owned(), FontId::proportional(t.font_button), t.form_dim).size().x,
+                fonts.layout_no_wrap("S".to_owned(), FontId::monospace(t.font_small), t.form_dim).size().x,
+            )
+        });
+        (spacing.left + t.space_16 + spacing.icon_gap + hint + spacing.key_gap + key + spacing.key_padding + spacing.right + t.space_2).ceil()
+    }
+
+    pub(crate) fn field_radius(progress: f32, floating: bool) -> f32 {
+        let t = Tokens::get();
+        // Preserve the original ribbon inset and rounding in both layouts.
+        let closed =
+            if floating { t.radius_lg.saturating_sub(t.space_4 as u8).max(t.radius_sm / 2) } else { t.radius_md.saturating_sub(t.space_2 as u8 / 2) };
+        egui::lerp(f32::from(closed)..=f32::from(t.radius_xl), progress)
+    }
+
+    fn inner_radius() -> u8 {
+        let t = Tokens::get();
+        t.radius_xl.saturating_sub(t.space_6 as u8)
+    }
+
+    pub(crate) fn field(
+        ui: &mut Ui,
+        value: &mut String,
+        invalid: bool,
+        focus: bool,
+        open: bool,
+        geometry: SearchFieldGeometry,
+        limit: usize,
+    ) -> Response {
+        let t = Tokens::get();
+        let SearchFieldGeometry { height, radius, progress } = geometry;
+        let spacing = FieldSpacing::at(progress);
         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
         let focused = open && (focus || ui.memory(|m| m.has_focus(egui::Id::new("sc_sbox_text"))));
         let ink = if invalid {
@@ -30,22 +97,21 @@ impl CommandSearch {
             t.control_border
         };
         if focused {
-            ui.painter().rect_filled(r.expand(t.space_3), t.radius_xl, if invalid { t.form_error_fill } else { t.accent_soft });
+            ui.painter().rect_filled(r.expand(t.space_3), radius + t.space_3, if invalid { t.form_error_fill } else { t.accent_soft });
         }
-        ui.painter().rect(r, t.radius_xl, t.control_fill, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+        ui.painter().rect(r, radius, t.control_fill, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
         icons::paint_icon(
             ui.painter(),
-            Rect::from_center_size(r.left_center() + vec2((t.space_12 + t.space_8).min(r.width() / 2.0), 0.0), vec2(t.space_16, t.space_16)),
+            Rect::from_center_size(r.left_center() + vec2((spacing.left + t.space_16 / 2.0).min(r.width() / 2.0), 0.0), vec2(t.space_16, t.space_16)),
             "zoom",
             1.0,
         );
         let cap = if open { "Esc" } else { "S" };
-        if r.width() > t.space_24 {
-            Self::key(ui, r.right_center() - vec2(t.space_10, 0.0), cap);
-        }
+        let key_width = Self::key_with_padding(ui, r.right_center() - vec2(spacing.right, 0.0), cap, spacing.key_padding);
+        let editor_left = (r.left() + spacing.left + t.space_16 + spacing.icon_gap).min(r.right());
         let editor = Rect::from_min_max(
-            pos2((r.left() + t.space_24 + t.space_16).min(r.right()), r.top()),
-            pos2((r.right() - t.space_24 * 2.0).max((r.left() + t.space_24 + t.space_16).min(r.right())), r.bottom()),
+            pos2(editor_left, r.top()),
+            pos2((r.right() - spacing.right - key_width - spacing.key_gap).max(editor_left), r.bottom()),
         );
         let mono = value.contains('{');
         let response = ui
@@ -55,6 +121,7 @@ impl CommandSearch {
                     editor.size(),
                     super::fields::text_input(egui::TextEdit::singleline(value))
                         .min_size(vec2(0.0, height))
+                        .margin(vec2(spacing.editor_margin, 0.0))
                         .id(egui::Id::new("sc_sbox_text"))
                         .char_limit(limit)
                         .interactive(open)
@@ -77,12 +144,16 @@ impl CommandSearch {
     }
 
     fn key(ui: &Ui, right: egui::Pos2, label: &str) -> f32 {
+        Self::key_with_padding(ui, right, label, Tokens::get().space_10)
+    }
+
+    fn key_with_padding(ui: &Ui, right: egui::Pos2, label: &str, padding: f32) -> f32 {
         let t = Tokens::get();
         let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::monospace(t.font_small), t.form_dim);
-        let size = galley.size() + vec2(t.space_10, t.space_4);
+        let size = galley.size() + vec2(padding, t.space_4);
         let r = Rect::from_min_size(pos2(right.x - size.x, right.y - size.y / 2.0), size);
-        ui.painter().rect(r, t.radius_sm, t.dialog_footer, Stroke::new(1.0, t.dialog_rule), egui::StrokeKind::Inside);
-        ui.painter().galley(r.min + vec2(t.space_10 / 2.0, t.space_2), galley, t.form_dim);
+        ui.painter().rect(r, Self::inner_radius(), t.dialog_footer, Stroke::new(1.0, t.dialog_rule), egui::StrokeKind::Inside);
+        ui.painter().galley(r.min + vec2(padding / 2.0, t.space_2), galley, t.form_dim);
         size.x
     }
 
@@ -167,13 +238,13 @@ impl super::MenuItem<'_> {
         let hot = self.enabled && (self.highlighted || response.hovered());
         let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(r));
         if hot {
-            painter.rect_filled(r, t.control_radius, t.accent_soft);
+            painter.rect_filled(r, CommandSearch::inner_radius(), t.accent_soft);
         }
         let tile = Rect::from_center_size(
             pos2(r.left() + t.space_8 + (t.space_24 + t.space_2) / 2.0, r.center().y),
             vec2(t.space_24 + t.space_2, t.space_24 + t.space_2),
         );
-        painter.rect_filled(tile, t.control_radius, if hot { t.accent_soft } else { t.dialog_footer });
+        painter.rect_filled(tile, CommandSearch::inner_radius(), if hot { t.accent_soft } else { t.dialog_footer });
         icons::paint_icon(&painter, tile.shrink(t.space_6), self.icon, if self.enabled { 1.0 } else { 0.4 });
         let right = r.right() - t.space_8;
         let key_width = if self.shortcut.is_empty() {
@@ -189,7 +260,7 @@ impl super::MenuItem<'_> {
             let rect = Rect::from_min_size(pos2(right - size.x, r.center().y - size.y / 2.0), size);
             painter.rect_filled(
                 rect,
-                t.radius_xl,
+                CommandSearch::inner_radius(),
                 match badge {
                     SearchBadge::Invalid => t.form_error_fill,
                     SearchBadge::Valid => t.form_success_fill,
@@ -255,5 +326,51 @@ impl super::MenuItem<'_> {
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, self.enabled, label));
         crate::scenario::publish_target(&format!("menu:{}", self.id), r);
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_corners_interpolate_and_nested_arcs_are_concentric() {
+        let t = Tokens::get();
+        for floating in [true, false] {
+            let closed = if floating { 4.0 } else { 5.0 };
+            for progress in [0.0, 0.5, 1.0] {
+                let radius = CommandSearch::field_radius(progress, floating);
+                assert_eq!(radius, egui::lerp(closed..=10.0, progress));
+                let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(188.0, 40.0));
+                let ring = rect.expand(t.space_3);
+                let ring_radius = radius + t.space_3;
+                assert_eq!(ring_radius, radius + 3.0);
+                assert_eq!(rect.min + vec2(radius, radius), ring.min + vec2(ring_radius, ring_radius));
+                // Inspect the real paint shapes so a stale fill/ring radius cannot
+                // pass by merely keeping the geometry calculation correct.
+                let ctx = crate::fonts::test_context();
+                let mut query = String::new();
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    CommandSearch::field(ui, &mut query, false, true, true, SearchFieldGeometry { height: 40.0, radius, progress }, 4096);
+                });
+                output.textures_delta.clear();
+                let shapes: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|s| match &s.shape {
+                        egui::Shape::Rect(r) => Some(r),
+                        _ => None,
+                    })
+                    .collect();
+                let fill = shapes.iter().find(|r| r.fill == t.control_fill).expect("field fill");
+                let ring = shapes.iter().find(|r| r.fill == t.accent_soft).expect("focus ring");
+                assert_eq!(fill.corner_radius, egui::CornerRadius::same(radius.round() as u8));
+                assert_eq!(ring.corner_radius, egui::CornerRadius::same((radius + t.space_3).round() as u8));
+                assert_eq!(ring.rect, fill.rect.expand(t.space_3));
+            }
+        }
+        assert_eq!(t.radius_xl, 10);
+        assert_eq!(CommandSearch::inner_radius(), 4);
+        assert_eq!(f32::from(CommandSearch::inner_radius()), f32::from(t.radius_xl) - t.space_6);
     }
 }

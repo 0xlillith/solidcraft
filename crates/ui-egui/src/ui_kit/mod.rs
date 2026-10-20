@@ -34,7 +34,7 @@ pub(crate) use panel::{ComputeStatus, FeatureOptions, Panel, Part, Window, Windo
 pub(crate) use panel::{collapsible_header, header};
 pub(crate) use radial::{RADIAL_RADIUS, radial_menu};
 pub(crate) use reports::*;
-pub(crate) use search::{CommandSearch, SearchBadge};
+pub(crate) use search::{CommandSearch, SearchBadge, SearchFieldGeometry};
 pub(crate) use status::*;
 pub(crate) use table::*;
 

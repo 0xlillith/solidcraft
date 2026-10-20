@@ -784,16 +784,13 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
     let tabs_width: f32 = widths.iter().sum::<f32>()
         + tabs.len().saturating_sub(1) as f32 * 2.0
         + tabs.iter().filter(|tab| matches!(**tab, "SKETCH" | "SHEET METAL")).count() as f32 * 6.0;
-    let search_width = if row.width() >= tabs_width + 188.0 + 16.0 { 188.0 } else { 24.0 };
+    let search_width = crate::ui_kit::CommandSearch::closed_width(ui.ctx());
     // The first tab and the search field sit the same distance from the card's top, left and right
     // edges, so their outer corners are concentric with the card's corners.
     let floating = app.ui.layout == crate::shell::LayoutMode::Floating;
     let inset = RIBBON_TAB_INSET;
     let corner = if floating { t.radius_lg.saturating_sub(inset as u8).max(2) } else { 5 };
-    let search = Rect::from_min_size(
-        pos2((row.right() - search_width - inset).max(row.left()), row.top() + inset),
-        vec2(search_width, TAB_ROW_HEIGHT - 2.0 * inset),
-    );
+    let search = Rect::from_min_size(pos2(row.right() - search_width - inset, row.top() + inset), vec2(search_width, TAB_ROW_HEIGHT - 2.0 * inset));
     // The single editor is drawn on the foreground layer by shortcut_box::show, so it
     // can grow over the ribbon without being clipped to the tab row.
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_ribbon_search"), search));
