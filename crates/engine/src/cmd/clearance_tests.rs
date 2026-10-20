@@ -345,6 +345,64 @@ fn a_body_that_changed_shape_is_measured_again() {
     assert!((f(&r["near"][0]["distance_mm"]) - 0.5).abs() < 1e-6, "{r}");
 }
 
+/// A flanged bushing and a headed pin seated in it line to line, on its very axis, the head on
+/// the flange. Plain, they touch and share nothing; sunk 0.2 into the flange, the head shares the
+/// ring under it. With a fillet under the head against the bore's sharp edge, the fillet's ring
+/// is in the flange (about 0.49 mm³), next to walls that lie on one another: the boolean tried
+/// for minutes there and gave up; now it is reported as such within seconds.
+#[test]
+fn a_pin_seated_line_to_line_in_its_bushing_is_measured() {
+    let ring = std::f64::consts::PI * (7.0f64.powi(2) - 4.0f64.powi(2)) * 0.2;
+    for (sunk, fillet) in [(0.0, false), (0.2, false), (0.0, true)] {
+        let mut s = Session::default();
+        run(&mut s, "solid.cylinder", json!({"radius": 5, "height": 12, "base": [100, 0, 0], "operation": "new", "body_name": "Bush"}));
+        run(&mut s, "solid.cylinder", json!({"radius": 7.5, "height": 1, "base": [100, 0, 12], "operation": "join", "targets": ["Bush"]}));
+        run(&mut s, "solid.cylinder", json!({"radius": 4, "height": 20, "base": [100, 0, -3], "operation": "cut", "targets": ["Bush"]}));
+        let z = 13.0 - sunk;
+        run(&mut s, "solid.cylinder", json!({"radius": 4, "height": z + 2.0, "base": [100, 0, -2], "operation": "new", "body_name": "Pin"}));
+        run(&mut s, "solid.cylinder", json!({"radius": 7, "height": 1.5, "base": [100, 0, z], "operation": "join", "targets": ["Pin"]}));
+        if fillet {
+            run(&mut s, "solid.fillet", json!({"edges": [[104, 0, z]], "radius": 0.3, "body": "Pin"}));
+            run(&mut s, "solid.fillet", json!({"edges": [[107, 0, z + 1.5]], "radius": 0.5, "body": "Pin"}));
+        }
+        let started = std::time::Instant::now();
+        let r = run(&mut s, "inspect.clearance", json!({"bodies": ["Pin"], "against": ["Bush"], "min_volume": 0.01, "clearance": 1e-6}));
+        assert!(started.elapsed().as_secs_f64() < 30.0, "sunk {sunk}: {:?}", started.elapsed());
+        if fillet {
+            assert!(r["unchecked"][0]["reason"].as_str().is_some_and(|w| w.contains("pin on one cylinder")), "{r}");
+            continue;
+        }
+        assert_eq!(r["unchecked"], json!([]), "sunk {sunk}: {r}");
+        if sunk == 0.0 {
+            assert_eq!(r["overlaps"].as_array().map(Vec::len), Some(0), "{r}");
+            assert_eq!(f(&r["near"][0]["distance_mm"]), 0.0, "{r}");
+        } else {
+            let v = f(&r["overlaps"][0]["volume_mm3"]);
+            assert!((v - ring).abs() <= 1e-3 * ring, "{v} {ring}: {r}");
+        }
+    }
+}
+
+/// A chamfered pin through a hole of its own radius, its axis a hair off the hole's: the boolean
+/// cannot intersect walls all but tangent along two lines and once passed the pair as clear.
+/// The crescent the pin shares with the plate is reported, against the lens of two circles.
+#[test]
+fn a_pin_a_hair_off_its_hole_shares_its_crescent() {
+    let crescent = |r: f64, e: f64| std::f64::consts::PI * r * r - (2.0 * r * r * (e / (2.0 * r)).acos() - e / 2.0 * (4.0 * r * r - e * e).sqrt());
+    for offset in [5.9e-4, 1e-2] {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 5, "corner": [-10, -10, 0], "body_name": "Plate"}));
+        run(&mut s, "solid.cylinder", json!({"radius": 3, "height": 9, "base": [0, 0, -2], "operation": "cut", "targets": ["Plate"]}));
+        run(&mut s, "solid.cylinder", json!({"radius": 3, "height": 9, "base": [offset, 0, -2], "operation": "new", "body_name": "Pin"}));
+        run(&mut s, "solid.chamfer", json!({"edges": [[offset + 3.0, 0, 7]], "distance": 0.5, "body": "Pin"}));
+        let r = run(&mut s, "inspect.clearance", json!({"min_volume": 1e-9}));
+        assert_eq!(r["unchecked"], json!([]), "{offset}: {r}");
+        let want = 5.0 * crescent(3.0, offset);
+        let got = f(&r["overlaps"][0]["volume_mm3"]);
+        assert!((got - want).abs() < 1e-6 * want, "{offset}: {got} against {want}: {r}");
+    }
+}
+
 /// The shared volume is checked against the bodies and their union: two 10 mm cubes sharing a
 /// 3 mm corner cube agree at 27 mm³, and a shared part read as three times that (as a mirrored
 /// pair once was) does not.
