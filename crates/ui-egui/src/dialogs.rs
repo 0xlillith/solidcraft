@@ -2252,67 +2252,92 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let window = panel.window();
     let repeatable =
         matches!(&d.kind, Kind::SketchModify(k) if crate::sketch_modify_ui::repeatable(k)) && d.editing.is_none() && !d.extra.contains_key("pattern");
-    let response = window.frame(frame).open(&mut keep).show(ctx, |ui| {
-        let spec = dense::command(&d.kind).and_then(solidcraft_engine::find_command);
-        let icon = spec.as_ref().map_or("", |s| s.icon);
-        let label = spec.as_ref().map_or(heading.as_str(), |s| tr(s.label));
-        let label = if d.editing.is_some() { heading.as_str() } else { label };
-        let heading =
-            crate::ui_kit::FeatureOptions { icon, title: label, drag_key: title(&d.kind), moved, docked, apply_label: repeatable.then_some("Apply") };
-        let applying = app.applying.is_some();
-        let mut collapsed = d.collapsed;
-        let manager = matches!(
-            d.kind,
-            Kind::Material { .. }
-                | Kind::Appearance(_)
-                | Kind::Motion(crate::dialogs_motion::Mo::Configurations { .. })
-                | Kind::Sheet(crate::dialogs_sheet::Sm::Rules { .. })
-                | Kind::Plastic(crate::dialogs_plastic::Pl::Rules { .. })
-        );
-        // A study/configuration owns Enter for its cells, including when folded.
-        let cell_enter = matches!(&d.kind, Kind::Motion(k) if k.wide());
-        if cell_enter && collapsed {
-            ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        }
-        let body = |ui: &mut egui::Ui| {
-            enter |= dense::rows(app, ctx, &mut d, ui);
-            if cell_enter {
-                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            }
-            let text = app.applying.as_ref().map(|job| {
-                let seconds = ((crate::now_ms() - job.started) / 1000.0).floor().max(0.0);
-                crate::i18n::format("dialog.computing", &[("seconds", &format!("{seconds:.0}"))])
+    if let Kind::ConfirmDelete { with, fail, .. } = &d.kind {
+        let detail = with.join(" · ");
+        let (closed, action) = crate::ui_kit::Confirm::new(egui::Id::new(("sc_dialog", title(&d.kind))), "delete", &heading)
+            .tone(crate::ui_kit::Tone::Danger)
+            .actions("Delete", "Cancel", None)
+            .detail(&detail)
+            .show(ctx, true, |ui| {
+                if !with.is_empty() {
+                    crate::ui_kit::text(ui, tr("Also deletes"), crate::ui_kit::Text::Report("also_deletes", false));
+                }
+                if !fail.is_empty() {
+                    crate::ui_kit::text(ui, &format!("{}: {}", tr("Will fail"), fail.join(", ")), crate::ui_kit::Text::Report("will_fail", true));
+                }
             });
-            crate::ui_kit::ComputeStatus { text, busy: app.applying.is_some() || app.preview.busy, applying: app.applying.is_some() }
-        };
-        let (closed, action) = if manager {
-            panel.feature_collapsible(ui, heading, applying, valid, &mut collapsed, body)
-        } else {
-            panel.feature(ui, heading, applying, valid, body)
-        };
-        d.reset_scroll = false;
-        d.collapsed = collapsed;
-        cancel |= closed;
-        if app.issue_report.draft.is_none() {
-            match action {
-                crate::ui_kit::Action::Ok => {
-                    ok = true;
-                    apply_again = false;
-                }
-                crate::ui_kit::Action::Cancel => {
-                    if !app.esc_handled || !ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        cancel = true;
-                    }
-                }
-                crate::ui_kit::Action::Apply => {
-                    ok = true;
-                    apply_again = true;
-                }
-                crate::ui_kit::Action::None => {}
+        ok = action == crate::ui_kit::Action::Ok;
+        cancel = closed || action == crate::ui_kit::Action::Cancel;
+        app.viewport.dialog_rect = crate::scenario::rect_of("dialog:window");
+    } else {
+        let response = window.frame(frame).open(&mut keep).show(ctx, |ui| {
+            let spec = dense::command(&d.kind).and_then(solidcraft_engine::find_command);
+            let icon = spec.as_ref().map_or("", |s| s.icon);
+            let label = spec.as_ref().map_or(heading.as_str(), |s| tr(s.label));
+            let label = if d.editing.is_some() { heading.as_str() } else { label };
+            let heading = crate::ui_kit::FeatureOptions {
+                icon,
+                title: label,
+                drag_key: title(&d.kind),
+                moved,
+                docked,
+                apply_label: repeatable.then_some("Apply"),
+            };
+            let applying = app.applying.is_some();
+            let mut collapsed = d.collapsed;
+            let manager = matches!(
+                d.kind,
+                Kind::Material { .. }
+                    | Kind::Appearance(_)
+                    | Kind::Motion(crate::dialogs_motion::Mo::Configurations { .. })
+                    | Kind::Sheet(crate::dialogs_sheet::Sm::Rules { .. })
+                    | Kind::Plastic(crate::dialogs_plastic::Pl::Rules { .. })
+            );
+            // A study/configuration owns Enter for its cells, including when folded.
+            let cell_enter = matches!(&d.kind, Kind::Motion(k) if k.wide());
+            if cell_enter && collapsed {
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             }
-        }
-    });
-    app.viewport.dialog_rect = response.map(|r| r.response.rect);
+            let body = |ui: &mut egui::Ui| {
+                enter |= dense::rows(app, ctx, &mut d, ui);
+                if cell_enter {
+                    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                }
+                let text = app.applying.as_ref().map(|job| {
+                    let seconds = ((crate::now_ms() - job.started) / 1000.0).floor().max(0.0);
+                    crate::i18n::format("dialog.computing", &[("seconds", &format!("{seconds:.0}"))])
+                });
+                crate::ui_kit::ComputeStatus { text, busy: app.applying.is_some() || app.preview.busy, applying: app.applying.is_some() }
+            };
+            let (closed, action) = if manager {
+                panel.feature_collapsible(ui, heading, applying, valid, &mut collapsed, body)
+            } else {
+                panel.feature(ui, heading, applying, valid, body)
+            };
+            d.reset_scroll = false;
+            d.collapsed = collapsed;
+            cancel |= closed;
+            if app.issue_report.draft.is_none() {
+                match action {
+                    crate::ui_kit::Action::Ok => {
+                        ok = true;
+                        apply_again = false;
+                    }
+                    crate::ui_kit::Action::Cancel => {
+                        if !app.esc_handled || !ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            cancel = true;
+                        }
+                    }
+                    crate::ui_kit::Action::Apply => {
+                        ok = true;
+                        apply_again = true;
+                    }
+                    crate::ui_kit::Action::None => {}
+                }
+            }
+        });
+        app.viewport.dialog_rect = response.map(|r| r.response.rect);
+    }
     if let Some(r) = app.viewport.dialog_rect {
         crate::scenario::publish_rect("dialog:outer", r);
         crate::scenario::publish_target("dialog:card", r);

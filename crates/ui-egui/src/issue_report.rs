@@ -517,7 +517,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let chrome = ui_kit::header_height() + t.form_footer_height + 6.0 * t.space_8;
     let scroll = (screen.height() - 2.0 * t.space_16 - chrome).clamp(60.0, 640.0);
     let mut link = None;
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_issue_report"), "bug_report", crate::i18n::tr_label("Create Issue — review draft"))
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_issue_report"), "bug_report", crate::i18n::tr_label("Create Issue — review draft"))
         .cards(cards)
         .fields()
         .keep_open_on_escape()

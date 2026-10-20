@@ -5,7 +5,7 @@
 //! Document Settings, the root component's menu and `ui.start` of `document.metadata` or
 //! `document.metadata.set` open it. [`show_object`] draws the Properties card (mass, volume, area,
 //! centre of mass, bounding box, counts) of the body or component a menu asked about; both are
-//! `ui_kit::Prompt` cards.
+//! `ui_kit::Window` cards.
 
 use serde_json::{Map, Value};
 use solidcraft_engine::doc::metadata::{DESCRIPTION, WELL_KNOWN};
@@ -90,7 +90,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.design_properties.take() else { return };
     let metadata = app.session.doc.metadata.clone();
     let title = crate::i18n::tr_label("Design Properties");
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_design_properties"), "settings", title).fields().show(ctx, true, |ui| {
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_design_properties"), "settings", title).fields().show(ctx, true, |ui| {
         for (i, key) in WELL_KNOWN.iter().enumerate() {
             let label = label(key);
             let Some(field) = d.fields.get_mut(i) else { continue };
@@ -158,7 +158,7 @@ pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
     }
     rows.push(("Faces / edges / vertices", format!("{} / {} / {}", total["faces"], total["edges"], total["vertices"])));
     let heading = crate::i18n::format("properties.title", &[("name", &title)]);
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_props"), "settings", &heading).actions("", "Close", None).show(ctx, true, |ui| {
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_props"), "settings", &heading).actions("", "Close", None).show(ctx, true, |ui| {
         for (label, value) in &rows {
             ui_kit::row(ui, crate::i18n::tr_label(label), |ui| ui_kit::text(ui, value, ui_kit::Text::Cell));
         }

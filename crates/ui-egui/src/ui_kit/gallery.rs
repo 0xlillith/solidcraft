@@ -28,6 +28,56 @@ macro_rules! element {
 
 // One entry per element/variant: names, rendering and geometry expectations stay together.
 const ELEMENTS: &[Element] = &[
+    element!("window", "dialog:footer", Some("dialog:ok"), |ui, _| {
+        Window::new(ui.id().with("window"), "settings", "Preferences").content(
+            ui,
+            true,
+            |ui| {
+                text(ui, "General", Text::Report("window", false));
+            },
+            |ui| {
+                button(ui, "Restore defaults", Button::Normal);
+            },
+        );
+    }),
+    element!("window_pages", "dialog:pages", Some("gallery:page"), |ui, s| {
+        panel::page_list(
+            ui,
+            &mut s.selected,
+            &[WindowPage {
+                icon: "settings",
+                label: "ui.general",
+                handle: "gallery:page",
+                scroll: true,
+                draw: |ui, _: &mut ()| {
+                    text(ui, "General", Text::Inline);
+                },
+            }],
+            &mut (),
+        );
+    }),
+    element!("confirm_warning", "dialog:footer", Some("dialog:apply"), |ui, _| {
+        Confirm::new(ui.id().with("confirm"), "status_warning", "Save changes?")
+            .tone(Tone::Warning)
+            .actions("Save", "Cancel", Some("Don't Save"))
+            .content(ui, true, |ui| {
+                text(ui, "Your changes will be lost.", Text::Report("message", false));
+            });
+    }),
+    element!("confirm_danger", "dialog:footer", Some("dialog:ok"), |ui, _| {
+        Confirm::new(ui.id().with("confirm"), "delete", "Delete")
+            .tone(Tone::Danger)
+            .detail("Fillet2 · Chamfer1")
+            .actions("Delete", "Cancel", None)
+            .content(ui, true, |ui| {
+                text(ui, "These features will be deleted:", Text::Report("message", false));
+            });
+    }),
+    element!("confirm_info", "dialog:footer", Some("dialog:ok"), |ui, _| {
+        Confirm::new(ui.id().with("confirm"), "help", "Replace file?").actions("Replace", "Cancel", None).content(ui, true, |ui| {
+            text(ui, "A file with this name already exists.", Text::Report("message", false));
+        });
+    }),
     element!("mono_note", |ui, _| {
         text(ui, "solid.fillet · replayable", Text::MonoNote("sample"));
     }),

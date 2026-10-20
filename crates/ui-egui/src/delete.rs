@@ -2,7 +2,6 @@
 //! the viewport or the browser goes in one undoable step through `selection.delete`. When it
 //! takes other features with it or makes some fail, a confirmation lists them first.
 
-use egui::vec2;
 use serde_json::{Value, json};
 
 use crate::SolveApp;
@@ -121,8 +120,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     };
     let (deleted, fails) = (list("deleted"), list("would_fail"));
     let shared = shared_occurrences(app, &p.params);
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_delete_confirm"), "delete", crate::i18n::tr_label("Delete"))
-        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, -60.0))
+    let (closed, action) = ui_kit::Confirm::new(egui::Id::new("sc_delete_confirm"), "delete", crate::i18n::tr_label("Delete"))
+        .tone(ui_kit::Tone::Danger)
         .actions("Delete", "Cancel", None)
         .show(ctx, true, |ui| {
             if shared {

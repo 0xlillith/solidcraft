@@ -48,7 +48,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     if app.stand_up.is_none() {
         return;
     }
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_stand_up"), "move", crate::i18n::tr_label("Stand this part up?"))
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_stand_up"), "move", crate::i18n::tr_label("Stand this part up?"))
         .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 140.0))
         .actions("Stand it up", "Leave it", Some("Don't ask again"))
         .show(ctx, true, |ui| {

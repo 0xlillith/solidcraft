@@ -67,7 +67,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let mut report: Option<String> = None;
     let mut delete: Option<Option<String>> = None;
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_crash_reports"), "bug_report", crate::i18n::tr_label("Crash Reports"))
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_crash_reports"), "bug_report", crate::i18n::tr_label("Crash Reports"))
         .cards(2.0)
         .actions("", crate::i18n::tr("ui.close"), None)
         .show(ctx, true, |ui| {

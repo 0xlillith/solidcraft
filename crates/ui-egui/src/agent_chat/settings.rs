@@ -291,7 +291,7 @@ pub fn dialog(app: &mut SolveApp, ctx: &egui::Context) {
     let mut open = true;
     let mut add = false;
     let mut test = false;
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_ai_add"), "settings", tr("ui.ai_add_agent_title"))
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_ai_add"), "settings", tr("ui.ai_add_agent_title"))
         .cards(2.0)
         .fields()
         .actions(tr("ui.ai_add"), "Cancel", None)

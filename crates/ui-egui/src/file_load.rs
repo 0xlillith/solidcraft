@@ -931,7 +931,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         Kind::Recover { .. } => "restore",
         Kind::ExportDxf => "export",
     };
-    let (closed, action) = ui_kit::Prompt::new(card_id, icon, title)
+    let (closed, action) = ui_kit::Window::new(card_id, icon, title)
         .cards(((cover.width() - 16.0) / crate::theme::Tokens::get().form_card_width).clamp(0.5, 1.3))
         .placed(egui::Align2::CENTER_TOP, top)
         .actions("", crate::i18n::tr("ui.cancel"), None)

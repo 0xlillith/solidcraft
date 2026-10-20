@@ -50,7 +50,7 @@ pub(crate) struct TabAccent {
 }
 
 /// WCAG contrast of two opaque sRGB colours.
-fn contrast_ratio(a: Color32, b: Color32) -> f64 {
+pub(crate) fn contrast_ratio(a: Color32, b: Color32) -> f64 {
     let luminance = |c: Color32| {
         let linear = |v: u8| {
             let v = f64::from(v) / 255.0;

@@ -786,3 +786,101 @@ fn disclosure_guard_distinguishes_overflow_and_playback_from_conditional_folds()
     assert_eq!(disclosure_guard(r#"fn show(ui: &mut Ui) { ui.label(if collapsed { "«" } else { "»" }); }"#).found.len(), 1);
     assert_eq!(disclosure_guard("fn show(ui: &mut Ui) { egui::collapsing_header::paint_default_icon(ui, open, response); }").found.len(), 1);
 }
+
+/// System windows and confirms may compose content, but never define another card frame.
+fn window_frame_violations(source: &str) -> Vec<String> {
+    #[derive(Default)]
+    struct Frames {
+        found: Vec<String>,
+        aliases: Vec<String>,
+    }
+    impl<'ast> Visit<'ast> for Frames {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            let attrs = match item {
+                syn::Item::Mod(i) => &i.attrs,
+                syn::Item::Fn(i) => &i.attrs,
+                _ => return visit::visit_item(self, item),
+            };
+            if !attrs
+                .iter()
+                .any(|a| a.path().is_ident("test") || (a.path().is_ident("cfg") && a.parse_args::<syn::Path>().is_ok_and(|p| p.is_ident("test"))))
+            {
+                visit::visit_item(self, item);
+            }
+        }
+        fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
+            if let syn::UseTree::Rename(rename) = tree
+                && matches!(rename.ident.to_string().as_str(), "Frame" | "Window" | "Modal")
+            {
+                self.aliases.push(rename.rename.to_string());
+            }
+            visit::visit_use_tree(self, tree);
+        }
+        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+            let names: Vec<_> = expr.path.segments.iter().map(|s| s.ident.to_string()).collect();
+            if !names.iter().any(|s| s == "ui_kit")
+                && names.iter().any(|s| matches!(s.as_str(), "Frame" | "Window" | "Modal" | "shell_card" | "dock_frame") || self.aliases.contains(s))
+            {
+                self.found.push(names.join("::"));
+            }
+            visit::visit_expr_path(self, expr);
+        }
+    }
+    let ast = syn::parse_file(source).unwrap();
+    let mut frames = Frames::default();
+    // Collect aliases first, including imports below a caller.
+    for item in &ast.items {
+        if let syn::Item::Use(u) = item {
+            frames.visit_use_tree(&u.tree);
+        }
+    }
+    frames.visit_file(&ast);
+    frames.found
+}
+
+#[test]
+fn system_windows_and_prompts_only_use_kit_frames_without_allowances() {
+    fn scan(dir: &Path, failures: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_none_or(|n| n != "ui_kit") {
+                    scan(&path, failures);
+                }
+            } else if path.extension().is_some_and(|n| n == "rs") {
+                let source = std::fs::read_to_string(&path).unwrap();
+                if source.contains("ui_kit::Window::") || source.contains("ui_kit::Confirm::") {
+                    let found = window_frame_violations(&source);
+                    if !found.is_empty() {
+                        failures.push(format!("{}: {found:?}", path.display()));
+                    }
+                }
+                if path.file_name().is_none_or(|n| n != "ui_kit_guard_tests.rs") {
+                    assert!(!source.contains("ui_kit::Prompt"), "{}: use Window or Confirm", path.display());
+                }
+            }
+        }
+    }
+    let mut failures = Vec::new();
+    scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut failures);
+    assert!(failures.is_empty(), "No caller-defined window frames:\n{}", failures.join("\n"));
+    assert!(ALLOWED.is_empty());
+}
+
+#[test]
+fn window_guard_rejects_frames_aliases_and_native_windows_but_accepts_kit_composition() {
+    let found = window_frame_violations(
+        r#"
+        use egui::{Frame as Card, Window as Popup, Modal as Alert};
+        fn raw(ui: &mut Ui) {
+            Card::NONE.show(ui, |_| {});
+            egui::Frame::group(ui.style());
+            Popup::new("Title"); Alert::new(id);
+            crate::frame::shell_card(fill); crate::frame::dock_frame(ctx, side);
+        }
+        fn kit() { crate::ui_kit::Window::new(id, icon, title); crate::ui_kit::Confirm::new(id, icon, title); }
+        #[cfg(test)] mod tests { fn ignored() { egui::Frame::NONE; } }
+    "#,
+    );
+    assert_eq!(found.len(), 6, "{found:?}");
+}

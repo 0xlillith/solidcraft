@@ -21,10 +21,21 @@ preferences, manager cards, prompts and the sketch palette. Import through
   pinned actions, compute status and keyboard routing. `wide()` uses three card
   widths. `feature_frame` and `palette_frame` retain docked/floating surfaces.
   `FeatureOptions::apply_label` adds Apply; `Panel::actions` supplies custom labels.
-- `Prompt` owns floating confirmation/property cards. Use `actions(ok, cancel,
-  apply)`, `anchor`/`placed`, `cards`, `selected`, `fields` and
-  `keep_open_on_escape` for existing prompt behavior. Empty `ok` omits the primary
-  action. It returns `(close_pressed, Action)`.
+- `Window` composes the shared Panel frame with a 40 pt icon/title/close header,
+  padded content and optional 48 pt footer. `show_with_left` pins a left action beside
+  the right-aligned buttons. `show_pages` accepts declarative `WindowPage` entries
+  (existing icon, i18n label key, stable handle, scroll policy and draw callback).
+  Its 188 pt soft page list has 32 pt icon/label rows, selected tint/ink and a divider.
+  All nine existing Preferences pages retain their order, settings and handles.
+  `actions`, `anchor`/`placed`, `cards`, `fields` and `keep_open_on_escape` retain
+  existing window behavior. Empty action labels omit the footer.
+- `Confirm` is an input-blocking modal using the same card frame and footer controls.
+  It shows a 36 pt icon disc in warning, danger or info tone, a title, caller-supplied
+  message and optional monospace `detail`, above a 52 pt footer. `actions(primary, cancel, left_ghost)`
+  places the optional third action at the left. Danger uses `form_error` with a
+  contrast-selected on-colour; other primaries use blue. Enter invokes the selected
+  answer (primary by default) when valid; Esc cancels. It retains close, answer and
+  message scenario handles. The old `Prompt` element is removed.
 - Callers supply data and enabled state, then dispatch existing commands. Editors
   leave their established completion, Enter, Tab and commit ownership unchanged.
 - Every text input uses the kit's shared `text_input` policy: symmetric horizontal
@@ -40,10 +51,12 @@ preferences, manager cards, prompts and the sketch palette. Import through
 
 Module names below describe implementation locations, not caller import paths.
 Every inline element/variant has one entry in the light/dark `gallery::ELEMENTS`
-table. Panel/Prompt compositions also have dedicated geometry and interaction tests.
+table. Panel/Window/Confirm compositions also have dedicated geometry and interaction tests.
 
 | Module / element | Use and options | Main tokens |
 | --- | --- | --- |
+| panel: `Window`, `WindowPage` | Shared card frame, header, optional page list, bounded content and footer with a left action | `form_header/footer_height`, `form_card_width`, `form_label_width`, `control_height`, `dialog_footer/rule`, `selected_bg/ink`, spacing |
+| confirm: `Confirm`, `Tone` | Modal warning/danger/info, title/message, mono detail and ghost/cancel/primary actions | `warning`, `form_error/fill`, `accent_soft`, `form_primary`, `on_accent`, `tab_on_fill_dark`, `font_subtitle`, spacing |
 | metrics: `row_height`, `table_row_height`, `header_height` | Shared control/header heights | `control_height`, `space_8`, `form_header_height` |
 | layout: `scope`, `row` | Form styling and aligned label/control columns | `form_label_width`, `form_gap_y`, `control_*`, `font_label`, `dialog_label`, `space_4/8` |
 | `caption` | Dim caption aligned beneath a control | `font_small`, `text_dim`, label-column tokens |
@@ -133,17 +146,17 @@ that remain outside the kit and why.
 
 ## Popup presentation and draft rows
 
-All kit cards use 28 pt controls, a 40 pt title band (14 pt semibold title,
+Panel and Window use 28 pt controls, a 40 pt title band (14 pt semibold title,
 19 pt command icon and 26 pt close/fold targets), and a 48 pt footer with
 28 pt actions. Table rows are `control_height + space_8` (36 pt), independent
 of control height. Bodies use 12 pt insets. Width limits and scroll boundaries
-remain owned by Panel/Prompt. Titles retain the supplied case.
+remain owned by Panel/Window/Confirm. Titles retain the supplied case.
 
 The `form_ink`, `form_dim`, `form_primary`, `form_error` and `form_error_fill`
 colour keys match the approved light cards. Dark values follow existing text,
 accent and error palette roles; every role is exported by theme files and measured
 by the colour-vision checks. Invalid fields include both error text and a tinted
-surface. Long variable-height lists can use `Prompt::placed` with a top-left pivot to
+surface. Long variable-height lists can use `Window::placed` with a top-left pivot to
 keep their painted controls and scenario targets aligned as they grow.
 Completion lists use the approved 230 pt minimum width (derived from card and
 spacing tokens), show kind labels on the right, selected details beneath

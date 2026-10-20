@@ -64,12 +64,12 @@ fn delete_confirmation_deletes_on_the_primary_action_and_keeps_everything_otherw
 }
 
 #[test]
-fn legacy_delete_dialog_is_a_dense_card_whose_primary_action_is_delete() {
+fn legacy_delete_dialog_is_a_confirm_whose_primary_action_is_delete() {
     let mut h = with_dependent_feature();
     h.app.menu.confirm = None;
     h.app.dialog = Some(crate::dialogs::Dialog::confirm_delete(1, vec!["Extrude1".into()], vec!["Hole1".into()]));
     card_is_drawn(&mut h);
-    assert!(scenario::handle_at("dialog:Delete").is_some() && scenario::rect_of("dialog:row:Also deletes").is_some());
+    assert!(scenario::handle_at("dialog:Delete").is_some() && scenario::rect_of("dialog:note:confirm_detail").is_some());
     press(&mut h, "Cancel");
     assert!(h.app.dialog.is_none());
 }
@@ -128,15 +128,18 @@ fn save_prompt_moves_between_its_actions_with_the_arrow_keys() {
         assert!(scenario::handle_at(&format!("dialog:{label}")).is_some(), "{label}");
     }
     assert_eq!(h.app.docs.choice, Answer::Save);
-    // The buttons read Cancel, Don't Save, Save from the left: Left walks toward Cancel.
+    // The ghost action is at the left: Don't Save, Cancel, Save. Arrows follow that order.
     h.step(&json!({"key": "ArrowLeft"})).unwrap();
     h.frames(2);
-    assert_eq!(h.app.docs.choice, Answer::DontSave);
+    assert_eq!(h.app.docs.choice, Answer::Cancel);
     h.step(&json!({"key": "ArrowRight"})).unwrap();
     h.frames(2);
     assert_eq!(h.app.docs.choice, Answer::Save);
     h.step(&json!({"key": "ArrowLeft"})).unwrap();
     h.step(&json!({"key": "ArrowLeft"})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.docs.choice, Answer::DontSave);
+    h.step(&json!({"key": "ArrowRight"})).unwrap();
     h.frames(2);
     assert_eq!(h.app.docs.choice, Answer::Cancel);
     h.step(&json!({"key": "Enter"})).unwrap();
@@ -227,4 +230,22 @@ fn object_properties_card_only_closes() {
     assert!(scenario::rect_of("dialog:row:Mass").is_some() && scenario::rect_of("dialog:row:Volume").is_some());
     press(&mut h, "Close");
     assert!(h.app.menu.props.is_none());
+}
+
+#[test]
+fn delete_confirm_resumes_after_the_issue_draft_closes() {
+    let mut h = with_dependent_feature();
+    h.frames(3);
+    let features = h.app.session.doc.features.len();
+    h.app.issue_report.draft = Some(crate::issue_report::draft_for(&h.app, None, None));
+    // As in the report window's screenshot/layout tests, let the bounded review settle.
+    h.frames(20);
+    let [x, y] = h.widget("Close draft").unwrap();
+    assert!(scenario::rect_of("dialog:cancel").unwrap().contains(egui::pos2(x as f32, y as f32)));
+    h.step(&json!({"widget":"Close draft"})).unwrap();
+    h.frames(3);
+    assert!(h.app.issue_report.draft.is_none(), "the report can close while the confirmation is suspended");
+    assert!(h.app.menu.confirm.is_some() && h.app.session.doc.features.len() == features);
+    press(&mut h, "Cancel");
+    assert!(h.app.menu.confirm.is_none() && h.app.session.doc.features.len() == features);
 }

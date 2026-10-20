@@ -4,7 +4,7 @@
 //! Closing a design with unsaved changes asks first, and so does quitting: one "save changes?"
 //! per design with unsaved changes ([`request_quit`]).
 
-use egui::{Align2, FontId, Rect, Sense, pos2, vec2};
+use egui::{FontId, Rect, Sense, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_engine::render::Camera;
@@ -549,7 +549,7 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
     let mut answer: Option<Answer> = None;
     // Left and Right move between the buttons as they are laid out (Save is picked first, at the
     // right); Enter gives the picked one.
-    let order = [Answer::Cancel, Answer::DontSave, Answer::Save];
+    let order = [Answer::DontSave, Answer::Cancel, Answer::Save];
     let (left, right, enter) = ctx.input_mut(|x| {
         (
             x.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft),
@@ -571,22 +571,17 @@ pub fn prompt(app: &mut SolveApp, ctx: &egui::Context) {
         answer = Some(choice);
     }
     let title = crate::i18n::format("document.save_changes", &[("name", &name_display)]);
-    let (closed, action) =
-        ui_kit::Prompt::new(egui::Id::new("sc_close_prompt"), solidcraft_engine::find_command("file.save").map_or("", |c| c.icon), &title)
-            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .actions(crate::i18n::tr("ui.save"), crate::i18n::tr("ui.cancel"), Some(crate::i18n::tr("ui.don_t_save")))
-            .selected(match choice {
-                Answer::Save => ui_kit::Action::Ok,
-                Answer::DontSave => ui_kit::Action::Apply,
-                Answer::Cancel => ui_kit::Action::Cancel,
-            })
-            .show(ctx, true, |ui| {
-                ui_kit::text(
-                    ui,
-                    &crate::i18n::format("document.unsaved_changes", &[("name", &name_display)]),
-                    ui_kit::Text::Report("unsaved", false),
-                );
-            });
+    let (closed, action) = ui_kit::Confirm::new(egui::Id::new("sc_close_prompt"), "status_warning", &title)
+        .tone(ui_kit::Tone::Warning)
+        .actions(crate::i18n::tr("ui.save"), crate::i18n::tr("ui.cancel"), Some(crate::i18n::tr("ui.don_t_save")))
+        .selected(match choice {
+            Answer::Save => ui_kit::Action::Ok,
+            Answer::DontSave => ui_kit::Action::Apply,
+            Answer::Cancel => ui_kit::Action::Cancel,
+        })
+        .show(ctx, true, |ui| {
+            ui_kit::text(ui, &crate::i18n::format("document.unsaved_changes", &[("name", &name_display)]), ui_kit::Text::Report("unsaved", false));
+        });
     answer = match action {
         ui_kit::Action::Ok => Some(Answer::Save),
         ui_kit::Action::Apply => Some(Answer::DontSave),

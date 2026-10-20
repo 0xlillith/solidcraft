@@ -792,16 +792,6 @@ fn additional_rows(app: &mut SolveApp, d: &mut Dialog, ui: &mut egui::Ui) -> boo
                 enter |= ui_kit::focused_text_field(ui, name, "");
             });
         }
-        Kind::ConfirmDelete { with, fail, .. } => {
-            if !with.is_empty() {
-                form_row(ui, "Also deletes", |ui| {
-                    ui_kit::text(ui, &with.join(", "), ui_kit::Text::Cell);
-                });
-            }
-            if !fail.is_empty() {
-                ui_kit::text(ui, &format!("{}: {}", tr("Will fail"), fail.join(", ")), ui_kit::Text::Report("will_fail", true));
-            }
-        }
         _ => {}
     }
     enter

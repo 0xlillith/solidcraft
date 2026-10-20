@@ -817,10 +817,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let id = egui::Id::new("sc_update");
     let mut also_download = false;
     let (closed, answer) =
-        ui_kit::Prompt::new(id, "update", crate::i18n::tr("update.title")).cards(1.7).actions(ok, cancel, apply).show(ctx, true, |ui| {
+        ui_kit::Window::new(id, "update", crate::i18n::tr("update.title")).cards(1.7).actions(ok, cancel, apply).show(ctx, true, |ui| {
             ui_kit::text(ui, &crate::i18n::format("update.available", &[("version", release.version())]), ui_kit::Text::Report("available", false));
             ui_kit::text(ui, &crate::i18n::format("update.you_have", &[("version", current_version())]), ui_kit::Text::Note("have"));
-            egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui_kit::list_frame(ui, "release_notes", |ui| {
                 ui.set_width(ui.available_width());
                 egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
                     if release.notes.trim().is_empty() {

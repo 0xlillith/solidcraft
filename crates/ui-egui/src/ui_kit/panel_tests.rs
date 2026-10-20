@@ -229,7 +229,7 @@ fn wide_tables_remain_bounded_with_pinned_actions_on_small_viewports() {
 }
 
 #[test]
-fn prompt_is_one_and_a_half_cards_wide_with_its_actions_in_both_themes() {
+fn window_is_one_and_a_half_cards_wide_with_its_actions_in_both_themes() {
     let previous = crate::theme::is_dark();
     for dark in [false, true] {
         crate::theme::set_dark(dark);
@@ -246,9 +246,8 @@ fn prompt_is_one_and_a_half_cards_wide_with_its_actions_in_both_themes() {
                     ..Default::default()
                 },
                 |ui| {
-                    action = Prompt::new(egui::Id::new("prompt_test"), "delete", "Delete")
+                    action = Window::new(egui::Id::new("prompt_test"), "delete", "Delete")
                         .actions("Delete", "Cancel", Some("Keep"))
-                        .selected(Action::Apply)
                         .show(ui.ctx(), true, |ui| {
                             text(ui, "Three features go with it.", Text::Report("body", false));
                         })
@@ -272,7 +271,7 @@ fn prompt_is_one_and_a_half_cards_wide_with_its_actions_in_both_themes() {
 }
 
 #[test]
-fn escape_closes_a_prompt_unless_it_keeps_the_card_open() {
+fn escape_closes_a_window_unless_it_keeps_the_card_open() {
     for keep in [false, true] {
         let ctx = crate::fonts::test_context();
         let mut action = Action::None;
@@ -287,7 +286,7 @@ fn escape_closes_a_prompt_unless_it_keeps_the_card_open() {
                     ..Default::default()
                 },
                 |ui| {
-                    let prompt = Prompt::new(egui::Id::new(("prompt_escape", keep)), "settings", "Report").actions("Open", "Close", None);
+                    let prompt = Window::new(egui::Id::new(("prompt_escape", keep)), "settings", "Report").actions("Open", "Close", None);
                     let prompt = if keep { prompt.keep_open_on_escape() } else { prompt };
                     action = prompt
                         .show(ui.ctx(), true, |ui| {
@@ -298,5 +297,255 @@ fn escape_closes_a_prompt_unless_it_keeps_the_card_open() {
             );
         }
         assert_eq!(action, if keep { Action::None } else { Action::Cancel }, "keep_open_on_escape={keep}");
+    }
+}
+
+#[test]
+fn window_pages_have_shared_metrics_callbacks_and_a_pinned_left_footer_action() {
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let ctx = crate::fonts::test_context();
+        let mut selected = usize::MAX;
+        let mut drawn = 0;
+        let pages = [
+            WindowPage {
+                icon: "settings",
+                label: "ui.general",
+                handle: "test:page:general",
+                scroll: true,
+                draw: |ui, state| {
+                    *state = 1;
+                    text(ui, "General", Text::Inline);
+                },
+            },
+            WindowPage {
+                icon: "orbit",
+                label: "ui.navigation",
+                handle: "test:page:navigation",
+                scroll: true,
+                draw: |ui, state| {
+                    *state = 2;
+                    text(ui, "Navigation", Text::Inline);
+                },
+            },
+        ];
+        for _ in 0..3 {
+            scenario::clear_handles();
+            crate::test_support::frame(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 800.0))),
+                    focused: true,
+                    ..Default::default()
+                },
+                |ui| {
+                    Window::new(ui.id().with("pages"), "settings", "Preferences").cards(3.0).show_pages(
+                        ui.ctx(),
+                        &mut selected,
+                        &pages,
+                        &mut drawn,
+                        |ui| {
+                            button(ui, "Restore defaults", Button::Normal);
+                        },
+                    );
+                },
+            );
+        }
+        assert_eq!((selected, drawn), (1, 2), "hostile page index is bounded before callback dispatch");
+        let nav = scenario::rect_of("dialog:pages").unwrap();
+        let header = scenario::rect_of("dialog:header").unwrap();
+        let footer = scenario::rect_of("dialog:footer").unwrap();
+        assert_eq!(nav.width(), 188.0);
+        assert_eq!(header.height(), 40.0);
+        assert_eq!(footer.height(), 48.0);
+        assert_eq!(nav.top(), header.bottom(), "no body inset around navigation");
+        assert_eq!(scenario::rect_of("test:page:general").unwrap().height(), 32.0);
+        assert!(footer.top() >= nav.bottom());
+        let left = scenario::rect_of("dialog:button::Restore defaults").unwrap();
+        let cancel = scenario::rect_of("dialog:cancel").unwrap();
+        assert!(footer.contains_rect(left) && left.right() < cancel.left());
+        let page = scenario::handle_at("test:page:general").unwrap();
+        for down in [true, false] {
+            crate::test_support::frame(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 800.0))),
+                    focused: true,
+                    events: pointer(page, down),
+                    ..Default::default()
+                },
+                |ui| {
+                    Window::new(ui.id().with("pages"), "settings", "Preferences").cards(3.0).show_pages(
+                        ui.ctx(),
+                        &mut selected,
+                        &pages,
+                        &mut drawn,
+                        |_| {},
+                    );
+                },
+            );
+        }
+        assert_eq!((selected, drawn), (0, 1), "click dispatches the declared page");
+    }
+    crate::theme::set_dark(previous);
+}
+
+#[test]
+fn confirm_routes_enter_escape_selected_answers_and_blocks_background_clicks() {
+    for (key, valid, selected, expected) in [
+        (egui::Key::Enter, true, Action::Ok, Action::Ok),
+        (egui::Key::Enter, false, Action::Ok, Action::None),
+        (egui::Key::Enter, true, Action::Apply, Action::Apply),
+        (egui::Key::Escape, true, Action::Ok, Action::Cancel),
+    ] {
+        let ctx = crate::fonts::test_context();
+        let mut action = Action::None;
+        let mut background = false;
+        let mut at = egui::Pos2::ZERO;
+        for pass in 0..5 {
+            let events = match pass {
+                2 => pointer(at, true),
+                3 => pointer(at, false),
+                4 => crate::test_support::key(key),
+                _ => vec![],
+            };
+            scenario::clear_handles();
+            crate::test_support::frame(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))),
+                    focused: true,
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let button = button(ui, "Background", Button::Normal);
+                    at = button.rect.center();
+                    background |= button.clicked();
+                    action = Confirm::new(ui.id().with("modal"), "status_warning", "Save changes?")
+                        .tone(Tone::Warning)
+                        .actions("Save", "Cancel", Some("Don't Save"))
+                        .selected(selected)
+                        .detail("Sample Plate")
+                        .show(ui.ctx(), valid, |ui| {
+                            text(ui, "Your changes will be lost.", Text::Report("message", false));
+                        })
+                        .1;
+                },
+            );
+        }
+        assert!(!background, "modal intercepts background pointer events");
+        assert_eq!(action, expected, "{key:?}, valid={valid}, selected={selected:?}");
+        assert_eq!(scenario::rect_of("confirm:disc").unwrap().size(), egui::vec2(36.0, 36.0));
+        let (ghost, cancel, primary) =
+            (scenario::rect_of("dialog:apply").unwrap(), scenario::rect_of("dialog:cancel").unwrap(), scenario::rect_of("dialog:ok").unwrap());
+        assert!(ghost.right() < cancel.left() && cancel.right() < primary.left());
+        assert!(scenario::rect_of("dialog:note:confirm_detail").is_some());
+    }
+}
+
+#[test]
+fn destructive_confirm_paints_error_primary_with_readable_on_colour_in_both_themes() {
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let ctx = crate::fonts::test_context();
+        let mut output = None;
+        for _ in 0..3 {
+            output = Some(crate::test_support::frame(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))),
+                    focused: true,
+                    ..Default::default()
+                },
+                |ui| {
+                    Confirm::new(ui.id().with("delete"), "delete", "Delete").tone(Tone::Danger).actions("Delete", "Cancel", None).show(
+                        ui.ctx(),
+                        true,
+                        |ui| {
+                            text(ui, "These features will be deleted:", Text::Report("message", false));
+                        },
+                    );
+                },
+            ));
+        }
+        let t = Tokens::get();
+        let primary = scenario::rect_of("dialog:ok").unwrap();
+        let shapes = output.unwrap().shapes;
+        let mut painted_fill = false;
+        for shape in &shapes {
+            crate::test_support::each_shape(&shape.shape, &mut |s| {
+                painted_fill |= matches!(s, egui::Shape::Rect(r) if r.rect == primary && r.fill == t.form_error);
+            });
+        }
+        assert!(painted_fill, "{dark}: primary must use form_error");
+        let ink = if crate::theme::contrast_ratio(t.on_accent, t.form_error) >= 4.5 { t.on_accent } else { t.tab_on_fill_dark };
+        assert!(crate::theme::contrast_ratio(ink, t.form_error) >= 4.5);
+        let mut painted_ink = false;
+        for shape in &shapes {
+            crate::test_support::each_shape(&shape.shape, &mut |s| {
+                painted_ink |= matches!(s, egui::Shape::Text(text) if primary.contains(text.pos) && text.galley.job.text == "Delete"
+                    && text.galley.job.sections.iter().all(|section| section.format.color == ink));
+            });
+        }
+        assert!(painted_ink, "{dark}: destructive primary text must use readable on-colour");
+    }
+    crate::theme::set_dark(previous);
+}
+
+#[test]
+fn preferences_preserves_every_page_and_footer_in_both_themes() {
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.theme = if dark { "dark" } else { "light" }.into();
+        h.app.home.open = false;
+        for (index, page) in crate::prefs::PAGES.iter().enumerate() {
+            crate::prefs::open_at(&mut h.app, index);
+            h.frames(3);
+            assert_eq!(h.app.prefs_window.section, index);
+            let nav = scenario::rect_of("dialog:pages").unwrap();
+            let row = scenario::rect_of(&format!("prefs:page:{page}")).unwrap();
+            assert!(nav.contains_rect(row), "{dark}: {page} stays visible");
+            let window = scenario::rect_of("prefs:window").unwrap();
+            for action in ["prefs:ok", "prefs:apply", "prefs:cancel"] {
+                assert!(window.contains_rect(scenario::rect_of(action).unwrap()), "{dark}: {page}: {action}");
+            }
+            assert!(scenario::rect_of("prefs:page_body").is_some());
+            assert!(h.widget(h.app.tr("ui.restore_defaults")).is_some());
+        }
+    }
+    crate::theme::set_dark(previous);
+}
+
+#[test]
+fn window_footer_is_optional_and_can_contain_only_a_left_action() {
+    for left in [false, true] {
+        let ctx = crate::fonts::test_context();
+        for _ in 0..3 {
+            scenario::clear_handles();
+            frame(&ctx, vec![], |ui| {
+                let window = Window::new(ui.id().with("optional_footer"), "settings", "Preferences").actions("", "", None);
+                if left {
+                    window.show_with_left(
+                        ui.ctx(),
+                        true,
+                        |_| {},
+                        |ui| {
+                            button(ui, "Restore defaults", Button::Normal);
+                        },
+                    );
+                } else {
+                    window.show(ui.ctx(), true, |_| {});
+                }
+            });
+        }
+        assert_eq!(scenario::rect_of("dialog:footer").is_some(), left);
+        assert_eq!(scenario::rect_of("dialog:button::Restore defaults").is_some(), left);
+        assert!(scenario::handle_at("dialog:ok").is_none() && scenario::handle_at("dialog:cancel").is_none());
+        assert!(scenario::handle_at("dialog:close").is_some());
     }
 }

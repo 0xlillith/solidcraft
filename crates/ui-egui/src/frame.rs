@@ -246,7 +246,7 @@ mod tests {
             let p = e.unwrap().path();
             if p.extension().is_some_and(|x| x == "rs") && p.file_name().is_some_and(|n| n != "frame.rs") {
                 let text = std::fs::read_to_string(&p).unwrap();
-                if text.contains("Window::new(") {
+                if text.contains("egui::Window::new(") {
                     bad.push(p.display().to_string());
                 }
             }

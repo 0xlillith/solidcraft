@@ -210,6 +210,33 @@ pub fn nav_preset(id: &str) -> &'static NavPreset {
 }
 /// The dialog's pages, in order.
 pub const PAGES: [&str; 9] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI", "Plugins"];
+// Keep every existing page and its scenario identity; only their presentation is shared.
+const WINDOW_PAGES: [ui_kit::WindowPage<SolveApp>; 9] = [
+    ui_kit::WindowPage { icon: "settings", label: "ui.general", handle: "prefs:page:General", scroll: true, draw: window_page::<0> },
+    ui_kit::WindowPage { icon: "orbit", label: "ui.navigation", handle: "prefs:page:Navigation", scroll: true, draw: window_page::<1> },
+    ui_kit::WindowPage {
+        icon: "settings",
+        label: "ui.keyboard_shortcuts",
+        handle: "prefs:page:Keyboard Shortcuts",
+        scroll: false,
+        draw: window_page::<2>,
+    },
+    ui_kit::WindowPage { icon: "ws_design", label: "ui.design", handle: "prefs:page:Design", scroll: true, draw: window_page::<3> },
+    ui_kit::WindowPage { icon: "style", label: "ui.graphics", handle: "prefs:page:Graphics", scroll: true, draw: window_page::<4> },
+    ui_kit::WindowPage { icon: "sketch", label: "ui.sketch", handle: "prefs:page:Sketch", scroll: true, draw: window_page::<5> },
+    ui_kit::WindowPage { icon: "select", label: "ui.selection", handle: "prefs:page:Selection", scroll: true, draw: window_page::<6> },
+    ui_kit::WindowPage { icon: "assistant", label: "ui.ai_button", handle: "prefs:page:AI", scroll: true, draw: window_page::<7> },
+    ui_kit::WindowPage { icon: "library", label: "ui.plugins", handle: "prefs:page:Plugins", scroll: true, draw: window_page::<8> },
+];
+
+fn window_page<const INDEX: usize>(ui: &mut egui::Ui, app: &mut SolveApp) {
+    if app.prefs_window.section != INDEX {
+        app.keymap.read_only = false;
+        app.prefs_window.section = INDEX;
+    }
+    page(app, ui, &Tokens::get());
+}
+
 pub const PAGE_AI: usize = 7;
 pub const PAGE_PLUGINS: usize = 8;
 pub const PAGE_SHORTCUTS: usize = 2;
@@ -966,54 +993,27 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         app.prefs_window.snapshot = Some(Snapshot::take(app));
     }
     unfold(ctx);
-    let t = Tokens::get();
     let mut button: Option<&str> = None;
     let before = app.preferences.clone();
     let capturing = crate::keymap::capturing(app);
-    let prompt = ui_kit::Prompt::new(egui::Id::new("sc_prefs"), "settings", app.tr("ui.preferences")).cards(3.0).fields().actions(
+    let window = ui_kit::Window::new(egui::Id::new("sc_prefs"), "settings", app.tr("ui.preferences")).cards(3.0).fields().actions(
         "OK",
         "Cancel",
         Some("Apply"),
     );
-    let prompt = if capturing { prompt.keep_open_on_escape() } else { prompt };
-    let (closed, action) = prompt.show(ctx, true, |ui| {
-        // A fixed, clipped page viewport keeps every page and translation the same size.
-        let height = (ctx.content_rect().height() - t.form_header_height - t.form_footer_height - t.space_24 * 3.0)
-            .clamp(t.control_height * 4.0, t.control_height * 16.0);
-        let (body, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::left_to_right(egui::Align::Min)));
-        child.shrink_clip_rect(body);
-        child.vertical(|ui| {
-            ui.set_width(t.form_label_width * 2.0);
-            for (i, title) in PAGES.iter().enumerate() {
-                let tab = ui_kit::list_picker(ui, title, app.tr_label(title), app.prefs_window.section == i);
-                crate::scenario::publish_target(&format!("prefs:page:{title}"), tab.rect);
-                if tab.clicked() {
-                    app.prefs_window.section = i;
-                    app.keymap.read_only = false;
-                }
-            }
-        });
-        child.separator();
-        child.vertical(|ui| {
-            ui.set_width(ui.available_width());
-            if app.prefs_window.section == PAGE_SHORTCUTS {
-                page(app, ui, &t);
-            } else {
-                let scroll = egui::ScrollArea::vertical()
-                    .id_salt(("sc_prefs_page", app.prefs_window.section))
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| page(app, ui, &t));
-                crate::scenario::publish_rect("prefs:page_body", scroll.inner_rect);
-            }
-        });
-        if ui_kit::button(ui, app.tr("ui.restore_defaults"), ui_kit::Button::Normal)
-            .on_hover_text(app.tr("ui.reset_the_settings_on_this_page"))
+    let window = if capturing { window.keep_open_on_escape() } else { window };
+    let mut selected = app.prefs_window.section;
+    let (closed, action) = window.show_pages(ctx, &mut selected, &WINDOW_PAGES, app, |ui| {
+        if ui_kit::button(ui, crate::i18n::tr("ui.restore_defaults"), ui_kit::Button::Normal)
+            .on_hover_text(crate::i18n::tr("ui.reset_the_settings_on_this_page"))
             .clicked()
         {
             button = Some("defaults");
         }
     });
+    if let Some(rect) = crate::scenario::rect_of("dialog:page_body") {
+        crate::scenario::publish_rect("prefs:page_body", rect);
+    }
     for name in ["window", "footer", "ok", "apply", "cancel"] {
         if let Some(rect) = crate::scenario::rect_of(&format!("dialog:{name}")) {
             crate::scenario::publish_target(&format!("prefs:{name}"), rect);

@@ -57,6 +57,11 @@ def ui_icon_names(source):
         if icon: names.add(icon.group(1))
     for table in re.finditer(r'for\s*\(i,\s*\(label,\s*icon,\s*tip\)\)\s*in\s*\[(.*?)\]\s*\.iter\(', source, re.S):
         names.update(re.findall(r'\("[^"]*",\s*"([a-z][a-z0-9_]*)",\s*"[^"]*"\)', table.group(1)))
+    # System-window wrappers and declarative page lists own their icon arguments.
+    for call in re.finditer(r'\b(?:Window|Confirm)::new\([^;]*?,\s*"([a-z][a-z0-9_]*)"\s*,', source, re.S):
+        names.add(call.group(1))
+    for page in re.finditer(r'\bWindowPage\s*\{[^}]*?\bicon:\s*"([a-z][a-z0-9_]*)"', source, re.S):
+        names.add(page.group(1))
     return names
 
 def requested_icons():

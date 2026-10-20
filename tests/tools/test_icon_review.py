@@ -66,6 +66,21 @@ def review_fixture():
 
 
 class IconReviewTest(unittest.TestCase):
+    def test_window_confirm_and_page_list_icons_are_discovered(self):
+        with review_fixture() as (root, design, get, post):
+            source = root / 'crates/ui-egui/src/windows.rs'
+            source.parent.mkdir(parents=True)
+            source.write_text('''fn show() {
+                ui_kit::Window::new(egui::Id::new("prefs"), "settings", title);
+                ui_kit::Confirm::new(id, "status_warning", title);
+                ui_kit::WindowPage { icon: "orbit", label: "ui.navigation", draw: draw_page };
+                ui_kit::Window::new(id, variable_icon, "not_an_icon");
+            }''', encoding='utf-8')
+            page = get('/')
+            for icon in ('settings', 'status_warning', 'orbit'):
+                self.assertIn(f'data-id="{icon}"', page)
+            self.assertNotIn('data-id="not_an_icon"', page)
+
     def test_runtime_manifest_discovers_variable_ids_and_reports_actual_placeholder(self):
         with review_fixture() as (root, design, get, post):
             manifest = design / 'requested_icons.txt'

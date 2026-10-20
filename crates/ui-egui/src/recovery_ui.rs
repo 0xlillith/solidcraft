@@ -56,7 +56,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let dir = app.autosave.as_ref().map(|a| a.dir.clone()).or_else(recovery::default_dir);
     let mut act: Option<(Entry, bool)> = None;
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_recover_prompt"), "restore", crate::i18n::tr_label("Recover unsaved design?"))
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_recover_prompt"), "restore", crate::i18n::tr_label("Recover unsaved design?"))
         .actions("", crate::i18n::tr_label("Later"), None)
         .show(ctx, true, |ui| {
             ui_kit::text(

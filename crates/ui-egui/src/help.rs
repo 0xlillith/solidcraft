@@ -98,7 +98,7 @@ fn about(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.help.about {
         return;
     }
-    let (closed, action) = ui_kit::Prompt::new(egui::Id::new("sc_about"), "help", crate::i18n::tr_label("About SolidCraft"))
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_about"), "help", crate::i18n::tr_label("About SolidCraft"))
         .cards(2.0)
         .actions("", "Close", None)
         .show(ctx, true, |ui| {

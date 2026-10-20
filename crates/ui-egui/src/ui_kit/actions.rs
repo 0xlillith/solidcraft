@@ -66,15 +66,31 @@ pub(crate) struct Footer<'a> {
     pub apply: Option<&'a str>,
     pub status: Option<&'a str>,
     pub selected: Option<Action>,
+    pub danger: bool,
+    pub confirm: bool,
 }
 
 pub(crate) fn footer(ui: &mut Ui, ok_label: &str, cancel_label: &str, ok_enabled: bool, options: Footer<'_>) -> Action {
-    let Footer { apply: apply_label, status, selected } = options;
+    footer_with_left(ui, ok_label, cancel_label, ok_enabled, options, |_| {})
+}
+
+pub(super) fn footer_with_left(
+    ui: &mut Ui,
+    ok_label: &str,
+    cancel_label: &str,
+    ok_enabled: bool,
+    options: Footer<'_>,
+    left: impl FnOnce(&mut Ui),
+) -> Action {
+    let Footer { apply: apply_label, status, selected, danger, confirm } = options;
     let t = Tokens::get();
     let ok_enabled = ok_enabled && !ok_label.is_empty();
     // The footer is a full-width band (the card has no margin of its own): its own fill, a rule
     // on top, and the buttons right-aligned with 10 pt above/below and 12 pt at the sides.
-    let (band, _) = ui.allocate_exact_size(vec2(dimension(ui.available_width()), t.form_footer_height), egui::Sense::hover());
+    let (band, _) = ui.allocate_exact_size(
+        vec2(dimension(ui.available_width()), t.form_footer_height + if confirm { t.space_4 } else { 0.0 }),
+        egui::Sense::hover(),
+    );
     let corner = t.radius_xl.saturating_sub(1);
     ui.painter().rect_filled(band, egui::CornerRadius { nw: 0, ne: 0, sw: corner, se: corner }, t.dialog_footer);
     ui.painter().hline(band.x_range(), band.top(), egui::Stroke::new(1.0, t.dialog_rule));
@@ -83,12 +99,14 @@ pub(crate) fn footer(ui: &mut Ui, ok_label: &str, cancel_label: &str, ok_enabled
     let inner = band.shrink2(vec2(t.space_12, t.space_10));
     scenario::publish_rect("dialog:footer:actions", inner);
     let mut action = if ui.is_enabled() { keyboard(ui.ctx(), ok_enabled) } else { Action::None };
+    let primary_fill = if danger { t.form_error } else { t.form_primary };
+    let primary_ink = if danger && crate::theme::contrast_ratio(t.on_accent, primary_fill) < 4.5 { t.tab_on_fill_dark } else { t.on_accent };
     let mut actions_left = inner.right();
     let row = ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = t.space_6;
             for (label, kind) in [(ok_label, Action::Ok), (apply_label.unwrap_or(""), Action::Apply), (cancel_label, Action::Cancel)] {
-                if (kind == Action::Apply && apply_label.is_none()) || (kind == Action::Ok && ok_label.is_empty()) {
+                if (kind == Action::Apply && (apply_label.is_none() || confirm)) || (kind == Action::Ok && ok_label.is_empty()) || label.is_empty() {
                     continue;
                 }
                 let marked = selected == Some(kind);
@@ -96,7 +114,7 @@ pub(crate) fn footer(ui: &mut Ui, ok_label: &str, cancel_label: &str, ok_enabled
                 let live = kind == Action::Cancel || ok_enabled;
                 ui.spacing_mut().button_padding = vec2(if primary { t.space_16 } else { t.space_12 }, 0.0);
                 let text = RichText::new(crate::i18n::tr_label(label)).size(t.font_label).color(if primary && ok_enabled {
-                    t.on_accent
+                    primary_ink
                 } else if primary {
                     t.form_dim
                 } else {
@@ -107,7 +125,7 @@ pub(crate) fn footer(ui: &mut Ui, ok_label: &str, cancel_label: &str, ok_enabled
                     egui::Button::new(if primary && ok_enabled { text.bold_face() } else { text })
                         .selected(marked && !primary)
                         .fill(if primary && ok_enabled {
-                            t.form_primary
+                            primary_fill
                         } else if marked {
                             t.selected_bg
                         } else {
@@ -135,6 +153,24 @@ pub(crate) fn footer(ui: &mut Ui, ok_label: &str, cancel_label: &str, ok_enabled
                 }
             }
         });
+    });
+    let left_rect = egui::Rect::from_min_max(inner.min, egui::pos2((actions_left - t.space_8).max(inner.left()), inner.bottom()));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+        if let Some(label) = apply_label.filter(|_| confirm) {
+            let response = ui.add(
+                egui::Button::new(crate::i18n::tr_label(label))
+                    .frame(false)
+                    .selected(selected == Some(Action::Apply))
+                    .min_size(vec2(0.0, t.form_button_height)),
+            );
+            pointer_on_hover(ui, &response);
+            scenario::publish_target("dialog:apply", response.rect);
+            scenario::publish_handle(&format!("dialog:{label}"), response.rect.center());
+            if response.clicked() {
+                action = Action::Apply;
+            }
+        }
+        left(ui);
     });
     if let Some(status) = status {
         let left = (row.response.rect.left() + t.space_16 + t.space_4).min(actions_left);
