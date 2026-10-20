@@ -12,14 +12,13 @@ create the compute pipeline does not register an available path executor.
 The native UI opens its independent job device on the viewport's selected adapter,
 so software fallback and safe mode do not rediscover a failing hardware driver.
 An incompatible explicit GPU policy leaves progressive rendering unavailable there.
-On D3D12 the path tracer compiles with DXC: FXC, wgpu's fallback compiler, needs
-about two hours for the path shader (#3217). x64 Windows builds link DXC in (built
-from its open source by mach-dxcompiler); elsewhere `dxcompiler.dll` beside
-SolidCraft or on the `PATH` provides it. The path tracer reopens the viewport's GPU
-on a D3D12 instance of its own that uses DXC, so the viewport keeps FXC, which still
-drives GPUs without shader model 6. Without DXC, discovery skips D3D12 adapters and
-the UI renders on the viewport's GPU through Vulkan; with no such Vulkan adapter
-the path executor reports why it is unavailable instead of compiling.
+The path tracer runs on Vulkan only (#3217). A viewport on D3D12 is reopened on the
+same GPU through Vulkan. Where there is no Vulkan driver (macOS for now, Windows over
+Remote Desktop or on the WARP software adapter, older drivers), the path executor reports
+itself unavailable and images render on the CPU. On an RTX 4090, D3D12 was never faster:
+equal per sample with DXC and about 55% slower with FXC, and it compiles the path shader
+at every start (about 82 s with DXC, about 2 hours with FXC), where Vulkan's compiled
+pipelines persist between runs.
 
 In the Render workspace, enable **Progressive rendering** and select samples per
 pixel before checking or starting an image. These controls are transient image-job
