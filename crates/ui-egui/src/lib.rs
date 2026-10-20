@@ -77,6 +77,7 @@ mod loft_rails_dialog_tests;
 #[cfg(test)]
 mod look_at_tests;
 mod material_card_review;
+
 #[cfg(test)]
 mod measurement_ui_tests;
 #[cfg(test)]
@@ -130,6 +131,7 @@ pub(crate) mod display_lod;
 mod file_load_ui_tests;
 #[cfg(test)]
 mod fillet_spline_handle_tests;
+pub mod mouse_gesture;
 pub(crate) mod navigation;
 pub(crate) mod open_meshing;
 pub mod palette;
@@ -339,6 +341,8 @@ pub struct SolveApp {
     pub palette: palette::Palette,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
+    /// Mouse gestures: the ring of tools and its customization window.
+    pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
     /// A saved design copied for insertion into another open document.
@@ -486,6 +490,7 @@ impl SolveApp {
             material_card_review: None,
             palette: palette::Palette::default(),
             menu: context_menu::MenuState::default(),
+            gesture: mouse_gesture::State::default(),
             tree: browser::TreeState::default(),
             linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
@@ -1514,6 +1519,7 @@ impl SolveApp {
         stand_up::show(self, ui.ctx());
         prefs::show_reset_notice(self, ui.ctx());
         context_menu::show(self, ui.ctx());
+        mouse_gesture::show(self, ui.ctx());
         delete::show(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
