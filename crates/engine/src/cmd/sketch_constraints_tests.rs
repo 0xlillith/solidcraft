@@ -314,6 +314,47 @@ fn an_angle_between_lines_takes_the_reading_nearest_its_value_and_reports_degree
 }
 
 #[test]
+fn an_angle_between_two_lines_from_one_point_measures_the_angle_between_them() {
+    // #2724: two radii of a circle 120° apart measured 60°, and 150° apart 30°.
+    for deg in [30.0_f64, 60.0, 90.0, 120.0, 150.0] {
+        let far = [20.0 * deg.to_radians().cos(), 20.0 * deg.to_radians().sin()];
+        // Both drawn out from the centre, the second drawn in towards it, or a corner.
+        let shapes = [
+            vec![json!([[0, 0], [20, 0]]), json!([[0, 0], far])],
+            vec![json!([[0, 0], [20, 0]]), json!([far, [0, 0]])],
+            vec![json!([[20, 0], [0, 0], far])],
+        ];
+        for (i, lines) in shapes.iter().enumerate() {
+            let mut s = new_sketch();
+            for pts in lines {
+                run(&mut s, "sketch.line", json!({"points": pts, "connect": false}));
+            }
+            let d = run(&mut s, "sketch.dimension", json!({"entities": ["l1", "l2"]}));
+            assert!((d["measured"].as_f64().unwrap() - deg).abs() < 1e-4, "{deg}° shape {i}: {d}");
+        }
+        // A value turns the corner's sides to it, keeping them on the same side of each other.
+        let mut s = new_sketch();
+        run(&mut s, "sketch.line", json!({"points": [[20, 0], [0, 0], far], "connect": false}));
+        let want = deg + 10.0;
+        let d = run(&mut s, "sketch.dimension", json!({"entities": ["l1", "l2"], "value": format!("{want} deg")}));
+        assert!((d["measured"].as_f64().unwrap() - want).abs() < 1e-6, "{deg}°: {d}");
+        let sk = sketch(&s);
+        let line = |l: &str| crate::cmd::sketch::line_pts(&sk, sk.curve_index(l).unwrap()).unwrap();
+        let ((a0, a1), (b0, b1)) = (line("l1"), line("l2"));
+        assert!(a1.dist(b0) < 1e-9, "the corner stays joined");
+        let (ra, rb) = (a0 - a1, b1 - b0);
+        let between = ra.cross(rb).abs().atan2(ra.dot(rb)).to_degrees();
+        assert!((between - want).abs() < 1e-6, "{deg}°: the sides are {between}° apart");
+    }
+    // Lines that share no end keep the acute reading.
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [20, 0]], "connect": false}));
+    run(&mut s, "sketch.line", json!({"points": [[30, 10], [40, 27.3205]], "connect": false}));
+    let d = run(&mut s, "sketch.dimension", json!({"entities": ["l1", "l2"]}));
+    assert!((d["measured"].as_f64().unwrap() - 60.0).abs() < 1e-3, "{d}");
+}
+
+#[test]
 fn symmetry_moves_a_free_line_between_two_fixed_lines() {
     // #1796: with both mirrored lines fixed, the symmetry line between them (a free construction
     // line) is the one to move; it was refused as "neither entity can move".

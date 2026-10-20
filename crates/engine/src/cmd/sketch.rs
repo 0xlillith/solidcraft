@@ -2075,9 +2075,15 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
                         (ConstraintKind::PointLineDistance { p: bq, l: a, value: d }, d)
                     }
                 } else {
-                    match text_at {
-                        Some(t) => angle_by_sector(a, b, (a0, a1), (b0, b1), t).ok_or_else(|| bad(cmd, "cannot place that angle"))?,
-                        None => {
+                    match (text_at, angle_from_shared_end(a, b, (a0, a1), (b0, b1))) {
+                        (Some(t), _) => angle_by_sector(a, b, (a0, a1), (b0, b1), t).ok_or_else(|| bad(cmd, "cannot place that angle"))?,
+                        // Two lines from one point (two radii, a corner) measure the angle
+                        // between them, from that point towards their other ends (#2724).
+                        (None, Some((between, supplement))) => {
+                            alt = Some(supplement);
+                            between
+                        }
+                        (None, None) => {
                             let mut ang = da.cross(db).atan2(da.dot(db));
                             let (mut ka, mut kb) = (a, b);
                             if ang < 0.0 {
@@ -2293,6 +2299,39 @@ fn angle_by_sector(a: usize, b: usize, (a0, a1): (Vec2, Vec2), (b0, b1): (Vec2, 
         }
     }
     None
+}
+
+/// The angle dimension between two lines that run from one shared end, measured from that end
+/// towards their other ends (#2724), and its supplement; None when they share no end or are
+/// collinear.
+fn angle_from_shared_end(
+    a: usize,
+    b: usize,
+    (a0, a1): (Vec2, Vec2),
+    (b0, b1): (Vec2, Vec2),
+) -> Option<((ConstraintKind, f64), (ConstraintKind, f64))> {
+    let tol = 1e-9 * a0.dist(a1).max(b0.dist(b1)).max(1.0);
+    // The sign that turns each line's direction into its ray away from the shared end.
+    let (sa, sb) = [(a0, b0, 1.0, 1.0), (a0, b1, 1.0, -1.0), (a1, b0, -1.0, 1.0), (a1, b1, -1.0, -1.0)]
+        .into_iter()
+        .find(|(p, q, ..)| p.dist(*q) <= tol)
+        .map(|(_, _, sa, sb)| (sa, sb))?;
+    let (ra, rb) = ((a1 - a0) * sa, (b1 - b0) * sb);
+    let mut ang = ra.cross(rb).atan2(ra.dot(rb));
+    let (mut first, mut second) = ((a, sa), (b, sb));
+    if ang < 0.0 {
+        ang = -ang;
+        std::mem::swap(&mut first, &mut second);
+    }
+    if !(ang > 1e-9 && ang < std::f64::consts::PI - 1e-9) {
+        return None;
+    }
+    // The constraint turns the first line's direction onto the second's, negated when the
+    // two rays run against their lines' directions differently.
+    let flip = first.1 * second.1 < 0.0;
+    let between = (ConstraintKind::Angle { a: first.0, b: second.0, value: ang, flip }, ang);
+    let supplement = (ConstraintKind::Angle { a: second.0, b: first.0, value: std::f64::consts::PI - ang, flip: !flip }, std::f64::consts::PI - ang);
+    Some((between, supplement))
 }
 
 pub(super) fn round6(x: f64) -> f64 {
