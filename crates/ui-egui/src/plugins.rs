@@ -141,7 +141,7 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
         return;
     };
     let path = dir.display().to_string();
-    ui.add(egui::Label::new(RichText::new(crate::i18n::format("ui.plugins_note", &[("path", &path)])).size(11.0).color(t.text_dim)).wrap());
+    ui.add(egui::Label::new(RichText::new(crate::i18n::format("ui.plugins_note", &[("path", &path)])).size(t.font_small).color(t.text_dim)).wrap());
     ui.add_space(8.0);
     if ui.button(crate::i18n::tr_label("Show in folder")).clicked() {
         // `show_in_folder` opens the parent of the path it is given, so the argument is a name
@@ -171,9 +171,11 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             ui.vertical(|ui| {
                 ui.label(RichText::new(&plugin.name).strong());
-                ui.label(RichText::new(crate::i18n::format("ui.plugins_version", &[("version", &plugin.version)])).size(11.0).color(t.text_dim));
+                ui.label(
+                    RichText::new(crate::i18n::format("ui.plugins_version", &[("version", &plugin.version)])).size(t.font_small).color(t.text_dim),
+                );
                 if !plugin.description.is_empty() {
-                    ui.label(RichText::new(&plugin.description).size(11.0).color(t.text_dim));
+                    ui.label(RichText::new(&plugin.description).size(t.font_small).color(t.text_dim));
                 }
             });
         });
@@ -181,10 +183,12 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     if !skipped.is_empty() {
         ui.add_space(6.0);
-        ui.label(RichText::new(crate::i18n::format("ui.plugins_skipped", &[("count", &skipped.len().to_string())])).size(11.0).color(t.text_dim));
+        ui.label(
+            RichText::new(crate::i18n::format("ui.plugins_skipped", &[("count", &skipped.len().to_string())])).size(t.font_small).color(t.text_dim),
+        );
         for skip in skipped.iter().take(8) {
             let who = if skip.folder.is_empty() { "folder" } else { skip.folder.as_str() };
-            ui.label(RichText::new(format!("{who}: {}", skip.reason)).size(11.0).color(t.text_dim));
+            ui.label(RichText::new(format!("{who}: {}", skip.reason)).size(t.font_small).color(t.text_dim));
         }
     }
 }

@@ -1,6 +1,7 @@
 //! The Crash Reports window (Help > Crash Reports…): the reports `solidcraft_engine::crash`
 //! keeps on this computer, each with a reviewed issue draft. It opens by itself after a crash.
 
+use crate::fonts::RichTextExt as _;
 use egui::{RichText, vec2};
 use solidcraft_engine::crash::{self, Summary};
 
@@ -88,7 +89,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     if ui.small_button("Copy folder path").clicked() {
                         ctx.copy_text(d.clone());
                     }
-                    ui.add(egui::Label::new(RichText::new(&d).monospace().size(11.0)).truncate()).on_hover_text(&d);
+                    ui.add(egui::Label::new(RichText::new(&d).monospace().size(crate::theme::Tokens::get().font_small)).truncate()).on_hover_text(&d);
                 });
             }
             ui.separator();
@@ -98,14 +99,14 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for r in &app.crashes.reports {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(report_heading(r)).strong());
+                        ui.label(RichText::new(report_heading(r)).semibold().color(crate::theme::Tokens::get().text));
                         if let Some(c) = &r.command {
-                            ui.label(RichText::new(c).monospace().size(11.0).color(t.text_dim));
+                            ui.label(RichText::new(c).monospace().size(crate::theme::Tokens::get().font_small).color(t.text_dim));
                         }
                     });
-                    ui.label(RichText::new(&r.message).size(12.0));
+                    ui.label(RichText::new(&r.message).size(t.font_body));
                     if r.kind == "unclean_exit" {
-                        ui.label(RichText::new(crate::i18n::tr("crash.unclean_explanation")).size(12.0).color(t.text_dim));
+                        ui.label(RichText::new(crate::i18n::tr("crash.unclean_explanation")).size(t.font_body).color(t.text_dim));
                     }
                     ui.horizontal(|ui| {
                         if ui.small_button("Report…").clicked() {
@@ -118,7 +119,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             delete = Some(Some(r.id.clone()));
                         }
                         if r.replayable {
-                            ui.label(RichText::new("replayable").size(11.0).color(t.text_dim));
+                            ui.label(RichText::new("replayable").size(crate::theme::Tokens::get().font_small).color(t.text_dim));
                         }
                     });
                     ui.add_space(6.0);

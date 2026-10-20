@@ -87,7 +87,7 @@ pub fn palette_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     submit(app, &line);
                 }
                 if let Some(last) = app.session.log.last() {
-                    ui.label(RichText::new(last).size(11.5).color(t.text_dim));
+                    ui.label(RichText::new(last).size(t.font_caption).color(t.text_dim));
                 }
             });
         },
@@ -128,7 +128,7 @@ pub fn popup(app: &mut SolveApp, ctx: &egui::Context) {
                         if ui.add_enabled(enabled, egui::Button::new(*label).frame(false)).clicked() {
                             picked = Some(id);
                         }
-                        ui.label(RichText::new(*id).size(10.5).color(t.text_dim));
+                        ui.label(RichText::new(*id).size(t.font_panel).color(t.text_dim));
                     });
                 }
             });
