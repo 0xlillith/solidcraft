@@ -1064,7 +1064,7 @@ mod tests {
             ctx.run_ui(egui::RawInput::default(), |_| {}).textures_delta.clear();
             ctx.fonts(|f| f.definitions().families[&egui::FontFamily::Proportional].clone())
         };
-        let latin = egui::FontDefinitions::default().families[&egui::FontFamily::Proportional][0].clone();
+        let latin = base_font_definitions().families[&egui::FontFamily::Proportional][0].clone();
         for language in ["uk", "en", "de"] {
             let list = installed(language);
             assert_eq!(list.first(), Some(&latin), "{language} keeps the Latin face first: {list:?}");

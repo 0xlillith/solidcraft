@@ -40,10 +40,14 @@ fn kind_label(kind: &str) -> &'static str {
     })
 }
 
-fn report_heading(r: &Summary) -> String {
+fn report_time(r: &Summary) -> String {
     let time = r.time.replace('T', " ");
     let time = time.trim_end_matches('Z');
-    let time = if r.kind == "unclean_exit" { crate::i18n::format("crash.detected_time", &[("time", time)]) } else { format!("{time} UTC") };
+    if r.kind == "unclean_exit" { crate::i18n::format("crash.detected_time", &[("time", time)]) } else { format!("{time} UTC") }
+}
+
+fn report_heading(r: &Summary) -> String {
+    let time = report_time(r);
     let times = if r.count > 1 { format!("  ×{}", r.count) } else { String::new() };
     format!("{time}  {}{times}", kind_label(&r.kind))
 }
@@ -102,24 +106,17 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             ui.push_id(&r.id, |ui| {
                                 ui.spacing_mut().item_spacing.y = crate::theme::Tokens::get().space_6;
                                 ui.add_space(crate::theme::Tokens::get().space_10);
-                                ui_kit::report_header(
-                                    ui,
-                                    kind_label(&r.kind),
-                                    r.count,
-                                    r.time.replace('T', " ").trim_end_matches('Z'),
-                                    &title,
-                                    |ui| {
-                                        if ui_kit::bin_button(ui, crate::i18n::tr("ui.delete")).clicked() {
-                                            delete = Some(Some(r.id.clone()));
-                                        }
-                                        ui_kit::icon_label_button(ui, crate::i18n::tr("crash.copy_path"), "copy", true, false)
-                                            .clicked()
-                                            .then(|| ctx.copy_text(r.path.clone()));
-                                        if ui_kit::icon_label_button(ui, crate::i18n::tr("crash.report"), "bug_report", true, false).clicked() {
-                                            report = Some(r.id.clone());
-                                        }
-                                    },
-                                );
+                                ui_kit::report_header(ui, kind_label(&r.kind), r.count, &report_time(r), &title, |ui| {
+                                    if ui_kit::bin_button(ui, crate::i18n::tr("ui.delete")).clicked() {
+                                        delete = Some(Some(r.id.clone()));
+                                    }
+                                    ui_kit::icon_label_button(ui, crate::i18n::tr("crash.copy_path"), "copy", true, false)
+                                        .clicked()
+                                        .then(|| ctx.copy_text(r.path.clone()));
+                                    if ui_kit::icon_label_button(ui, crate::i18n::tr("crash.report"), "bug_report", true, false).clicked() {
+                                        report = Some(r.id.clone());
+                                    }
+                                });
                                 let mut detail = r.command.clone().unwrap_or_default();
                                 if r.replayable {
                                     let sep = if detail.is_empty() { "" } else { " · " };
@@ -331,7 +328,7 @@ mod tests {
         ] {
             assert!(crate::scenario::rect_of(rect).is_some(), "missing {rect}");
         }
-        let title = "2026-10-12 16:23:41  Closed unexpectedly  ×2";
+        let title = "Detected 2026-10-12 16:23:41 UTC  Closed unexpectedly  ×2";
         assert!(crate::scenario::handle_at(&format!("dialog:cell:{title}")).is_some());
         assert!(crate::scenario::handle_at(&format!("dialog:cell:{}", d.display())).is_some());
         h.step(&json!({"click":{"handle":"dialog:button::Copy folder path"}})).unwrap();

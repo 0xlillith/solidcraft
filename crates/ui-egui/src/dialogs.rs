@@ -2299,7 +2299,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             }
             let body = |ui: &mut egui::Ui| {
+                d.sync_fillet_chain(&app.session);
                 enter |= dense::rows(app, ctx, &mut d, ui);
+                d.sync_fillet_chain(&app.session);
                 if cell_enter {
                     ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
                 }

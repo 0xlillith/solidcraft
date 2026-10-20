@@ -1529,7 +1529,6 @@
   "ui.stand_up_tip": "Når en STEP- eller IGES-fil åbnes med Z opad, tilbydes en kvart omdrejning om X",
   "ui.start": "Start",
   "ui.start_over": "Start forfra",
-  "ui.start_radius": "Startradius",
   "ui.stretch": "Stræk",
   "ui.supersampling": "Supersampling (SSAA)",
   "ui.supersampling_adaptive": "Kun når visningen står stille",

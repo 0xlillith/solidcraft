@@ -310,7 +310,14 @@ fn an_opened_design_shows_its_bodies_as_they_are_meshed() {
     // Framed from the meshes now, as a synchronous open frames it.
     let framed = w.app.cam;
     w.app.fit_view();
-    assert_eq!(w.app.cam, framed);
+    // Floating viewport framing can round the same bounds by a few ulps.
+    let refitted = w.app.cam;
+    assert!((refitted.target - framed.target).len() < 1e-9);
+    assert!((refitted.distance - framed.distance).abs() < 1e-9);
+    assert_eq!(
+        (refitted.yaw, refitted.pitch, refitted.roll, refitted.fov, refitted.up),
+        (framed.yaw, framed.pitch, framed.roll, framed.fov, framed.up)
+    );
     // An edit after that: the viewport draws the session's world again.
     w.app.session.execute("solid.box", &json!({"length": 5, "width": 5, "height": 5, "operation": "new"})).unwrap();
     w.frame(vec![]);

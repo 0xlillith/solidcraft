@@ -40,6 +40,7 @@ pub(super) fn command(kind: &Kind) -> Option<&'static str> {
         Kind::Construct { command, .. } => Some(command),
         Kind::PathPlane { .. } => Some("construct.plane.along_path"),
         Kind::Split => Some("solid.split_body"),
+        Kind::DeleteFaces => Some("face.delete"),
         Kind::Move { .. } => Some("solid.move"),
         Kind::Thread { .. } => Some("solid.thread"),
         Kind::ReplaceFace => Some("solid.replace_face"),

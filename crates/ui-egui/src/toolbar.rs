@@ -544,11 +544,11 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 // The browser build: a copy as a downloaded file, whatever Save does.
-                if app.services.download_design.is_some() && item_if(ui, "Download design", "", shown) {
+                if app.services.download_design.is_some() && item_if(ui, "Download design", "", "export", shown) {
                     download_design(app);
                     close = true;
                 }
-                if app.services.browser_files.is_some() && item(ui, "Files in this browser…", "") {
+                if app.services.browser_files.is_some() && item(ui, "Files in this browser…", "", "open") {
                     if let Some(show) = &app.services.browser_files {
                         show();
                     }

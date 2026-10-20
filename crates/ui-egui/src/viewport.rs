@@ -5130,7 +5130,7 @@ mod tests {
     #[test]
     fn device_navigation_allows_face_clicks_and_preserves_modifier_selection() {
         for gpu in [false, true] {
-            for (modifiers, add) in [(egui::Modifiers::NONE, false), (egui::Modifiers::SHIFT, true), (egui::Modifiers::CTRL, true)] {
+            for (modifiers, add) in [(egui::Modifiers::NONE, false), (egui::Modifiers::SHIFT, true), (egui::Modifiers::COMMAND, true)] {
                 let ctx = crate::fonts::test_context();
                 let mut app = device_face_app(gpu);
                 let existing = Sel::Body { name: "Body1".into() };
