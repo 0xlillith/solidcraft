@@ -12,6 +12,13 @@ create the compute pipeline does not register an available path executor.
 The native UI opens its independent job device on the viewport's selected adapter,
 so software fallback and safe mode do not rediscover a failing hardware driver.
 An incompatible explicit GPU policy leaves progressive rendering unavailable there.
+The path tracer runs on Vulkan only (#3217). A viewport on D3D12 is reopened on the
+same GPU through Vulkan. Where there is no Vulkan driver (macOS for now, Windows over
+Remote Desktop or on the WARP software adapter, older drivers), the path executor reports
+itself unavailable and images render on the CPU. On an RTX 4090, D3D12 was never faster:
+equal per sample with DXC and about 55% slower with FXC, and it compiles the path shader
+at every start (about 82 s with DXC, about 2 hours with FXC), where Vulkan's compiled
+pipelines persist between runs.
 
 In the Render workspace, enable **Progressive rendering** and select samples per
 pixel before checking or starting an image. These controls are transient image-job

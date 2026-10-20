@@ -64,16 +64,28 @@ pub fn host() -> Result<ImageHost> {
 /// Open an independent job device on the viewport's selected adapter. In particular,
 /// software fallback and safe mode must not rediscover a failing hardware driver.
 /// An explicit incompatible SOLIDCRAFT_GPU policy leaves this executor unavailable.
+/// The path tracer runs on Vulkan only: a viewport on another backend is reopened on the same
+/// GPU through Vulkan, and without one the executor is unavailable and images render on the CPU.
 pub fn host_on_adapter(adapter: &wgpu::Adapter) -> Result<ImageHost> {
     let policy = crate::select::Policy::from_env().map_err(gpu)?;
     let info = adapter.get_info();
     if !policy.admits(crate::select::tier_of(info.device_type)) {
         return Err(gpu(format!("viewport adapter does not satisfy SOLIDCRAFT_GPU={}", policy.name())));
     }
+    if info.backend != wgpu::Backend::Vulkan {
+        let (vulkan, _) = crate::select::pick_vulkan(policy, |i| i.vendor == info.vendor && i.device == info.device)
+            .ok_or_else(|| gpu(format!("{VULKAN_ONLY}; the viewport uses {:?}", info.backend)))?;
+        let (device, queue) = open_device(&vulkan)?;
+        log::info!("gpu-path viewport GPU: {} through Vulkan", info.name);
+        return ImageHost::with_executor(Arc::new(Executor::new(device, queue)?));
+    }
     let (device, queue) = open_device(adapter)?;
     log::info!("gpu-path viewport adapter: {} ({:?})", info.name, info.device_type);
     ImageHost::with_executor(Arc::new(Executor::new(device, queue)?))
 }
+
+/// Why the executor is unavailable without Vulkan (#3217).
+const VULKAN_ONLY: &str = "the GPU path tracer needs a Vulkan driver (images render on the CPU without one)";
 
 // Path resources need six storage buffers (geometry, BVH, accumulation, HDRI,
 // textures, medium-failure counts). Request that limit only on this independent path device: raster and
@@ -99,7 +111,8 @@ fn open_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
 }
 fn open_headless() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let policy = crate::select::Policy::from_env().map_err(gpu)?;
-    let (adapter, _) = crate::select::pick(policy).ok_or_else(|| gpu(format!("no gpu-path adapter satisfies {}", policy.name())))?;
+    let (adapter, _) = crate::select::pick_vulkan(policy, |_| true)
+        .ok_or_else(|| gpu(format!("{VULKAN_ONLY}; no Vulkan adapter satisfies SOLIDCRAFT_GPU={}", policy.name())))?;
     let (device, queue) = open_device(&adapter)?;
     Ok((adapter, device, queue))
 }
