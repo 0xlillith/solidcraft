@@ -283,6 +283,9 @@ pub struct Tokens {
     pub form_primary: Color32,
     pub form_error: Color32,
     pub form_error_fill: Color32,
+    /// Successful validation text and its badge surface.
+    pub form_success: Color32,
+    pub form_success_fill: Color32,
     /// Corner radius of dense form controls and actions.
     pub control_radius: u8,
     /// Width of the dense form label column.

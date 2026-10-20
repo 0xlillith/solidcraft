@@ -28,6 +28,20 @@ macro_rules! element {
 
 // One entry per element/variant: names, rendering and geometry expectations stay together.
 const ELEMENTS: &[Element] = &[
+    element!("command_search", |ui, _| {
+        let mut query = "fillet".to_owned();
+        CommandSearch::field(ui, &mut query, false, true, 4096);
+        Menu::show(ui, ui.available_width(), |ui| {
+            CommandSearch::heading(ui, "search.commands", 1);
+            let c = solidcraft_engine::find_command("solid.fillet").unwrap();
+            let mut row = MenuItem::new(c.id, c.label, c.icon);
+            row.highlighted = true;
+            row.shortcut = "F";
+            row.search_row(ui, &query, "MODEL › MODIFY", None);
+            CommandSearch::detail(ui, "radius  6 mm");
+            CommandSearch::footer(ui, false);
+        });
+    }),
     element!("menu", |ui, _| {
         Menu::show(ui, 268.0, |ui| {
             Menu::heading(ui, "Body");
@@ -682,7 +696,7 @@ const ELEMENTS: &[Element] = &[
 fn example(ui: &mut Ui, element: &Element) -> (&'static str, Option<&'static str>) {
     let mut sample = Sample { value: "12 mm".into(), second: "25 mm".into(), selected: 0, checked: true };
     let rect = ui.scope(|ui| (element.draw)(ui, &mut sample)).response.rect;
-    if matches!(element.name, "menu" | "menu_submenu" | "rename_menu" | "workspace_menu") {
+    if matches!(element.name, "menu" | "menu_submenu" | "rename_menu" | "workspace_menu" | "command_search") {
         // A popup's elevation is painted outside its layout rectangle. Reserve those
         // actual shadow bounds as part of the gallery sample, keeping the paint guard strict.
         ui.expand_to_include_rect(rect + Menu::frame().shadow.margin());
@@ -1077,6 +1091,73 @@ fn menu_board_in_both_themes() {
         if let Ok(dir) = std::env::var("SOLIDCRAFT_MENU_EVIDENCE") {
             std::fs::create_dir_all(&dir).unwrap();
             image.save(std::path::Path::new(&dir).join(if dark { "menus-dark.png" } else { "menus-light.png" })).unwrap();
+        }
+    }
+    crate::theme::set_dark(previous);
+}
+
+/// CPU raster of the actual popup in all five board states. No display or GPU required.
+#[test]
+fn command_search_board_in_both_themes() {
+    use super::checks::tests::{raster, textures_update};
+    use std::collections::HashMap;
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        let t = Tokens::get();
+        assert!(crate::theme::contrast_ratio(t.form_success, t.form_success_fill) >= 4.5);
+        assert!(crate::theme::contrast_ratio(t.selected_ink, t.accent_soft) >= 4.5);
+        for (state, query) in [
+            ("empty", ""),
+            ("matches", "fillet"),
+            ("command", r#"solid.extrude {"distance":20}"#),
+            ("invalid", r#"solid.extrude {"distance":}"#),
+            ("no-match", "filletttt"),
+        ] {
+            let ctx = crate::fonts::test_context();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let mut app = crate::test_support::sample_app();
+            app.run("parameters.add", serde_json::json!({"name":"fillet_radius","expression":"6 mm"})).unwrap();
+            app.sbox.used("solid.extrude");
+            app.sbox.used("solid.fillet");
+            app.sbox.used("sketch.create");
+            crate::shortcut_box::open(&mut app, Some(egui::pos2(20.0, 20.0)));
+            app.sbox.text = query.to_owned();
+            let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(570.0, 650.0));
+            let mut textures = HashMap::new();
+            let mut image = None;
+            for _ in 0..3 {
+                scenario::clear_handles();
+                let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(bounds), focused: true, ..Default::default() }, |ui| {
+                    ui.painter().rect_filled(bounds, 0.0, Tokens::get().panel);
+                    crate::shortcut_box::show(&mut app, ui.ctx());
+                });
+                textures_update(&mut textures, &output.textures_delta);
+                output.textures_delta.clear();
+                image = Some(raster(&ctx, output.shapes, output.pixels_per_point, bounds, &textures));
+            }
+            let popup = scenario::rect_of("ribbon:search_popup").unwrap();
+            let field = scenario::rect_of("shortcut:search").unwrap();
+            assert_eq!(field.height(), 40.0);
+            assert_eq!(popup.width(), 520.0);
+            assert!(bounds.contains_rect(popup), "{state}: {popup:?}");
+            match state {
+                "matches" => {
+                    assert!(scenario::handle_at("menu:solid.fillet").is_some());
+                    assert_eq!(scenario::rect_of("menu:solid.fillet").unwrap().height(), 38.0);
+                    assert!(scenario::handle_at("menu:search:design:0").is_some());
+                }
+                "command" => assert!(scenario::rect_of("dialog:note:command_parameters").is_some()),
+                "invalid" => assert!(scenario::rect_of("dialog:report:command_parameters").is_some()),
+                "no-match" => assert!(scenario::rect_of("dialog:report:search_no_match").is_some()),
+                _ => {}
+            }
+            let image = image.unwrap();
+            assert!(image.pixels().any(|p| p.0[3] != 0));
+            if let Ok(dir) = std::env::var("SOLIDCRAFT_SEARCH_EVIDENCE") {
+                std::fs::create_dir_all(&dir).unwrap();
+                image.save(std::path::Path::new(&dir).join(format!("search-{state}-{}.png", if dark { "dark" } else { "light" }))).unwrap();
+            }
         }
     }
     crate::theme::set_dark(previous);

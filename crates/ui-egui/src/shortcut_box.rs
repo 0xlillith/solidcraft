@@ -1,23 +1,21 @@
-//! The S box: a command search that opens at the cursor (the S key). It searches every command by
-//! name, id, toolbar tab and panel with a forgiving (fuzzy) match. With nothing typed it lists
-//! the recent commands first. Pinned commands sit in a row of icons on top, a small toolbar of
-//! favourites. Up/Down choose, Enter runs, Esc closes. Recent and pinned commands are kept
-//! between runs.
+//! Ribbon-anchored command search. Ranking comes from the registry; document results use
+//! existing feature-edit and parameter commands. JSON mode never starts an interactive tool.
 
-use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use egui::{Pos2, Rect, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::command_specs;
 
 use crate::theme::Tokens;
-use crate::{SolveApp, icons, ui_kit};
+use crate::{SolveApp, ui_kit};
 
 /// How many recent commands are kept.
 const RECENT: usize = 12;
-const W: f32 = 340.0;
+pub(crate) const MAX_QUERY: usize = 4096;
+const MAX_RESULTS: usize = 80;
 
 #[derive(Default)]
 pub struct ShortcutBox {
-    /// Where it opened (the cursor), while open.
+    /// Fallback anchor when there is no ribbon (headless tests).
     at: Option<Pos2>,
     /// The highlighted row.
     index: usize,
@@ -30,6 +28,7 @@ pub struct ShortcutBox {
     /// Most recent first.
     pub recent: Vec<String>,
     pub pinned: Vec<String>,
+    design: Option<(u64, Vec<DesignRow>)>,
 }
 
 impl ShortcutBox {
@@ -38,13 +37,19 @@ impl ShortcutBox {
     }
     pub fn load(&mut self, v: &Value) {
         let list = |k: &str| -> Vec<String> {
-            v.get(k).and_then(Value::as_array).map(|a| a.iter().take(64).filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+            v.get(k)
+                .and_then(Value::as_array)
+                .map(|a| a.iter().take(64).filter_map(|x| x.as_str().filter(|s| s.len() <= 256).map(str::to_string)).collect())
+                .unwrap_or_default()
         };
         self.recent = list("recent");
         self.pinned = list("pinned");
     }
     /// A command was run from the box: it goes to the front of the recent list.
     pub fn used(&mut self, id: &str) {
+        if solidcraft_engine::find_command(id).is_none() {
+            return;
+        }
         self.recent.retain(|r| r != id);
         self.recent.insert(0, id.to_string());
         self.recent.truncate(RECENT);
@@ -120,7 +125,7 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
                 .max(score(&q, c.id) * 9 / 10)
                 .max(score(&q, tab).max(score(&q, home_tab)) / 3)
                 .max(score(&q, panel).max(score(&q, home_panel)) / 3);
-            let recent = app.sbox.recent.iter().position(|r| r == c.id).map_or(0, |i| 2000 - i as u32);
+            let recent = app.sbox.recent.iter().position(|r| r == c.id).map_or(0, |i| 2000u32.saturating_sub(i.min(2000) as u32));
             // Commands that can run now come before those that can't.
             let usable = if c.info(&app.session).enabled { 150 } else { 0 };
             (s > 0).then_some((s + usable + if q.is_empty() { recent } else { recent / 20 }, (c.id, label, c.icon, place)))
@@ -130,32 +135,113 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
     v.into_iter().map(|(_, row)| row).collect()
 }
 
-/// A row's right-hand side, ending at `at`: the shortcut, then where the command lives
-/// ("Sketch › Create"). The separator is drawn, centred on the ink of the panel's name: a
-/// font's "›", or one centred on the row, sits low beside Japanese or Chinese words.
-fn paint_key_and_place(painter: &egui::Painter, at: Pos2, key: &str, place: Option<(&str, &str)>, color: egui::Color32) {
-    let font = FontId::proportional(crate::theme::Tokens::get().font_panel);
-    // One piece of text ending at `x`, centred on the row: its left edge and the middle of its ink.
-    let piece = |x: f32, text: &str| -> (f32, f32) {
-        let galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
-        let pos = pos2(x - galley.size().x, at.y - galley.size().y / 2.0);
-        let ink = galley
-            .rows
-            .first()
-            .filter(|r| r.row.visuals.mesh_bounds.is_positive())
-            .map_or(galley.size().y / 2.0, |r| r.pos.y + r.row.visuals.mesh_bounds.center().y);
-        painter.galley(pos, galley, color);
-        (pos.x, pos.y + ink)
+#[derive(Clone, Debug)]
+enum DesignTarget {
+    Feature(u64),
+    Parameter(String),
+}
+
+#[derive(Clone, Debug)]
+struct DesignRow {
+    label: String,
+    detail: String,
+    icon: &'static str,
+    target: DesignTarget,
+}
+
+fn bounded(text: &str) -> String {
+    text.chars().take(MAX_QUERY).collect()
+}
+
+fn design_rows(app: &mut SolveApp, query: &str) -> Vec<DesignRow> {
+    if app.sbox.design.as_ref().is_none_or(|(revision, _)| *revision != app.session.revision) {
+        let doc = &app.session.doc;
+        let params = doc.param_rows();
+        let values: std::collections::BTreeMap<_, _> = params.iter().take(20_000).map(|p| (p.name.as_str(), p)).collect();
+        let mut rows = Vec::new();
+        for feature in doc.features.iter().take(10_000) {
+            let value = feature
+                .param_names
+                .iter()
+                .take(64)
+                .find_map(|name| values.get(name.as_str()))
+                .map(|p| p.value.filter(|v| v.is_finite()).map_or_else(|| bounded(&p.expression), |v| format!("{v} {}", p.unit)))
+                .unwrap_or_default();
+            rows.push(DesignRow {
+                label: bounded(&feature.name),
+                detail: format!("{} · {value}", crate::i18n::tr("search.feature")),
+                icon: crate::timeline::icon_of(&feature.kind),
+                target: DesignTarget::Feature(feature.id),
+            });
+        }
+        let icon = solidcraft_engine::find_command("parameters.change").map_or("", |c| c.icon);
+        for p in params.iter().filter(|p| p.source == "user").take(10_000) {
+            let value = p.value.filter(|v| v.is_finite()).map_or_else(|| bounded(&p.expression), |v| format!("{v} {}", p.unit));
+            rows.push(DesignRow {
+                label: bounded(&p.name),
+                detail: format!("{} · {value}", crate::i18n::tr("search.parameter")),
+                icon,
+                target: DesignTarget::Parameter(p.name.clone()),
+            });
+        }
+        app.sbox.design = Some((app.session.revision, rows));
+    }
+    let q = query.trim().to_lowercase();
+    let mut rows: Vec<_> = app
+        .sbox
+        .design
+        .as_ref()
+        .into_iter()
+        .flat_map(|(_, rows)| rows)
+        .filter_map(|row| {
+            let rank = score(&q, &row.label);
+            (rank > 0).then_some((rank, row.clone()))
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.label.cmp(&b.1.label)));
+    rows.into_iter().take(24).map(|(_, row)| row).collect()
+}
+
+/// Same split, serde parser and error messages as the original command line.
+fn typed(line: &str) -> Option<(&str, Result<Value, String>)> {
+    let line = line.trim();
+    if !line.contains('{') {
+        return None;
+    }
+    let split = line.find(|c: char| c.is_whitespace() || c == '{').unwrap_or(line.len());
+    let id = line.get(..split).unwrap_or_default();
+    let rest = line.get(split..).unwrap_or_default().trim();
+    let result = if solidcraft_engine::find_command(id).is_none() {
+        Err(crate::i18n::format("shortcut.no_command", &[("id", id)]))
+    } else {
+        serde_json::from_str::<Value>(rest).map_err(|e| crate::i18n::format("shortcut.json_error", &[("error", &e.to_string())]))
     };
-    let mut x = at.x;
-    if let Some((tab, panel)) = place {
-        let (left, ink) = piece(x, panel);
-        icons::glyphs::breadcrumb(painter, pos2(left - 5.0, ink), color);
-        x = piece(left - 10.0, tab).0 - 14.0;
-    }
-    if !key.is_empty() {
-        piece(x, key);
-    }
+    Some((id, result))
+}
+
+/// Bounded Levenshtein distance also handles transposed/missing letters in a no-match query.
+fn closest(query: &str) -> Option<&'static str> {
+    let q: Vec<_> = query.trim().to_lowercase().chars().take(128).collect();
+    command_specs()
+        .into_iter()
+        .map(|c| {
+            let label = crate::i18n::tr_label(c.label);
+            let mut prev: Vec<_> = (0..=q.len()).collect();
+            for (j, ch) in label.to_lowercase().chars().take(128).enumerate() {
+                let mut next = vec![j + 1];
+                for (i, qc) in q.iter().enumerate() {
+                    next.push(
+                        (prev.get(i).copied().unwrap_or(128) + usize::from(ch != *qc))
+                            .min(prev.get(i + 1).copied().unwrap_or(128) + 1)
+                            .min(next.last().copied().unwrap_or(128) + 1),
+                    );
+                }
+                prev = next;
+            }
+            (prev.last().copied().unwrap_or(128), label)
+        })
+        .min()
+        .map(|(_, label)| label)
 }
 
 /// Open the box at a point (the cursor), or at the middle of the window.
@@ -165,36 +251,28 @@ pub fn open(app: &mut SolveApp, at: Option<Pos2>) {
     app.sbox.index = 0;
     app.sbox.text.clear();
     app.sbox.focus = true;
+    app.sbox.design = None;
 }
 
 /// A line typed as `command.id {"param": value}`: the command runs at once with those parameters
 /// (the same entry the bottom command line used to take).
 fn run_typed(app: &mut SolveApp, line: &str) {
-    let line = line.trim();
-    app.ui.palette_open = false;
-    app.sbox.at = None;
-    app.sbox.text.clear();
-    let split = line.find(|c: char| c.is_whitespace() || c == '{').unwrap_or(line.len());
-    let (id, rest) = (line.get(..split).unwrap_or_default(), line.get(split..).unwrap_or_default().trim());
-    let Some(command) = solidcraft_engine::find_command(id) else {
-        app.set_status(crate::i18n::format("shortcut.no_command", &[("id", id)]), true);
-        return;
-    };
-    match serde_json::from_str::<Value>(rest) {
-        Ok(params) => {
-            app.sbox.used(command.id);
-            let _ = app.run(command.id, params);
+    if let Some((id, result)) = typed(line) {
+        match result {
+            Ok(params) => {
+                app.sbox.used(id);
+                let _ = app.run(id, params);
+            }
+            Err(error) => app.set_status(error, true),
         }
-        Err(e) => app.set_status(crate::i18n::format("shortcut.json_error", &[("error", &e.to_string())]), true),
     }
+    close(app);
 }
 
-fn run(app: &mut SolveApp, id: &str) {
-    app.sbox.used(id);
+fn close(app: &mut SolveApp) {
     app.ui.palette_open = false;
     app.sbox.at = None;
     app.sbox.text.clear();
-    app.start(id);
 }
 
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
@@ -205,152 +283,238 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let t = Tokens::get();
     let screen = ctx.content_rect();
-    // Opened without `open` (a feature edit that falls through to the box): focus once.
     if app.sbox.at.is_none() {
         app.sbox.focus = true;
     }
-    let at = *app.sbox.at.get_or_insert_with(|| ctx.input(|i| i.pointer.latest_pos()).unwrap_or(screen.center()));
-    let list = search(app, &app.sbox.text);
-    let (up, down, enter, esc) = ctx.input(|i| {
-        (i.key_pressed(egui::Key::ArrowUp), i.key_pressed(egui::Key::ArrowDown), i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape))
-    });
-    if down {
-        app.sbox.index = (app.sbox.index + 1).min(list.len().saturating_sub(1));
-    }
-    if up {
-        app.sbox.index = app.sbox.index.saturating_sub(1);
-    }
-    let mut picked: Option<&'static str> = None;
-    let mut pin: Option<&'static str> = None;
-    let mut menu: Option<(Pos2, &'static str)> = None;
-    let w = W.min((screen.width() - 8.0).max(32.0));
-    let h = 380.0_f32.min((screen.height() - 8.0).max(120.0));
+    let fallback = *app.sbox.at.get_or_insert(screen.center());
+    let anchor =
+        ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("sc_ribbon_search"))).map(|r| r.left_bottom() + vec2(0.0, t.space_6)).unwrap_or(fallback);
+    let anchor = if anchor.x.is_finite() && anchor.y.is_finite() { anchor } else { screen.center() };
+    app.sbox.text = bounded(&app.sbox.text);
+    let width = ui_kit::CommandSearch::width().min((screen.width() - t.space_8).max(t.space_24));
+    let height = (screen.height() - anchor.y - t.space_8).max(t.space_24 * 4.0);
     let pos = pos2(
-        at.x.clamp(screen.left() + 4.0, (screen.right() - w - 4.0).max(screen.left() + 4.0)),
-        at.y.clamp(screen.top() + 4.0, (screen.bottom() - h).max(screen.top() + 4.0)),
+        anchor.x.clamp(screen.left() + t.space_4, (screen.right() - width - t.space_4).max(screen.left() + t.space_4)),
+        anchor.y.max(screen.top() + t.space_4),
     );
-    let resp = crate::frame::area(egui::Id::new("sc_sbox")).fixed_pos(pos).order(egui::Order::Foreground).show(ctx, |ui| {
-        crate::context_menu::menu_frame(ui, |ui| {
-            ui_kit::scope(ui, |ui| {
-                ui.set_width(w - 10.0);
-                // Pinned commands: a mini toolbar.
-                if !app.sbox.pinned.is_empty() {
-                    ui.horizontal_wrapped(|ui| {
-                        for id in app.sbox.pinned.clone() {
-                            let Some(c) = solidcraft_engine::find_command(&id) else { continue };
-                            let (r, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-                            if resp.hovered() {
-                                ui.painter().rect_filled(r, 4.0, t.hover);
-                            }
-                            icons::paint(ui.painter(), r.shrink(5.0), c.icon, t.icon, t.icon_fill, t.accent);
-                            if resp.on_hover_text(crate::i18n::tr_label(c.label)).clicked() {
-                                picked = Some(c.id);
-                            }
-                        }
-                    });
-                    ui.separator();
+    let (up, down, enter, esc, tab, keep) = ctx.input(|i| {
+        (
+            i.key_pressed(egui::Key::ArrowUp),
+            i.key_pressed(egui::Key::ArrowDown),
+            i.key_pressed(egui::Key::Enter),
+            i.key_pressed(egui::Key::Escape),
+            i.key_pressed(egui::Key::Tab),
+            i.modifiers.shift,
+        )
+    });
+    let mut picked = None;
+    let mut menu = None;
+    let mut rows = Vec::new();
+    let mut design = Vec::new();
+    let mut mode = None;
+    let response = crate::frame::area(egui::Id::new("sc_sbox")).fixed_pos(pos).order(egui::Order::Foreground).fade_in(false).show(ctx, |ui| {
+        ui.set_width(width);
+        ui.spacing_mut().item_spacing.y = t.space_6;
+        ui_kit::scope(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = t.space_6;
+            let invalid = typed(&app.sbox.text).is_some_and(|(_, result)| result.is_err());
+            let field = ui_kit::CommandSearch::field(ui, &mut app.sbox.text, invalid, std::mem::take(&mut app.sbox.focus), MAX_QUERY);
+            if field.changed() {
+                app.sbox.index = 0;
+            }
+            mode = typed(&app.sbox.text).map(|(id, result)| (id.to_owned(), result));
+            if mode.is_none() {
+                rows = search(app, &app.sbox.text)
+                    .into_iter()
+                    .filter(|r| {
+                        !app.sbox.text.trim().is_empty()
+                            || (app.sbox.recent.is_empty() && app.sbox.pinned.is_empty())
+                            || app.sbox.recent.iter().chain(&app.sbox.pinned).any(|id| id == r.0)
+                    })
+                    .take(if app.sbox.text.trim().is_empty() {
+                        if app.sbox.recent.is_empty() && app.sbox.pinned.is_empty() { 8 } else { MAX_RESULTS }
+                    } else {
+                        56
+                    })
+                    .collect();
+                design = if app.sbox.text.trim().is_empty() { Vec::new() } else { design_rows(app, &app.sbox.text.clone()) };
+            }
+            let enabled: Vec<_> = rows
+                .iter()
+                .map(|r| solidcraft_engine::find_command(r.0).is_some_and(|c| c.info(&app.session).enabled))
+                .chain(design.iter().map(|_| true))
+                .take(MAX_RESULTS)
+                .collect();
+            if down || up {
+                let step = if down { 1 } else { enabled.len().saturating_sub(1) };
+                for _ in 0..enabled.len() {
+                    app.sbox.index = (app.sbox.index + step) % enabled.len().max(1);
+                    if enabled.get(app.sbox.index).copied().unwrap_or(false) {
+                        break;
+                    }
                 }
-                let te = ui_kit::search_field(ui, egui::Id::new("sc_sbox_text"), &mut app.sbox.text, crate::i18n::tr_label("Search commands"));
-                crate::scenario::publish_rect("shortcut:search", te.rect);
-                if std::mem::take(&mut app.sbox.focus) {
-                    te.request_focus();
-                }
-                if te.changed() {
-                    app.sbox.index = 0;
-                }
-                ui.add_space(4.0);
-                if app.sbox.text.trim().is_empty() && !app.sbox.recent.is_empty() {
-                    ui.label(egui::RichText::new(crate::i18n::tr_label("RECENT")).size(crate::theme::Tokens::get().font_micro).color(t.text_dim));
-                }
-                egui::ScrollArea::vertical().max_height(h - 90.0).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    for (i, (id, label, icon, place)) in list.iter().enumerate().take(80) {
-                        let enabled = solidcraft_engine::find_command(id).is_some_and(|c| c.info(&app.session).enabled);
-                        let (r, resp) = ui.allocate_exact_size(vec2(w - 20.0, 26.0), Sense::click());
-                        let lit = i == app.sbox.index || resp.hovered();
-                        if lit {
-                            ui.painter().rect_filled(r, 4.0, t.hover);
-                            if i == app.sbox.index && (up || down) {
-                                ui.scroll_to_rect(r, None);
-                            }
-                        }
-                        let ink = if enabled { t.icon } else { t.border };
-                        icons::paint(
-                            ui.painter(),
-                            Rect::from_center_size(pos2(r.left() + 14.0, r.center().y), vec2(16.0, 16.0)),
-                            icon,
-                            ink,
-                            t.icon_fill,
-                            t.accent,
+            }
+            app.sbox.index = app.sbox.index.min(enabled.len().saturating_sub(1));
+            if !enabled.get(app.sbox.index).copied().unwrap_or(false) {
+                app.sbox.index = enabled.iter().position(|v| *v).unwrap_or(0);
+            }
+            ui_kit::Menu::show(ui, width, |ui| {
+                egui::ScrollArea::vertical().max_height((height - t.control_height * 4.0).max(t.control_height)).show(ui, |ui| {
+                    if let Some((id, result)) = &mode {
+                        let mut row = ui_kit::MenuItem::new(
+                            "search:run",
+                            crate::i18n::tr("search.run"),
+                            solidcraft_engine::find_command(id).map_or("", |c| c.icon),
                         );
-                        let col = if enabled { t.text } else { t.text_dim };
-                        ui.painter().text(
-                            pos2(r.left() + 30.0, r.center().y),
-                            Align2::LEFT_CENTER,
-                            label,
-                            FontId::proportional(crate::theme::Tokens::get().font_button),
-                            col,
-                        );
-                        let key = crate::keymap::effective(app, id).unwrap_or_default();
-                        paint_key_and_place(ui.painter(), pos2(r.right() - 26.0, r.center().y), &key, *place, t.text_dim);
-                        // The pin.
-                        let pinned = app.sbox.pinned.iter().any(|p| p == id);
-                        let pr = Rect::from_center_size(pos2(r.right() - 11.0, r.center().y), vec2(16.0, 16.0));
-                        let presp = ui.interact(pr, ui.id().with(("pin", *id)), Sense::click());
-                        if pinned || lit {
-                            let c = pr.center();
-                            let pts: Vec<Pos2> = (0..10)
-                                .map(|k| {
-                                    let a = std::f32::consts::PI * (k as f32 / 5.0) - std::f32::consts::FRAC_PI_2;
-                                    let rr = if k % 2 == 0 { 6.0 } else { 2.6 };
-                                    c + vec2(a.cos() * rr, a.sin() * rr)
-                                })
-                                .collect();
-                            if pinned {
-                                ui.painter().add(egui::Shape::convex_polygon(pts.clone(), t.warning, Stroke::NONE));
+                        row.enabled = result.is_ok();
+                        row.highlighted = true;
+                        let badge = crate::i18n::tr(if result.is_ok() { "search.valid" } else { "search.invalid" });
+                        row.shortcut = badge;
+                        if row
+                            .search_row(ui, "", id, Some(if result.is_ok() { ui_kit::SearchBadge::Valid } else { ui_kit::SearchBadge::Invalid }))
+                            .clicked()
+                        {
+                            picked = Some(0);
+                        }
+                        match result {
+                            Ok(params) => {
+                                ui_kit::CommandSearch::detail(ui, &format!("{id}\n{}", serde_json::to_string_pretty(params).unwrap_or_default()))
                             }
-                            ui.painter().add(egui::Shape::closed_line(pts, Stroke::new(1.0, if pinned { t.warning } else { t.text_dim })));
+                            Err(error) => {
+                                ui_kit::text(ui, error, ui_kit::Text::Error("command_parameters"));
+                            }
                         }
-                        if presp.on_hover_text(crate::i18n::tr(if pinned { "shortcut.unpin" } else { "shortcut.pin" })).clicked() {
-                            pin = Some(id);
-                        } else if resp.clicked() && enabled {
-                            picked = Some(id);
+                    } else {
+                        let empty = app.sbox.text.trim().is_empty();
+                        let mut last_recent = None;
+                        for (index, (id, label, icon, place)) in rows.iter().enumerate() {
+                            let recent = empty && app.sbox.recent.iter().any(|r| r == id);
+                            if last_recent != Some(recent) {
+                                let count = rows.iter().filter(|r| (empty && app.sbox.recent.iter().any(|id| id == r.0)) == recent).count();
+                                ui_kit::CommandSearch::heading(ui, if recent { "search.recent" } else { "search.commands" }, count);
+                                last_recent = Some(recent);
+                            }
+                            let mut item = ui_kit::MenuItem::new(id, label, icon);
+                            item.enabled = enabled.get(index).copied().unwrap_or(false);
+                            item.highlighted = index == app.sbox.index;
+                            let shortcut = crate::keymap::effective(app, id).unwrap_or_default();
+                            item.shortcut = &shortcut;
+                            let path = place.map_or_else(|| id.to_string(), |(tab, panel)| format!("{tab} › {panel}"));
+                            let response = item.search_row(ui, &app.sbox.text, &path, None);
+                            if item.highlighted && (up || down) {
+                                ui.scroll_to_rect(response.rect, None);
+                            }
+                            if response.clicked() {
+                                picked = Some(index);
+                            }
+                            if response.secondary_clicked() {
+                                menu = Some((response.rect.left_bottom(), (*id).to_owned()));
+                            }
                         }
-                        if resp.secondary_clicked() {
-                            menu = Some((resp.interact_pointer_pos().unwrap_or(r.left_bottom()), id));
+                        if !design.is_empty() {
+                            ui_kit::CommandSearch::heading(ui, "search.design", design.len());
+                        }
+                        for (index, row) in design.iter().enumerate() {
+                            let handle = format!("search:design:{index}");
+                            let mut item = ui_kit::MenuItem::new(&handle, &row.label, row.icon);
+                            item.highlighted = app.sbox.index == rows.len() + index;
+                            let badge = crate::i18n::tr(match row.target {
+                                DesignTarget::Feature(_) => "search.feature",
+                                DesignTarget::Parameter(_) => "search.parameter",
+                            });
+                            item.shortcut = badge;
+                            let response = item.search_row(ui, &app.sbox.text, &row.detail, Some(ui_kit::SearchBadge::Kind));
+                            if item.highlighted && (up || down) {
+                                ui.scroll_to_rect(response.rect, None);
+                            }
+                            if response.clicked() {
+                                picked = Some(rows.len() + index);
+                            }
+                        }
+                        if rows.is_empty() && design.is_empty() {
+                            ui.add_space(t.space_16);
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                                ui_kit::text(
+                                    ui,
+                                    &crate::i18n::format("search.no_match", &[("query", &app.sbox.text)]),
+                                    ui_kit::Text::Heading("search_no_match"),
+                                );
+                                if let Some(label) = closest(&app.sbox.text) {
+                                    ui_kit::text(
+                                        ui,
+                                        &crate::i18n::format("search.suggest", &[("label", label)]),
+                                        ui_kit::Text::Report("search_suggest", false),
+                                    );
+                                }
+                            });
+                            ui.add_space(t.space_8);
+                        }
+                        if empty {
+                            ui_kit::text(
+                                ui,
+                                &crate::i18n::format("search.try", &[("example", r#"solid.extrude {"distance": 20}"#)]),
+                                ui_kit::Text::Note("search_try"),
+                            );
                         }
                     }
                 });
-            })
+                ui_kit::CommandSearch::footer(ui, mode.is_some());
+            });
         });
     });
-    crate::scenario::publish_rect("ribbon:search_popup", resp.response.rect);
-    if let Some(id) = pin {
-        app.sbox.toggle_pin(id);
-    }
-    // A row's menu: pin to the toolbar or the shortcuts.
+    crate::scenario::publish_target("ribbon:search_popup", response.response.rect);
+    crate::scenario::publish_target("palette:outer", response.response.rect);
     if let Some((at, id)) = menu {
-        crate::context_menu::open_for(app, at, crate::context_menu::Target::ToolbarCommand { id: id.to_string() });
+        crate::context_menu::open_for(app, at, crate::context_menu::Target::ToolbarCommand { id });
         return;
     }
-    if enter && picked.is_none() && app.sbox.text.contains('{') {
-        let line = app.sbox.text.clone();
-        run_typed(app, &line);
-        return;
+    if tab && mode.is_none() {
+        if let Some(row) = rows.get(app.sbox.index) {
+            app.sbox.text = row.0.to_owned();
+        } else if let Some(row) = design.get(app.sbox.index.saturating_sub(rows.len())) {
+            app.sbox.text = row.label.clone();
+        }
+        app.sbox.focus = true;
     }
-    if enter
-        && picked.is_none()
-        && let Some((id, ..)) = list.get(app.sbox.index)
-    {
-        picked = Some(id);
+    if enter || picked.is_some() {
+        if mode.is_some() {
+            let line = app.sbox.text.clone();
+            // Invalid submissions retain the old error, while the field remains editable.
+            if let Some((_, Err(error))) = &mode {
+                app.set_status(error.clone(), true);
+            } else {
+                run_typed(app, &line);
+                if keep {
+                    app.ui.palette_open = true;
+                    app.sbox.at = Some(pos);
+                    app.sbox.text = line;
+                    app.sbox.focus = true;
+                }
+            }
+        } else {
+            let index = picked.unwrap_or(app.sbox.index);
+            if let Some((id, ..)) = rows.get(index).filter(|r| solidcraft_engine::find_command(r.0).is_some_and(|c| c.info(&app.session).enabled)) {
+                app.sbox.used(id);
+                close(app);
+                app.start(id);
+            } else if let Some(row) = design.get(index.saturating_sub(rows.len())).filter(|_| index >= rows.len()) {
+                let target = row.target.clone();
+                close(app);
+                match target {
+                    DesignTarget::Feature(id) => app.edit_feature(id),
+                    DesignTarget::Parameter(name) => {
+                        app.start("parameters.change");
+                        if let Some(dialog) = &mut app.params {
+                            dialog.filter = name;
+                        }
+                    }
+                }
+            }
+        }
     }
-    let outside = ctx.input(|i| i.pointer.any_pressed()) && !resp.response.contains_pointer();
-    if let Some(id) = picked {
-        run(app, id);
-    } else if esc || outside {
-        app.ui.palette_open = false;
-        app.sbox.at = None;
-        app.sbox.text.clear();
+    let outside = ctx.input(|i| i.pointer.any_pressed()) && !response.response.contains_pointer();
+    if esc || outside {
+        close(app);
     }
 }
 
@@ -477,5 +641,114 @@ mod tests {
         h.frames(2);
         assert_eq!(h.app.session.doc.features.len(), before + 1, "{:?}", h.app.status);
         assert!(!h.app.ui.palette_open);
+    }
+    #[test]
+    fn command_mode_preserves_parser_and_keeps_invalid_input_editable() {
+        assert!(typed("solid.box").is_none());
+        assert_eq!(typed(r#"solid.box {"length":10}"#).unwrap().1.unwrap(), json!({"length":10}));
+        assert!(typed("solid.box {}").unwrap().1.is_ok());
+        assert!(typed("not.a.command {}").unwrap().1.unwrap_err().contains("no command"));
+        let expected = serde_json::from_str::<Value>(r#"{"length": }"#).unwrap_err();
+        assert_eq!(
+            typed(r#"solid.box {"length": }"#).unwrap().1.unwrap_err(),
+            crate::i18n::format("shortcut.json_error", &[("error", &expected.to_string())])
+        );
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.call("ui.palette", json!({"text": r#"solid.box {"length": }"#}));
+        h.frames(3);
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(h.app.ui.palette_open);
+        assert!(h.app.sbox.text.contains("length"));
+        assert!(h.app.status.as_ref().is_some_and(|(s, _, error)| *error && s.contains("JSON")));
+        assert!(h.app.session.doc.features.is_empty());
+    }
+
+    #[test]
+    fn shift_enter_runs_json_and_retains_the_query_and_focus() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        let query = r#"solid.box {"length":10,"width":10,"height":10}"#;
+        h.call("ui.palette", json!({"text":query}));
+        h.frames(3);
+        h.step(&json!({"key":"Enter", "shift":true})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.session.doc.features.len(), 1, "{:?}", h.app.status);
+        assert!(h.app.ui.palette_open);
+        assert_eq!(h.app.sbox.text, query);
+        assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new("sc_sbox_text"))));
+        h.step(&json!({"key":"Enter"})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.session.doc.features.len(), 2);
+        assert!(!h.app.ui.palette_open);
+    }
+
+    #[test]
+    fn document_results_open_existing_feature_and_parameter_editors() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.run("solid.box", json!({"length":6,"width":6,"height":6})).unwrap();
+        h.app.run("parameters.add", json!({"name":"box_width", "expression":"6 mm"})).unwrap();
+        let rows = design_rows(&mut h.app, "box");
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().any(|r| matches!(r.target, DesignTarget::Feature(_)) && r.detail.contains("6 mm")));
+        assert!(rows.iter().any(|r| matches!(r.target, DesignTarget::Parameter(_)) && r.detail.contains("6 mm")));
+        h.call("ui.palette", json!({"text":"box_width"}));
+        h.frames(3);
+        h.step(&json!({"key":"Enter"})).unwrap();
+        assert!(!h.app.ui.palette_open);
+        assert_eq!(h.app.params.as_ref().unwrap().filter, "box_width");
+        h.app.params = None;
+        h.call("ui.palette", json!({"text":"box"}));
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"menu:search:design:0"}})).unwrap();
+        assert!(!h.app.ui.palette_open);
+        assert!(h.app.dialog.is_some(), "a feature opens its existing edit dialog");
+    }
+
+    #[test]
+    fn tab_fills_selected_registry_id_arrows_choose_and_escape_closes() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.call("ui.start", json!({"command":"ui.palette"}));
+        h.frames(3);
+        h.step(&json!({"text":"solid."})).unwrap();
+        let first = h.app.sbox.index;
+        h.step(&json!({"key":"ArrowDown"})).unwrap();
+        assert_ne!(h.app.sbox.index, first);
+        h.step(&json!({"key":"ArrowUp"})).unwrap();
+        assert_eq!(h.app.sbox.index, first);
+        h.step(&json!({"key":"Tab"})).unwrap();
+        assert_eq!(h.app.sbox.text, "solid.box");
+        assert_eq!(crate::scenario::rect_of("palette:outer"), crate::scenario::rect_of("ribbon:search_popup"));
+        assert_eq!(crate::scenario::rect_of("palette:search"), crate::scenario::rect_of("shortcut:search"));
+        h.step(&json!({"key":"Escape"})).unwrap();
+        assert!(!h.app.ui.palette_open && h.app.sbox.text.is_empty());
+    }
+
+    #[test]
+    fn hostile_queries_and_non_finite_anchors_are_bounded() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        open(&mut h.app, Some(pos2(f32::NAN, f32::INFINITY)));
+        h.app.sbox.text = "界".repeat(MAX_QUERY * 2);
+        h.frames(3);
+        assert_eq!(h.app.sbox.text.chars().count(), MAX_QUERY);
+        assert!(crate::scenario::rect_of("ribbon:search_popup").unwrap().is_finite());
+        assert!(crate::scenario::handles("menu:").len() <= MAX_RESULTS);
+        assert_eq!(closest("fliet"), Some("Fillet"));
+        h.call("ui.palette", json!({"open":false}));
+        assert!(!h.app.ui.palette_open);
+    }
+    #[test]
+    fn saved_pins_remain_visible_without_a_query_or_recent_commands() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.sbox.load(&json!({"pinned":["solid.extrude"]}));
+        h.call("ui.palette", json!({}));
+        h.frames(3);
+        assert!(h.app.sbox.recent.is_empty());
+        assert!(crate::scenario::rect_of("menu:solid.extrude").is_some());
+        assert_eq!(crate::scenario::handles("menu:").len(), 1);
     }
 }

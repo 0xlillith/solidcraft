@@ -67,8 +67,15 @@
   value box in the viewport.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll
   back, and drag features to reorder them.
-- **S box.** Press S anywhere for a command search at the cursor. Pin the commands you use most
-  to its top.
+- **Command search (S).** Click the ribbon search field or press S to open the search popup
+  below it. Results group commands by their ribbon path and show matching features and user
+  parameters from this design. With an empty query, recent commands appear first, followed by
+  pinned commands in the Commands group. Up/Down
+  choose, Enter runs, Tab fills the selected name, and Esc closes. A feature opens its existing
+  editor; a parameter opens Change Parameters filtered to its name. To run with explicit values,
+  enter an id and JSON object, for example `solid.extrude {"distance": 20}`. The popup validates
+  JSON as you type and shows parser errors. Shift+Enter runs it and keeps the popup open.
+  Right-click a command for its existing pin and toolbar actions.
 
 Preferences (File › Preferences) hold the theme, the units of new designs, the mouse preset, the
 visual style and autosave. Graphics › Colour vision gives the colours that carry a meaning (sketch

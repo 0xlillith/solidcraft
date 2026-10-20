@@ -408,6 +408,18 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
             ok(json!(app.cam))
         }
         "ui.camera" => wrap(camera(app, p)),
+        "ui.palette" => {
+            if p.get("open").and_then(Value::as_bool) == Some(false) {
+                app.ui.palette_open = false;
+                app.sbox.text.clear();
+            } else {
+                app.start("ui.palette");
+                if let Some(query) = s("text") {
+                    app.sbox.text = query.chars().take(crate::shortcut_box::MAX_QUERY).collect();
+                }
+            }
+            ok(json!({"open": app.ui.palette_open, "text": app.sbox.text}))
+        }
         "ui.start" => {
             let Some(id) = s("command") else { return err("missing `command`") };
             // `params`: what the dialog opens on. Refused: nothing starts, or the dialog closes.

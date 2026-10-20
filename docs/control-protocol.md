@@ -227,3 +227,18 @@ UI callers apply the camera with their animation preference, without editing the
 
 Shift-orbit snapping includes 45-degree edge views and isometric corner views, with a
 lightly damped spring transition and a small boundary margin to prevent flicker.
+
+### Command search
+
+`ui.palette {text?, open?}` opens command search under the ribbon search field; `open: false`
+closes it. `ui.start {command: "ui.palette"}`, clicking `ribbon:search`, and S open the same
+popup. This is UI routing: `engine.execute` continues to run commands without opening dialogs.
+The query is limited to 4096 Unicode characters, with at most 80 visible results.
+
+`shortcut:search` and `palette:search` identify the editor; `ribbon:search_popup` and
+`palette:outer` identify the popup. Command rows retain `menu:<command id>`; design rows use
+`menu:search:design:<index>`. Up/Down choose an enabled row, Enter runs it, Tab fills its id or
+name, and Esc closes. Typing `command.id {"parameter": value}` validates JSON live and runs
+through the same engine entry as `engine.execute`. Shift+Enter runs JSON and keeps the query
+open. Invalid JSON stays editable and reports the parser's error. Feature results open their
+existing edit tools; parameter results open Change Parameters filtered to that name.

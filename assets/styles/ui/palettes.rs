@@ -44,6 +44,8 @@ impl Tokens {
             form_primary: Color32::from_rgb(35, 110, 173),
             form_error: Color32::from_rgb(161, 52, 44),
             form_error_fill: Color32::from_rgb(252, 239, 237),
+            form_success: Color32::from_rgb(39, 107, 44),
+            form_success_fill: Color32::from_rgb(229, 242, 230),
             control_radius: 6,
             form_label_width: 70.0,
             form_gap_y: 5.0,
@@ -346,6 +348,8 @@ impl Tokens {
         t.form_primary = t.accent;
         t.form_error = t.error;
         t.form_error_fill = t.timeline_item_error;
+        t.form_success = Color32::from_rgb(143, 219, 154);
+        t.form_success_fill = Color32::from_rgb(44, 74, 51);
         t
     }
 
@@ -363,6 +367,12 @@ impl Tokens {
         t.analysis.draft = [positive, [0.95, 0.90, 0.60], negative];
         t.analysis.access = [positive, negative];
         t.analysis.hatch = true;
+        // Keep validation badges separate from red errors under both red-green
+        // simulations, while retaining their explicit Valid / Not valid labels.
+        t.form_success_fill = if dark { Color32::from_rgb(44, 57, 67) } else { Color32::from_rgb(227, 227, 246) };
+        if !dark {
+            t.form_success = Color32::from_rgb(39, 88, 78);
+        }
         // The icons that show the same meanings follow; on the dark toolbar the blue is a little
         // stronger, to stay clear of the icon fill.
         let good = if dark { Color32::from_rgb(35, 115, 245) } else { Color32::from_rgb(51, 115, 230) };

@@ -771,11 +771,6 @@ fn ribbon_text(ui: &egui::Ui, at: egui::Pos2, text: &str, size: f32, color: Colo
     ui.painter().galley(origin, galley, color);
 }
 
-/// The ribbon and S shortcut share one popup anchor, including after resizing.
-fn search_anchor(ctx: &egui::Context) -> Option<egui::Pos2> {
-    ctx.data(|d| d.get_temp::<Rect>(egui::Id::new("sc_ribbon_search"))).map(|r| r.left_bottom() + vec2(0.0, 3.0))
-}
-
 fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
     let t = Tokens::get();
     let tabs = crate::workspace::visible_tabs(app);
@@ -820,7 +815,7 @@ fn ribbon_tabs(app: &mut SolveApp, ui: &mut egui::Ui, row: Rect) {
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     if resp.on_hover_text(label).clicked() {
-        crate::shortcut_box::open(app, search_anchor(ui.ctx()));
+        app.start("ui.palette");
     }
     let changed = ui.ctx().data_mut(|d| {
         let id = egui::Id::new("sc_ribbon_visible_tab");
@@ -1870,8 +1865,7 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 // is what leaves it, so a second Escape after putting a tool down is harmless.
             }
             Key::S if !mods.shift && !mods.alt => {
-                let at = search_anchor(ctx).or_else(|| ctx.input(|i| i.pointer.latest_pos()));
-                crate::shortcut_box::open(app, at);
+                app.start("ui.palette");
             }
             Key::V => crate::context_menu::toggle_visibility(app),
             Key::F2 => {

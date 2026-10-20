@@ -281,7 +281,15 @@ fn groups(t: &Tokens) -> Vec<Group> {
         group("card text", &[("form_ink", t.form_ink), ("form_error", t.form_error)], &[("dialog_body", t.dialog_body)]),
         group("card hints", &[("form_dim", t.form_dim)], &[("dialog_body", t.dialog_body)]),
         group("card primary", &[("form_primary", t.form_primary)], &[("dialog_body", t.dialog_body)]),
-        group("card validation", &[("form_error", t.form_error)], &[("form_error_fill", t.form_error_fill)]),
+        // Validation is identified by its words as well as colour. Measure both the
+        // ink and badge surfaces against the corresponding failure states.
+        group(
+            "card validation",
+            &[("form_success", t.form_success), ("form_error", t.form_error)],
+            &[("form_success_fill", t.form_success_fill), ("form_error_fill", t.form_error_fill)],
+        ),
+        group("validation status", &[("form_success", t.form_success), ("error", t.error)], &[("panel", t.panel)]),
+        group("validation surfaces", &[("form_success_fill", t.form_success_fill), ("form_error_fill", t.form_error_fill)], &[]),
         group("UI text", &[("error", t.error), ("warning", t.warning), ("text", t.text)], &[("panel", t.panel)]),
         group("origin axes", &[("axis_x", t.axis_x), ("axis_y", t.axis_y), ("axis_z", t.axis_z)], &[("viewport_top", t.viewport_top)]),
         group("view triad", &[("triad[0]", t.triad[0]), ("triad[1]", t.triad[1]), ("triad[2]", t.triad[2])], &[("viewport_top", t.viewport_top)]),
@@ -738,10 +746,11 @@ fn each_mode_changes_only_its_table() {
         "form_accent",
         "sketch_accent",
         "preview_sketch",
+        "form_success_fill",
     ];
     let mut red_green_light =
         red_green_both.into_iter().filter(|name| !["surface_accent", "mesh_accent", "form_accent"].contains(name)).collect::<Vec<_>>();
-    red_green_light.extend(["sketch_projected", "sketch_locked", "timeline_item_error", "construction_geom", "glyph_text"]);
+    red_green_light.extend(["sketch_projected", "sketch_locked", "timeline_item_error", "construction_geom", "glyph_text", "form_success"]);
     for (dark, mode, want) in [
         (false, ColorVision::Protan, set(&red_green_light)),
         (true, ColorVision::Protan, set(&red_green_both)),
@@ -819,6 +828,33 @@ fn every_mode_keeps_colours_apart_for_its_eye() {
             }
         }
     }
+}
+
+/// Badge meaning must survive each simulation even for subtle default tints (which
+/// the general groups check may otherwise skip when they are close for normal vision).
+#[test]
+fn validation_badges_are_distinct_and_readable_in_every_mode() {
+    let mut failures = Vec::new();
+    for dark in [false, true] {
+        for mode in std::iter::once(ColorVision::Off).chain(MODES) {
+            let t = Tokens::themed(dark, mode);
+            for (name, other) in [("form_error", t.form_error), ("error", t.error)] {
+                let distance = worst(mode, rgb(t.form_success), rgb(other));
+                if distance < FLOOR {
+                    failures.push(format!("{mode:?} dark={dark} form_success vs {name}: {distance:.2}"));
+                }
+            }
+            let distance = worst(mode, rgb(t.form_success_fill), rgb(t.form_error_fill));
+            if distance < FLOOR {
+                failures.push(format!("{mode:?} dark={dark} validation fills: {distance:.2}"));
+            }
+            let contrast = crate::theme::contrast_ratio(t.form_success, t.form_success_fill);
+            if contrast < 4.5 {
+                failures.push(format!("{mode:?} dark={dark} success contrast: {contrast:.2}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
