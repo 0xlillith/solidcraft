@@ -288,6 +288,13 @@ mod web {
                                         self.renaming = Some((e.name.clone(), e.name.clone()));
                                         self.rename_focus = true;
                                     }
+                                    if ui
+                                        .small_button("Save to computer…")
+                                        .on_hover_text("A copy in a file you choose; the stored design stays here")
+                                        .clicked()
+                                    {
+                                        act = Some(("save_copy", e.name.clone()));
+                                    }
                                     if ui.small_button("Download").clicked() {
                                         act = Some(("download", e.name.clone()));
                                     }
@@ -321,6 +328,10 @@ mod web {
                             self.app.set_status(e, true);
                         }
                     }
+                    Err(e) => self.app.set_status(e.to_string(), true),
+                },
+                "save_copy" => match vfs::read(&path, solidcraft_engine::io::MAX_DESIGN_BYTES) {
+                    Ok(b) => disk::save_copy(&self.files, &name, b),
                     Err(e) => self.app.set_status(e.to_string(), true),
                 },
                 "download_open" => {

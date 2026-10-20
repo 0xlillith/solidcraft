@@ -11,6 +11,38 @@
 /// Where a design on the computer's disk appears to the engine.
 pub const PREFIX: &str = "/disk/";
 
+/// Where designs kept in the browser's private storage (OPFS) appear to the engine.
+pub const OPFS_PREFIX: &str = "/opfs/";
+/// Paths written here are handed to the user as downloads.
+pub const DOWNLOADS_PREFIX: &str = "/downloads/";
+
+/// Where what a command wrote to an engine path goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteTo {
+    /// The browser's private storage: the design (or recovery file) keeps its name there.
+    Opfs,
+    /// A file on the computer, through its handle.
+    Disk,
+    /// A download.
+    Download,
+    /// Kept only in memory (uploads).
+    Memory,
+}
+
+/// Route a write by its path. OPFS paths always go to OPFS, whatever the browser can do: a design
+/// opened from the browser's storage keeps saving there until the user picks Save As.
+pub fn route(path: &str) -> WriteTo {
+    if path.starts_with(OPFS_PREFIX) {
+        WriteTo::Opfs
+    } else if parse(path).is_some() {
+        WriteTo::Disk
+    } else if path.starts_with(DOWNLOADS_PREFIX) {
+        WriteTo::Download
+    } else {
+        WriteTo::Memory
+    }
+}
+
 /// The engine path of the design `name` kept under handle `id`.
 pub fn path(id: &str, name: &str) -> String {
     format!("{PREFIX}{id}/{name}")
@@ -112,11 +144,6 @@ mod web {
         window.is_secure_context() && has("showSaveFilePicker") && has("showOpenFilePicker")
     }
 
-    /// Is `path` a design on the disk?
-    pub fn is_disk(path: &str) -> bool {
-        parse(path).is_some()
-    }
-
     fn types(description: &str, mime: &str, extension: &str) -> Array {
         let accept = Object::new();
         let _ = Reflect::set(&accept, &mime.into(), &Array::of1(&extension.into()));
@@ -150,14 +177,45 @@ mod web {
         path(&id, &name)
     }
 
-    /// Save As, step one: show the browser's save dialog (call in the click). The answer is the
-    /// engine path the design is saved to, `None` when the dialog was closed.
-    pub fn pick_save(files: &Rc<Files>, name: &str) -> impl std::future::Future<Output = Option<String>> + use<> {
+    fn save_options(name: &str) -> Object {
         let options = Object::new();
         let _ = Reflect::set(&options, &"suggestedName".into(), &name.into());
         let (description, mime, extension) = save_type(name);
         let _ = Reflect::set(&options, &"types".into(), &types(description, mime, extension));
-        let promise = start_picker("showSaveFilePicker", &options);
+        options
+    }
+
+    /// "Save to computer…" for a design kept in the browser: write a copy of `bytes` to a file the
+    /// user picks (call in the click), or download it where the browser can't pick one. The design
+    /// itself stays where it is.
+    pub fn save_copy(files: &Rc<Files>, name: &str, bytes: Vec<u8>) {
+        if !supported() {
+            if let Err(e) = crate::files::download(name, &bytes) {
+                files.say(format!("{name}: {e}"), true);
+            }
+            return;
+        }
+        let promise = start_picker("showSaveFilePicker", &save_options(name));
+        let files = files.clone();
+        spawn_local(async move {
+            let r = async {
+                let h: FileSystemFileHandle =
+                    JsFuture::from(promise?).await.map_err(failed)?.dyn_into().map_err(|_| Pick::Failed("not a file".into()))?;
+                write_handle(&h, &bytes).await.map_err(Pick::Failed)?;
+                Ok::<String, Pick>(h.name())
+            };
+            match r.await {
+                Ok(saved) => files.say(format!("Saved a copy to {saved}"), false),
+                Err(Pick::Cancelled) => {}
+                Err(Pick::Failed(e)) => files.say(format!("save to computer: {e}"), true),
+            }
+        });
+    }
+
+    /// Save As, step one: show the browser's save dialog (call in the click). The answer is the
+    /// engine path the design is saved to, `None` when the dialog was closed.
+    pub fn pick_save(files: &Rc<Files>, name: &str) -> impl std::future::Future<Output = Option<String>> + use<> {
+        let promise = start_picker("showSaveFilePicker", &save_options(name));
         let files = files.clone();
         async move {
             let handle = match promise {
@@ -261,7 +319,11 @@ mod web {
     async fn write(path: &str, bytes: &[u8]) -> Result<(), String> {
         let (id, name) = parse(path).ok_or("not a file on the computer")?;
         let handle = handle_for(id).await.map_err(|e| format!("{name}: {e}"))?;
-        ensure_readwrite(&handle).await.map_err(|e| format!("{name}: {e}"))?;
+        write_handle(&handle, bytes).await.map_err(|e| format!("{name}: {e}"))
+    }
+
+    async fn write_handle(handle: &FileSystemFileHandle, bytes: &[u8]) -> Result<(), String> {
+        ensure_readwrite(handle).await?;
         let w: web_sys::FileSystemWritableFileStream =
             JsFuture::from(handle.create_writable()).await.map_err(err)?.dyn_into().map_err(|_| "no writable stream".to_string())?;
         JsFuture::from(w.write_with_u8_array(bytes).map_err(err)?).await.map_err(err)?;
@@ -374,6 +436,23 @@ mod tests {
         ] {
             assert_eq!(parse(not), None, "{not}");
         }
+    }
+
+    /// Designs already stored in OPFS (and the recovery files) keep saving to OPFS under their own
+    /// names, whether or not the browser can write to the disk.
+    #[test]
+    fn writes_to_opfs_paths_still_go_to_opfs() {
+        for p in
+            ["/opfs/Bracket.solidcraft", "/opfs/Bracket (2).solidcraft", "/opfs/recovery.solidcraft", "/opfs/recovery.json", "/opfs/old.solvecraft"]
+        {
+            assert_eq!(route(p), WriteTo::Opfs, "{p}");
+        }
+        // A design opened from OPFS saves to its own path; only a Save As can pick the disk.
+        assert_eq!(save_target(false, true), SaveTarget::Browser);
+        assert_eq!(route(&format!("{OPFS_PREFIX}Bracket.solidcraft")), WriteTo::Opfs);
+        assert_eq!(route("/disk/18f-2a/Bracket.solidcraft"), WriteTo::Disk);
+        assert_eq!(route("/downloads/part.step"), WriteTo::Download);
+        assert_eq!(route("/upload/part.step"), WriteTo::Memory);
     }
 
     #[test]

@@ -19,9 +19,9 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{FileSystemDirectoryHandle, FileSystemFileHandle, FileSystemGetFileOptions, FileSystemWritableFileStream};
 
 /// Where OPFS files appear to the engine.
-pub const OPFS: &str = "/opfs/";
+pub const OPFS: &str = disk::OPFS_PREFIX;
 /// Paths written here are handed to the user as downloads.
-pub const DOWNLOADS: &str = "/downloads/";
+pub const DOWNLOADS: &str = disk::DOWNLOADS_PREFIX;
 /// Files brought in from the computer.
 pub const UPLOAD: &str = "/upload/";
 /// The autosave of unsaved work (in OPFS: `recovery.solidcraft` and `recovery.json`).
@@ -309,28 +309,32 @@ pub fn start(files: &Rc<Files>) {
 /// Store what commands wrote: OPFS paths into OPFS, download paths as downloads.
 pub fn flush(files: &Rc<Files>) {
     for (path, bytes) in vfs::take_writes() {
-        if let Some(name) = path.strip_prefix(OPFS) {
-            let name = name.to_string();
-            {
-                let mut e = files.entries.borrow_mut();
-                e.retain(|x| x.name != name);
-                if name != RECOVERY && name != RECOVERY_META {
-                    e.push(Entry { name: name.clone(), size: bytes.len() as u64, modified: js_sys::Date::now() });
-                    e.sort_by_key(|a| a.name.to_lowercase());
+        match disk::route(&path) {
+            disk::WriteTo::Opfs => {
+                let name = path.strip_prefix(OPFS).unwrap_or(&path).to_string();
+                {
+                    let mut e = files.entries.borrow_mut();
+                    e.retain(|x| x.name != name);
+                    if name != RECOVERY && name != RECOVERY_META {
+                        e.push(Entry { name: name.clone(), size: bytes.len() as u64, modified: js_sys::Date::now() });
+                        e.sort_by_key(|a| a.name.to_lowercase());
+                    }
                 }
+                let files = files.clone();
+                spawn_local(async move {
+                    if let Err(e) = write_file(&name, &bytes).await {
+                        files.say(format!("{name}: {e}"), true);
+                    }
+                });
             }
-            let files = files.clone();
-            spawn_local(async move {
-                if let Err(e) = write_file(&name, &bytes).await {
+            disk::WriteTo::Disk => disk::enqueue(files, &path, bytes),
+            disk::WriteTo::Download => {
+                let name = path.strip_prefix(DOWNLOADS).unwrap_or(&path);
+                if let Err(e) = download(name, &bytes) {
                     files.say(format!("{name}: {e}"), true);
                 }
-            });
-        } else if crate::disk::is_disk(&path) {
-            disk::enqueue(files, &path, bytes);
-        } else if let Some(name) = path.strip_prefix(DOWNLOADS)
-            && let Err(e) = download(name, &bytes)
-        {
-            files.say(format!("{name}: {e}"), true);
+            }
+            disk::WriteTo::Memory => {}
         }
     }
 }
