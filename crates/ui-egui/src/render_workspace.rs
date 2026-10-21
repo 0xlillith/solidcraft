@@ -90,6 +90,9 @@ impl PathHost {
     }
 }
 
+/// The samples slider's top end: 2^12 = 4096 samples per pixel.
+const MAX_SAMPLES_EXPONENT: u32 = 12;
+
 /// Setup times kept per adapter, at most.
 const MAX_SETUP_TIMES: usize = 16;
 
@@ -134,7 +137,10 @@ fn setup_progress(ui: &mut egui::Ui, app: &SolveApp, started: std::time::Instant
     match expected.map(|s| std::time::Duration::from_secs_f64(s.max(1.0))) {
         Some(expected) if elapsed < expected.mul_f64(1.5) => {
             let fraction = (elapsed.as_secs_f32() / expected.as_secs_f32()).min(0.99);
-            ui.add(egui::ProgressBar::new(fraction).text(format!("{} / ~{}", mmss(elapsed), mmss(expected))).animate(true));
+            crate::ui_kit::progress(ui, "gpu_path_setup", fraction);
+            ui.label(format!("{} / ~{}", mmss(elapsed), mmss(expected)));
+            // The bar moves with time, so keep drawing while it is shown.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
         }
         _ => {
             ui.horizontal(|ui| {
@@ -443,10 +449,16 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     if matches!(app.render_workspace.path_host, PathHost::Ready(_)) {
         let label = app.tr("render.image_progressive").to_string();
-        ui.checkbox(&mut app.render_workspace.view.progressive, label);
+        crate::ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.progressive);
         if app.render_workspace.view.progressive {
-            let label = app.tr("render.image_samples").to_string();
-            ui.add(egui::Slider::new(&mut app.render_workspace.view.samples, 1..=4096).logarithmic(true).text(label));
+            ui.label(app.tr("render.image_samples"));
+            // Powers of two from 1 to 4096 samples per pixel; requests from elsewhere keep any count.
+            let samples = &mut app.render_workspace.view.samples;
+            let mut exponent = (*samples).max(1).ilog2().min(MAX_SAMPLES_EXPONENT);
+            let slider = crate::ui_kit::Slider { integer: true, format: |e| format!("{}", 1u32 << (e as u32).min(31)), ..Default::default() };
+            if crate::ui_kit::slider(ui, &mut exponent, 0..=MAX_SAMPLES_EXPONENT, slider).changed() {
+                *samples = 1 << exponent.min(MAX_SAMPLES_EXPONENT);
+            }
         }
     }
     let transparent_label = app.tr("render.image_transparent").to_string();
