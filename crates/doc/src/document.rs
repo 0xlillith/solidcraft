@@ -2329,6 +2329,12 @@ pub struct Feature {
     /// where newer ones number them after the first name (`Ribs (4)`, #373).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shell_piece_order: bool,
+    /// The pieces of a face this feature splits are numbered in the kernel's order and by the
+    /// index of the face they came from, as builds before #3902 numbered them, instead of by
+    /// place. Set on the features of designs saved before then, whose stored `#k` face names
+    /// mean that numbering.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kernel_piece_order: bool,
     #[serde(flatten)]
     pub kind: FeatureKind,
 }
@@ -3030,6 +3036,7 @@ impl Document {
             face_names: Vec::new(),
             participants: Vec::new(),
             shell_piece_order: false,
+            kernel_piece_order: false,
             kind,
         };
         self.place_feature(f);
