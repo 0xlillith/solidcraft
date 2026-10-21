@@ -53,6 +53,62 @@ class Validation:
             value = pbr.get(field)
             self.check(number(value) and lower <= value <= upper, label + ": invalid " + field)
 
+    def ui_checks(self, catalog: dict) -> None:
+        flow = self.documents["ui/demo-flow.json"]
+        ui_path = self.directory / "ui"
+        contract_path = (ui_path / flow["metadata"]["integration_contract"]).resolve()
+        self.check(contract_path == (self.catalog / "ui-integration.json").resolve(), "UI flow must reference the shared integration contract")
+        contract = read_json(self.catalog / "ui-integration.json")
+        self.check(flow["metadata"]["status"] == "specified_unbound" and contract["metadata"]["runtime_ready"] is False,
+                   "UI specification cannot imply implemented runtime behavior")
+        controls = flow["controls"]
+        self.check(flow["defaults"]["default_view"] == controls["disclosure"]["default"] == contract["disclosure"]["default"] == "Quick",
+                   "UI disclosure defaults disagree")
+        self.check(controls["disclosure"]["global_mode_switch"] is False and controls["disclosure"]["extra_ribbon_tabs"] is False,
+                   "Disclosure must not create global modes or ribbon tabs")
+        self.check(controls["maximum_primary_adjustments"] == contract["disclosure"]["quick_adjustment_budget"] == 6,
+                   "Primary adjustment budgets disagree")
+        for context, values in controls["quick_by_context"].items():
+            self.check(isinstance(values, list) and 0 < len(values) <= 6 and len(set(values)) == len(values),
+                       "Invalid primary control list for " + context)
+        self.check(controls["quick"] == controls["quick_by_context"]["lunar_scene"], "Default lunar controls disagree")
+        self.check(flow["library"]["local_categories"] == contract["library"]["category_labels"], "UI library categories disagree")
+        quality = flow["quality_selection"]
+        self.check((ui_path / quality["source"]).resolve() == (self.catalog / "quality-presets.json").resolve(),
+                   "UI quality picker must reference the shared quality catalog")
+        profiles = quality["profiles"]
+        self.check(len(profiles) == len(catalog["quality-presets.json"])
+                   and {p["quality_preset_id"] for p in profiles} == set(catalog["quality-presets.json"]), "UI quality profile inventory disagrees")
+        for profile in profiles:
+            source = catalog["quality-presets.json"].get(profile["quality_preset_id"], {})
+            self.check(profile["name"] == source.get("name") and profile["status"] == source.get("status") == "specified_unbound",
+                       "UI quality labels or availability disagree with the source catalog")
+        shots = self.indices["scenes/shots.json"]
+        recommendations = quality["recommendations"]
+        self.counts["ui/demo-flow.json shot quality recommendations"] = len(recommendations)
+        self.check(len(recommendations) == len(shots) and {r["shot_id"] for r in recommendations} == set(shots),
+                   "Every prepared shot needs one quality recommendation group")
+        for item in recommendations:
+            ids = item["quality_preset_ids"]
+            self.check(len(ids) == 3 and len(set(ids)) == 3 and set(ids) <= set(catalog["quality-presets.json"]),
+                       item["shot_id"] + ": recommend three known quality profiles")
+            self.check(item["default_quality_preset_id"] in ids
+                       and item["default_quality_preset_id"] == shots.get(item["shot_id"], {}).get("quality_preset_id"),
+                       item["shot_id"] + ": UI default must preserve the prepared shot quality")
+        registered = {r["id"] for r in contract["command_reuse"]}
+        self.check({r["command"] for r in flow["command_bindings"]["registered_authorities"]} <= registered,
+                   "UI flow invents an existing command authority")
+        proposals = {r["candidate_id"] for r in contract["proposed_commands"]}
+        self.check(all(r["registered"] is False and r["command"] in proposals for r in flow["command_bindings"]["future_proposals"]),
+                   "UI future proposals disagree with the shared contract")
+        swatches = flow["swatch_opening"]
+        self.check((ui_path / swatches["script"]).resolve() == (self.directory / "materials/appearance-swatches.json").resolve()
+                   and swatches["script_first_command"] == "file.new" and swatches["preserve_existing_documents"] is True
+                   and swatches["runtime_executed"] is False and swatches["visual_reviewed"] is False,
+                   "Swatch opening must preserve document isolation and actual evidence status")
+        self.check(all(s["runtime_ui_available"] is False and s["render_available_after_preflight"] is False
+                       for s in flow["availability_states"]), "Illustrative UI states cannot claim current runtime enablement")
+
     def run(self) -> dict:
         catalog_ids = set()
         catalog = {}
@@ -187,6 +243,7 @@ class Validation:
         self.check(sequence["local_physics"]["gravity_m_s2"] == [0, 0, -1.62]
                    and sequence["local_physics"]["atmospheric_drag"] is False, "Lunar local physics assumption changed without review")
         self.check({"release", "free_flight", "capture", "miss", "store"} <= states, "Sequence lacks physical success/failure events")
+        self.ui_checks(catalog)
         return {
             "valid": not self.errors, "counts": self.counts, "errors": self.errors,
             "native_source_status": source["status"], "runtime_ready": False,

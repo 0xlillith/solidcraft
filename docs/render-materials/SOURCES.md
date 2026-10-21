@@ -20,3 +20,9 @@ Accessed for this contribution on 2026-10-21. These sources support specific fac
 | SRC-OPENPBR | [ASWF OpenPBR Surface specification](https://academysoftwarefoundation.github.io/OpenPBR/) | Public surface-model specification, observed v1.1.1 dated 2026-04-17. Conceptual reference only; no code, artwork or specification text is copied. |
 
 The use of a public specification does not authorize a prohibited implementation dependency. The source repository's clean-room rules continue to apply. See [CLEAN_ROOM.md](CLEAN_ROOM.md) for the complete admission and authorship policy.
+
+## Implemented UI design reference
+
+The UI continuation inspected upstream main at **`728f753b8094e1a54c5cc8b7e453982afa028023` (0.18.4)** on 2026-10-21. This is a read-only design reference; the personal integration base remains `93a2922c5ee272fb605703ae84c05825b4a74607` (0.18.2).
+
+[ui-integration.json](ui-integration.json) records 21 exact path/blob comparisons and their source URLs. The primary references are the [workspace/ribbon structure](https://github.com/tangency-labs/solidcraft/blob/728f753b8094e1a54c5cc8b7e453982afa028023/crates/ui-egui/src/workspace.rs), [current UI kit](https://github.com/tangency-labs/solidcraft/blob/728f753b8094e1a54c5cc8b7e453982afa028023/docs/ui-kit.md), [theme](https://github.com/tangency-labs/solidcraft/blob/728f753b8094e1a54c5cc8b7e453982afa028023/crates/ui-egui/src/theme.rs) and [binding icon style guide](https://github.com/tangency-labs/solidcraft/blob/728f753b8094e1a54c5cc8b7e453982afa028023/assets/icons/ui/STYLE_GUIDE.md). Current code takes precedence over historical picture proposals. Existing icon masters were previewed for review only; no UI artwork or screenshot is added to the shipped package.

@@ -21,6 +21,16 @@ This PR provides English planning content under `docs/render-materials/` and pre
 
 ## Architecture boundaries
 
+### Required UI alignment
+
+Use [UI_INTEGRATION.md](UI_INTEGRATION.md) and [ui-integration.json](ui-integration.json) before wiring the library or inspector. The audit compared the fixed 0.18.2 integration base with upstream 0.18.4 at `728f753b8094e1a54c5cc8b7e453982afa028023`, read-only. Preserve the implemented shell: one Render workspace and `RENDER` ribbon tab, current `SCENE`/`IMAGE` groups, shared Floating/Docked layouts, approved icons, theme tokens and UI kit. The selected Render tab uses `render_ink` on `render_soft`; its icons keep their semantic palettes.
+
+Extend the existing Appearance/LocalLibrary consumer and current render commands. Library categories are local navigation; Quick/Detailed/Expert are inspector disclosures. A future result canvas, Render picking/gizmos and migration from the fixed 285-point settings container to the shared Panel are explicit integration tasks. Do not describe them as current support. Reconcile the pinned mappings with the implementation that actually lands in this fork, without replacing its fixed base.
+
+The twelve prepared SELENE shots now have exact three-profile quality recommendations in [the demo flow](../../assets/render/selene/ui/demo-flow.json). Its current state remains unbound, and opening the standalone swatch input must create a fresh isolated document. Runtime validation includes theme/layout/scaling, keyboard, scope, draft, lock and multi-document behavior as specified in the UI acceptance matrix.
+
+### Layer and state ownership
+
 Follow the existing layer direction: rendering primitives and capability contracts remain below the document/engine layers; persisted scene intent belongs at the appropriate document boundary; commands orchestrate changes; UI panels display and invoke commands. Keep device/windowing/UI dependencies out of lower layers according to `AGENTS.md`. Use the existing navigation handler for all new render views.
 
 JSON in this package is a specification format, not a requirement to load unvalidated dictionaries inside the Rust application. Design typed Rust data with finite-value checks, caps, version migration, resource hashes and errors. Bound array lengths, resource size, recursion, texture allocation and loop work before execution. Unknown fields, unavailable features and unresolved resources need clear outcomes; do not silently discard them.

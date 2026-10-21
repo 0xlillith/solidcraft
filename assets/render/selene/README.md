@@ -15,7 +15,7 @@ This is the concrete authoring slice of the [render/materials catalog](../../../
 | [Mechanism acceptance](motion/mechanism-acceptance.json) | 12 review areas and four analytic planning examples | Documented behavior to preserve, with native/runtime evidence still unresolved. |
 | [Read-only preflight](motion/preflight-commands.json) | Five supported inspection commands | Inventory of joints, studies, appearances, physical materials and render scene on an opened design. |
 | [Sample sequence](motion/sample-sequence.json) | 11 states for collection, closure, release, flight, capture, storage and failure | A future dynamics contract, not a canned motion clip or simulated result. |
-| [Demo UI flow](ui/demo-flow.json) | Simple three-step scene/quality/render flow and contextual advanced controls | An integration specification for the existing Render workspace. |
+| [Demo UI flow](ui/demo-flow.json) | Three-step scene/quality/render flow, three exact quality recommendations for each shot and contextual disclosure | An unbound integration specification aligned with the implemented Render ribbon, icons and shared UI kit. |
 | [Preparation tool](tools/prepare.py) and [validator](tools/validate_prepared.py) | Native inspection, review templates, guarded opaque overlay compilation and package checks | Python 3.11 development tools only; no application runtime dependency. |
 
 The 600-material, 280-light and 280-environment catalog remains the broader design inventory. These 48 appearances are realizations of existing concepts, not 48 additional concept IDs. The 10 stages and 12 shots specialize existing presets for SELENE.
@@ -70,7 +70,7 @@ The [scene guide](scenes/README.md) explains the 12 prepared shots: low/high Sun
 
 Resolve stage geometry, appearances, source ownership, camera framing and executor support before mutation. Physical lunar scenes have one finite-angular Sun, reflected light from actual geometry and explicitly owned hardware emitters where requested. They have no automatic sky fill, atmosphere, Earth disk or star overlay. The terrain is an original conceptual procedural stage, with no implied named-site accuracy. Exact contact placement and swept-volume clearance require the admitted rover bounds.
 
-Integrate the authored UI flow through existing command, resource, theme and camera-navigation systems. The default flow is **choose scene → choose quality → render**, with availability and actual blockers visible. Advanced controls expose layers, units, mapping, lighting, camera, output and provenance in context. A preset never changes engineering or simulation properties, and unsupported features are never silently removed.
+Integrate the authored UI flow using the [shared UI integration contract](../../../docs/render-materials/UI_INTEGRATION.md): the existing Render workspace, one Render tab, Scene/Image ribbon groups and the current icon/token vocabulary. The default flow is **choose scene → choose quality → render**, with availability and actual blockers visible. Scenes, Materials, Lighting and Environments are local library categories. Quick is the default collapsed inspector; Detailed and Expert open sections of the same state. At most six primary adjustments appear together, while layers, units, mapping, lighting, camera, output and provenance remain accessible. A preset never changes engineering or simulation properties, and unsupported features are never silently removed.
 
 ## Reuse motion; add validated dynamics
 

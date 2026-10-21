@@ -62,6 +62,18 @@ An independent review corrected two appearance-to-concept associations, confirme
 
 The improved `SELENE-showcase.solidcraft` native file was not found in the bounded public-source search documented in `assets/render/selene/SOURCE.md`. Its source lock remains `awaiting_native_source`; native selectors, runtime mechanism evidence and full scene execution remain unresolved. The opaque swatch script was checked against existing command shapes but has not been executed or rendered in this environment.
 
+## Redesign-aligned UI continuation
+
+The UI specification was reconciled with the implemented upstream design at `728f753b8094e1a54c5cc8b7e453982afa028023` (0.18.4), keeping the personal integration base at `93a2922c5ee272fb605703ae84c05825b4a74607` (0.18.2). All 21 source-record blob pairs in `ui-integration.json` were checked against Git objects: 17 are identical; the recorded toolbar, navigation, document and shell-composition source files have differences that do not authorize an automatic base update.
+
+The review verified 13 current command/icon registrations, the named UI-kit controls, the theme-token names and the distinction between the one Render tab and its Scene/Image ribbon groups. Existing `ws_render`, `appearance` and `render_image` artwork was previewed at 64, 24 and 16 pixels in light and dark through the repository palette. No SVG, palette or acceptance record changed. These previews are not application screenshots or evidence that the planned UI is implemented.
+
+The catalog and prepared-resource validators passed again with **0 errors**; the catalog also reported **0 warnings**. Their coverage now includes the unbound UI contract, source-identity field consistency, current tab/picking declarations, disclosure/category rules, exact quality names and references, all twelve per-shot recommendation groups, preserved shot defaults, command reuse/proposal consistency and isolated swatch-opening declarations. The 56 stable UX requirement IDs remain intact. Four deliberately invalid temporary variants were rejected: invented current Render picking, a wrong quality label, a changed shot default and a false swatch runtime-execution claim.
+
+An independent source review corrected the Render tab's selected treatment to `render_ink` on `render_soft`, and cross-file review aligned the lunar quality recommendations and six default controls. The primary lunar set is Sun azimuth, Sun elevation, exposure, camera framing, terrain seed and supported dust coverage. Appearance variants stay in the appearance context.
+
+At this review, **99 local Markdown links** resolved and the new JSON contract had an exact attribution row. The existing commands and source metadata were inspected, not executed. No new runtime UI, render, screenshot, screen-reader result, usability measurement or platform-parity result is claimed. The acceptance matrix is work for the runtime implementation.
+
 ## Repository gate limitation
 
 The required commands `cargo xtask ci`, `cargo xtask assets` and `cargo xtask icons` were attempted in the isolated checkout and could not start:
@@ -71,6 +83,8 @@ cargo: command not found
 ```
 
 The environment lacks the Rust toolchain. The PR therefore remains a **draft** until the relevant repository checks run on the submitted tree in a suitable environment. This is an actual uncompleted gate, not a claim that documentation requires no checks. The root attribution file is embedded by the UI and can expand CI's affected scope.
+
+The same three required commands were attempted for the UI continuation and again could not start because `cargo` is unavailable. No successful Rust gate is inferred from the Python data checks.
 
 The package validator and whitespace review do not substitute for repository CI, renderer reference images, native/WASM execution or physics validation. There are no screenshots of new runtime behavior because this PR introduces no runtime behavior.
 

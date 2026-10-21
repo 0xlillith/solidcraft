@@ -14,6 +14,8 @@ The user's original v7 SELENE model repository was inspected read-only at a pinn
 
 The continuation adds original numerical appearance recipes, a simple analytic-box swatch script, scene/role/shot specifications and development tools under `assets/render/selene/`. Tangency's own public mechanism documentation and PR discussions establish the selected improved variant's documented behavior; no external code, native derivative or demonstration media is copied into this package. A missing derivative file is recorded as unavailable rather than assigned an assumed license or hash.
 
+The UI continuation uses SolidCraft's own implemented shell, UI kit, theme and accepted SVGs as its design authority. It records a read-only comparison between the fixed integration base and upstream `728f753b8094e1a54c5cc8b7e453982afa028023` in `ui-integration.json`. Original integration prose and metadata are added; no icon master, palette, acceptance hash, commercial reference or application UI implementation is copied or changed. Temporary previews of existing project icons stay outside the shipped resource package.
+
 ## What was inspected
 
 - SolidCraft's own `AGENTS.md`, `CONTRIBUTING.md`, architecture, render settings, render workspace, render backend and physical-material-card documentation at the pinned integration base.

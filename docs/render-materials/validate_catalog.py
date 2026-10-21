@@ -39,7 +39,7 @@ COLLECTIONS = {
 }
 SUPPORT_FILES = (
     "baseline-setup-commands.json", "selene-bindings.json",
-    "lunar-physics-fixtures.json", "provenance.json",
+    "lunar-physics-fixtures.json", "provenance.json", "ui-integration.json",
 )
 REF_PATTERN = re.compile(
     r"(?:MAT|LUZ|ENV|CAP|UX|SIM|Q|STU|ENVSET|SCENE)-\d{3}|[FS]\d{2}"
@@ -765,7 +765,7 @@ class Validator:
 
     def support_checks(self) -> None:
         """Structural and original analytic checks; no simulation is performed."""
-        for filename in ("selene-bindings.json", "lunar-physics-fixtures.json", "provenance.json"):
+        for filename in ("selene-bindings.json", "lunar-physics-fixtures.json", "provenance.json", "ui-integration.json"):
             doc = self.documents.get(filename)
             if doc is None:
                 continue
@@ -1058,6 +1058,81 @@ class Validator:
             else:
                 self.error(path + ".kind", "Unknown analytic fixture kind.")
 
+    def ui_checks(self) -> None:
+        filename = "ui-integration.json"
+        doc = self.documents.get(filename)
+        if doc is None:
+            return
+        meta = metadata(doc)
+        self.require(meta.get("status") == "specified_unbound" and meta.get("runtime_ready") is False,
+                     filename + ".metadata", "The UI contract describes unbound intent, not implemented UI.")
+        snapshots = self.obj(doc.get("source_snapshots"), filename + ".source_snapshots")
+        for kind in ("integration_base", "design_reference"):
+            record = self.obj(snapshots.get(kind), filename + ".source_snapshots." + kind)
+            self.require(isinstance(record.get("commit"), str) and re.fullmatch(r"[0-9a-f]{40}", record["commit"]) is not None,
+                         filename + ".source_snapshots." + kind, "Source snapshots require exact Git commit identities.")
+        records = doc.get("source_records")
+        if self.require(isinstance(records, list) and bool(records), filename + ".source_records", "Source records are required."):
+            seen = set()
+            self.counts["ui-integration.json source records"] = len(records)
+            for index, raw in enumerate(records):
+                path = f"{filename}.source_records[{index}]"
+                record = self.obj(raw, path)
+                identity = record.get("id")
+                if self.text(identity, path + ".id"):
+                    self.require(identity not in seen, path + ".id", "Duplicate source record.")
+                    seen.add(identity)
+                source_path = record.get("path")
+                self.require(isinstance(source_path, str) and bool(source_path) and not Path(source_path).is_absolute()
+                             and ".." not in Path(source_path).parts, path + ".path", "Source paths must be repository relative.")
+                for field in ("baseline_git_blob", "reference_git_blob"):
+                    self.require(isinstance(record.get(field), str) and re.fullmatch(r"[0-9a-f]{40}", record[field]) is not None,
+                                 path + "." + field, "Expected an exact Git blob identity.")
+                self.require(record.get("identical_between_revisions") is (record.get("baseline_git_blob") == record.get("reference_git_blob")),
+                             path, "Source comparison must match recorded blob identities.")
+        workspace = self.obj(doc.get("workspace"), filename + ".workspace")
+        self.require(workspace.get("visible_tab_ids_at_baseline") == ["RENDER"] and workspace.get("group_is_tab") is False,
+                     filename + ".workspace", "The baseline has one RENDER tab; SCENE and IMAGE are groups.")
+        navigation = object_value(workspace.get("navigation"))
+        self.require(navigation.get("handler") == "navigation::handle" and navigation.get("pick_at_baseline") is False,
+                     filename + ".workspace.navigation", "Do not invent current Render picking or a separate camera controller.")
+        disclosure = self.obj(doc.get("disclosure"), filename + ".disclosure")
+        self.require(disclosure.get("default") == "Quick" and disclosure.get("levels") == ["Quick", "Detailed", "Expert"]
+                     and disclosure.get("global_mode_switch") is False, filename + ".disclosure", "Use one inspector with progressive disclosure.")
+        self.number(disclosure.get("quick_adjustment_budget"), filename + ".disclosure.quick_adjustment_budget", minimum=1, maximum=6, integer=True)
+        library = self.obj(doc.get("library"), filename + ".library")
+        self.require(library.get("category_labels") == ["Scenes", "Materials", "Lighting", "Environments"]
+                     and library.get("category_is_workspace") is False, filename + ".library", "Library types are local category navigation.")
+        recommendations = doc.get("quality_recommendations")
+        if self.require(isinstance(recommendations, list), filename + ".quality_recommendations", "Expected recommendations."):
+            for index, raw in enumerate(recommendations):
+                path = f"{filename}.quality_recommendations[{index}]"
+                record = self.obj(raw, path)
+                values = record.get("preset_ids")
+                if self.string_list(values, path + ".preset_ids", unique=True):
+                    self.require(len(values) == 3, path, "Recommend three exact profiles, with the complete picker still available.")
+                    for value in values:
+                        self.reference(value, "quality-presets.json", path + ".preset_ids")
+        reused, proposed = doc.get("command_reuse"), doc.get("proposed_commands")
+        if self.require(isinstance(reused, list) and isinstance(proposed, list), filename, "Command reuse and proposal arrays are required."):
+            ids = set()
+            for raw in reused:
+                record = self.obj(raw, filename + ".command_reuse")
+                identity = record.get("id")
+                if self.text(identity, filename + ".command_reuse.id"):
+                    self.require(identity not in ids, filename + ".command_reuse", "Duplicate existing command.")
+                    ids.add(identity)
+                self.require(record.get("status") == "registered_at_baseline", filename + ".command_reuse", "Declare existing-command evidence scope.")
+            for raw in proposed:
+                record = self.obj(raw, filename + ".proposed_commands")
+                identity = record.get("candidate_id")
+                if self.text(identity, filename + ".proposed_commands.candidate_id"):
+                    self.require(identity not in ids, filename + ".proposed_commands", "Proposed commands cannot duplicate existing routes.")
+                    ids.add(identity)
+                self.require(record.get("status") == "unregistered_proposal", filename + ".proposed_commands", "Do not claim new runtime registration.")
+        self.require(metadata(self.documents.get("ux.json", {})).get("integration_contract") == "ui-integration.json",
+                     "ux.json.metadata.integration_contract", "UX requirements must identify their UI integration contract.")
+
     def run(self) -> dict[str, Any]:
         self.load()
         self.collection_checks()
@@ -1070,6 +1145,7 @@ class Validator:
         self.scene_checks()
         self.roadmap_checks()
         self.support_checks()
+        self.ui_checks()
         return {
             "valid": not self.errors,
             "schema_version": SCHEMA_VERSION,

@@ -18,6 +18,7 @@ The catalog is a content and implementation backlog. Its entries are not install
 | [Environments guide](environments-guide.md) | Procedural stages, lunar environments and environment presets. |
 | [Preset contract](PRESETS.md) | Quality tiers, composition rules, units and runtime availability. |
 | [UX plan](UX.md) | A few-click workflow with deeper controls available in context. |
+| [UI integration](UI_INTEGRATION.md) | Exact alignment with the implemented SolidCraft redesign: ribbon groups, existing icons/tokens, library, inspector, responsiveness and accessibility. |
 | [Renderer plan](RENDERER.md) | Quality foundations, expensive features and evidence for competitive claims. |
 | [SELENE](SELENE.md) | Improved showcase source selection, lunar stills, model upgrades and future sample-handling dynamics. |
 | [Prepared SELENE resources](../../assets/render/selene/README.md) | 48 authored appearance recipes, executable swatches, 33 roles, 10 stages, 12 shots and source-admission tools. |
@@ -28,6 +29,8 @@ The catalog is a content and implementation backlog. Its entries are not install
 ## Machine-readable source of truth
 
 `materials.json`, `lighting.json` and `environments.json` hold the concept inventory. `capabilities.json`, `ux.json`, `simulation-requirements.json` and `roadmap.json` hold requirements and sequencing. `quality-presets.json`, `studio-presets.json`, `environment-presets.json` and `scene-presets.json` hold future preset intent. `baseline-setup-commands.json` contains six examples using the already documented `render.settings.set` shape. `selene-bindings.json` retains the historical v7 inventory only; the active improved source is selected by `assets/render/selene/source-lock.json`. Meanwhile, `lunar-physics-fixtures.json` contains analytic checks for future simulation work.
+
+The [UI integration contract](ui-integration.json) pins 21 project source files across the fixed integration base and the observed 0.18.4 design reference. It records current command/icon mappings, proposed groups, disclosure, quality recommendations and twelve acceptance cases. It registers no UI or commands.
 
 JSON is authoritative for identifiers, counts and recipe values. Markdown explains policy and provides a readable index. Python scripts are optional development tooling for authoring and validation; they are not an application runtime or a proposed replacement for SolidCraft's Rust implementation.
 
