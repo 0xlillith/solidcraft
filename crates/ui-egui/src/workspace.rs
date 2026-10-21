@@ -60,6 +60,11 @@ pub struct Section {
     pub ids: &'static [&'static str],
 }
 
+/// Parameters and Configurations stay on every design tab they were on before the ribbon
+/// redesign (MODEL and SHEET METAL), on SKETCH while editing a sketch, and in MANAGE, their
+/// canonical home.
+const CONFIGURE: &[&str] = &["parameters.change", "config.table", "config.configure"];
+
 pub const SECTIONS: &[Section] = &[
     Section {
         tab: "MODEL",
@@ -80,6 +85,7 @@ pub const SECTIONS: &[Section] = &[
         promoted: 3,
         ids: &["solid.move", "solid.mirror", "solid.pattern.rectangular", "solid.align", "solid.pattern.circular", "solid.pattern.path"],
     },
+    Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "MODEL", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
     Section { tab: "SURFACE", panel: "EDIT", promoted: 4, ids: &["surface.trim", "surface.untrim", "surface.extend", "surface.stitch"] },
@@ -232,6 +238,8 @@ pub const SECTIONS: &[Section] = &[
             "canvas.insert",
         ],
     },
+    // Sketch dimensions are driven by parameters, so they are one click away while sketching.
+    Section { tab: "SKETCH", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "SKETCH", panel: "FINISH SKETCH", promoted: 1, ids: &["sketch.finish"] },
     Section {
         tab: "SHEET METAL",
@@ -242,6 +250,7 @@ pub const SECTIONS: &[Section] = &[
     Section { tab: "SHEET METAL", panel: "FLAT", promoted: 3, ids: &["sheet.unfold", "sheet.refold", "sheet.flat_pattern"] },
     Section { tab: "SHEET METAL", panel: "OUTPUT", promoted: 2, ids: &["sheet.export_dxf", "sheet.export_bend_table"] },
     Section { tab: "SHEET METAL", panel: "RULES", promoted: 1, ids: &["sheet.manage_rules"] },
+    Section { tab: "SHEET METAL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "RENDER", panel: "SCENE", promoted: 2, ids: &["render.scene"] },
     Section { tab: "RENDER", panel: "IMAGE", promoted: 1, ids: &["render.start"] },
 ];
@@ -345,6 +354,8 @@ pub fn destination(c: &CommandSpec) -> Option<(&'static str, &'static str)> {
     let primary = match c.id {
         "sheet.manage_rules" => Some(("MANAGE", "RULES")),
         "sheet.convert" => Some(("MODEL", "MODIFY")),
+        "parameters.change" => Some(("MANAGE", "PARAMETERS")),
+        "config.table" | "config.configure" => Some(("MANAGE", "CONFIGURATIONS")),
         _ => None,
     };
     primary
@@ -432,9 +443,9 @@ pub fn visible_tabs(app: &crate::SolveApp) -> Vec<&'static str> {
     if app.session.active_sketch.is_some() {
         tabs.push("SKETCH");
     }
-    if sheet_body(app).is_some() {
-        tabs.push("SHEET METAL");
-    }
+    // Always reachable, as before the ribbon redesign: a sheet-metal part starts from an
+    // ordinary sketch or solid, so the tab cannot wait for a sheet body.
+    tabs.push("SHEET METAL");
     tabs
 }
 
@@ -625,7 +636,9 @@ mod tests {
     #[test]
     fn contextual_tabs_follow_the_active_body_and_allow_other_tabs() {
         let mut h = crate::scenario::Harness::new();
-        assert_eq!(visible_tabs(&h.app), TABS);
+        let mut fresh = TABS.to_vec();
+        fresh.push("SHEET METAL");
+        assert_eq!(visible_tabs(&h.app), fresh, "SHEET METAL is reachable before any sheet body exists");
         h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
         assert_eq!(h.app.ui.tab, "SKETCH");
         h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]})).unwrap();
@@ -645,15 +658,69 @@ mod tests {
         h.app.run("solid.box", json!({"body_name":"Solid", "operation":"new", "length":10, "width":10, "height":10})).unwrap();
         h.app.run("select.set", json!({"items":[{"type":"body","name":"Solid"}]})).unwrap();
         sync_context(&mut h.app);
-        assert!(!visible_tabs(&h.app).contains(&"SHEET METAL"));
+        assert!(visible_tabs(&h.app).contains(&"SHEET METAL"), "the tab stays reachable off a sheet body");
+        assert!(sheet_body(&h.app).is_none());
         h.app.run("select.set", json!({"items":[{"type":"body","name":"Sheet"}]})).unwrap();
         sync_context(&mut h.app);
         assert_eq!(h.app.ui.tab, "SHEET METAL");
     }
 
+    /// Parameters and Configurations are on the design tabs they were on before the redesign, and a
+    /// fresh document reaches Sheet Metal (to flange a sketch or convert a solid) by its tab.
+    #[test]
+    fn parameters_and_configurations_are_on_model_and_sheet_metal_and_the_sheet_tab_opens_fresh() {
+        let specs = solidcraft_engine::command_specs();
+        for tab in ["MODEL", "SHEET METAL", "SKETCH", "MANAGE"] {
+            let ids = panel_ids(tab, &specs);
+            assert!(ids.contains(&"parameters.change"), "{tab}: Parameters");
+            assert!(ids.contains(&"config.table"), "{tab}: Configurations");
+        }
+        for tab in ["MODEL", "SHEET METAL", "SKETCH"] {
+            let (commands, n) = layout(tab, "CONFIGURE", &specs).unwrap();
+            assert_eq!(commands.iter().take(n).map(|c| c.id).collect::<Vec<_>>(), ["parameters.change", "config.table"]);
+        }
+        let mut h = crate::scenario::Harness::new();
+        assert!(sheet_body(&h.app).is_none());
+        h.step(&json!({"click":{"handle":"tab:SHEET METAL"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.ui.tab, "SHEET METAL");
+        let specs = solidcraft_engine::command_specs();
+        let (create, _) = layout("SHEET METAL", "CREATE", &specs).unwrap();
+        assert!(create.iter().any(|c| c.id == "sheet.convert"), "Convert to Sheet Metal is in the Sheet Metal tab's Create panel");
+        for id in ["sheet.flange", "parameters.change", "config.table"] {
+            assert!(crate::scenario::handle_at(&format!("button:{id}")).is_some(), "{id} is a button on the fresh Sheet Metal tab");
+        }
+        h.step(&json!({"click":{"handle":"button:parameters.change"}})).unwrap();
+        assert!(h.app.params.is_some(), "Parameters opens from the Sheet Metal tab");
+        assert_eq!(h.app.ui.tab, "SHEET METAL", "and the tab stays");
+        h.step(&json!({"click":{"handle":"params:close"}})).unwrap();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.ui.tab, "SKETCH");
+        for id in ["parameters.change", "config.table"] {
+            assert!(crate::scenario::handle_at(&format!("button:{id}")).is_some(), "{id} is a button on the Sketch tab");
+        }
+        h.app.finish_sketch();
+        h.step(&json!({"click":{"handle":"tab:MODEL"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":"button:config.table"}})).unwrap();
+        assert!(matches!(
+            h.app.dialog.as_ref().map(|d| &d.kind),
+            Some(crate::dialogs::Kind::Motion(crate::dialogs_motion::Mo::Configurations { .. }))
+        ));
+        assert_eq!(h.app.ui.tab, "MODEL", "Configurations opens from the Model tab without leaving it");
+    }
+
+    fn panel_ids(tab: &str, specs: &[&CommandSpec]) -> Vec<&'static str> {
+        SECTIONS.iter().filter(|s| s.tab == tab).flat_map(|s| layout(tab, s.panel, specs).unwrap().0).map(|c| c.id).collect()
+    }
+
     #[test]
     fn starts_palette_and_control_use_the_new_destinations() {
         let mut h = crate::scenario::Harness::new();
+        // Parameters is also on MODEL, so a start from there stays put; from SURFACE it goes home.
+        h.app.ui.tab = "SURFACE".into();
+        h.frames(2);
         for (id, tab) in [("parameters.change", "MANAGE"), ("solid.box", "MODEL"), ("surface.patch", "SURFACE")] {
             h.step(&json!({"start":id})).unwrap();
             assert_eq!(h.app.ui.tab, tab, "{id}");

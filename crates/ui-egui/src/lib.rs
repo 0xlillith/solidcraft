@@ -246,7 +246,7 @@ pub use control::{ControlRequest, ControlResponse};
 pub struct UiState {
     /// Automation-only shell mode; never persisted in preferences.
     pub layout: shell::LayoutMode,
-    /// Ribbon tab; contextual SKETCH and SHEET METAL join the seven design tabs.
+    /// Ribbon tab; SHEET METAL and the contextual SKETCH join the seven design tabs.
     pub tab: String,
     /// Last contextual body/sketch, only used to select on entry.
     #[serde(skip)]

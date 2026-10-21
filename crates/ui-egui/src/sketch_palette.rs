@@ -3,7 +3,7 @@
 //! buttons. Options: the line type of the selected curves (normal, construction, centerline),
 //! Look At, and the display toggles kept with the sketch (grid, snap, slice, profiles, points,
 //! dimensions, constraints, projected geometry, construction geometry, 3D sketch); the sketch's
-//! degrees of freedom. Finish Sketch lives in the ribbon Exit group. Toggles run `sketch.options`, line types
+//! degrees of freedom. Finish Sketch sits at the bottom, beside the ribbon's Exit group. Toggles run `sketch.options`, line types
 //! `sketch.construction` / `sketch.centerline`.
 //!
 //! The line type is also a drawing mode: with nothing selected, Construction (or X) makes what
@@ -343,6 +343,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut linetype = None;
     let mut construction = false;
     let mut look = false;
+    let mut finish = false;
     let mut tie = false;
     let mut start = None;
     let feature = active_feature(app);
@@ -460,6 +461,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 section_alias("sketch_palette:options_fold", "ui.palette_more");
             }
             crate::ui_kit::Part::Footer => {
+                let button = crate::ui_kit::wide_primary_button(ui, "Finish Sketch");
+                crate::scenario::publish_rect("sketch_palette:finish", button.rect);
+                crate::scenario::publish_handle("sketch_palette:finish", button.rect.center());
+                finish = button.clicked();
                 let (at, slice) = crate::ui_kit::button_pair(
                     ui,
                     "sketch_palette",
@@ -479,13 +484,6 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     app.viewport.palette_rect = response.map(|r| r.response.rect.expand(frame.stroke.width));
     if let Some(rect) = app.viewport.palette_rect {
         crate::scenario::publish_rect("sketch_palette:outer", rect);
-    }
-    // Compatibility automation hook now points at the single Finish action in the ribbon.
-    if let Some(at) = crate::scenario::handle_at("button:sketch.finish") {
-        crate::scenario::publish_handle("sketch_palette:finish", at);
-        if let Some(rect) = crate::scenario::rect_of("button:sketch.finish") {
-            crate::scenario::publish_rect("sketch_palette:finish", rect);
-        }
     }
     if let Some((key, on)) = set {
         let mut params = serde_json::Map::new();
@@ -512,6 +510,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if look {
         crate::dialogs::look_at_sketch_again(app);
+    }
+    if finish {
+        app.finish_sketch();
     }
 }
 
@@ -586,6 +587,18 @@ mod tests {
         h.settle();
         assert!(crate::scenario::rect_of("ribbon:section:SKETCH:FINISH SKETCH").is_some());
         let at = crate::scenario::handle_at("button:sketch.finish").unwrap();
+        h.call("ui.click", json!({"x":at.x,"y":at.y}));
+        assert!(h.app.session.active_sketch.is_none());
+    }
+
+    #[test]
+    fn palette_has_a_finish_sketch_button_that_finishes_the_sketch() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.settle();
+        let at = crate::scenario::handle_at("sketch_palette:finish").expect("the palette ends in Finish Sketch");
+        assert!(crate::scenario::rect_of("sketch_palette:look_at").is_some(), "Look At | Slice stay");
+        assert!(crate::scenario::handle_at("button:sketch.finish").is_some(), "and so does the ribbon's Finish");
         h.call("ui.click", json!({"x":at.x,"y":at.y}));
         assert!(h.app.session.active_sketch.is_none());
     }
