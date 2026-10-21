@@ -91,6 +91,8 @@ pub const SECTIONS: &[Section] = &[
     },
     Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "MODEL", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
+    // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
+    Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
     Section { tab: "SURFACE", panel: "EDIT", promoted: 4, ids: &["surface.trim", "surface.untrim", "surface.extend", "surface.stitch"] },
     Section { tab: "SURFACE", panel: "CONVERT", promoted: 2, ids: &["surface.thicken", "mesh.convert"] },
@@ -634,6 +636,7 @@ mod tests {
             ("ASSEMBLE", "COMPONENTS", "component.insert_design"),
             ("SHEET METAL", "CREATE", "sheet.convert"),
             ("SHEET METAL", "SKETCH", "sketch.create"),
+            ("SURFACE", "SKETCH", "sketch.create"),
             ("SKETCH", "REFERENCE", "canvas.insert"),
         ] {
             assert!(layout(tab, panel, &specs).unwrap().0.iter().any(|c| c.id == id));
@@ -944,6 +947,22 @@ mod tests {
         h.frames(2);
         assert_eq!(h.app.ui.tab, "SHEET METAL", "New Sketch is on this tab, so it stays");
         h.step(&json!({"click": {"plane": "XZ"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.session.active_sketch.is_some());
+        assert_eq!(h.app.ui.tab, "SKETCH");
+    }
+
+    /// New Sketch is on the SURFACE tab too, and a sketch started there stays on that tab until
+    /// it opens.
+    #[test]
+    fn new_sketch_starts_from_the_surface_tab() {
+        let mut h = crate::scenario::Harness::new();
+        h.step(&json!({"click": {"handle": "tab:SURFACE"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "button:sketch.create"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.ui.tab, "SURFACE", "New Sketch is on this tab, so it stays");
+        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
         h.frames(2);
         assert!(h.app.session.active_sketch.is_some());
         assert_eq!(h.app.ui.tab, "SKETCH");
