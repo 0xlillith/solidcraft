@@ -1,0 +1,595 @@
+{
+  "metadata": {
+    "schema_version": "0.2.0",
+    "language": "en",
+    "status": "awaiting_native_source",
+    "name": "SELENE improved showcase mechanism acceptance",
+    "source_lock": "../source-lock.json",
+    "authorship": "Original acceptance criteria and analytic planning checks derived from public SolidCraft project descriptions.",
+    "license": "MIT OR Apache-2.0",
+    "provenance_id": "ORIGINAL-2026-10-CATALOG",
+    "units": {
+      "length": "mm",
+      "angle": "rad",
+      "time": "s"
+    },
+    "evidence_policy": "Documentation, native inspection and runtime execution are separate evidence levels. Every native binding and runtime result is unresolved here.",
+    "runtime_scope": "Kinematic mechanism acceptance only. Lunar dynamics, force and torque limits, contact impulses, regolith, grasp/release and capture physics need independent simulation evidence.",
+    "reference_resolution": "reference_ids resolve against ../source-lock.json references.",
+    "automatic_admission_allowed": false
+  },
+  "items": [
+    {
+      "id": "MCA-001",
+      "name": "Grounded structure and anchored static modules",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-001",
+          "SELENE-REF-002"
+        ],
+        "summary": "The documented original v7 had 18 modules that were neither grounded nor joined. The improved example rigidly groups static modules with Structure so the turret and dish have an anchored chain."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Resolve the improved source's grounded structure occurrence and each static-module attachment from native IDs.",
+        "Inspect rigid joints or equivalent explicit constraints, including the turret pedestal and dish support. Do not assume the original set of 18 maps one-to-one to the improved file.",
+        "Record intentionally free or suppressed occurrences with an explicit purpose."
+      ],
+      "runtime_acceptance": [
+        "Driving each documented movable subsystem must move its intended occurrences and report a meaningful stopped or unconnected reason when a deliberately disconnected test is used.",
+        "Check that the fixed chassis and static modules retain their intended transforms during subsystem motion; do not replace the mechanism with arbitrary parenting."
+      ]
+    },
+    {
+      "id": "MCA-002",
+      "name": "Independent solar-actuator barrels and rods",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-001",
+          "SELENE-REF-002"
+        ],
+        "summary": "Four solar actuators are described as separate barrel and rod mechanisms, with moving eyes and pins assigned to the appropriate part."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Identify all four actuators and their barrel/rod occurrences, body membership and attachment points.",
+        "Verify that rigid bodies belong to the correct moving component and that assembly parentage is resolved.",
+        "Retain any genuinely empty or historical components only if the reviewed source does; do not infer a required total component count."
+      ],
+      "runtime_acceptance": [
+        "During wing motion, each rod must translate relative to its barrel while both end pins remain coincident with their mates.",
+        "Review all actuator bodies for double transformation, detached pins and visual intersections over the chosen motion range."
+      ]
+    },
+    {
+      "id": "MCA-003",
+      "name": "Solar-actuator closed loops and travel stops",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-001",
+          "SELENE-REF-002",
+          "SELENE-REF-004"
+        ],
+        "summary": "Each actuator uses a revolute root pin, a stroke slider and a revolute wing pin. Published slider limits are -6 to +0.4 mm. The documented port-wing tilt stops near 32.23 degrees when the stroke reaches its lower limit."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Bind each loop's joints, slider axis, sign convention, limits, wing hinge and body-local pin origins.",
+        "Review flip and frame conventions. Confirm the intended assembled pose closes the loop before it is driven.",
+        "Replace rounded demonstration coordinates with source-derived coordinates for native acceptance; record any difference without rewriting the source to match a rounded example."
+      ],
+      "runtime_acceptance": [
+        "Drive from the same approved starting pose in continuous increments; verify pin coincidence and loop closure throughout.",
+        "A request beyond feasible travel must stop with an explicit loop/limit report and retain a closed pose.",
+        "Compare source-derived geometry with an independently evaluated actuator-length relation, using a documented tolerance appropriate to the actual solver and geometry."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "slider_lower_limit",
+          "value": -6,
+          "unit": "mm",
+          "kind": "reported_input",
+          "binding_status": "candidate_requires_native_review"
+        },
+        {
+          "quantity": "slider_upper_limit",
+          "value": 0.4,
+          "unit": "mm",
+          "kind": "reported_input",
+          "binding_status": "candidate_requires_native_review"
+        },
+        {
+          "quantity": "reported_port_tilt_stop",
+          "value": 0.5625196179177724,
+          "unit": "rad",
+          "kind": "rounded_reported_demo_result",
+          "binding_status": "not_a_native_acceptance_tolerance"
+        }
+      ],
+      "analytic_candidate": {
+        "id": "SELENE-ANALYTIC-001",
+        "status": "original_calculation_from_rounded_published_inputs",
+        "frame": "+Z up; hinge rotation about +X; the common actuator X coordinate is set to zero because it cancels from this planar length calculation.",
+        "inputs": {
+          "hinge_mm": [
+            0,
+            -140,
+            158
+          ],
+          "root_pin_mm": [
+            0,
+            -91,
+            134
+          ],
+          "wing_pin_at_zero_mm": [
+            0,
+            -180.41,
+            169.71
+          ],
+          "evaluation_angle_rad": 0.3490658503988659,
+          "stroke_lower_limit_mm": -6
+        },
+        "formula": "T(theta) = H + Rx(theta) * (T0 - H); L(theta) = norm(T(theta) - R); stroke(theta) = L(theta) - L(0).",
+        "calculated_expected": {
+          "length_at_zero_mm": 96.27747503959584,
+          "stroke_at_evaluation_angle_mm": -2.8659532890803945,
+          "first_positive_stop_angle_rad": 0.5625425647338391
+        },
+        "interpretation": "The rounded coordinates produce a stop near 32.231315 degrees, close to the approximately 32.23-degree published result. These calculations are planning checks, not measurements of the unavailable native model.",
+        "comparison_policy": "Recompute this self-contained analytic example independently. After source admission, derive a separate check from reviewed native axes and points. Do not use this example's rounded numbers as exact source geometry."
+      }
+    },
+    {
+      "id": "MCA-004",
+      "name": "Mirrored solar-wing tilt link",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-001"
+        ],
+        "summary": "The documented starboard tilt follows the port tilt with a ratio of -1."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Bind the actual driver/follower tilt joints, their effective angle values, limits and offset.",
+        "Confirm that opposing hinge-axis orientations are consistent with the stored link sign; inspect the source instead of assigning signs from camera appearance."
+      ],
+      "runtime_acceptance": [
+        "For changes within both mechanisms' feasible range, verify delta_starboard = -delta_port after applying the reviewed offset and axis conventions.",
+        "When either actuator loop reaches a limit, preserve all closed-loop constraints and report the stopped result."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "angular_motion_link_ratio",
+          "value": -1,
+          "unit": "rad/rad",
+          "kind": "reported_input",
+          "binding_status": "candidate_requires_native_review"
+        }
+      ]
+    },
+    {
+      "id": "MCA-005",
+      "name": "Six-wheel motion-link chain",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-001",
+          "SELENE-REF-002"
+        ],
+        "summary": "The six wheels form one motion-link chain, with links stored from the far end in the author's showcase."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Resolve all six wheel-axis joints and the directed link graph, including effective driver, ratios, offsets and native link order.",
+        "Verify that no wheel has two conflicting drivers and that the source has no invalid cycle.",
+        "Record the source order; evaluation must not depend on a convenient serialization order."
+      ],
+      "runtime_acceptance": [
+        "Drive the chain's effective source over the approved range and verify every wheel's expected signed angular increment.",
+        "Evaluate an equivalent reordered link list in an isolated diagnostic if the engine supports it; the motion should match.",
+        "Keep this kinematic link check separate from traction, slip, terrain contact forces and suspension dynamics."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "wheel_count",
+          "value": 6,
+          "unit": "count",
+          "kind": "reported_inventory_expectation",
+          "binding_status": "not_sufficient_for_variant_identity"
+        },
+        {
+          "quantity": "documented_equal_wheel_link_ratio",
+          "value": 1,
+          "unit": "rad/rad",
+          "kind": "reported_input",
+          "binding_status": "candidate_requires_native_review"
+        }
+      ]
+    },
+    {
+      "id": "MCA-006",
+      "name": "Rack-and-pinion demonstration track",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-002"
+        ],
+        "summary": "The author's improved showcase rolls a regolith demonstration track beneath the wheels using a rack-and-pinion coupling with reported pitch radius 38 mm and prescribed no-slip kinematics."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Identify the helper-track occurrence, slider, driving revolute joint and rack coupling.",
+        "Review the actual pitch radius, sign, offset and coordinate frame.",
+        "Tag this track as a kinematic demonstration helper. It is not a scanned lunar terrain or a solved rover-ground interaction."
+      ],
+      "runtime_acceptance": [
+        "Verify that the track displacement magnitude equals radius times wheel-angle change in radians, within the reviewed numeric tolerance.",
+        "Confirm the native direction and offset with the actual joint axes and a small positive drive.",
+        "Exclude or explicitly disable this helper in terrain-contact dynamics; prescribed rack motion must not silently become traction physics."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "reported_pitch_radius",
+          "value": 38,
+          "unit": "mm",
+          "kind": "reported_input",
+          "binding_status": "candidate_requires_native_review"
+        }
+      ],
+      "analytic_candidate": {
+        "id": "SELENE-ANALYTIC-002",
+        "status": "original_calculation_from_reported_input",
+        "inputs": {
+          "pitch_radius_mm": 38,
+          "angle_change_rad": 6.283185307179586
+        },
+        "formula": "abs(delta_translation_mm) = pitch_radius_mm * abs(delta_angle_rad).",
+        "calculated_expected": {
+          "translation_magnitude_mm": 238.76104167282426
+        },
+        "interpretation": "One full turn in the reported 38 mm coupling implies this displacement magnitude. Direction and offset require native binding. Command values may use degrees; native formula inputs are radians.",
+        "comparison_policy": "This verifies a kinematic relation only; it does not measure rolling resistance, traction or lunar gravity."
+      }
+    },
+    {
+      "id": "MCA-007",
+      "name": "Turret-to-dish gear coupling",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-002"
+        ],
+        "summary": "The improved showcase describes a 24:36 gear coupling that turns the dish against the turret."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Bind the two rotational joints and the coupling's declared driver/follower direction, ratio, offset and axis conventions.",
+        "Confirm whether the source expresses tooth counts, radii or a direct motion-link ratio; retain the native representation."
+      ],
+      "runtime_acceptance": [
+        "For the documented driver-to-follower interpretation, check a follower angular-change magnitude of 24/36 times the driver change.",
+        "Verify the rotation sign from the native gear setup; opposite visual rotation alone is not an axis convention.",
+        "Keep any hard stops and other links effective throughout the driven sequence."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "reported_driver_to_follower_size_ratio",
+          "value": 0.6666666666666666,
+          "unit": "ratio",
+          "kind": "derived_magnitude_from_reported_24_to_36_pair",
+          "binding_status": "driver_order_and_sign_require_native_review"
+        }
+      ],
+      "analytic_candidate": {
+        "id": "SELENE-ANALYTIC-003",
+        "status": "original_calculation_from_reported_ratio",
+        "inputs": {
+          "driver_count": 24,
+          "follower_count": 36,
+          "driver_angle_change_rad": 1.5707963267948966
+        },
+        "formula": "abs(delta_follower_rad) = (24 / 36) * abs(delta_driver_rad).",
+        "calculated_expected": {
+          "follower_angle_change_magnitude_rad": 1.0471975511965976
+        },
+        "interpretation": "A candidate 90-degree driver increment gives a 60-degree follower magnitude under the stated driver/follower assignment. It is not a substitute for inspecting the native coupling.",
+        "comparison_policy": "Resolve native driver order, axes, sign and offset before treating this as an executable acceptance check."
+      }
+    },
+    {
+      "id": "MCA-008",
+      "name": "Threaded vial-cap motion",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-002"
+        ],
+        "summary": "The showcase adds a vial-cap screw motion described as 1.5 mm per turn."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Identify the actual vial-cap and vial/body occurrences or helper geometry, the screw or coupled joints, axis, pitch, sign, offset and limits.",
+        "Inspect whether the cap is an independent source occurrence. Do not transplant the original v7 cassette's body grouping.",
+        "Record which original or helper parts the demonstration actually uses; an unscrewing cap does not establish an independently releasable vial."
+      ],
+      "runtime_acceptance": [
+        "Verify 1.5 mm axial displacement magnitude per full rotation if native inspection confirms the reported pitch.",
+        "Check the sign, visual contact and feasible range from the reviewed start pose.",
+        "For later release/collection scenes, separately require a hollow vial, contents boundary, closure state, independent release body and mass properties; this demonstration does not supply those facts."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "reported_screw_pitch",
+          "value": 1.5,
+          "unit": "mm/turn",
+          "kind": "reported_input",
+          "binding_status": "candidate_requires_native_review"
+        }
+      ],
+      "analytic_candidate": {
+        "id": "SELENE-ANALYTIC-004",
+        "status": "original_calculation_from_reported_input",
+        "inputs": {
+          "pitch_mm_per_turn": 1.5,
+          "angle_change_rad": 6.283185307179586
+        },
+        "formula": "abs(delta_axial_mm) = pitch_mm_per_turn * abs(delta_angle_rad) / (2*pi).",
+        "calculated_expected": {
+          "axial_displacement_magnitude_mm": 1.5
+        },
+        "interpretation": "A prescribed screw-motion relation; it does not establish a sealed closure, thread contact mechanics or a suitable capture device.",
+        "comparison_policy": "Confirm whether the inspected source uses pitch as lead per revolution and verify the native axis and sign."
+      }
+    },
+    {
+      "id": "MCA-009",
+      "name": "Articulated arm reach and drag behavior",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-002",
+          "SELENE-REF-003"
+        ],
+        "summary": "The author demonstrates joint.reach moving the gripper toward a pebble in 17 steps, and separate reach/drag demonstrations show an out-of-reach target stopping short. These are published kinematic examples."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Resolve the improved arm chain, tool point, joints, native angular limits, optional orientation target and grounded base.",
+        "Record the actual target coordinates and poses only after obtaining the source and any accompanying demonstration commands.",
+        "Do not infer actuator speed, torque, backlash, contact handling or reachable launch/catch trajectories from inverse-kinematics success."
+      ],
+      "runtime_acceptance": [
+        "Reproduce agreed reachable targets from an approved initial pose while preserving limits and closed loops; record achieved pose and error.",
+        "Exercise an unreachable target and confirm a bounded result with useful stopped-by-limit or loop information.",
+        "Check collision/contact separately. The cited joint.reach change explicitly does not check contact sets.",
+        "Choose and report an appropriate error tolerance for the reviewed model and engine. Do not promote the author's reported tiny residual to a universal precision guarantee."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "reported_demonstration_step_count",
+          "value": 17,
+          "unit": "count",
+          "kind": "reported_demo_metadata",
+          "binding_status": "not_required_native_study_count"
+        },
+        {
+          "quantity": "author_reported_point_residual_bound",
+          "value": 1e-8,
+          "unit": "mm",
+          "kind": "reported_demo_result",
+          "binding_status": "not_independently_reproduced_and_not_an_acceptance_tolerance"
+        }
+      ]
+    },
+    {
+      "id": "MCA-010",
+      "name": "Coordinated SELENE tour and trace separation",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": true,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-002",
+          "SELENE-REF-004"
+        ],
+        "summary": "One motion study is reported to play track, wings, turret, geared dish, arm and vial cap together. PR 1680 names the study SELENE tour and reports 121 exported tour frames; kept gripper and wing-tip traces appear in demonstrations."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Locate the native saved study and record its name, ID, step domain, keys, joint references and any loop-dependent motion.",
+        "Identify motion traces and helper markers as display/analysis geometry so they are not mistaken for physical hardware or collision bodies.",
+        "Inspect whether study timing is stored, provided at export or still unspecified. Frame count and export FPS do not define actuator feasibility."
+      ],
+      "runtime_acceptance": [
+        "Replay from the declared initial pose on a copy with all participating link and loop constraints enabled; record any stopped or unmoved subsystem.",
+        "For export, verify sample count, joint states and source immutability independently of the rendering quality profile.",
+        "Use an explicit seconds mapping before estimating velocities or accelerations; rendering settings cannot silently retime an approved motion."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "reported_exported_tour_frames",
+          "value": 121,
+          "unit": "frames",
+          "kind": "reported_export_metadata",
+          "binding_status": "not_assumed_native_steps_or_runtime_duration"
+        }
+      ]
+    },
+    {
+      "id": "MCA-011",
+      "name": "Motion analysis and sampled interference evidence",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": false,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-005"
+        ],
+        "summary": "The published motion-analysis demonstration charts a solar tilt and actuator stroke, then checks the arm against the wings. It describes a clear tour and a separate intentional swing with forearm/distal-arm interference from step 45."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Bind any saved study used by these demonstrations and identify the exact arm and wing occurrence sets.",
+        "Keep the intentional collision case separate from the main tour; do not invent missing study keys or include a collision case by default.",
+        "Record the source's contact sets and whether they stop playback or are bypassed for the reported interference analysis."
+      ],
+      "runtime_acceptance": [
+        "Plot the actual solved follower values, with units and an explicit study duration when per-second quantities are requested.",
+        "For interference checks, record sample spacing, checked pairs, truncation status and any work-budget limit.",
+        "A clear sampled result must not be reported as continuous collision-free proof; tighten sampling or use continuous collision detection where necessary.",
+        "Treat the published step-45 example as descriptive until the exact corresponding study is available."
+      ],
+      "numeric_expectations": [
+        {
+          "quantity": "reported_first_interference_step",
+          "value": 45,
+          "unit": "study_step",
+          "kind": "reported_result_for_separate_demo",
+          "binding_status": "not_a_required_key_or_collision_in_the_primary_tour"
+        }
+      ]
+    },
+    {
+      "id": "MCA-012",
+      "name": "Flexible-hose and sketch visibility treatment",
+      "status": "awaiting_native_source",
+      "required_for_native_admission": false,
+      "documentation_evidence": {
+        "status": "published_description_not_reproduced",
+        "reference_ids": [
+          "SELENE-REF-001"
+        ],
+        "summary": "The mechanism reference notes that rigid hose bodies on one arm link and stationary sweep sketches drift visually during motion; those items were hidden for recording."
+      },
+      "native_evidence": {
+        "status": "not_inspected",
+        "bindings": null
+      },
+      "runtime_evidence": {
+        "status": "not_executed",
+        "software_commit": null,
+        "report": null
+      },
+      "native_review": [
+        "Identify the actual improved source's hose bodies and sketches, their attachment or display ownership, and the saved visibility state.",
+        "Do not hide functional geometry indiscriminately to pass a review; document exactly which visual-only elements are omitted.",
+        "If flexible hardware must remain visible, plan reviewed deformation or link-wise geometry separately."
+      ],
+      "runtime_acceptance": [
+        "Confirm that motion previews and renders disclose any intentionally hidden rigid hose approximations.",
+        "Check that hidden sketch/trace geometry does not alter collision membership or engineering mass silently.",
+        "Do not describe a hidden hose as a physically simulated flexible cable."
+      ]
+    }
+  ]
+}
