@@ -1783,6 +1783,9 @@ pub(crate) fn selection_filter(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
+/// Two Esc presses within this many seconds finish the open sketch.
+pub const ESCAPE_TWICE_S: f64 = 0.4;
+
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     if app.file_load.busy() {
@@ -1811,6 +1814,10 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     }
     for k in keys {
         use egui::Key;
+        // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
+        if k != Key::Escape {
+            app.last_escape = None;
+        }
         if shown && crate::navigation::view_key(app, ctx, k, mods) {
             continue;
         }
@@ -1841,6 +1848,29 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         match k {
             Key::Escape => {
                 app.esc_handled = true;
+                // Two quick presses in a sketch finish it (keeping it, like Finish Sketch);
+                // the first one has already cancelled whatever was active.
+                let now = ctx.input(|i| i.time);
+                let again = app.last_escape.is_some_and(|t| now - t <= ESCAPE_TWICE_S);
+                app.last_escape = Some(now);
+                // Not while a tool is still out (its first Esc only ended a chain): this press
+                // puts it down, and the next quick one finishes.
+                if again
+                    && app.tool.is_none()
+                    && app.dialog.is_none()
+                    && let Some(sketch) = app.session.active_sketch
+                {
+                    app.last_escape = None;
+                    // A sketch left blank is taken away instead, in one undo step, so no empty
+                    // sketch stays behind.
+                    let blank = app.session.doc.sketch(sketch).is_ok_and(crate::sketch_palette::is_blank);
+                    let depth = app.session.undo.len();
+                    app.finish_sketch();
+                    if blank && app.session.active_sketch.is_none() && app.run("timeline.delete", json!({ "feature": sketch.to_string() })).is_ok() {
+                        app.session.undo.truncate(depth + 1);
+                    }
+                    continue;
+                }
                 if crate::sketch_text_move::cancel_drag(app) {
                     continue;
                 }
@@ -1854,8 +1884,8 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                     app.tree.picked_joints.clear();
                     let _ = app.run("select.clear", json!({}));
                 }
-                // An open sketch with nothing left to cancel stays open (#1804). Finish Sketch
-                // is what leaves it, so a second Escape after putting a tool down is harmless.
+                // A single Esc with nothing left to cancel keeps the sketch open (#1804); a quick
+                // second press finishes it (above).
             }
             Key::S if !mods.shift && !mods.alt => {
                 app.start("ui.palette");

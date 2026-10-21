@@ -428,6 +428,8 @@ pub struct SolveApp {
     pub last_command: Option<(String, String)>,
     /// Esc was already acted on this frame (by the shortcuts), so later handlers skip it.
     pub esc_handled: bool,
+    /// When Esc was last pressed (input time): a second press soon after finishes the sketch.
+    pub last_escape: Option<f64>,
     pub status: Option<(String, f64, bool)>,
     pub quit_requested: bool,
     /// Autosave into the recovery folder (the desktop app turns it on).
@@ -556,6 +558,7 @@ impl SolveApp {
             apply_gate: None,
             last_command: None,
             esc_handled: false,
+            last_escape: None,
             status: None,
             quit_requested: false,
             autosave: None,
