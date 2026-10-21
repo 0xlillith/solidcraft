@@ -1529,6 +1529,10 @@ fn ribbon_tooltip(app: &SolveApp, response: egui::Response, command: &solidcraft
         if let Some(description) = description {
             ui.add(egui::Label::new(description).wrap());
         }
+        // The tool's own help, when it has one (#2758).
+        if let Some(help) = crate::command_help::help(command.id) {
+            ui.add(egui::Label::new(egui::RichText::new(help).color(t.text_dim)).wrap());
+        }
         if let Some(reason) = disabled {
             ui.add(egui::Label::new(egui::RichText::new(reason).color(t.text_dim)).wrap());
         }
@@ -1630,9 +1634,11 @@ fn dropdown_row(app: &SolveApp, ui: &mut egui::Ui, c: &'static solidcraft_engine
     if pin.on_hover_text(tip).clicked() {
         return RowAction::TogglePin;
     }
-    let resp = match &info.disabled_reason {
-        Some(why) if !info.enabled => resp.on_hover_text(why),
-        _ => resp,
+    // A disabled row says why; a documented command also shows its help (#2758).
+    let reason = info.disabled_reason.as_deref().filter(|_| !info.enabled);
+    let resp = match crate::command_help::row_tip(c.id, &label, c.shortcut, reason) {
+        Some(tip) => crate::command_help::tooltip(resp, c.id, tip),
+        None => resp,
     };
     if resp.secondary_clicked() {
         return RowAction::Menu(resp.interact_pointer_pos().unwrap_or(rect.left_bottom()));
