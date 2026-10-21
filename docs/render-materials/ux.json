@@ -1,0 +1,693 @@
+{
+  "metadata": {
+    "schema_version": "0.2.0",
+    "language": "en",
+    "status": "concept_catalog",
+    "provenance_id": "ORIGINAL-2026-10-CATALOG"
+  },
+  "items": [
+    {
+      "id": "UX-001",
+      "area": "Entry",
+      "name": "Choose work intent",
+      "behavior": "Offer Product, Interior, Exterior, Inspection and Lunar options while retaining the selected subject.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-002",
+      "area": "Entry",
+      "name": "Immediate preview",
+      "behavior": "Show a bounded preview and the actual preparation phase.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-003",
+      "area": "Entry",
+      "name": "Three detail levels",
+      "behavior": "Quick, Detailed and Expert inspect the same persistent scene state.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-004",
+      "area": "Entry",
+      "name": "Complete scene recipes",
+      "behavior": "Preview component replacements and preserve locked components.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-005",
+      "area": "Library",
+      "name": "Everyday-language search",
+      "behavior": "Search intended use, finish and visual properties with deterministic filters.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-006",
+      "area": "Library",
+      "name": "Comparable thumbnails",
+      "behavior": "Use declared reference lighting, exposure and appropriate sample geometry.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-007",
+      "area": "Library",
+      "name": "Practical filters",
+      "behavior": "Filter by family, domain, capability, cost and availability.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-008",
+      "area": "Library",
+      "name": "Resource information card",
+      "behavior": "Show controls, provenance, dependencies and validation state.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-009",
+      "area": "Library",
+      "name": "Explicit assignment scope",
+      "behavior": "Preview face, body, component or occurrence targets before applying.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "A face, body, component-definition and occurrence assignment each affect exactly the displayed target scope."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-010",
+      "area": "Library",
+      "name": "Local versions and favorites",
+      "behavior": "Keep favorites usable offline and pin resource versions.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Reopen an offline project with an intentionally missing pack and identify its exact ID/version without substituting another resource."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-011",
+      "area": "Materials",
+      "name": "Essential appearance inspector",
+      "behavior": "Expose only meaningful controls for the selected recipe initially.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-012",
+      "area": "Materials",
+      "name": "Visible physical layers",
+      "behavior": "Keep substrate, coating, wear and dust independently editable.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-013",
+      "area": "Materials",
+      "name": "Orientation on the part",
+      "behavior": "Align a finish to an edge or axis and report lost references.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-014",
+      "area": "Materials",
+      "name": "Real texture scale",
+      "behavior": "Display texture dimensions in model units without scaling geometry.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-015",
+      "area": "Materials",
+      "name": "Guided transparency",
+      "behavior": "Explain surface, solid thickness, absorption and nested contents.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-016",
+      "area": "Materials",
+      "name": "Engineering properties",
+      "behavior": "Keep optical appearance separate from sourced engineering cards.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-017",
+      "area": "Materials",
+      "name": "Optional node editor",
+      "behavior": "Synchronize exposed recipe parameters and label arbitrary graphs as custom.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-018",
+      "area": "Lighting",
+      "name": "Selection-sized rigs",
+      "behavior": "Fit once to a selected subject and offer an explicit refit action.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Fit a rig once to the selected subject, then move its camera and arm without changing the resolved source transforms."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-019",
+      "area": "Lighting",
+      "name": "Intent-based controls",
+      "behavior": "Expose softness and contrast with a visible energy-normalization policy.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-020",
+      "area": "Lighting",
+      "name": "Place a reflection with the cursor",
+      "behavior": "Preview a source placement computed from the selected surface and view.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-021",
+      "area": "Lighting",
+      "name": "Studio view",
+      "behavior": "Show sources, flags and reflectors without changing the final camera.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-022",
+      "area": "Lighting",
+      "name": "Balance light groups",
+      "behavior": "Separate physically linear gain changes from editorial RGB recoloring.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-023",
+      "area": "Environment",
+      "name": "Linked environment background and ground",
+      "behavior": "Keep physical links by default and show deliberate artistic exceptions.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-024",
+      "area": "Environment",
+      "name": "Visual orientation",
+      "behavior": "Rotate illumination and reflections together while retaining camera locks.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-025",
+      "area": "Environment",
+      "name": "Stage and parallax",
+      "behavior": "Identify background images versus nearby three-dimensional geometry.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-026",
+      "area": "Environment",
+      "name": "Coherent sun and sky",
+      "behavior": "Assign one owner to each source and prevent duplicate solar energy.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Composing a sky, environment and rig produces at most one owned solar emitter, with explicit conflict resolution."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-027",
+      "area": "Camera",
+      "name": "Frame and lock",
+      "behavior": "Offer subject framing and independent camera, focus and exposure locks.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-028",
+      "area": "Camera",
+      "name": "Click to focus",
+      "behavior": "Set a real focus distance using the selected scene position.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-029",
+      "area": "Camera",
+      "name": "Shots and variants",
+      "behavior": "Save combinations and compare with shared conditions.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-030",
+      "area": "Rendering",
+      "name": "Guided quality",
+      "behavior": "Select a quality goal while retaining inspectable numeric intent.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-031",
+      "area": "Rendering",
+      "name": "Time or quality targets",
+      "behavior": "Base estimates on measurements and label incomplete convergence.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-032",
+      "area": "Rendering",
+      "name": "Transparent device selection",
+      "behavior": "Show the selected executor and all missing capabilities before start.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-033",
+      "area": "Rendering",
+      "name": "Phases and cancellation",
+      "behavior": "Expose preparation, sampling, finishing and export progress with cancellation.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-034",
+      "area": "Rendering",
+      "name": "Actionable diagnostics",
+      "behavior": "Offer a specific correction for an unsupported or missing resource.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-035",
+      "area": "Image",
+      "name": "Before-after and A/B",
+      "behavior": "Lock relevant conditions and keep comparison images identifiable.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "A/B keeps camera, exposure and view transform locked unless the user explicitly changes the comparison scope."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-036",
+      "area": "Image",
+      "name": "Reversible finishing stack",
+      "behavior": "Keep the scene-linear result separate from display and artistic treatments.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-037",
+      "area": "Output",
+      "name": "Export by purpose",
+      "behavior": "Offer transparent product image, presentation and production-master intents.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-038",
+      "area": "Output",
+      "name": "Reviewable queue",
+      "behavior": "Show captured variants, output paths and resource requirements before enqueueing.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-039",
+      "area": "Accessibility",
+      "name": "Keyboard focus and help",
+      "behavior": "Provide visible focus, scalable text and non-color-only status cues.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Complete search, selection, parameter edit, apply, cancel and render using only the keyboard; focus returns predictably."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-040",
+      "area": "Automation",
+      "name": "Assistant through common commands",
+      "behavior": "Preview proposed actions and execute the same command contracts as the UI.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P0",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-041",
+      "area": "Lunar",
+      "name": "Physical or editorial mode",
+      "behavior": "Label artificial fill and preserve a strict lunar lighting option.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-042",
+      "area": "Lunar",
+      "name": "Surface scale inspector",
+      "behavior": "Compare regolith grain, wheel tread and vial size in the same units.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-043",
+      "area": "Lunar",
+      "name": "Celestial context",
+      "behavior": "Show site, epoch, local approximation and Earth-visibility assumptions.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-044",
+      "area": "Lunar",
+      "name": "Source ownership inspector",
+      "behavior": "Identify environment, rig and rover-owned emitters before composition.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "A visible emissive surface and its sampling representation are identified as one contribution, with no duplicated energy."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-045",
+      "area": "SELENE",
+      "name": "Verified rover binding",
+      "behavior": "Check the pinned model hash and show unmatched component selectors.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Reject the automatic SELENE binding when its source hash or expected occurrence graph differs."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-046",
+      "area": "SELENE",
+      "name": "Material role mapping",
+      "behavior": "Preview chassis, foil, solar cell, lens, LED, vial and dust roles separately.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-047",
+      "area": "SELENE",
+      "name": "Shot guide",
+      "behavior": "Offer hero, electronics bay, arm, vial macro and shadow-operation compositions.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-048",
+      "area": "SELENE",
+      "name": "Realism diagnostics",
+      "behavior": "Review scale, contact, light ownership, missing data and unsupported optics.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-049",
+      "area": "Animation",
+      "name": "Simulation versus animation time",
+      "behavior": "Expose playback speed without changing gravity or integration time.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P2",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-050",
+      "area": "Animation",
+      "name": "Constraint handoff timeline",
+      "behavior": "Show grip, release, free flight, capture and stow events.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P2",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-051",
+      "area": "Animation",
+      "name": "Trajectory preview",
+      "behavior": "Display predicted and simulated paths with collision and reachability feedback.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P2",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-052",
+      "area": "Animation",
+      "name": "Contact inspector",
+      "behavior": "Show impulses, penetration and relative speed near catch events.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P2",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-053",
+      "area": "Animation",
+      "name": "Sample state",
+      "behavior": "Show open, filling, sealed, airborne, captured and stored states.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction."
+      ],
+      "priority": "P2",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-054",
+      "area": "Animation",
+      "name": "Bake and replay",
+      "behavior": "Freeze approved physics and keep rendering independent of simulation edits.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Changing simulation parameters invalidates the bake, while changing render samples preserves the approved motion."
+      ],
+      "priority": "P2",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-055",
+      "area": "Presets",
+      "name": "Capability-aware quick starts",
+      "behavior": "Resolve the complete quality, studio, environment and material requirements atomically.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "An unsupported scene identifies all missing capabilities before any scene state changes."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    },
+    {
+      "id": "UX-056",
+      "area": "Presets",
+      "name": "Explicit conflicts and overrides",
+      "behavior": "Explain source, camera, material and physics conflicts before applying.",
+      "acceptance": [
+        "State-changing behavior uses validated engine commands; presentation-only focus and navigation remain UI responsibilities.",
+        "Relevant undo, locks and unsupported-capability outcomes are verified for this interaction.",
+        "Conflicting overrides are resolved before a single undoable apply; cancel leaves the document unchanged."
+      ],
+      "priority": "P1",
+      "status": "proposed_support_unverified"
+    }
+  ]
+}
