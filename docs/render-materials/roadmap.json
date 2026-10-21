@@ -175,13 +175,14 @@
     {
       "id": "S01",
       "name": "SELENE model binding",
-      "scope": "Verify v7 provenance, roles and occurrence identities; plan explicit derivative upgrades.",
+      "scope": "Acquire and pin the documented improved SELENE-showcase native file; verify its loops, links, grounding and motion studies, then bind reviewed appearance roles.",
       "depends_on": [
         "F01",
         "F03"
       ],
       "acceptance": [
-        "Unchanged original source and reviewed role assignments."
+        "Improved source hash, derivative provenance and notices recorded; v7 fallback rejected.",
+        "Native and runtime mechanism acceptance checks completed; exact targets reviewed."
       ],
       "status": "planned"
     },
@@ -203,7 +204,7 @@
     {
       "id": "S03",
       "name": "Animation and dynamics foundation",
-      "scope": "Implement units, rigid bodies, joints, motors, contact and analytic benchmarks.",
+      "scope": "Extend existing kinematic studies, IK and motion analysis with SI dynamics, rigid-body inertia, bounded actuation, continuous contact, events and analytic benchmarks.",
       "depends_on": [
         "F01",
         "S01"

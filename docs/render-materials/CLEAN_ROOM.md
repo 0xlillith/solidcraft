@@ -10,13 +10,16 @@ The public OpenPBR surface specification was consulted for the existence and sco
 
 NASA pages were consulted for limited scientific facts. No NASA imagery, terrain file, animation, logo or texture is bundled. The procedural lunar concepts are original proposed scenes, not reconstructed NASA datasets or certified locations. A future terrain or ephemeris import requires its own source, version, rights and coordinate record.
 
-The user's SELENE model repository was inspected read-only at a pinned commit. This contribution records selected model identities, counts and joint limits needed to plan integration. It does not vendor the native model or its media. A later derivative demo must retain the source project's attribution, including the separate Ubuntu Font Licence notice for modeled Ubuntu Light lettering and the SolidCraft emblem attribution. Do not collapse those obligations into a blanket MIT statement.
+The user's original v7 SELENE model repository was inspected read-only at a pinned commit as a historical baseline. This contribution records selected model identities, counts and joint limits needed to plan integration. It does not vendor the native model or its media. A later derivative demo must retain the source project's attribution, including the separate Ubuntu Font Licence notice for modeled Ubuntu Light lettering and the SolidCraft emblem attribution. Do not collapse those obligations into a blanket MIT statement.
+
+The continuation adds original numerical appearance recipes, a simple analytic-box swatch script, scene/role/shot specifications and development tools under `assets/render/selene/`. Tangency's own public mechanism documentation and PR discussions establish the selected improved variant's documented behavior; no external code, native derivative or demonstration media is copied into this package. A missing derivative file is recorded as unavailable rather than assigned an assumed license or hash.
 
 ## What was inspected
 
 - SolidCraft's own `AGENTS.md`, `CONTRIBUTING.md`, architecture, render settings, render workspace, render backend and physical-material-card documentation at the pinned integration base.
 - SolidCraft's own attribution, asset validation and CI selection rules to place this contribution correctly.
 - SELENE's README, attribution, model statistics and `models/Rover-v7.solidcraft` at the pinned source revision.
+- Tangency Labs' own mechanism reference and public showcase, motion export and motion analysis discussions, identified in the prepared source lock.
 - Public scientific and specification pages identified in [SOURCES.md](SOURCES.md).
 
 The local-only `plan/` directory was absent from the isolated public checkout. This contribution neither invents its contents nor commits a replacement. The user's explicit destination is the personal render/materials fork, so this work targets that branch through a dedicated PR instead of the upstream product repository.

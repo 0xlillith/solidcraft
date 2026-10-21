@@ -2,7 +2,7 @@
 
 ## Scope of this contribution
 
-This PR provides English planning content and data under `docs/render-materials/`, plus exact attribution rows. It changes no application command, shader, renderer backend, native document format, model geometry or existing example. The integration base is the user's `lab/render-materials` branch at the recorded revision. Do not replace it with a newer upstream snapshot as a side effect of integrating this package.
+This PR provides English planning content under `docs/render-materials/` and prepared authoring resources plus development tools under `assets/render/selene/`, with exact attribution rows. It changes no application command, shader, renderer backend, native document format or model geometry. The new swatch script uses existing commands. The integration base is the user's `lab/render-materials` branch at the recorded revision. Do not replace it with a newer upstream snapshot as a side effect of integrating this package.
 
 ## Immediate implementation tasks
 
@@ -33,6 +33,14 @@ Treat concept IDs as durable. Resource versions can evolve without renumbering t
 
 Preserve the old ID ranges when moving from the previous planning inventory. Use English display names and searchable aliases where helpful. The retained `LUZ` prefix is an identifier compatibility decision, not a request for Spanish UI text.
 
+## Prepared files available now
+
+Use [assets/render/selene](../../assets/render/selene/README.md) as the prepared resource authority. It contains 48 original recipes with current opaque PBR projections and separate advanced intent, one executable 48-swatch command script, 33 semantic roles, 10 stages and 12 shot recipes. These are authoring resources; do not advertise them as a validated production library or import the pack as scalar `solidcraft-library/1` data.
+
+`tools/prepare.py` inspects native identity and assembly metadata, makes an unreviewed body-role template, and compiles an opaque overlay only after source and target review. It emits the documented `appearance.assign` envelope, preserving physical materials. `tools/validate_prepared.py` checks the prepared package. Both are Python development tools, not application dependencies.
+
+The active source lock selects the improved `SELENE-showcase.solidcraft` and is currently `awaiting_native_source`. Acquire that exact native file, record its provenance/notices and hash, then resolve roles against evaluated geometry. Do not substitute the historical `selene-bindings.json` IDs. No current native target map is claimed.
+
 ## Suggested first resource slice
 
 Select exact concept IDs after the material registry is bound, covering: neutral dielectric, coated plastic, clear glass, colored absorbing glass, brushed aluminum, stainless steel, painted steel, sparse-flake paint, rubber, silicone, FDM polymer, PCB solder mask, copper trace, wood with directional grain, a wood coat, LED diffuser, light-guide polymer, solar-cell assembly appearance, thermal blanket and mare/highland regolith.
@@ -41,7 +49,7 @@ Pair these with neutral product, dark housing, metal strip, glass bright-field, 
 
 ## SELENE-specific dependencies
 
-The still demo needs precise geometry/tessellation, layered surfaces, stable physical mapping, transparent container optics, sampled emitters for LED views, terrain detail, one-Sun ownership, linear color/output and memory-safe quality settings. The animation additionally needs independent vial bodies, explicit closure and grasp state, collision proxies, mass/inertia, contact, joint actuation, granular approximation choices, analytic verification, immutable bakes and shutter-time sampling.
+The still demo needs precise geometry/tessellation, layered surfaces, stable physical mapping, transparent container optics, sampled emitters for LED views, terrain detail, one-Sun ownership, linear color/output and memory-safe quality settings. The future dynamics layer should reuse existing kinematic studies, IK, links, traces and export. It additionally needs verified independent vial bodies, explicit closure and grasp state, collision proxies, mass/inertia, contact, joint actuation, granular approximation choices, analytic verification, immutable bakes and shutter-time sampling.
 
 Do not make animation a prerequisite for the still. Do not advertise the animation as physically verified because it follows a parabola visually: release velocity, rotation, contacts, constraints, mass changes and storage also need evidence.
 

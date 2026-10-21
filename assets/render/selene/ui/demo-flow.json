@@ -1,0 +1,110 @@
+{
+  "metadata": {
+    "schema_version": "0.1.0",
+    "language": "en",
+    "status": "specified_unbound",
+    "provenance_id": "ORIGINAL-2026-10-CATALOG",
+    "source_lock": "../source-lock.json"
+  },
+  "id": "SELENE-DEMO-FLOW-001",
+  "kind": "ui_integration_specification_not_runtime_registration",
+  "entry_point": "Existing Render workspace: choose the SELENE collection in the shared resource browser.",
+  "simple_flow": [
+    {
+      "step": 1,
+      "label": "Choose a scene",
+      "content": "Low-sun hero, sampling macro, LED work patch, studio diagnostic, or other prepared shot.",
+      "behavior": "Show actual availability and the specific unresolved source or executor requirement."
+    },
+    {
+      "step": 2,
+      "label": "Choose quality",
+      "content": "Preview, Portfolio or Lunar Master, resolved through the existing quality presets.",
+      "behavior": "Show supported output size and quality budget; preserve camera and appearance locks."
+    },
+    {
+      "step": 3,
+      "label": "Render",
+      "content": "Preflight summary, progress, cancel, and raw/finished result comparison.",
+      "behavior": "Resolve the complete request before one atomic scene apply; never silently drop optical features."
+    }
+  ],
+  "controls": {
+    "quick": [
+      "scene",
+      "quality",
+      "appearance variant",
+      "dust amount when supported",
+      "Sun direction",
+      "exposure",
+      "camera fit"
+    ],
+    "advanced_groups": [
+      "physical material vs appearance vs simulation",
+      "surface layers and map scale",
+      "emitters and source ownership",
+      "terrain detail and memory budget",
+      "camera, clipping and depth of field",
+      "sampling, denoising and color output",
+      "source versions and reproduction manifest"
+    ],
+    "selection_policy": "Contextual controls show the selected body, face or supported occurrence scope; shared component edits explain their scope before applying."
+  },
+  "availability_states": [
+    {
+      "id": "concept",
+      "action": "Read requirements",
+      "render_available_after_preflight": false
+    },
+    {
+      "id": "authored_opaque_preview",
+      "action": "Open material swatches",
+      "render_available_after_preflight": true
+    },
+    {
+      "id": "awaiting_native_source",
+      "action": "View required model and source record",
+      "render_available_after_preflight": false
+    },
+    {
+      "id": "awaiting_optical_support",
+      "action": "Show missing capabilities",
+      "render_available_after_preflight": false
+    },
+    {
+      "id": "bound_and_validated",
+      "action": "Apply scene and render",
+      "render_available_after_preflight": true
+    }
+  ],
+  "defaults": {
+    "default_view": "Simple",
+    "physical_mode": "lunar_physical",
+    "editorial_fill": false,
+    "earth_and_stars": "Off until a separately reviewed site/time/exposure binding enables them.",
+    "engineering_properties": "Preserve",
+    "source_native": "Read-only; save a named derivative.",
+    "unsupported_feature": "Block the affected shot and name the missing capability.",
+    "preview_fallback": "Explicit opt-in, with an approximation badge retained in the saved request."
+  },
+  "accessibility": [
+    "Keyboard navigation through search, scene cards, controls and preflight.",
+    "Text labels in addition to thumbnails and status colors.",
+    "Screen-reader descriptions of capability and source blockers.",
+    "Numeric controls with units, typed entry, undo and reset.",
+    "Reduced-motion mode for turntable and progress previews."
+  ],
+  "integration_rules": [
+    "Use the existing command registry for user-visible behavior.",
+    "Use theme::Tokens and approved UI icon assignments.",
+    "Use navigation::handle for the render camera.",
+    "Keep resource resolution and validation in the engine, not duplicated UI logic.",
+    "Catalog JSON describes intent; it does not register production commands."
+  ],
+  "acceptance": [
+    "A first-time user can find a prepared scene, understand any blocker and choose supported quality without opening Advanced.",
+    "An expert can reproduce every applied value and source hash.",
+    "Cancel, failure and unsupported requests preserve the document.",
+    "Appearance edits never change density, inertia, friction or joint limits."
+  ]
+}

@@ -1259,11 +1259,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -1383,11 +1384,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -1509,11 +1511,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -1638,11 +1641,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -1761,11 +1765,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -1885,11 +1890,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -2010,11 +2016,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -2131,11 +2138,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -2261,11 +2269,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",
@@ -2744,11 +2753,12 @@
         "CAP-120"
       ],
       "subject_binding": {
-        "kind": "pinned_selene_or_reviewed_derivative",
-        "manifest": "selene-bindings.json",
-        "selection_rule": "Exact source and occurrence validation followed by reviewed body/face role assignment.",
+        "kind": "improved_selene_showcase_or_reviewed_derivative",
+        "manifest": "../../assets/render/selene/source-lock.json",
+        "selection_rule": "Admit the improved SELENE-showcase native source by hash and provenance, then review semantic body/face roles. Historical v7 IDs are not active targets.",
         "preserve_physical_scale": true,
-        "unresolved_action": "block_without_scene_mutation"
+        "unresolved_action": "block_without_scene_mutation",
+        "required_source_status": "pinned_native"
       },
       "controls": [
         "Appearance choice",

@@ -2,8 +2,11 @@
   "metadata": {
     "schema_version": "0.2.0",
     "language": "en",
-    "status": "inspected_reference_not_runtime_binding",
-    "provenance_id": "ORIGINAL-2026-10-CATALOG"
+    "status": "historical_reference_only",
+    "provenance_id": "ORIGINAL-2026-10-CATALOG",
+    "active_demo_source": false,
+    "superseded_by": "../../assets/render/selene/source-lock.json",
+    "usage": "Historical v7 comparison only. Never use these IDs as targets for the improved SELENE-showcase source."
   },
   "source": {
     "repository": "0xlillith/solidcraft-rover",

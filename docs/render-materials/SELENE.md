@@ -6,7 +6,17 @@ Produce a convincing photographed view of SELENE on original procedural lunar te
 
 This document specifies the work. It does not claim that the model has been rebuilt, its engineering suitability established, a renderer implemented or the animation simulated.
 
-## Pinned source model
+## Selected improved source
+
+The selected base is **`SELENE-showcase.solidcraft`**, the improved rover documented by SychPL in Tangency Labs' [mechanism showcase](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321), [motion export PR](https://github.com/tangency-labs/solidcraft/pull/1680) and [motion analysis PR](https://github.com/tangency-labs/solidcraft/pull/1712). It adds grounded modules, split actuator loops, linked wheels, a rack/pinion track, a geared dish, a screw-driven vial cap, inverse-kinematic arm movement and a combined motion study. These are documented author demonstrations, not results reproduced by this contribution.
+
+The native file itself was not found in the public repository trees, relevant author branches, PR comments or releases reviewed on 2026-10-21. The source lock therefore records `awaiting_native_source`, with no invented native hash, repository path, component IDs or format version. A filename or video is insufficient to bind model targets. See [the precise search and admission record](../../assets/render/selene/SOURCE.md) and [source-lock.json](../../assets/render/selene/source-lock.json).
+
+All ten SELENE catalog scenes now require this improved source or its explicitly reviewed derivative. The original v7 is ineligible as a fallback. The [prepared demo package](../../assets/render/selene/README.md) supplies original appearance recipes, swatches, semantic roles, stage and camera recipes, mechanism acceptance requirements, a future dynamics sequence and developer preparation tools.
+
+## Historical v7 inspection
+
+The following inventory is retained only to explain the previous planning baseline and original attribution. It is not the selected demo model and must not supply active selectors for the improved source.
 
 | Field | Inspected value |
 |---|---|
@@ -20,7 +30,7 @@ This document specifies the work. It does not claim that the model has been rebu
 | Source statistics | 1,395 bodies; 576 sketches; 3,324 history features |
 | Assembly inventory | 36 component definitions plus root; 36 occurrences; 17 revolute joints |
 
-These values are observations of the pinned source and its published statistics, not a runtime replay of the full model in this contribution. `selene-bindings.json` records the inspected component, occurrence and joint identities and the selected vial's source feature references. Bindings are valid only after the file hash and expected structure match.
+These values are observations of the historical v7 source and its published statistics, not a runtime replay. `selene-bindings.json` is explicitly `historical_reference_only`; its component, occurrence, joint and vial references must not be applied to the improved showcase.
 
 The original is an illustrative scientific rover assembly, with wheels, suspension, sampling arm, navigation hardware, solar wings, communications, electronics and sample storage. It is not a certified lunar vehicle. Keep its existing physical dimensions: scaling it into a different class of rover changes the design and would require an explicit derivative with new assumptions.
 
@@ -69,22 +79,32 @@ Start with a compact high-detail patch around the rover, a medium-detail surroun
 
 Before calling a still photorealistic, review ground contact, object scale, geometry thickness, material mapping, energy ownership, indirect light, highlight clipping, raw noise, texture filtering and close crops. Record the camera, exposure, color transform, resource hashes and executor. Review several light/camera directions: one favorable hero angle is insufficient evidence for a reusable material pack.
 
-## Model changes needed for the animation derivative
+## Preserve the improved mechanisms and extend the derivative
 
-The inspected arm chain uses occurrences 2736 (turret), 2751 (upper arm), 2782 (forearm), 2813 (distal arm) and 2844 (gripper tool). Joints 11–15 provide the corresponding revolute articulations and recorded angle limits. Wheel joints occupy 1–6; navigation, solar-wing and dish articulation account for the remaining joints.
+The improved source already demonstrates substantial kinematic work. Preserve it and verify it through [mechanism-acceptance.json](../../assets/render/selene/motion/mechanism-acceptance.json) before adding motion:
 
-The six vials currently belong to the sample-laboratory component 3019, occurrence 3020. They are not separate free-flight occurrences in the inspected graph. The candidate vial at source coordinates `(-136, -22)` comprises a wall, bottom, contents, cap and eight grip features. Its nearby retention grommet belongs to the rack and must not fly with the vial.
+| Existing documented work | Required admission and regression evidence |
+|---|---|
+| Six-wheel motion-link chain | Resolve exact driver/follower IDs and signs; verify every wheel at several poses. |
+| Four split solar actuators and closed loops | Resolve each barrel/rod/pin graph, keep grounding, and compare stroke/tilt relations and stop reasons. |
+| Grounded formerly floating modules | Check the actual assembly graph and drive results; a successful command must move the intended geometry. |
+| Rack/pinion track, gear and cap screw | Preserve the authored showcase helpers as kinematic demonstrations; record radii, ratios, pitch and reference frames. |
+| Arm IK and combined tour | Keep the original named study, review reachable poses and preserve its limits. |
+| Trace, analysis and animation export | Reuse the existing command surfaces; inspect actual support at the integration revision. |
 
-Create a reviewed derivative with:
+The native file is needed to determine which vial parts are already independent and how the improved hierarchy differs. Do not repeat the historical v7 split plan blindly. The earlier feature IDs and candidate-vial coordinates remain historical evidence only.
 
-1. An independently addressable vial occurrence and explicit open/sealed lid state, preserving its appearance and source lineage.
-2. A coherent hollow vessel and separate contents representation. Check thickness, watertight collision boundaries and the contact geometry used by the gripper.
+Create a named derivative only for changes that the admitted source still needs:
+
+1. An independently addressable complete vial, with separate lid/seal state and an explicit relationship to its contents. The showcase's unscrewing cap alone does not establish a complete free-flight vial.
+2. A coherent hollow vessel, valid wall thickness, closure contact and gripper-accessible geometry. Rack grommets and retention hardware remain attached to the rover.
 3. Collision proxies separate from detailed render meshes for the vial, arm, rack and terrain.
-4. Measured or explicitly synthetic mass, inertia, center of mass, friction and restitution parameters, each with units and provenance.
-5. A feasible collection mechanism. The existing illustrative tool may need a scoop, lid actuator or controlled pour station; choose and model that mechanism explicitly after checking reach and clearances.
-6. Grasp and storage constraints with recorded activation criteria, not unexplained parenting changes.
+4. Measured or explicitly synthetic mass, inertia, center of mass, friction and restitution, each with units and provenance. Appearance roughness does not supply these properties.
+5. A feasible collection mechanism and route to the container. Review whether the improved tool needs a scoop, a lid actuator or a controlled pour station before adding geometry.
+6. Grasp, release, catch and storage events with physical activation criteria, plus continuous contact handling and bounded actuation.
+7. Replacement or per-link treatment for rigidly modeled flexible hoses that drift during movement. Hidden source geometry should stay explicitly recorded; hiding it does not validate flexible dynamics.
 
-The original v7 file remains a pinned source. Changes belong in a new derivative with a new hash and binding manifest. The current arm's joint definitions do not establish motor torque, control bandwidth or physical reachability of a proposed catch.
+Native values and study keys use radians and millimeters; the joint commands accept degrees and millimeters. Preserve that boundary. Existing kinematic studies, sampled interference checks and GIF export provide useful authoring and inspection, but they do not implement the future dynamic throw/catch simulation. Every derivative gets its own hash, lineage, reviewed selectors and replay evidence.
 
 ## Animation state sequence
 

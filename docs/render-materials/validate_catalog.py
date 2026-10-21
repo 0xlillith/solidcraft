@@ -623,6 +623,11 @@ class Validator:
                 self.text(subject.get(field), path + ".subject_binding." + field)
             self.require(subject.get("preserve_physical_scale") is True, path + ".subject_binding.preserve_physical_scale", "Scene composition must preserve physical subject dimensions.")
             self.require(subject.get("unresolved_action") == "block_without_scene_mutation", path + ".subject_binding.unresolved_action", "Unresolved composition must fail atomically.")
+            if isinstance(scene.get("name"), str) and scene["name"].startswith("SELENE "):
+                self.require(subject.get("kind") == "improved_selene_showcase_or_reviewed_derivative"
+                             and subject.get("manifest") == "../../assets/render/selene/source-lock.json"
+                             and subject.get("required_source_status") == "pinned_native",
+                             path + ".subject_binding", "SELENE shots require the improved showcase source; v7 references are historical only.")
             bindings = self.obj(scene.get("appearance_bindings"), path + ".appearance_bindings")
             dependencies = set()
             for preset in (quality, studio, environment):
@@ -822,6 +827,10 @@ class Validator:
         doc = self.documents.get(filename)
         if doc is None:
             return
+        self.require(metadata(doc).get("status") == "historical_reference_only"
+                     and metadata(doc).get("active_demo_source") is False
+                     and metadata(doc).get("superseded_by") == "../../assets/render/selene/source-lock.json",
+                     filename + ".metadata", "The original v7 inventory must remain explicitly ineligible as the active demo source.")
         source = self.obj(doc.get("source"), filename + ".source")
         for key in ("repository", "path", "format", "source_id"):
             self.text(source.get(key), filename + ".source." + key)
