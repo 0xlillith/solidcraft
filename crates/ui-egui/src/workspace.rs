@@ -65,6 +65,10 @@ pub struct Section {
 /// canonical home.
 const CONFIGURE: &[&str] = &["parameters.change", "config.table", "config.configure"];
 
+/// Commands that stay for agents, MCP and scripts but are not offered to people: the sketch solves
+/// itself after every edit, so a Solve button (and the search hit for it) only confuses.
+pub const AGENT_ONLY: &[&str] = &["sketch.solve"];
+
 pub const SECTIONS: &[Section] = &[
     Section {
         tab: "MODEL",
