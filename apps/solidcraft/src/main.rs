@@ -47,6 +47,8 @@ struct App {
     starting: Option<std::path::PathBuf>,
     /// Frames begun; the second one means the first was drawn (startup is over).
     frames: u32,
+    /// Started over the control channel: the window doesn't ask for the foreground.
+    take_focus_unwanted: bool,
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     space_mouse: space_mouse::SpaceMouse,
 }
@@ -59,6 +61,14 @@ impl eframe::App for App {
             // A second frame right away, which means the first was presented: the app is up.
             ctx.request_repaint();
             if self.frames == 2 {
+                // The window is shown only once its first frame is presented, and Windows then
+                // keeps a window of a process started from a shortcut or an installer behind the
+                // others. Ask for the foreground once, now that it is on screen; never again, so
+                // later frames don't take the focus from whatever the user moved to. Automation
+                // over the control channel keeps the focus where it is.
+                if !self.take_focus_unwanted {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 solidcraft_engine::crash::phase(solidcraft_engine::crash::RUNNING);
                 if let Some(dir) = self.starting.take() {
                     startup::started(&dir);
@@ -703,6 +713,7 @@ fn main() -> eframe::Result {
                 solve: app,
                 starting,
                 frames: 0,
+                take_focus_unwanted: control_port.is_some(),
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 space_mouse,
             }))
