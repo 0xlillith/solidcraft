@@ -473,9 +473,10 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 {
                     app.set_status(error, true);
                 }
-                if app.render_workspace.view.dirty {
-                    ui.label(app.tr("render.unsaved"));
-                }
+                // Keep every following control at the same position when a staged
+                // edit or save toggles dirty state, including between pointer events.
+                let dirty_label = if app.render_workspace.view.dirty { app.tr("render.unsaved") } else { "" };
+                ui.add_sized([ui.available_width(), ui.text_style_height(&egui::TextStyle::Body)], egui::Label::new(dirty_label).truncate());
                 if crate::ui_kit::button(ui, app.tr("render.reload_settings"), crate::ui_kit::Button::Normal).clicked() {
                     setups::load(app);
                 }

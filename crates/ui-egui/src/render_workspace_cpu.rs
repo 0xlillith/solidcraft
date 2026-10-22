@@ -55,7 +55,7 @@ fn budget_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
     });
-    crate::scenario::publish_handle("render:cpu-budget", control.rect.center());
+    crate::scenario::publish_target("render:cpu-budget", control.rect);
     ui.small(app.tr("render.cpu_budget_help"));
     let title = app.tr("render.cpu_budget_details").to_string();
     ui_kit::section(ui, "render_cpu_budget_details", &title, false, |ui| {

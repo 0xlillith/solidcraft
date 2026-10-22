@@ -1615,9 +1615,9 @@ fn clicked_gpu_material_at_assignment_limit_edits_existing_but_cannot_add_anothe
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1600,"height":2200}));
     h.app.run("solid.box", json!({"length":1,"width":1,"height":1,"body_name":"Optics"})).unwrap();
-    h.app.run("solid.pattern.rectangular", json!({"bodies":["Optics"],"dir1":[1,0,0],"count1":65,"spacing1":3})).unwrap();
+    h.app.run("solid.pattern.rectangular", json!({"bodies":["Optics"],"dir1":[1,0,0],"count1":129,"spacing1":3})).unwrap();
     let targets: Vec<materials::Target> = serde_json::from_value(h.app.run("render.scene", json!({})).unwrap()["bodies"].clone()).unwrap();
-    assert_eq!(targets.len(), 65);
+    assert_eq!(targets.len(), 129);
     h.app.session.mark_saved();
     let doc = h.app.session.doc.clone();
     let undo = h.app.session.undo.len();
@@ -1637,14 +1637,14 @@ fn clicked_gpu_material_at_assignment_limit_edits_existing_but_cannot_add_anothe
     h.step(&json!({"widget":include})).unwrap();
     assert!(!h.app.render_workspace.view.materials.bindings[0].enabled, "the existing assignment remains editable at the limit");
     assert!(h.app.render_workspace.view.materials.bindings.iter().skip(1).all(|binding| binding.enabled));
-    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 64);
+    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 128);
 
-    // The first scene body has no assignment: selecting it cannot create a 65th entry.
+    // The first scene body has no assignment: selecting it cannot create a 129th entry.
     h.step(&json!({"widget":refresh})).unwrap();
     h.step(&json!({"widget":choose})).unwrap();
     h.step(&json!({"click":{"handle":format!("dialog:list:render:material-body-{}", targets[0].ordinal)}})).unwrap();
     h.step(&json!({"widget":add})).unwrap();
-    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 64);
+    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 128);
     assert!(h.app.render_workspace.view.materials.bindings.iter().all(|binding| binding.target != targets[0]));
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
     assert_eq!(h.app.session.undo.len(), undo);
@@ -2386,4 +2386,27 @@ fn setup_actions_and_return_design_stay_visible_with_long_render_controls() {
     }
     h.step(&json!({"widget":h.app.tr("render.return_design")})).unwrap();
     assert!(!active(&h.app));
+}
+
+#[test]
+fn dirty_indication_preserves_reload_and_resource_picker_hit_targets() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":2600}));
+    enter(&mut h.app, true).unwrap();
+    select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    setups::save(&mut h.app).unwrap();
+    setups::load(&mut h.app);
+    h.frames(3);
+    let reload = h.app.tr("render.reload_settings").to_string();
+    let clean_reload = h.widget(&reload).unwrap();
+    let clean_picker = crate::scenario::rect_of("render:cpu-budget").unwrap();
+    h.app.render_workspace.view.draft.exposure_ev = 1.0;
+    setups::refresh_dirty(&mut h.app);
+    assert!(h.app.render_workspace.view.dirty);
+    h.frames(3);
+    assert_eq!(h.widget(&reload).unwrap(), clean_reload, "dirty text must not move Reload");
+    assert_eq!(crate::scenario::rect_of("render:cpu-budget").unwrap(), clean_picker, "dirty text must not move the CPU resource picker");
+    h.step(&json!({"widget":reload})).unwrap();
+    assert!(!h.app.render_workspace.view.dirty);
+    assert_eq!(h.app.render_workspace.view.draft.exposure_ev, 0.0);
 }

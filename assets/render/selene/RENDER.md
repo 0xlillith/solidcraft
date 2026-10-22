@@ -54,7 +54,7 @@ The complete image and four unscaled detail crops were visually reviewed: subjec
 
 RGB absorption and material recipes are illustrative authored optical choices, not measured glass spectra or engineering properties. The explicit rig gain is a creative lighting adjustment, not an unchanged photometric calibration. Normal maps alter shading, not CAD geometry. LED diffusers are transmitted surfaces, not validated volumetric/mesh emitters. The static image does not establish collision-free motion, contact physics, lunar dust or dynamics.
 
-Native renderer tests passed 457/457. The hardware GPU suite passed 95 tests with three explicitly ignored tests, and the official 12-crate library/web WASM check passed. Whole-workspace type checking, strict lint, resource/persistence command checks and camera/publication tests have their own evidence. Interactive GUI acceptance and whole-project CI are not inferred from this image. The current UI harness status is recorded in the batch ledger and PR #7.
+Native renderer tests passed 457/457. The hardware GPU suite passed 95 tests with three explicitly ignored tests, and the official 12-crate library/web WASM check passed. Whole-workspace type checking, strict lint, resource/persistence command checks and camera/publication tests have their own evidence. Interactive GUI acceptance and whole-project CI are not inferred from this image. The focused Render-workspace harness also passed 58 tests with no failures; its click-stability repair and remaining whole-project acceptance scope are recorded in the batch ledger and PR #7.
 
 ## Historical Design previews and earlier CPU-product evidence
 
