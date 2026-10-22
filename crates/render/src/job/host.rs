@@ -24,6 +24,36 @@ const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
 const QUEUE_LIMIT: usize = 2;
 
 #[cfg(test)]
+struct CpuExecutor;
+#[cfg(test)]
+impl ImageExecutor for CpuExecutor {
+    fn descriptor(&self) -> Result<ExecutorDescriptor> {
+        Ok(ExecutorDescriptor {
+            id: ExecutorId::new("cpu-product").map_err(|e| JobError::new(ErrorCode::Internal, e.to_string()))?,
+            availability: Availability::Available,
+            profiles: vec![RenderProfile {
+                mode: RenderMode::Preview,
+                operation: RenderOperation::Image,
+                formats: vec![RenderFormat::Png],
+                features: vec![crate::RenderFeature::Pbr],
+            }],
+            limits: RenderLimits::default(),
+            scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
+        })
+    }
+
+    fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        if options != JobOptions::default() {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "CPU product does not support sampling or exposure controls"));
+        }
+        admit(scene, request)
+    }
+    fn begin(&self, scene: ProductScene, request: ImageRequest, _options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+        Ok(Box::new(ImageTask::new(scene, request, cancel)?))
+    }
+}
+
+#[cfg(test)]
 #[path = "host_tests.rs"]
 mod tests;
 
@@ -1446,36 +1476,6 @@ mod environment_metadata_lease_tests {
         drop(host);
         drop(job);
         assert_eq!(budget.used.load(Ordering::Acquire), 0);
-    }
-}
-
-#[cfg(test)]
-struct CpuExecutor;
-#[cfg(test)]
-impl ImageExecutor for CpuExecutor {
-    fn descriptor(&self) -> Result<ExecutorDescriptor> {
-        Ok(ExecutorDescriptor {
-            id: ExecutorId::new("cpu-product").map_err(|e| JobError::new(ErrorCode::Internal, e.to_string()))?,
-            availability: Availability::Available,
-            profiles: vec![RenderProfile {
-                mode: RenderMode::Preview,
-                operation: RenderOperation::Image,
-                formats: vec![RenderFormat::Png],
-                features: vec![crate::RenderFeature::Pbr],
-            }],
-            limits: RenderLimits::default(),
-            scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
-        })
-    }
-
-    fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
-        if options != JobOptions::default() {
-            return Err(JobError::new(ErrorCode::InvalidRequest, "CPU product does not support sampling or exposure controls"));
-        }
-        admit(scene, request)
-    }
-    fn begin(&self, scene: ProductScene, request: ImageRequest, _options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
-        Ok(Box::new(ImageTask::new(scene, request, cancel)?))
     }
 }
 
