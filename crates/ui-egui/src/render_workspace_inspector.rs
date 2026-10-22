@@ -794,7 +794,7 @@ fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
         && let Ok(status) = app.session.execute("render.status", &json!({"job":job}))
     {
         if let Some(error) = status["error"]["message"].as_str() {
-            ui_kit::text(ui, &error.to_string(), ui_kit::Text::Error("render.native-error"));
+            ui_kit::text(ui, error, ui_kit::Text::Error("render.native-error"));
         }
         json_details(app, ui, "render.diag_job_details", &status);
     }

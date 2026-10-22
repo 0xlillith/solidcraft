@@ -549,6 +549,7 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
     if let Some(description) = source["description"].as_str().or_else(|| source["purpose"].as_str()) {
         ui.small(description);
     }
+    let mut linked_profile = None;
     if let Some(specifications) = detail["physical_references"]["specifications"].as_array() {
         let title = app.tr("render.physical_associations").to_string();
         ui_kit::section(ui, ("physical_associations", id), &title, false, |ui| {
@@ -569,13 +570,19 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
                 for profile in profiles {
                     let profile_id = profile["id"].as_str().unwrap_or("");
                     if ui_kit::button(ui, profile["name"].as_str().unwrap_or(profile_id), ui_kit::Button::Normal).clicked() {
-                        if let Err(error) = choose(app, view, "physical_profiles", profile_id) {
-                            app.set_status(error, true);
-                        }
+                        linked_profile = Some(profile_id.to_string());
                     }
                 }
             }
         });
+    }
+    if let Some(profile_id) = linked_profile {
+        if let Err(error) = choose(app, view, "physical_profiles", &profile_id) {
+            app.set_status(error, true);
+        }
+        // The next frame uses the newly captured resource. Do not combine the
+        // previous surface's detail with the newly selected physical profile.
+        return;
     }
     ui_kit::text(ui, app.tr("render.library_authored_help"), ui_kit::Text::Note("render.library_authored_help"));
     match view.kind.as_str() {
