@@ -236,7 +236,10 @@ pub(crate) fn view_key(app: &mut SolveApp, ctx: &egui::Context, key: egui::Key, 
     } else if !repeat {
         let degrees = if mods.shift { 90.0 } else { 15.0 };
         app.viewport.key_hold = Some(KeyHold { key, action, shift: mods.shift, since: app.now });
-        let _ = app.run("view.navigate", json!({"camera": app.cam, "action": action, "degrees": degrees}));
+        // Turn from where a step in flight is going, so taps add up and the one animation is
+        // retargeted rather than a second started.
+        let from = app.cam_anim.map_or(app.cam, |a| a.to);
+        let _ = app.run("view.navigate", json!({"camera": from, "action": action, "degrees": degrees}));
     }
     true
 }
@@ -1216,6 +1219,7 @@ mod view_key_tests {
     #[test]
     fn arrow_keys_turn_and_pan_the_view() {
         let mut h = Harness::new();
+        h.app.preferences.look_at_anim = false;
         h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
         h.step(&json!({"call": "ui.view", "params": {"view": "front"}})).unwrap();
         h.frames(3);
@@ -1258,20 +1262,22 @@ mod view_key_tests {
 
     fn front_view() -> Harness {
         let mut h = Harness::new();
+        h.app.preferences.look_at_anim = true;
         h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
         h.step(&json!({"call": "ui.view", "params": {"view": "front"}})).unwrap();
         h.settle();
         h
     }
 
-    /// Holding an arrow turns the view steadily, by frame time, whatever the key repeat does.
+    /// Holding an arrow turns the view steadily, by frame time, whatever the key repeat does:
+    /// one animation at most, never a second one fighting the first.
     #[test]
     fn a_held_arrow_turns_the_view_steadily_and_ignores_key_repeat() {
         let hold = |repeats: bool| {
             let mut h = front_view();
+            let mut last = h.app.cam.yaw;
             h.app.synthetic.push(arrow(true, false));
             h.frame();
-            let mut last = h.app.cam.yaw;
             let log = h.app.session.log.len();
             let mut deltas = Vec::new();
             for frame in 0..60 {
@@ -1282,8 +1288,9 @@ mod view_key_tests {
                 deltas.push(turn(last, h.app.cam.yaw));
                 last = h.app.cam.yaw;
             }
+            assert!(h.app.cam_anim.is_none(), "the held turn runs on key state, not on a tween");
             assert_eq!(h.app.session.log.len(), log, "turn frames do not flood the command log");
-            assert!(deltas.iter().all(|d| *d >= 0.0), "the view never reverses while held: {deltas:?}");
+            assert!(deltas.iter().all(|d| *d > 0.0), "the view never stops or reverses while held: {deltas:?}");
             let steady = &deltas[20..];
             let per_frame = 90f64.to_radians() / 60.0;
             assert!(steady.iter().all(|d| (d - per_frame).abs() < 1e-3), "{steady:?}");
@@ -1296,14 +1303,34 @@ mod view_key_tests {
         assert!((hold(false) - hold(true)).abs() < 1e-9, "OS key repeat changes nothing");
     }
 
-    /// A tap is one step of 15°, applied in the frame of the press, and a second tap adds to it.
+    /// A tap is still one animated step of 15°, with one animation.
     #[test]
-    fn a_tap_is_one_instant_step() {
+    fn a_tap_is_one_animated_step() {
         let mut h = front_view();
         let before = h.app.cam.yaw;
         tap(&mut h);
+        h.frames(2);
+        assert!(h.app.cam_anim.is_some(), "the step animates");
+        h.settle();
+        assert!(h.app.cam_anim.is_none());
         assert!((turn(before, h.app.cam.yaw).abs() - 15f64.to_radians()).abs() < 1e-6);
+    }
+
+    /// A tap while a step is in flight retargets that animation: the turns add up and only one
+    /// animation exists, starting where the camera is.
+    #[test]
+    fn a_tap_during_a_step_retargets_the_one_animation() {
+        let mut h = front_view();
+        let before = h.app.cam.yaw;
         tap(&mut h);
+        h.frames(5);
+        let mid = h.app.cam;
+        tap(&mut h);
+        h.frames(1);
+        let anim = h.app.cam_anim.expect("one animation");
+        assert!((turn(before, anim.to.yaw).abs() - 30f64.to_radians()).abs() < 1e-6, "retargeted past the first step");
+        assert!(turn(mid.yaw, anim.from.yaw).abs() < 15f64.to_radians(), "continues from the camera as it is");
+        h.settle();
         assert!((turn(before, h.app.cam.yaw).abs() - 30f64.to_radians()).abs() < 1e-6);
     }
 
@@ -1312,6 +1339,7 @@ mod view_key_tests {
     #[test]
     fn ctrl_8_again_looks_from_the_other_side() {
         let mut h = Harness::new();
+        h.app.preferences.look_at_anim = false;
         h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
         h.frames(2);
         let back_z = |h: &Harness| h.app.cam.back().z;

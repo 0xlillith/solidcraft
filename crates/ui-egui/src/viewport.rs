@@ -2425,7 +2425,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         || (primary_nav.is_some() && primary_down)
         || mode.is_some()
         || app.viewport.axis_drag.is_some()
-        || app.viewport.spin;
+        || app.viewport.spin
+        || app.cam_anim.is_some();
     let hits = hover.filter(|_| inside && app.viewport.boxsel.is_none() && !navigating).map(|p| pick_cached(app, &proj, p)).unwrap_or_default();
     // The Fillet and Chamfer window resolves its own corners: the nearest sketch point to a
     // corner drawn from the origin is the fixed origin, which ends no two curves.
@@ -5263,6 +5264,14 @@ mod tests {
         app.viewport.spin = false;
         hover_frame(&mut app, &ctx, vec![]);
         assert!(app.viewport.hover.is_some());
+        app.cam_anim = Some(solidcraft_engine::render::CameraAnim::new(app.cam, app.cam, 0.0));
+        for _ in 0..3 {
+            hover_frame(&mut app, &ctx, vec![]);
+            assert!(app.viewport.hover.is_none());
+        }
+        app.cam_anim = None;
+        hover_frame(&mut app, &ctx, vec![]);
+        assert!(app.viewport.hover.is_some());
     }
 
     /// After a close-up refines a body (#1320), the model draws it from the refined plan (on the
@@ -6240,8 +6249,8 @@ mod tests {
         assert_eq!(h.app.cam.target, before.target);
         assert_eq!(h.app.cam.distance, before.distance);
         orbit_drag(&mut h.app, rect, 0.0, 0.0, None, false, false);
-        assert!((h.app.cam.yaw - 1.6).abs() < 1e-6);
         h.frames(2);
+        assert!((h.app.cam.yaw - 1.6).abs() < 1e-6);
         assert!(h.app.viewport.orbit_free.is_none());
     }
 
