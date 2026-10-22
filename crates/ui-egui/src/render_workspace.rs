@@ -559,10 +559,18 @@ fn method_selector(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
     crate::scenario::publish_handle("render:method", response.rect.center());
     if image_host(app, app.render_workspace.view.method).is_err() {
-        ui.small(app.tr("render.setup_offline_help"));
+        if app.render_workspace.view.inspector.page == inspector::Page::All {
+            ui.small(app.tr("render.setup_offline_help"));
+        } else {
+            crate::ui_kit::text(ui, app.tr("render.setup_offline_help"), crate::ui_kit::Text::Note("render.setup_offline_help"));
+        }
     }
     if app.render_workspace.view.method != ImageMethod::Raster {
-        ui.small(app.tr("render.preview_image_settings_help"));
+        if app.render_workspace.view.inspector.page == inspector::Page::All {
+            ui.small(app.tr("render.preview_image_settings_help"));
+        } else {
+            crate::ui_kit::text(ui, app.tr("render.preview_image_settings_help"), crate::ui_kit::Text::Note("render.preview_image_settings_help"));
+        }
     }
 }
 

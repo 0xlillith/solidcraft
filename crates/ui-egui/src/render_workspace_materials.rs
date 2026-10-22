@@ -546,7 +546,7 @@ fn choose_map(app: &mut SolveApp, binding: &Binding, slot: MapSlot) {
 
 /// Prepare through the engine, then install only a request-local binding. No
 /// authored material may silently remove a glass override or switch executor.
-pub(super) fn install_library_surface(app: &mut SolveApp, id: &str, target: Target) -> Result<(), String> {
+pub(super) fn install_library_surface(app: &mut SolveApp, id: &str, target: Target, plane: &str, scale: f64) -> Result<(), String> {
     if app.render_workspace.view.method != super::ImageMethod::GpuRaytrace {
         return Err(app.tr("render.material_gpu_required").into());
     }
@@ -562,7 +562,8 @@ pub(super) fn install_library_surface(app: &mut SolveApp, id: &str, target: Targ
     } else if app.render_workspace.view.materials.bindings.len() >= MAX_BINDINGS {
         return Err(app.tr("render.material_limits").into());
     }
-    let reply = app.run("render.library.surface.prepare", json!({"id":id,"body_index":target.ordinal,"body_name":target.name}))?;
+    let reply =
+        app.run("render.library.surface.prepare", json!({"id":id,"body_index":target.ordinal,"body_name":target.name,"plane":plane,"scale":scale}))?;
     let texture = &reply["texture"];
     let frame: PlanarFrame = serde_json::from_value(texture["frame"].clone()).map_err(|e| e.to_string())?;
     let path = |key: &str| texture[key].as_str().map(str::to_string).ok_or_else(|| "invalid authored surface reply".to_string());

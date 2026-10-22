@@ -143,3 +143,104 @@ fn unsupported_output_is_visible_and_never_fakes_export_or_clamps_intent() {
     assert!(h.app.render_workspace.view.completed.is_none());
     assert!(h.app.tr("render.output_format_status").contains("EXR"));
 }
+
+#[test]
+fn rational_resolution_lock_preserves_anchor_rounding_and_rejects_without_partial_changes() {
+    let mut edit = Resolution { locked: true, ..Default::default() };
+    let mut size = [3840, 2160];
+    size = edit.edit(size, 0, 1920, 8192).unwrap();
+    assert_eq!(size, [1920, 1080]);
+    size = edit.edit(size, 1, 720, 8192).unwrap();
+    assert_eq!(size, [1280, 720]);
+    let anchor = edit.anchor;
+    for _ in 0..100 {
+        size = edit.edit(size, 0, 1001, 8192).unwrap();
+        assert_eq!(size, [1001, 563]);
+        size = edit.edit(size, 0, 1920, 8192).unwrap();
+        assert_eq!(size, [1920, 1080]);
+    }
+    assert_eq!(edit.anchor, anchor, "rounded edits must not drift the anchor");
+    assert!(edit.edit(size, 1, 8192, 8192).is_none());
+    assert_eq!(edit.observed, Some(size), "a refused linked dimension must not partly change size");
+    assert!(edit.rejected);
+    assert!(edit.edit(size, 0, 0, 8192).is_none());
+    assert!(edit.edit(size, 2, 100, 8192).is_none());
+    let mut extreme = Resolution { locked: true, ..Default::default() };
+    assert!(extreme.edit([1, u32::MAX], 0, u32::MAX, u32::MAX).is_none());
+    assert!(Resolution { locked: true, ..Default::default() }.edit([0, 1], 0, 1, 8192).is_none());
+}
+
+#[test]
+fn resolution_lock_reanchors_for_explicit_presets_and_does_not_affect_other_intent() {
+    let mut edit = Resolution { locked: true, ..Default::default() };
+    assert_eq!(edit.edit([3840, 2160], 0, 1920, 8192), Some([1920, 1080]));
+    edit.observe([1080, 1920]);
+    assert_eq!(edit.edit([1080, 1920], 1, 960, 8192), Some([540, 960]));
+    edit.observe([1000, 1000]);
+    assert_eq!(edit.edit([1000, 1000], 0, 777, 8192), Some([777, 777]));
+    edit.locked = false;
+    assert_eq!(edit.edit([777, 777], 0, 555, 8192), Some([555, 777]));
+    edit.locked = true;
+    assert_eq!(edit.edit([555, 777], 0, 1110, 8192), Some([1110, 1554]));
+}
+
+#[test]
+fn actual_output_ratio_and_orientation_controls_are_local_and_preserve_saved_capture() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    h.app.render_workspace.view.draft.width = 1920;
+    h.app.render_workspace.view.draft.height = 1080;
+    h.app.render_workspace.view.samples = 37;
+    h.app.render_workspace.view.inspector.page = Page::Output;
+    setups::save(&mut h.app).unwrap();
+    let saved = h.app.session.doc.to_json();
+    let camera = h.app.cam;
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:aspect-lock"}})).unwrap();
+    assert!(h.app.render_workspace.view.inspector.resolution.locked);
+    assert!(!h.app.render_workspace.view.dirty, "coupling editor coordinates is not a saved numerical edit");
+    h.step(&json!({"click":{"handle":"render:swap-size"}})).unwrap();
+    assert_eq!((h.app.render_workspace.view.draft.width, h.app.render_workspace.view.draft.height), (1080, 1920));
+    assert_eq!(h.app.render_workspace.view.samples, 37);
+    assert_eq!(h.app.cam, camera);
+    assert_eq!(h.app.session.doc.to_json(), saved);
+    assert!(h.app.render_workspace.view.dirty);
+    setups::load(&mut h.app);
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.resolution.anchor, Some([1920, 1080]));
+}
+
+#[test]
+fn contextual_scope_notes_wrap_with_native_tokens_instead_of_clipping() {
+    let mut h = fixture();
+    h.app.render_workspace.view.inspector.page = Page::Scene;
+    h.frames(3);
+    let rect = crate::scenario::rect_of("dialog:note:render.scene_preserves_design").unwrap();
+    let inspector = crate::scenario::rect_of("render:inspector").unwrap();
+    let footer = crate::scenario::rect_of("render:job-footer").unwrap();
+    assert!(rect.height() > Tokens::get().font_small + Tokens::get().space_8, "long scope notice must have more than one line");
+    assert!(inspector.contains_rect(rect));
+    assert!(rect.bottom() < footer.top());
+}
+
+#[test]
+fn temporary_library_maps_preserve_the_reviewed_plane_scale_and_optical_exclusivity() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let targets = h.app.run("render.scene", json!({})).unwrap();
+    let target: materials::Target = serde_json::from_value(targets["bodies"][0].clone()).unwrap();
+    let before = h.app.session.doc.to_json();
+    materials::install_library_surface(&mut h.app, "SURF-001", target.clone(), "yz", 2.5).unwrap();
+    let binding = &h.app.render_workspace.view.materials.bindings[0];
+    assert_eq!(binding.maps.frame.u, [0.0, 250.0, 0.0]);
+    assert_eq!(binding.maps.frame.v, [0.0, 0.0, 250.0]);
+    assert_eq!(h.app.session.doc.to_json(), before, "temporary maps must not change the native model");
+    let original = binding.maps.frame;
+    assert!(materials::install_library_surface(&mut h.app, "SURF-001", target.clone(), "unknown", 1.0).is_err());
+    assert!(materials::install_library_surface(&mut h.app, "SURF-001", target.clone(), "xy", 0.0).is_err());
+    assert_eq!(h.app.render_workspace.view.materials.bindings[0].maps.frame, original);
+    h.app.render_workspace.view.materials.bindings[0].glass_enabled = true;
+    assert!(materials::install_library_surface(&mut h.app, "SURF-001", target, "xy", 1.0).is_err());
+    assert!(h.app.render_workspace.view.materials.bindings[0].glass_enabled);
+    assert_eq!(h.app.session.doc.to_json(), before);
+}

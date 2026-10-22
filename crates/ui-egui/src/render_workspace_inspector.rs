@@ -75,7 +75,59 @@ pub(super) struct View {
     ground_color: [f64; 3],
     replace_ground: bool,
     appearance: Appearance,
+    resolution: Resolution,
 }
+/// Editor-only coupling. The fixed rational anchor prevents repeated rounded
+/// edits drifting; external preset/shot changes deliberately establish a new anchor.
+#[derive(Clone, Debug, Default)]
+struct Resolution {
+    locked: bool,
+    anchor: Option<[u32; 2]>,
+    observed: Option<[u32; 2]>,
+    rejected: bool,
+}
+impl Resolution {
+    fn observe(&mut self, size: [u32; 2]) {
+        if self.observed != Some(size) {
+            self.anchor = (size[0] > 0 && size[1] > 0).then_some(size);
+            self.observed = Some(size);
+            self.rejected = false;
+        }
+    }
+    fn edit(&mut self, before: [u32; 2], axis: usize, value: u32, maximum: u32) -> Option<[u32; 2]> {
+        self.observe(before);
+        let mut candidate = before;
+        *candidate.get_mut(axis)? = value;
+        if value == 0 || value > maximum {
+            self.rejected = true;
+            return None;
+        }
+        if self.locked {
+            let Some(anchor) = self.anchor else {
+                self.rejected = true;
+                return None;
+            };
+            let Some(other) = 1usize.checked_sub(axis) else {
+                self.rejected = true;
+                return None;
+            };
+            let denominator = u64::from(*anchor.get(axis)?);
+            let numerator = u64::from(value).checked_mul(u64::from(*anchor.get(other)?))?;
+            let paired = numerator.checked_add(denominator / 2)?.checked_div(denominator)?;
+            if paired == 0 || paired > u64::from(maximum) {
+                self.rejected = true;
+                return None;
+            }
+            *candidate.get_mut(other)? = u32::try_from(paired).ok()?;
+        } else {
+            self.anchor = (candidate[0] > 0 && candidate[1] > 0).then_some(candidate);
+        }
+        self.observed = Some(candidate);
+        self.rejected = false;
+        Some(candidate)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Pending {
     action: PendingAction,
@@ -126,6 +178,7 @@ impl Default for View {
             ground_color: [0.18; 3],
             replace_ground: false,
             appearance: Appearance::default(),
+            resolution: Resolution::default(),
         }
     }
 }
@@ -170,7 +223,7 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 egui::ScrollArea::vertical().id_salt(("render_inspector", page.handle(), app.docs.active)).auto_shrink([false, false]).show(
                     ui,
                     |ui| {
-                        ui.heading(app.tr(page.key()));
+                        ui_kit::text(ui, app.tr(page.key()), ui_kit::Text::Heading(page.key()));
                         match page {
                             Page::Scene => scene_controls(app, ui),
                             Page::Appearance => appearance_controls(app, ui),
@@ -180,7 +233,7 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                             Page::Output => output_controls(app, ui),
                             Page::Diagnostics => diagnostics(app, ui),
                             Page::All => {
-                                ui.small(app.tr("render.all_controls_help"));
+                                ui_kit::text(ui, app.tr("render.all_controls_help"), ui_kit::Text::Note("render.all_controls_help"));
                                 camera_actions(app, ui);
                                 let title = app.tr("render.page_camera").to_string();
                                 ui_kit::section(ui, "render_all_camera", &title, false, |ui| camera_controls(app, ui));
@@ -332,7 +385,7 @@ fn browse_button(app: &mut SolveApp, ui: &mut egui::Ui, kind: &str, key: &str) {
     }
 }
 fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
-    ui.small(app.tr("render.scene_preserves_design"));
+    ui_kit::text(ui, app.tr("render.scene_preserves_design"), ui_kit::Text::Note("render.scene_preserves_design"));
     super::method_selector(app, ui);
     gpu_status(app, ui);
     browse_button(app, ui, "native_scenes", "render.browse_native_scenes");
@@ -371,7 +424,7 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn shot_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.shot_manager").to_string();
     ui_kit::section(ui, "render_shot_manager", &title, false, |ui| {
-        ui.small(app.tr("render.shot_saved_only"));
+        ui_kit::text(ui, app.tr("render.shot_saved_only"), ui_kit::Text::Note("render.shot_saved_only"));
         let label = app.tr("render.shot_new_name").to_string();
         ui_kit::bounded_cell_editor(ui, ui.id().with("render_shot_new_name"), &mut app.render_workspace.view.inspector.shot_name, &label, false, 128);
         for (command, key) in [("render.shot.duplicate", "render.shot_duplicate"), ("render.shot.rename", "render.shot_rename")] {
@@ -401,7 +454,7 @@ fn shot_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 fn appearance_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
-    ui.small(app.tr("render.appearance_physics_separate"));
+    ui_kit::text(ui, app.tr("render.appearance_physics_separate"), ui_kit::Text::Note("render.appearance_physics_separate"));
     base_appearance(app, ui);
     browse_button(app, ui, "surfaces", "render.browse_surfaces");
     browse_button(app, ui, "physical_profiles", "render.browse_physical");
@@ -422,7 +475,7 @@ fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             cpu::light_controls(app, ui);
         }
         ImageMethod::Raster => {
-            ui.small(app.tr("render.method_limit_raster"));
+            ui_kit::text(ui, app.tr("render.method_limit_raster"), ui_kit::Text::Note("render.method_limit_raster"));
         }
     }
 }
@@ -432,14 +485,14 @@ fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if r.changed() {
         app.render_workspace.view.dirty = true;
     }
-    ui.small(app.tr("render.background_not_light"));
+    ui_kit::text(ui, app.tr("render.background_not_light"), ui_kit::Text::Note("render.background_not_light"));
     browse_button(app, ui, "hdr", "render.browse_environments");
     library::inspect_kinds(app, ui, &["hdr", "environments"]);
     match app.render_workspace.view.method {
         ImageMethod::GpuRaytrace => studio::environment_controls(app, ui),
         ImageMethod::CpuRaytrace => cpu::environment_controls(app, ui),
         ImageMethod::Raster => {
-            ui.small(app.tr("render.method_limit_raster"));
+            ui_kit::text(ui, app.tr("render.method_limit_raster"), ui_kit::Text::Note("render.method_limit_raster"));
         }
     }
 }
@@ -452,7 +505,7 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
     });
 }
 fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
-    ui.small(app.tr("render.camera_exact_help"));
+    ui_kit::text(ui, app.tr("render.camera_exact_help"), ui_kit::Text::Note("render.camera_exact_help"));
     let before = app.cam;
     let mut camera = before;
     let mut perspective = camera.fov > 0.0;
@@ -461,21 +514,21 @@ fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     if perspective {
         let mut fov = camera.fov.to_degrees();
-        ui.label(app.tr("render.camera_fov"));
-        if ui_kit::number_field(ui, &mut fov, 1.0..=150.0, 0.1, " deg").changed() {
+        let label = app.tr("render.camera_fov").to_string();
+        if ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut fov, 1.0..=150.0, 0.1, " deg")).changed() {
             camera.fov = fov.to_radians();
         }
     }
-    ui.label(app.tr("render.camera_distance"));
-    ui_kit::number_field(ui, &mut camera.distance, 0.000001..=1e9, 1.0, " mm");
+    let label = app.tr("render.camera_distance").to_string();
+    ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut camera.distance, 0.000001..=1e9, 1.0, " mm"));
     let mut target = [camera.target.x, camera.target.y, camera.target.z];
     vector(ui, app.tr("render.camera_target"), &mut target, -1e9..=1e9, 1.0);
     camera.target = solidcraft_engine::geom::Vec3::new(target[0], target[1], target[2]);
     for (key, value) in [("render.camera_yaw", &mut camera.yaw), ("render.camera_pitch", &mut camera.pitch), ("render.camera_roll", &mut camera.roll)]
     {
         let mut degrees = value.to_degrees();
-        ui.label(app.tr(key));
-        if ui_kit::number_field(ui, &mut degrees, -360000.0..=360000.0, 0.5, " deg").changed() {
+        let label = app.tr(key).to_string();
+        if ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut degrees, -360000.0..=360000.0, 0.5, " deg")).changed() {
             *value = degrees.to_radians();
         }
     }
@@ -509,14 +562,42 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ImageMethod::GpuRaytrace => 8192,
         ImageMethod::Raster => 4096,
     };
-    ui.horizontal(|ui| {
-        ui.label(app.tr("render.image_width"));
-        let r = ui_kit::number_field(ui, &mut app.render_workspace.view.draft.width, 1..=side, 1.0, "");
-        crate::scenario::publish_target("render:output-width", r.rect);
-        ui.label(app.tr("render.image_height"));
-        let r = ui_kit::number_field(ui, &mut app.render_workspace.view.draft.height, 1..=side, 1.0, "");
-        crate::scenario::publish_target("render:output-height", r.rect);
-    });
+    let before = [app.render_workspace.view.draft.width, app.render_workspace.view.draft.height];
+    app.render_workspace.view.inspector.resolution.observe(before);
+    let mut width = before[0];
+    let mut height = before[1];
+    let label = app.tr("render.image_width").to_string();
+    let w = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut width, 1..=side, 1.0, " px"));
+    crate::scenario::publish_target("render:output-width", w.rect);
+    let label = app.tr("render.image_height").to_string();
+    let h = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut height, 1..=side, 1.0, " px"));
+    crate::scenario::publish_target("render:output-height", h.rect);
+    let edit = if w.changed() {
+        Some((0, width))
+    } else if h.changed() {
+        Some((1, height))
+    } else {
+        None
+    };
+    if let Some((axis, value)) = edit
+        && let Some([width, height]) = app.render_workspace.view.inspector.resolution.edit(before, axis, value, side)
+    {
+        app.render_workspace.view.draft.width = width;
+        app.render_workspace.view.draft.height = height;
+    }
+    let label = app.tr("render.output_lock_ratio").to_string();
+    let lock = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.resolution.locked);
+    crate::scenario::publish_target("render:aspect-lock", lock.rect);
+    let swap = ui_kit::button(ui, app.tr("render.output_swap_orientation"), ui_kit::Button::Normal);
+    crate::scenario::publish_target("render:swap-size", swap.rect);
+    if swap.clicked() {
+        let draft = &mut app.render_workspace.view.draft;
+        std::mem::swap(&mut draft.width, &mut draft.height);
+        app.render_workspace.view.inspector.resolution.observe([draft.width, draft.height]);
+    }
+    if app.render_workspace.view.inspector.resolution.rejected {
+        ui_kit::text(ui, app.tr("render.output_ratio_refused"), ui_kit::Text::Error("render.output_ratio_refused"));
+    }
     ui.horizontal_wrapped(|ui| {
         for (label, width, height) in [("HD", 1280, 720), ("Full HD", 1920, 1080), ("4K UHD", 3840, 2160)] {
             if ui_kit::button(ui, label, ui_kit::Button::Normal).clicked() {
@@ -527,40 +608,40 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
     let size = (u64::from(app.render_workspace.view.draft.width), u64::from(app.render_workspace.view.draft.height));
     if cpu::image_limits(app).fit(size.0, size.1, None) != Some(size) {
-        ui.colored_label(Tokens::get().warning, app.tr("render.output_over_budget"));
+        ui_kit::text(ui, app.tr("render.output_over_budget"), ui_kit::Text::Error("render.output_over_budget"));
     }
     match app.render_workspace.view.method {
         ImageMethod::GpuRaytrace => {
-            ui.label(app.tr("render.image_samples"));
-            ui_kit::number_field(ui, &mut app.render_workspace.view.samples, 1..=4096, 1.0, "");
-            ui.label(app.tr("render.gpu_depth"));
-            ui_kit::number_field(ui, &mut app.render_workspace.view.max_depth, 1..=16, 1.0, "");
-            ui.label(app.tr("render.gpu_seed"));
-            ui_kit::number_field(ui, &mut app.render_workspace.view.seed, 0..=u32::MAX, 1.0, "");
+            let label = app.tr("render.image_samples").to_string();
+            ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.samples, 1..=4096, 1.0, ""));
+            let label = app.tr("render.gpu_depth").to_string();
+            ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.max_depth, 1..=16, 1.0, ""));
+            let label = app.tr("render.gpu_seed").to_string();
+            ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.seed, 0..=u32::MAX, 1.0, ""));
             studio::finishing_controls(app, ui);
         }
         ImageMethod::CpuRaytrace => super::cpu_sampling_controls(app, ui),
         ImageMethod::Raster => {
-            ui.small(app.tr("render.method_limit_raster"));
+            ui_kit::text(ui, app.tr("render.method_limit_raster"), ui_kit::Text::Note("render.method_limit_raster"));
         }
     }
     if app.render_workspace.view.method != ImageMethod::Raster {
-        ui.label(app.tr("render.image_exposure"));
-        ui_kit::number_field(ui, &mut app.render_workspace.view.draft.exposure_ev, -32.0..=32.0, 0.1, " EV");
+        let label = app.tr("render.image_exposure").to_string();
+        ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.draft.exposure_ev, -32.0..=32.0, 0.1, " EV"));
     }
     let label = app.tr("render.image_transparent").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.transparent);
-    ui.small(app.tr("render.output_format_status"));
+    ui_kit::text(ui, app.tr("render.output_format_status"), ui_kit::Text::Note("render.output_format_status"));
     let label = app.tr("render.image_overwrite").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.overwrite);
     browse_button(app, ui, "quality", "render.browse_quality");
     library::inspect_kinds(app, ui, &["quality"]);
     super::completed_image(app, ui);
-    ui.small(app.tr("render.adaptive_pending"));
+    ui_kit::text(ui, app.tr("render.adaptive_pending"), ui_kit::Text::Note("render.adaptive_pending"));
 }
 
 pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
-    ui.small(app.tr("render.scene_review_help"));
+    ui_kit::text(ui, app.tr("render.scene_review_help"), ui_kit::Text::Note("render.scene_review_help"));
     let snapshot = setups::snapshot(app);
     if ui_kit::button(
         ui,
@@ -585,9 +666,9 @@ pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
         let unchanged =
             review.current(app) && setups::snapshot(app).ok().and_then(|v| serde_json::to_value(v).ok()).as_ref() == Some(&review.request["set"]);
         if !unchanged {
-            ui.colored_label(Tokens::get().warning, app.tr("render.review_stale"));
+            ui_kit::text(ui, app.tr("render.review_stale"), ui_kit::Text::Error("render.review_stale"));
         }
-        ui.small(app.tr("render.scene_preserved_fields"));
+        ui_kit::text(ui, app.tr("render.scene_preserved_fields"), ui_kit::Text::Note("render.scene_preserved_fields"));
         if let Some(fields) = review.reply["replaces"].as_array() {
             ui.small(format!("{}: {}", app.tr("render.scene_replaces"), fields.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
         }
@@ -611,7 +692,7 @@ pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
     }
 }
 pub(super) fn quality_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
-    ui.small(app.tr("render.quality_projection_help"));
+    ui_kit::text(ui, app.tr("render.quality_projection_help"), ui_kit::Text::Note("render.quality_projection_help"));
     let label = app.tr("render.quality_ack").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.quality_ack);
     let enabled = app.render_workspace.view.inspector.quality_ack && app.render_workspace.view.method == ImageMethod::GpuRaytrace;
@@ -673,7 +754,7 @@ fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
     let request = super::image_request(app);
     ui.strong(app.tr(app.render_workspace.view.method.label()));
     if let Err(error) = super::image_params(app) {
-        ui.colored_label(Tokens::get().warning, error);
+        ui_kit::text(ui, &error.to_string(), ui_kit::Text::Error("render.native-error"));
     }
     if ui_kit::button(ui, app.tr("render.inspect_scene"), ui_kit::Button::Normal).clicked() {
         match app.run("render.scene", json!({})) {
@@ -686,7 +767,7 @@ fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     if let Some(info) = &app.render_workspace.view.inspector.scene_info {
         if !info.current(app) {
-            ui.small(app.tr("render.review_stale"));
+            ui_kit::text(ui, app.tr("render.review_stale"), ui_kit::Text::Note("render.review_stale"));
         }
         let bodies = info.reply["bodies"].as_array();
         let count = bodies.map_or(0, Vec::len);
@@ -696,14 +777,14 @@ fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Some(check) = &app.render_workspace.view.inspector.checked {
         ui.strong(app.tr("render.diag_last_check"));
         if !check.current(app) || request.as_ref().ok() != Some(&check.request) {
-            ui.small(app.tr("render.review_stale"));
+            ui_kit::text(ui, app.tr("render.review_stale"), ui_kit::Text::Note("render.review_stale"));
         }
         if let Some(bytes) = check.reply["admission"]["estimated_total_bytes"].as_u64() {
             ui.label(format!("{}: {:.2} MiB", app.tr("render.diag_memory"), bytes as f64 / 1048576.0));
         }
         if let Some(warnings) = check.reply["warnings"].as_array() {
             for warning in warnings {
-                ui.small(warning.to_string());
+                ui_kit::text(ui, &warning.to_string(), ui_kit::Text::Note("render.native-warning"));
             }
         }
         let detail = check.reply.clone();
@@ -713,7 +794,7 @@ fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
         && let Ok(status) = app.session.execute("render.status", &json!({"job":job}))
     {
         if let Some(error) = status["error"]["message"].as_str() {
-            ui.colored_label(Tokens::get().warning, error);
+            ui_kit::text(ui, &error.to_string(), ui_kit::Text::Error("render.native-error"));
         }
         json_details(app, ui, "render.diag_job_details", &status);
     }
@@ -725,7 +806,7 @@ fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
     for key in
         ["render.adaptive_pending", "render.exr_pending", "render.transmission_scope", "render.advanced_material_scope", "render.queue_pending"]
     {
-        ui.small(app.tr(key));
+        ui_kit::text(ui, app.tr(key), ui_kit::Text::Note(key));
     }
     browse_button(app, ui, "capabilities", "render.browse_capabilities");
     library::inspect_kinds(app, ui, &["capabilities"]);
@@ -811,17 +892,17 @@ fn base_appearance(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ("render.material_roughness", &mut view.roughness, 0.045..=1.0),
                 ("render.material_ior", &mut view.ior, 1.0..=3.0),
             ] {
-                ui.label(app.tr(key));
-                ui_kit::number_field(ui, value, range, 0.01, "");
+                let label = app.tr(key).to_string();
+                ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, range, 0.01, ""));
             }
             let current = view.revision == Some(app.session.revision)
                 && view.document.as_ref().is_some_and(|d| Weak::ptr_eq(d, &Arc::downgrade(&app.session.doc)))
                 && !app.session.model.is_stale();
             if !current {
-                ui.small(app.tr("render.material_refresh_needed"));
+                ui_kit::text(ui, app.tr("render.material_refresh_needed"), ui_kit::Text::Note("render.material_refresh_needed"));
             }
             if !view.opaque {
-                ui.small(app.tr("render.base_opaque_only"));
+                ui_kit::text(ui, app.tr("render.base_opaque_only"), ui_kit::Text::Note("render.base_opaque_only"));
             }
             if ui_kit::button(ui, app.tr("render.base_apply"), ui_kit::Button::Enabled(current && view.opaque)).clicked()
                 && let Some(name) = &view.selected
@@ -838,7 +919,7 @@ fn base_appearance(app: &mut SolveApp, ui: &mut egui::Ui) {
                     Err(error) => app.set_status(error, true),
                 }
             }
-            ui.small(app.tr("render.base_apply_help"));
+            ui_kit::text(ui, app.tr("render.base_apply_help"), ui_kit::Text::Note("render.base_apply_help"));
         }
         app.render_workspace.view.inspector.appearance = view;
     });
@@ -879,10 +960,10 @@ fn gpu_status(app: &SolveApp, ui: &mut egui::Ui) {
     match &app.render_workspace.path_host {
         super::PathHost::Preparing(_, started) => super::setup_progress(ui, app, *started),
         super::PathHost::Failed(error) => {
-            ui.colored_label(Tokens::get().warning, format!("{}: {error}", app.tr("render.gpu_path_failed")));
+            ui_kit::text(ui, &format!("{}: {error}", app.tr("render.gpu_path_failed")), ui_kit::Text::Error("render.gpu_path_failed"));
         }
         super::PathHost::NotStarted => {
-            ui.small(app.tr("render.gpu_unavailable"));
+            ui_kit::text(ui, app.tr("render.gpu_unavailable"), ui_kit::Text::Note("render.gpu_unavailable"));
         }
         super::PathHost::Ready(_) => {}
     }
