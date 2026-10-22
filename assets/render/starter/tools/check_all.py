@@ -118,6 +118,10 @@ def stages(authoring_only: bool, independent_decode: bool) -> list[tuple[str, li
             ("icons", cargo + ["xtask", "icons"]),
             ("render-clippy", cargo + ["clippy", *native, "--all-targets", "--", "-D", "warnings"]),
             ("render-unit-tests", cargo + ["test", *native, "--lib"]),
+            # Keep optional CPU regressions exercised explicitly without making
+            # the default renderer depend on a workspace's feature unification.
+            ("render-cpu-clippy", cargo + ["clippy", *native, "--features", "raytrace-cpu", "--all-targets", "--", "-D", "warnings"]),
+            ("render-cpu-unit-tests", cargo + ["test", *native, "--features", "raytrace-cpu", "--lib"]),
             ("native-regressions", cargo + ["test", *native, "--example", "validate_starter"]),
             ("native-admission", cargo + ["run", *native, "--example", "validate_starter"]),
         ]

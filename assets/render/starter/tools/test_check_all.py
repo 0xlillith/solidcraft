@@ -79,6 +79,18 @@ class GateChecks(unittest.TestCase):
             self.assertIn("validate", commands["physical-references"])
             self.assertNotIn("build", commands["physical-references"])
 
+    def test_native_gate_keeps_default_and_optional_cpu_feature_coverage_separate(self):
+        native = dict(check_all.stages(False, False))
+        for name in ("render-clippy", "render-unit-tests"):
+            self.assertNotIn("--features", native[name])
+        for name in ("render-cpu-clippy", "render-cpu-unit-tests"):
+            command = native[name]
+            self.assertEqual(command[command.index("--features")+1], "raytrace-cpu")
+            self.assertIn("--locked", command)
+        authoring = dict(check_all.stages(True, False))
+        self.assertNotIn("render-cpu-clippy", authoring)
+        self.assertNotIn("render-cpu-unit-tests", authoring)
+
     def test_authoring_only_is_explicit_and_native_is_default(self):
         self.assertIn("native-admission", {name for name, _ in check_all.stages(False, False)})
         self.assertNotIn("native-admission", {name for name, _ in check_all.stages(True, False)})

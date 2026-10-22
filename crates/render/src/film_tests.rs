@@ -222,6 +222,7 @@ fn construction_and_complete_pass_share_caller_work_and_cancel() {
     assert_eq!(pass.samples_per_pixel(), 1);
 }
 
+#[cfg(feature = "raytrace-cpu")]
 #[test]
 fn primary_film_large_profile_keeps_every_sample_and_cancels_before_mutation() {
     use crate::film::primary::PrimaryFilm;
