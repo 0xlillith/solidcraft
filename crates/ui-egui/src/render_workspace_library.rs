@@ -432,6 +432,11 @@ pub(super) fn browse(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.render_workspace.view.library = view;
 }
 
+pub(super) fn selected_kind(app: &SolveApp, kind: &str) -> bool {
+    let view = &app.render_workspace.view.library;
+    view.kind == kind && view.selected.is_some()
+}
+
 pub(super) fn inspect_kinds(app: &mut SolveApp, ui: &mut egui::Ui, kinds: &[&str]) {
     if kinds.contains(&app.render_workspace.view.library.kind.as_str()) {
         inspect(app, ui);
@@ -444,6 +449,12 @@ pub(super) fn inspect(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Some(id) = view.selected.clone() {
         ui.strong(view.details.as_ref().and_then(|d| d["resource"]["name"].as_str()).unwrap_or(&id));
         ui.small(&id);
+        // Native composition is an actionable review, not a long specification
+        // reader: keep Resolve/consent/Apply ahead of ancillary resource metadata.
+        let native_composition = view.kind == "native_scenes";
+        if native_composition {
+            super::inspector::scene_resource(app, ui, &id);
+        }
         let key = (view.kind.clone(), id.clone());
         let favorite = view.favorites.contains(&key);
         if ui_kit::button(
@@ -476,7 +487,9 @@ pub(super) fn inspect(app: &mut SolveApp, ui: &mut egui::Ui) {
         if view.kind == "surfaces" {
             source_preview(app, ui, &mut view, &id);
         }
-        resource_controls(app, ui, &mut view, &id);
+        if !native_composition {
+            resource_controls(app, ui, &mut view, &id);
+        }
         if let Some(detail) = &view.details {
             let title = app.tr("render.library_details").to_string();
             ui_kit::section(ui, ("render_library_detail", &id), &title, false, |ui| {

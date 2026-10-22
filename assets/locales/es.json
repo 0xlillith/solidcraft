@@ -1397,6 +1397,7 @@
   "render.scene_replaces": "Sustituye",
   "render.scene_review": "Resolver y revisar",
   "render.scene_review_help": "Revisa la composición nativa completa antes de aplicar. No se sustituyen las especificaciones SCENE avanzadas sin resolver.",
+  "render.scene_scope_details": "Alcance de la composición",
   "render.setup_legacy_environment": "Esta configuración antigua usa rotación o intensidad de entorno heredadas. Se conservan esos valores; conviértelos explícitamente antes de guardar un trabajo de imagen completo.",
   "render.setup_name": "Nombre de configuración",
   "render.setup_numeric_help": "Guardar conserva el método de imagen activo y todos sus ajustes numéricos. Recargar o elegir otra configuración sustituye este borrador; la cámara se restaura por separado.",

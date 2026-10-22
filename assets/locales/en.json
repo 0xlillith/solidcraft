@@ -1403,6 +1403,7 @@
   "render.scene_replaces": "Replaces",
   "render.scene_review": "Resolve and review",
   "render.scene_review_help": "Review the complete native composition before applying. Unbound advanced SCENE specifications are not substituted.",
+  "render.scene_scope_details": "Composition scope",
   "render.setup_legacy_environment": "This older setup uses legacy environment rotation or intensity. Those values are retained; convert them explicitly before saving a full image job.",
   "render.setup_name": "Setup name",
   "render.setup_numeric_help": "Save records the active image method and all its numeric settings. Reload or choosing another setup replaces this draft; restore the camera separately.",

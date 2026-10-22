@@ -205,20 +205,16 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
             ui_kit::scope(ui, |ui| {
                 header(app, ui);
                 pages(app, ui);
-                egui::Panel::bottom("render_job_footer")
-                    .exact_size(t.control_height * 4.0 + t.space_24 + t.space_8)
-                    .resizable(false)
-                    .frame(egui::Frame::NONE)
-                    .show(ui, |ui| {
-                        ui.separator();
-                        super::job_controls(app, ui, true);
-                        if ui_kit::button(ui, app.tr("render.return_design"), ui_kit::Button::Normal).clicked()
-                            && let Err(error) = super::enter(app, false)
-                        {
-                            app.set_status(error, true);
-                        }
-                        crate::scenario::publish_rect("render:job-footer", ui.min_rect());
-                    });
+                ui_kit::Panel::pinned_footer(ui, "render_job_footer", 4, |ui| {
+                    ui.separator();
+                    super::job_controls(app, ui, true);
+                    if ui_kit::button(ui, app.tr("render.return_design"), ui_kit::Button::Normal).clicked()
+                        && let Err(error) = super::enter(app, false)
+                    {
+                        app.set_status(error, true);
+                    }
+                    crate::scenario::publish_rect("render:job-footer", ui.min_rect());
+                });
                 let page = app.render_workspace.view.inspector.page;
                 egui::ScrollArea::vertical().id_salt(("render_inspector", page.handle(), app.docs.active)).auto_shrink([false, false]).show(
                     ui,
@@ -385,12 +381,21 @@ fn browse_button(app: &mut SolveApp, ui: &mut egui::Ui, kind: &str, key: &str) {
     }
 }
 fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    // After a library selection, primary native-resource actions lead the page.
+    // Shared method/help and catalog navigation remain below, not between the
+    // chosen resource and its explicit review/consent. No state is changed by layout.
+    let selected_native = library::selected_kind(app, "native_scenes");
+    if selected_native {
+        library::inspect_kinds(app, ui, &["native_scenes"]);
+    }
     ui_kit::text(ui, app.tr("render.scene_preserves_design"), ui_kit::Text::Note("render.scene_preserves_design"));
     super::method_selector(app, ui);
     gpu_status(app, ui);
     browse_button(app, ui, "native_scenes", "render.browse_native_scenes");
     browse_button(app, ui, "scenes", "render.browse_scene_specs");
-    library::inspect_kinds(app, ui, &["native_scenes", "scenes", "selene_shots"]);
+    if !selected_native {
+        library::inspect_kinds(app, ui, &["native_scenes", "scenes", "selene_shots"]);
+    }
     let title = app.tr("render.passive_stage").to_string();
     ui_kit::section(ui, "render_ground_details", &title, false, |ui| {
         ui.label(app.tr("render.ground_margin"));
@@ -641,14 +646,14 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
-    ui_kit::text(ui, app.tr("render.scene_review_help"), ui_kit::Text::Note("render.scene_review_help"));
     let snapshot = setups::snapshot(app);
-    if ui_kit::button(
+    let resolve = ui_kit::button(
         ui,
         app.tr("render.scene_review"),
         ui_kit::Button::Enabled(snapshot.is_ok() && app.render_workspace.view.method == ImageMethod::GpuRaytrace),
-    )
-    .clicked()
+    );
+    crate::scenario::publish_target("render:scene-resolve", resolve.rect);
+    if resolve.clicked()
         && let Ok(set) = snapshot
     {
         let request = json!({"id":id,"name":app.render_workspace.view.name,"set":set,"expected_revision":app.session.revision});
@@ -668,15 +673,16 @@ pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
         if !unchanged {
             ui_kit::text(ui, app.tr("render.review_stale"), ui_kit::Text::Error("render.review_stale"));
         }
-        ui_kit::text(ui, app.tr("render.scene_preserved_fields"), ui_kit::Text::Note("render.scene_preserved_fields"));
         if let Some(fields) = review.reply["replaces"].as_array() {
             ui.small(format!("{}: {}", app.tr("render.scene_replaces"), fields.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")));
         }
         let label = app.tr("render.scene_consent").to_string();
-        ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.scene_consent);
-        if ui_kit::button(ui, app.tr("render.scene_apply"), ui_kit::Button::Enabled(unchanged && app.render_workspace.view.inspector.scene_consent))
-            .clicked()
-        {
+        let consent = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.scene_consent).on_hover_text(&label);
+        crate::scenario::publish_target("render:scene-consent", consent.rect);
+        let apply =
+            ui_kit::button(ui, app.tr("render.scene_apply"), ui_kit::Button::Enabled(unchanged && app.render_workspace.view.inspector.scene_consent));
+        crate::scenario::publish_target("render:scene-apply", apply.rect);
+        if apply.clicked() {
             let mut request = review.request;
             request["replace_lighting_and_environment"] = json!(true);
             request["replace_stage"] = json!(true);
@@ -690,6 +696,12 @@ pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
             }
         }
     }
+    let title = app.tr("render.scene_scope_details").to_string();
+    ui_kit::section(ui, ("render_native_composition_scope", id), &title, false, |ui| {
+        for key in ["render.scene_review_help", "render.scene_preserved_fields", "render.library_authored_help"] {
+            ui_kit::text(ui, app.tr(key), ui_kit::Text::Note(key));
+        }
+    });
 }
 pub(super) fn quality_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
     ui_kit::text(ui, app.tr("render.quality_projection_help"), ui_kit::Text::Note("render.quality_projection_help"));

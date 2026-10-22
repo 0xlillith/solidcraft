@@ -244,3 +244,25 @@ fn temporary_library_maps_preserve_the_reviewed_plane_scale_and_optical_exclusiv
     assert!(h.app.render_workspace.view.materials.bindings[0].glass_enabled);
     assert_eq!(h.app.session.doc.to_json(), before);
 }
+
+#[test]
+fn native_composition_review_actions_are_visible_before_auxiliary_resource_details() {
+    for dark in [false, true] {
+        let mut h = fixture();
+        h.call("ui.set", json!({"dark":dark}));
+        super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+        setups::save(&mut h.app).unwrap();
+        library::open_category(&mut h.app, "native_scenes");
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"render:library:NATIVE-STUDIO-002"}})).unwrap();
+        let footer = crate::scenario::rect_of("render:job-footer").unwrap();
+        let resolve = crate::scenario::rect_of("render:scene-resolve").unwrap();
+        assert!(resolve.bottom() < footer.top(), "the review action must precede supplementary prose");
+        h.step(&json!({"click":{"handle":"render:scene-resolve"}})).unwrap();
+        h.frames(3);
+        for name in ["render:scene-consent", "render:scene-apply"] {
+            let rect = crate::scenario::rect_of(name).unwrap();
+            assert!(rect.bottom() < footer.top(), "{name} must remain above the pinned job actions: rect={rect:?}, footer={footer:?}, dark={dark}");
+        }
+    }
+}
