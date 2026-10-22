@@ -75,40 +75,90 @@ fn real_cpu_png_conductor_matches_independent_environment_quadrature_once() {
     assert!(background.pixels().all(|p| p.0 == [13, 27, 41, 255]));
 }
 
+struct ProgressiveHdrResult {
+    previews: Vec<(u32, Vec<u8>)>,
+    png: Vec<u8>,
+    work: u64,
+}
+
+fn progressive_hdr_png(samples_per_pixel: u32, seed: u32, quantum: usize, environment: Option<EnvironmentInput>) -> ProgressiveHdrResult {
+    let mut request = request();
+    let mut options = request.raytrace.clone().unwrap();
+    options.progressive = Some(job::CpuProgressiveOptions { samples_per_pixel, seed });
+    options.reflections = Some(job::ReflectionOptions {
+        bodies: vec![job::ReflectionBody { body: "Original conductor plate".into(), mode: job::ReflectionMode::RoughSpecular }],
+        samples: 1,
+        max_bounces: 2,
+    });
+    request.raytrace = Some(options.clone());
+    let mut task = ImageTask::new_with_environment(scene(), request, CancelToken::default(), options, environment).unwrap();
+    let mut previews = Vec::new();
+    for _ in 0..300_000 {
+        match task.step_with_previews(quantum).unwrap() {
+            ImagePoll::Pending(_) => {}
+            ImagePoll::Preview { png, samples_per_pixel } => previews.push((samples_per_pixel, png)),
+            ImagePoll::Complete(png) => return ProgressiveHdrResult { previews, png, work: task.work.used() },
+        }
+    }
+    panic!("bounded progressive HDR fixture did not finish");
+}
+
+fn progressive_hdr_expected(samples: u32, seed: u32) -> [u8; 4] {
+    // Independent normal-view, white-conductor reference at roughness one.
+    // The centre pixel (40) stays inside the plate for every camera jitter.
+    // GGX gives z = 1 - 2*u and weight = 2*z/(1+z) for z > 0; other
+    // attempts are null events, not replacement samples. Only the variate
+    // sequence is shared with production: no BSDF, PDF or film code is used.
+    let sum: f64 = (0..samples)
+        .map(|ordinal| {
+            let z = 1.0 - 2.0 * progressive::variates(seed, 40, ordinal, 0x100)[0];
+            if z > 0.0 { 2.0 * z / (1.0 + z) } else { 0.0 }
+        })
+        .sum();
+    let mean = sum / f64::from(samples);
+    // The original HDR is constant linear RGB (1, 0.5, 0.25). Average in
+    // linear space over ALL attempts, then apply the display response once.
+    let rgb = [mean, mean * 0.5, mean * 0.25].map(|r| encode(r / (1.0 + r)));
+    [rgb[0], rgb[1], rgb[2], 255]
+}
+
+fn centre(png: &[u8]) -> [u8; 4] {
+    ::image::load_from_memory(png).unwrap().to_rgba8().get_pixel(4, 4).0
+}
+
 #[test]
 fn progressive_hdr_and_rough_reflections_keep_the_same_absolute_prefix_at_every_quantum() {
-    let render = |samples_per_pixel, quantum| {
-        let mut request = request();
-        let mut options = request.raytrace.clone().unwrap();
-        options.progressive = Some(job::CpuProgressiveOptions { samples_per_pixel, seed: 82 });
-        options.reflections = Some(job::ReflectionOptions {
-            bodies: vec![job::ReflectionBody { body: "Original conductor plate".into(), mode: job::ReflectionMode::RoughSpecular }],
-            samples: 1,
-            max_bounces: 2,
-        });
-        request.raytrace = Some(options.clone());
-        let mut task = ImageTask::new_with_environment(scene(), request, CancelToken::default(), options, Some(input())).unwrap();
-        let mut previews = Vec::new();
-        for _ in 0..300_000 {
-            match task.step_with_previews(quantum).unwrap() {
-                ImagePoll::Pending(_) => {}
-                ImagePoll::Preview { png, samples_per_pixel } => previews.push((samples_per_pixel, png)),
-                ImagePoll::Complete(png) => return (previews, png, task.work.used()),
-            }
+    for (target, checkpoints) in [(3, vec![1, 2]), (7, vec![1, 2, 4])] {
+        let result = progressive_hdr_png(target, 82, 1, Some(input()));
+        assert_eq!(result.previews.iter().map(|(n, _)| *n).collect::<Vec<_>>(), checkpoints);
+        let other = progressive_hdr_png(target, 82, 16384, Some(input()));
+        assert_eq!(result.previews, other.previews);
+        assert_eq!(result.png, other.png);
+        assert_eq!(result.work, other.work);
+        for (samples, checkpoint) in result.previews {
+            assert_eq!(progressive_hdr_png(samples, 82, 3, Some(input())).png, checkpoint);
+            assert_eq!(centre(&checkpoint), progressive_hdr_expected(samples, 82));
         }
-        panic!("bounded progressive HDR fixture did not finish");
-    };
-    let (previews, final_png, work) = render(3, 1);
-    assert_eq!(previews.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [1, 2]);
-    let (other_previews, other_final, other_work) = render(3, 16384);
-    assert_eq!(previews, other_previews);
-    assert_eq!(final_png, other_final);
-    assert_eq!(work, other_work);
-    for (samples, checkpoint) in previews {
-        assert_eq!(render(samples, 3).1, checkpoint);
+        assert_eq!(centre(&result.png), progressive_hdr_expected(target, 82));
     }
-    let image = ::image::load_from_memory(&final_png).unwrap().to_rgba8();
-    assert_ne!(image.get_pixel(4, 4).0, [0, 0, 0, 255], "captured HDR must reach the actual conductor");
+}
+
+#[test]
+fn progressive_hdr_rough_reflections_count_null_events_in_the_linear_mean() {
+    // Preserve the previously failing seed rather than picking a brighter one:
+    // its first three attempts are all null, and later attempts receive HDR.
+    assert_eq!(progressive_hdr_expected(3, 82), [0, 0, 0, 255]);
+    assert_ne!(progressive_hdr_expected(7, 82), [0, 0, 0, 255]);
+    for seed in [0, 82, u32::MAX] {
+        for samples in [1, 3, 7] {
+            let result = progressive_hdr_png(samples, seed, 37, Some(input()));
+            assert_eq!(centre(&result.png), progressive_hdr_expected(samples, seed), "seed={seed}, samples={samples}");
+            let image = ::image::load_from_memory(&result.png).unwrap().to_rgba8();
+            assert_eq!(image.get_pixel(0, 0).0, [13, 27, 41, 255], "HDR must not replace the display background");
+            let unlit = progressive_hdr_png(samples, seed, 37, None);
+            assert_eq!(centre(&unlit.png), [0, 0, 0, 255], "no direct lights or environment means zero radiance");
+        }
+    }
 }
 
 #[test]
