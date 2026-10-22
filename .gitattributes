@@ -1,0 +1,3 @@
+# Preserve the runtime icon audit's canonical text snapshot across platforms.
+.gitattributes text eol=lf
+assets/icons/ui/design/requested_icons.txt text eol=lf
