@@ -19,6 +19,10 @@ path = "src/main.rs"
 name = "solvecraft-cli"
 path = "src/alias.rs"
 
+[features]
+default = ["raytrace-cpu"]
+raytrace-cpu = ["solidcraft-engine/raytrace-cpu"]
+
 [dependencies]
 solidcraft-engine = { workspace = true }
 solidcraft-gpu = { workspace = true }

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod appearance;
+pub mod appearance_pack;
 mod assembly;
 mod body_transfer;
 mod body_transfer_sheet;
@@ -48,6 +49,8 @@ pub use profile_refs::{capture_profile_selection, profile_fallback_notes, profil
 pub mod plastic;
 pub mod project;
 mod project3d;
+pub mod render_job;
+pub mod render_resources;
 pub mod render_settings;
 pub use project3d::iso_grid;
 pub mod sheet;

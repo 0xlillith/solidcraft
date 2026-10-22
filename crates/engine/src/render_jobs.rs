@@ -3,7 +3,7 @@
 
 use solidcraft_render::{
     ExecutorDescriptor,
-    job::{CpuHost, ErrorCode, JobError, JobHandle, JobId, JobStatus, Phase, RenderFrame},
+    job::{CpuHost, ErrorCode, HostKind, Integrator, JobError, JobHandle, JobId, JobStatus, Phase, RenderFrame},
 };
 use std::collections::VecDeque;
 use std::sync::{
@@ -12,6 +12,14 @@ use std::sync::{
 };
 
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
+
+/// The native CPU worker has two explicit execution methods. This pure metadata
+/// lookup neither creates a host nor enables raytracing in cooperative/feature-off builds.
+/// A stopped native host keeps its descriptor, marked unavailable by the host.
+pub(crate) fn cpu_raytrace_descriptor(host: Option<&CpuHost>) -> Option<ExecutorDescriptor> {
+    let host = host.filter(|host| host.kind() == HostKind::NativeWorker)?;
+    host.descriptor_for(Integrator::Raytrace).ok()
+}
 
 fn owner() -> u64 {
     let mut n = NEXT_OWNER.load(Ordering::Relaxed);
@@ -24,12 +32,19 @@ fn owner() -> u64 {
     }
 }
 
+pub(crate) struct Execution {
+    pub executor: solidcraft_render::ExecutorId,
+    pub options: solidcraft_render::job::JobOptions,
+    pub environment: Option<solidcraft_render::lighting::environment_input::EnvironmentInput>,
+}
+
 pub(crate) struct Jobs {
     owner: u64,
     serial: u64,
     generation: u64,
     pub(crate) host: Option<CpuHost>,
     pub(crate) descriptor: Option<ExecutorDescriptor>,
+    pub(crate) additional: Vec<(CpuHost, ExecutorDescriptor)>,
     live: Vec<JobHandle>,
     history: VecDeque<JobStatus>,
     last_good: Option<JobHandle>,
@@ -37,7 +52,17 @@ pub(crate) struct Jobs {
 
 impl Default for Jobs {
     fn default() -> Self {
-        Self { owner: owner(), serial: 0, generation: 0, host: None, descriptor: None, live: Vec::new(), history: VecDeque::new(), last_good: None }
+        Self {
+            owner: owner(),
+            serial: 0,
+            generation: 0,
+            host: None,
+            descriptor: None,
+            additional: Vec::new(),
+            live: Vec::new(),
+            history: VecDeque::new(),
+            last_good: None,
+        }
     }
 }
 
@@ -50,10 +75,24 @@ impl Drop for Jobs {
 }
 
 impl Jobs {
+    pub(crate) fn host_for(&self, executor: &solidcraft_render::ExecutorId) -> Option<&CpuHost> {
+        if executor.as_str() == "cpu-raytrace" {
+            return self
+                .host
+                .as_ref()
+                .filter(|host| host.descriptor_for(solidcraft_render::job::Integrator::Raytrace).is_ok_and(|d| &d.id == executor));
+        }
+        if self.descriptor.as_ref().is_some_and(|d| &d.id == executor) {
+            return self.host.as_ref();
+        }
+        self.additional.iter().find(|(_, d)| &d.id == executor).map(|(host, _)| host)
+    }
+
     pub(crate) fn scratch(&self) -> Self {
         let mut jobs = Self::default();
         jobs.host = self.host.clone();
         jobs.descriptor = self.descriptor.clone();
+        jobs.additional = self.additional.clone();
         jobs
     }
 
@@ -77,15 +116,17 @@ impl Jobs {
         Ok(())
     }
 
-    pub(crate) fn start(
+    pub(crate) fn start_with_environment(
         &mut self,
         revision: u64,
         scene: solidcraft_render::ProductScene,
         request: solidcraft_render::job::ImageRequest,
         replace: bool,
+        execution: Execution,
     ) -> Result<JobStatus, JobError> {
+        let Execution { executor, options, environment } = execution;
         self.collect()?;
-        let host = self.host.as_ref().ok_or_else(|| JobError::new(ErrorCode::HostUnavailable, "no image host is installed"))?.clone();
+        let host = self.host_for(&executor).ok_or_else(|| JobError::new(ErrorCode::HostUnavailable, "resolved image host is not installed"))?.clone();
         if replace {
             for job in self.live.drain(..) {
                 let mut status = job.cancel()?;
@@ -109,7 +150,14 @@ impl Jobs {
         }
         let serial = self.serial.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "render job identity exhausted"))?;
         let generation = self.generation.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "render generation exhausted"))?;
-        let handle = host.submit(JobId { session: self.owner, serial, generation }, revision, scene, request)?;
+        let handle = host.submit_with_environment_and_options(
+            JobId { session: self.owner, serial, generation },
+            revision,
+            scene,
+            request,
+            options,
+            environment,
+        )?;
         let status = handle.status()?;
         self.serial = serial;
         self.generation = generation;
@@ -156,10 +204,19 @@ impl crate::Session {
             return Ok(());
         }
         let descriptor = host.as_ref().map(CpuHost::descriptor).transpose().map_err(job_error)?;
+        if descriptor.as_ref().is_some_and(|d| d.id.as_str() == "cpu-raytrace") {
+            return Err(crate::EngineError::Other("cpu-raytrace is reserved for the native CPU raytrace integrator".into()));
+        }
+        let previous_raytrace = cpu_raytrace_descriptor(self.render_jobs.host.as_ref());
         let mut backend = self.render_backend();
-        backend.executors.retain(|e| self.render_jobs.descriptor.as_ref().is_none_or(|old| old.id != e.id));
+        backend.executors.retain(|e| {
+            self.render_jobs.descriptor.as_ref().is_none_or(|old| old.id != e.id) && previous_raytrace.as_ref().is_none_or(|old| old.id != e.id)
+        });
         if let Some(d) = &descriptor {
             backend.executors.push(d.clone());
+        }
+        if let Some(raytrace) = cpu_raytrace_descriptor(host.as_ref()) {
+            backend.executors.push(raytrace);
         }
         solidcraft_render::resolve_request(
             &[backend],
@@ -176,9 +233,43 @@ impl crate::Session {
         )
         .map_err(|e| crate::EngineError::Other(e.to_string()))?;
         let mut jobs = Jobs::default();
+        jobs.additional = self.render_jobs.additional.clone();
         jobs.host = host;
         jobs.descriptor = descriptor;
         self.render_jobs = jobs;
+        Ok(())
+    }
+
+    /// Add an executor without replacing CPU jobs or their ownership. Applications share
+    /// this host across document sessions; descriptor IDs must be unique in the registry.
+    pub fn register_render_job_host(&mut self, host: solidcraft_render::job::ImageHost) -> crate::Result<()> {
+        let descriptor = host.descriptor().map_err(job_error)?;
+        if descriptor.id.as_str() == "cpu-raytrace" {
+            return Err(crate::EngineError::Other("cpu-raytrace is reserved for the native CPU raytrace integrator".into()));
+        }
+        if self.render_jobs.additional.iter().any(|(old, _)| old.same_host(&host)) {
+            return Ok(());
+        }
+        if descriptor.profiles.iter().any(|p| p.operation != solidcraft_render::RenderOperation::Image) {
+            return Err(crate::EngineError::Other("image host must only register image profiles".into()));
+        }
+        let mut registry = self.render_backend();
+        registry.executors.push(descriptor.clone());
+        solidcraft_render::resolve_request(
+            &[registry],
+            &solidcraft_render::RenderRequest {
+                backend: None,
+                mode: solidcraft_render::RenderMode::Preview,
+                operation: solidcraft_render::RenderOperation::Image,
+                width: 1,
+                height: 1,
+                format: Some(solidcraft_render::RenderFormat::Png),
+                features: Vec::new(),
+                policy: Default::default(),
+            },
+        )
+        .map_err(|e| crate::EngineError::Other(e.to_string()))?;
+        self.render_jobs.additional.push((host, descriptor));
         Ok(())
     }
 

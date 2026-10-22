@@ -10,15 +10,26 @@ use super::CommandSpec;
 use crate::params::bad;
 use crate::{Result, Session};
 
+mod clear_coat;
+mod environment;
 mod jobs;
+#[cfg(test)]
+mod light_union_tests;
+mod resources;
+mod textures;
+mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.hdr.inspect", "Inspect HDR Source", resources::inspect).icon("inspect").noundo().doc_only()
+    .params("path: scoped Radiance HDR file; validates the complete bounded source and returns sha256, width, height, encoded_bytes and primaries without saving or rendering"),
+CommandSpec::new("render.settings.capture_hdr", "Save Render Settings with HDR", resources::capture_settings).icon("settings").doc_only()
+    .params("name, set: typed CPU/GPU setup patch with hdr/environment unset; path: scoped HDR; expected_sha256?: digest returned by render.hdr.inspect (changed sources refuse); rotation_rad?:0, intensity?:1; samples?:1/4/16/64 for CPU only (default16); assume_linear_srgb?:false for GPU only. Captures immutable bytes and saves resource plus setup atomically in one undo, without a host; returns name/setup/resource metadata, never source bytes"),
 CommandSpec::new("render.preflight", "Check Render Request", jobs::preflight).icon("inspect").noundo().doc_only()
-    .params("setup?: saved name OR settings?: full RenderSetup; transparent_background?: false; replace?: false. Validates the installed image host and bounded captured product scene without starting work. Stale geometry is rejected. See docs/render-jobs.md"),
+    .params("setup?: saved name OR settings?: full RenderSetup. A typed job selects raster/cpu_raytrace/gpu_path and its numerical options plus embedded HDR before dispatch; only replace may accompany it. Without job, the legacy runtime controls below remain available. See docs/render-settings.md. integrator?: raster (default) or raytrace; progressive?: false (registered GPU path, CPU integrator/LED options are mutually exclusive); samples?: 1..4096; max_depth?: 1..16; seed?: u32 for progressive; raytrace?: bounded runtime progressive/primary_samples/lights/punctual_lights/area_lights/area_samples/seed/exposure_ev/shadows/reflections/anisotropic_faces/emissions/surface_effects/dielectrics/environment options, only with raytrace. CPU raytrace.progressive?: {samples_per_pixel:1..64, seed:u32}; at most 1048576 pixels and 16777216 camera samples, requires primary_samples:1 and selected reflections.samples:1; no area/LED, anisotropy or dielectrics in this initial mode. See docs/render-cpu-progressive.md; environment?: {path: scoped HDR, expected_sha256?: inspected digest, rotation_radians: 0, intensity: 1, samples: 16} OR {resource: saved HDR digest, rotation_radians, intensity, samples}; embedded resources cannot combine with path/hash; explicit sRGB/D65 HDR primaries required. Opaque CPU preview with selected mirror/rough-specular reflections and certified planar anisotropy. HDR with rough reflections or anisotropy requires fully metallic selected bodies and all effective faces; unsupported combinations refuse. No MIS or GI. CPU runtime dielectrics support only certified thin_sheet/closed_box boundaries with explicit IOR and Beer absorption; see docs/render-raytrace-dielectrics.md. CPU emissions are visible radiance only; surface_effects change roughness/shading normals without geometry changes. led_strip?: continuous world-mm LED rectangle recipe; led_samples?: 1/4/16/64 for the whole strip, default16. At most8directional+8punctual+4rectangle/LED sources; shared area N. See docs/render-light-union.md. transparent_background?: false; replace?: false. With progressive:true, raytrace instead accepts GPU dielectrics/clear_coats/textures; environment instead accepts tagged hdr/embedded_hdr/sky with rotation_rad/intensity; file hdr supports expected_sha256, embedded_hdr uses a document resource digest. See docs/render-hdr-resources.md. GPU lens, studio lighting, tone_map and denoise are also available; see docs/render-transmission.md, render-environment.md, render-runtime-textures.md, render-thin-lens.md, render-studio-lighting.md and render-denoise.md. Optional CPU raytracing requires a raytrace-cpu build and native host, checked before scene capture. Stale geometry is rejected. See docs/render-jobs.md"),
 CommandSpec::new("render.start", "Render Image", jobs::start).noundo().doc_only().at("RENDER", "IMAGE").icon("render_image")
     .params("Same request as render.preflight. Captures an immutable product scene and queues a bounded image job. Returns its session-scoped job identity, captured scene_generation and progress. Does not change the design. See docs/render-jobs.md"),
 CommandSpec::new("render.status", "Render Progress", jobs::status).icon("list").noundo().doc_only()
-    .params("job: {session, serial, generation}. Non-blocking progress, error and completed frame metadata; no image bytes and no rendering in this call."),
+    .params("job: {session, serial, generation}. Non-blocking progress, error, optional CPU preview metadata {frame_sequence,samples_per_pixel,frame}, and completed frame metadata; no image bytes and no rendering in this call. Preview is separate from the exportable final image."),
 CommandSpec::new("render.cancel", "Cancel Render", jobs::cancel).icon("delete").noundo().doc_only()
     .params("job: {session, serial, generation}. Requests cooperative cancellation; completed jobs remain completed. Late cancelled frames cannot be published."),
 CommandSpec::new("render.export", "Export Render Image", jobs::export).icon("export").noundo().doc_only()
@@ -30,7 +41,7 @@ CommandSpec::new("render.backends", "Render Backends", backends).icon("list")
 CommandSpec::new("render.settings.get", "Render Settings", get_settings).icon("settings").noundo().doc_only()
     .params("name?: saved setup. Without name returns {setups, defaults}; with name returns {name, setup}. Does not evaluate the model or apply a camera. See docs/render-settings.md"),
 CommandSpec::new("render.settings.set", "Save Render Settings", set_settings).icon("settings").doc_only()
-    .params("name: setup name, set: object of fields to replace (backend, mode, camera, width, height, format, exposure_ev, environment_rotation, environment_intensity, background). Creates from defaults, validates atomically, one undo step; identical edits are no-ops. See docs/render-settings.md"),
+    .params("name: setup name, set: object of fields to replace (backend, mode, camera, width, height, format, exposure_ev, environment_rotation, environment_intensity, background, job). job?: typed active raster/cpu_raytrace/gpu_path configuration with optional validated embedded HDR reference; omitted preserves, null clears, object replaces the complete job. Creates from defaults and saves without a host, validates atomically, one undo step; identical edits are no-ops. See docs/render-settings.md"),
 CommandSpec::new("render.scene", "Inspect Render Scene", scene).noundo().at("RENDER", "SCENE").icon("render_scene")
     .params("No parameters. Authoritative product-scene metadata, without modelling overlays or mesh payloads. Explicitly settles stale geometry; does not render an image. See docs/render-workspace.md"),
 CommandSpec::new("render.settings.apply", "Apply Render Camera", apply_settings).icon("camera").noundo().doc_only()
@@ -45,7 +56,8 @@ fn scene(s: &mut Session, params: &Value) -> Result<Value> {
     let bodies: Vec<_> = scene
         .meshes
         .iter()
-        .map(|m| json!({"name":m.name,"triangles":m.mesh.triangles.len(),"color":m.color,"opacity":m.opacity,"face_appearances":m.faces.len()}))
+        .enumerate()
+        .map(|(ordinal,m)| json!({"ordinal":ordinal,"name":m.name,"triangles":m.mesh.triangles.len(),"color":m.color,"opacity":m.opacity,"face_appearances":m.faces.len()}))
         .collect();
     Ok(
         json!({"bodies":bodies,"bounds":if scene.bounds.is_empty() { Value::Null } else { json!({"min":scene.bounds.min,"max":scene.bounds.max}) },"overlays":false}),
@@ -91,16 +103,7 @@ struct SetSettings {
 fn set_settings(s: &mut Session, params: &Value) -> Result<Value> {
     let cmd = "render.settings.set";
     let request: SetSettings = serde_json::from_value(params.clone()).map_err(|e| bad(cmd, e.to_string()))?;
-    RenderSettings::validate_name(&request.name).map_err(|e| bad(cmd, e.to_string()))?;
-    let patch = request.set.as_object().filter(|p| p.len() <= 10).ok_or_else(|| bad(cmd, "`set` must be an object with at most 10 fields"))?;
-    let current = s.doc.render.setups.get(&request.name).cloned().unwrap_or_default();
-    let mut value = serde_json::to_value(&current).map_err(|e| bad(cmd, e.to_string()))?;
-    let object = value.as_object_mut().ok_or_else(|| bad(cmd, "invalid render setup"))?;
-    for (key, value) in patch {
-        object.insert(key.clone(), value.clone());
-    }
-    let setup: RenderSetup = serde_json::from_value(value).map_err(|e| bad(cmd, e.to_string()))?;
-    setup.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    let setup = patched_settings(s, &request.name, &request.set, cmd)?;
     let reply = json!({"name": request.name, "setup": setup});
     if s.doc.render.setups.get(&request.name) == Some(&setup) {
         return Ok(reply);
@@ -110,6 +113,20 @@ fn set_settings(s: &mut Session, params: &Value) -> Result<Value> {
     settings.validate().map_err(|e| bad(cmd, e.to_string()))?;
     s.doc_mut().render = Arc::new(settings);
     Ok(reply)
+}
+
+fn patched_settings(s: &Session, name: &str, set: &Value, cmd: &str) -> Result<RenderSetup> {
+    RenderSettings::validate_name(name).map_err(|e| bad(cmd, e.to_string()))?;
+    let patch = set.as_object().filter(|p| p.len() <= 11).ok_or_else(|| bad(cmd, "`set` must be an object with at most 11 fields"))?;
+    let current = s.doc.render.setups.get(name).cloned().unwrap_or_default();
+    let mut value = serde_json::to_value(&current).map_err(|e| bad(cmd, e.to_string()))?;
+    let object = value.as_object_mut().ok_or_else(|| bad(cmd, "invalid render setup"))?;
+    for (key, value) in patch {
+        object.insert(key.clone(), value.clone());
+    }
+    let setup: RenderSetup = serde_json::from_value(value).map_err(|e| bad(cmd, e.to_string()))?;
+    setup.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(setup)
 }
 
 fn backends(s: &mut Session, params: &Value) -> Result<Value> {
@@ -164,6 +181,71 @@ mod tests {
         for p in [json!([]), json!(3), json!({"backend": "missing"}), json!({"width": "bad"})] {
             assert!(assert_unchanged(&mut s, p).is_err());
         }
+    }
+
+    #[test]
+    fn cooperative_host_never_discovers_cpu_raytracing_or_accepts_its_reserved_viewport_id() {
+        use solidcraft_render::job::CpuHost;
+        let mut s = Session::default();
+        s.set_render_job_host(Some(CpuHost::cooperative())).unwrap();
+        let reply = assert_unchanged(&mut s, json!({})).unwrap();
+        let backend: solidcraft_render::BackendDescriptor = serde_json::from_value(reply["backends"][0].clone()).unwrap();
+        assert!(backend.executors.iter().any(|d| d.id.as_str() == "cpu-product"));
+        assert!(!backend.executors.iter().any(|d| d.id.as_str() == "cpu-raytrace"));
+        let mut viewport = CpuHost::cooperative().descriptor().unwrap();
+        viewport.id = solidcraft_render::ExecutorId::new("cpu-raytrace").unwrap();
+        viewport.profiles[0].operation = solidcraft_render::RenderOperation::Viewport;
+        viewport.profiles[0].formats.clear();
+        assert!(s.set_render_viewport(Some(viewport)).unwrap_err().to_string().contains("reserved"));
+        assert_eq!(s.render_backend(), backend);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_cpu_discovery_matches_installed_features_and_preserves_raster_default() {
+        use solidcraft_render::job::{CpuHost, Integrator};
+        use solidcraft_render::{RenderFeature, RenderFormat, RenderMode, RenderOperation, RenderRequest};
+        let host = CpuHost::for_platform().unwrap();
+        // Query the host so the same test covers feature-off builds and workspace
+        // feature unification without assuming the engine's own cfg is sufficient.
+        let raytrace = host.validate_integrator(Integrator::Raytrace).is_ok();
+        let mut s = Session::default();
+        let doc = s.doc.clone();
+        s.set_render_job_host(Some(host.clone())).unwrap();
+        let reply = assert_unchanged(&mut s, json!({})).unwrap();
+        assert!(Arc::ptr_eq(&doc, &s.doc));
+        assert!(!s.is_dirty());
+        assert!(s.undo.is_empty());
+        let backend: solidcraft_render::BackendDescriptor = serde_json::from_value(reply["backends"][0].clone()).unwrap();
+        let descriptors: Vec<_> = backend.executors.iter().filter(|d| d.id.as_str() == "cpu-raytrace").collect();
+        assert_eq!(descriptors.len(), usize::from(raytrace));
+        if let Some(descriptor) = descriptors.first() {
+            assert_eq!(descriptor.availability, solidcraft_render::Availability::Available);
+            assert_eq!(*descriptor, &host.descriptor_for(Integrator::Raytrace).unwrap());
+            assert!(!descriptor.profiles.iter().any(|p| p.features.contains(&RenderFeature::Progressive)));
+        }
+        let request = RenderRequest {
+            backend: None,
+            mode: RenderMode::Preview,
+            operation: RenderOperation::Image,
+            width: 16,
+            height: 16,
+            format: Some(RenderFormat::Png),
+            features: vec![RenderFeature::Pbr],
+            policy: Default::default(),
+        };
+        assert_eq!(solidcraft_render::resolve_request(std::slice::from_ref(&backend), &request).unwrap().executor.as_str(), "cpu-product");
+        assert_eq!(s.scratch().render_backend(), backend);
+        s.set_render_job_host(Some(host)).unwrap();
+        assert_eq!(s.render_backend(), backend, "reinstalling the same host cannot duplicate method descriptors");
+        s.set_render_job_host(Some(CpuHost::cooperative())).unwrap();
+        assert!(!s.render_backend().executors.iter().any(|d| d.id.as_str() == "cpu-raytrace"));
+        s.set_render_job_host(None).unwrap();
+        assert_eq!(s.render_backend(), solidcraft_render::builtin_backend());
+        assert_unchanged(&mut s, json!({})).unwrap();
+        assert!(Arc::ptr_eq(&doc, &s.doc));
+        assert!(!s.is_dirty());
+        assert!(s.undo.is_empty());
     }
 
     #[test]
