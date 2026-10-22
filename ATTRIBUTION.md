@@ -861,3 +861,5 @@ surface frame cannot strand cached meshes without their GPU initialization.
 | assets/render/physical/tools/check_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
 | assets/render/physical/tools/physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
 | assets/render/physical/tools/test_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
+| assets/render/physical/tools/export_library.py | SolidCraft contributors | original explicit reference-library planner and native no-loss export verifier; no external code | MIT OR Apache-2.0 |
+| assets/render/physical/tools/test_export_library.py | SolidCraft contributors | original regressions for native capability refusal, source identity and physical-card preservation | MIT OR Apache-2.0 |

@@ -224,7 +224,7 @@ def load():
 
 def native_condition(p,r):
     c=r['conditions'];extra={k:v for k,v in c.items() if k not in {'state','temperature_k','moisture_dry_basis_kg_kg','strain_rate_per_s'} and v is not None}
-    state=p['reference_state']+' | '+r['qualifier']+' reference; source review required; not design allowables.'
+    state=c['state']+' | '+r['qualifier']+' reference; source review required; not design allowables.'
     if extra:state+=' | '+json.dumps(extra,sort_keys=True,separators=(',',':'))
     if r['uncertainty'] is not None:state+=' | Reported uncertainty retained in extended profile.'
     if r['qualifier']=='derived':state+=' | Derived value; formula retained in extended profile.'
@@ -252,7 +252,8 @@ def native_card(p,sources):
     if p['isotropic_reference_model']:
         e,nu=point('young_modulus'),point('poisson_ratio')
         if e and nu:
-            require(e['source_id']==nu['source_id'] and e['conditions']['temperature_k']==nu['conditions']['temperature_k'],'mixed elastic source/temperature')
+            keys=('temperature_k','temperature_interval_k','moisture_dry_basis_kg_kg','strain_rate_per_s','state','direction','environment','thermal_regime','specimen_thickness_mm','heating_rate_k_min')
+            require(e['source_id']==nu['source_id'] and all(e['conditions'].get(k)==nu['conditions'].get(k) for k in keys),'mixed elastic source/conditions')
             require(-1<number(nu['value'])<.5,'unstable isotropic Poisson ratio')
             add(e,{'kind':'elasticity','model':{'symmetry':'isotropic','young_modulus_pa':e['value'],'poisson_ratio':nu['value']}},[nu['id']])
             selected[-1]['conditions']['state']+=' | Isotropic reference model; not validated part behavior.'

@@ -3,12 +3,12 @@
   "native_card_schema": 1,
   "native_library_format": false,
   "source_sha256": {
-    "sources.json": "1227405333fc09cba22bba301194512b661664312483efa9863be6b651e54b96",
-    "profiles.json": "05d5c6855295107fdd84386f81a1e47a1cfe0b074bc46c0cde0356db18f6e39a",
+    "sources.json": "8f684a2cf1fac8b2c836e12ca6a1afb9b8d85c8bdee73b4703ca0203936943b7",
+    "profiles.json": "61b8ec99225f4333a46027a4baa7eda1a9d77eeadcc3e79b4efc42113654c14a",
     "quantities.json": "5083e049d446e6b8f5ce9add42f99c4e8c3aaa0c88fb46405da5911a4e0cf28c",
-    "bindings.json": "d98ba01dccc7d88d3b87b3c8e1d6f6ba8b8ce7d4c62f5a0ad7d1072fb214737b"
+    "bindings.json": "a2b7cddef7f164ef678cb45aa485d090150e1da3b8612f1b828ec3da4865f5e1"
   },
-  "generator_sha256": "a3f21d8c31476d2d57a486212466b34af79017f5c1f879e07d5393636bd53ad2",
+  "generator_sha256": "f296e365a7740a75d933c7d5584dcc34e3c3ba16d5674f14fd2ad9f8dde87ffd",
   "runtime_assignment": false,
   "items": [
     {
@@ -4686,6 +4686,570 @@
       ],
       "missing_native_kinds": [
         "compressive_strength",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "tensile_strength",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "pmma-goodfellow-sheet",
+      "card": {
+        "schema_version": 1,
+        "designation": "PMMA sheet - Goodfellow stock reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "goodfellow-pmma-sheet",
+            "title": "Goodfellow PMMA film and sheet reference",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://www.goodfellow.com/eu/pmma-film-group"
+          }
+        ],
+        "properties": [
+          {
+            "data": {
+              "kind": "density",
+              "kg_m3": 1190.0
+            },
+            "source_id": "goodfellow-pmma-sheet",
+            "conditions": {
+              "temperature_k": null,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"not_reported\"}"
+            }
+          },
+          {
+            "data": {
+              "kind": "tensile_strength",
+              "pa": 80000000.0
+            },
+            "source_id": "goodfellow-pmma-sheet",
+            "conditions": {
+              "temperature_k": null,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"not_reported\"}"
+            }
+          }
+        ]
+      },
+      "native_projection_status": "partial_native_card",
+      "exported_property_ids": [
+        "density",
+        "tensile_strength"
+      ],
+      "not_projected": [
+        {
+          "id": "young_modulus",
+          "quantity": "young_modulus",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "poisson_ratio",
+          "quantity": "poisson_ratio",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "elongation_break",
+          "quantity": "elongation_break",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "specific_heat",
+          "quantity": "specific_heat",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "thermal_expansion",
+          "quantity": "thermal_expansion",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "refractive_index",
+          "quantity": "refractive_index",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "volume_resistivity",
+          "quantity": "volume_resistivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "dielectric_strength",
+          "quantity": "dielectric_strength",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "thermal_conductivity",
+          "quantity": "thermal_conductivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "relative_permittivity",
+          "quantity": "relative_permittivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "loss_tangent",
+          "quantity": "loss_tangent",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "water_absorption",
+          "quantity": "water_absorption",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "hdt-045mpa",
+          "quantity": "heat_deflection",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "hdt-18mpa",
+          "quantity": "heat_deflection",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "kevlar49-fibre",
+      "card": {
+        "schema_version": 1,
+        "designation": "Kevlar 49 fibre - Goodfellow constituent reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "goodfellow-kevlar49",
+            "title": "Goodfellow Kevlar 49 polyaramid fibre",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://www.goodfellow.com/global/kevlar-49-polyaramid-fibre-group"
+          }
+        ],
+        "properties": [
+          {
+            "data": {
+              "kind": "density",
+              "kg_m3": 1440.0
+            },
+            "source_id": "goodfellow-kevlar49",
+            "conditions": {
+              "temperature_k": null,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"not_reported\"}"
+            }
+          },
+          {
+            "data": {
+              "kind": "specific_heat",
+              "j_kg_k": 1400.0
+            },
+            "source_id": "goodfellow-kevlar49",
+            "conditions": {
+              "temperature_k": null,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"not_reported\"}"
+            }
+          }
+        ]
+      },
+      "native_projection_status": "partial_native_card",
+      "exported_property_ids": [
+        "density",
+        "specific_heat"
+      ],
+      "not_projected": [
+        {
+          "id": "thermal_conductivity",
+          "quantity": "thermal_conductivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "thermal_expansion",
+          "quantity": "thermal_expansion",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "young_modulus",
+          "quantity": "young_modulus",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "tensile_strength",
+          "quantity": "tensile_strength",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "water_absorption",
+          "quantity": "water_absorption",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "elasticity",
+        "shear_strength",
+        "tensile_strength",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "pvc-kuhn-stock",
+      "card": {
+        "schema_version": 1,
+        "designation": "PVC stock - Kuhn supplier reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "kuhn-pvc-stock",
+            "title": "Kuhn PVC stock-material reference",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://www.kuhn-marsberg.de/en/product/PVC/"
+          }
+        ],
+        "properties": [
+          {
+            "data": {
+              "kind": "density",
+              "kg_m3": 1400.0
+            },
+            "source_id": "kuhn-pvc-stock",
+            "conditions": {
+              "temperature_k": null,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"ISO 1183-1\"}"
+            }
+          },
+          {
+            "data": {
+              "kind": "thermal_conductivity",
+              "w_m_k": [
+                0.159,
+                0.159,
+                0.159
+              ],
+              "axes": "material123"
+            },
+            "source_id": "kuhn-pvc-stock",
+            "conditions": {
+              "temperature_k": 296.15,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"not_reported\"} | Isotropic reference approximation, not measured directional tensor."
+            }
+          }
+        ]
+      },
+      "native_projection_status": "partial_native_card",
+      "exported_property_ids": [
+        "density",
+        "thermal_conductivity"
+      ],
+      "not_projected": [
+        {
+          "id": "volume_resistivity",
+          "quantity": "volume_resistivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "dielectric_strength",
+          "quantity": "dielectric_strength",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "permittivity-100",
+          "quantity": "relative_permittivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "loss-100",
+          "quantity": "loss_tangent",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "permittivity-1000000",
+          "quantity": "relative_permittivity",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "loss-1000000",
+          "quantity": "loss_tangent",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "tensile_strength",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "sikafloor161-cured",
+      "card": {
+        "schema_version": 1,
+        "designation": "Sikafloor 161 HC - cured epoxy binder reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "sika-161-cured",
+            "title": "Sika Sikafloor 161 HC cured resin reference",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://phl.sika.com/en/construction/flooring/industry-wet-areas/epoxy-flooring-system/sikafloor-161-hc.html"
+          }
+        ],
+        "properties": [
+          {
+            "data": {
+              "kind": "compressive_strength",
+              "pa": 60000000.0
+            },
+            "source_id": "sika-161-cured",
+            "conditions": {
+              "temperature_k": 296.15,
+              "moisture_dry_basis_kg_kg": null,
+              "strain_rate_per_s": null,
+              "state": "Sikafloor 161 HC resin cured 28 days at +23 C. | typical reference; source review required; not design allowables. | {\"direction\":\"not_reported\",\"test_method\":\"not_reported\"}"
+            }
+          }
+        ]
+      },
+      "native_projection_status": "partial_native_card",
+      "exported_property_ids": [
+        "compressive_strength"
+      ],
+      "not_projected": [
+        {
+          "id": "hardness_shore_d",
+          "quantity": "hardness_shore_d",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "flexural_strength",
+          "quantity": "flexural_strength",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "density",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "tensile_strength",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "uv22-coating",
+      "card": {
+        "schema_version": 1,
+        "designation": "UV22 nanosilica-filled UV epoxy - coating reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "masterbond-uv22",
+            "title": "Master Bond UV22 UV-cured epoxy",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://www.masterbond.com/tds/uv22"
+          }
+        ],
+        "properties": []
+      },
+      "native_projection_status": "extended_data_only",
+      "exported_property_ids": [],
+      "not_projected": [
+        {
+          "id": "hardness_shore_d",
+          "quantity": "hardness_shore_d",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "thermal_expansion",
+          "quantity": "thermal_expansion",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "refractive_index",
+          "quantity": "refractive_index",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "tg-uv-only",
+          "quantity": "glass_transition",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "tg-post-cured",
+          "quantity": "glass_transition",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "density",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "tensile_strength",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "c71-enamel",
+      "card": {
+        "schema_version": 1,
+        "designation": "C71 Speedline enamel - coating-system reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "hmg-c71",
+            "title": "HMG C71 Speedline machinery enamel",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://hmgpaint.mybigcommerce.com/c71-speedline/"
+          }
+        ],
+        "properties": []
+      },
+      "native_projection_status": "extended_data_only",
+      "exported_property_ids": [],
+      "not_projected": [
+        {
+          "id": "service_temperature",
+          "quantity": "service_temperature",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "density",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "tensile_strength",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "hmg-stoving-hammer",
+      "card": {
+        "schema_version": 1,
+        "designation": "Stoving Enamel Hammer - cured coating reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "hmg-hammer-stoving",
+            "title": "HMG Stoving Enamel Hammer TOPSTV",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://www.hmgpaint.com/products/all-products/topcoat/1928/stoving-enamel-hammer"
+          }
+        ],
+        "properties": []
+      },
+      "native_projection_status": "extended_data_only",
+      "exported_property_ids": [],
+      "not_projected": [
+        {
+          "id": "dry_film_thickness",
+          "quantity": "dry_film_thickness",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        },
+        {
+          "id": "service_temperature",
+          "quantity": "service_temperature",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "density",
+        "elasticity",
+        "shear_strength",
+        "specific_heat",
+        "tensile_strength",
+        "thermal_conductivity",
+        "thermal_expansion",
+        "yield_strength"
+      ],
+      "reference_selection_required": true,
+      "runtime_assignment": false
+    },
+    {
+      "profile_id": "hmg-sc601-clear",
+      "card": {
+        "schema_version": 1,
+        "designation": "Acrythane SC601 clearcoat - layer reference",
+        "family": "polymer",
+        "sources": [
+          {
+            "id": "hmg-sc601-clear",
+            "title": "HMG Acrythane SC601 Clearcoat",
+            "kind": "public_reference",
+            "license": null,
+            "reference": "https://hmgpaint.com/products/all-products/topcoat/1942/acrythane-sc601-clearcoat"
+          }
+        ],
+        "properties": []
+      },
+      "native_projection_status": "extended_data_only",
+      "exported_property_ids": [],
+      "not_projected": [
+        {
+          "id": "dry_film_thickness",
+          "quantity": "dry_film_thickness",
+          "reason": "Retained in extended profile: unsupported native quantity, range/bound, directional measurement or incomplete constitutive model."
+        }
+      ],
+      "missing_native_kinds": [
+        "compressive_strength",
+        "density",
         "elasticity",
         "shear_strength",
         "specific_heat",

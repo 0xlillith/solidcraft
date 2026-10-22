@@ -92,8 +92,8 @@ loose-soil density merely to increase numeric coverage.
 
 ## Review backlog
 
-The 308 concepts without an applicable named reference need a selected recipe,
-grade or multi-material construction. The 292 with candidates still require review
+The 294 concepts without an applicable named reference need a selected recipe,
+grade or multi-material construction. The 306 with candidates still require review
 of their stated relation and conditions; some references are constituents or
 explicit comparisons, not effective-property defaults. No numerical completeness
 percentage is derived from these association counts.
@@ -104,3 +104,37 @@ thermal interfaces, resin systems, foams, friction materials and aerospace-quali
 processes. Temperature-dependent curves, fatigue, creep, damping, outgassing and
 failure envelopes should be added as documented quantities/models, not filled with
 uncited family averages.
+
+
+## Added source review — 2026-10-22
+
+Eight additional primary supplier/manufacturer references add 43 selected records,
+bringing the dataset to 59 profiles, 50 source records and 416 numerical records.
+All 48 authored surfaces now have an explicit reference-candidate relationship.
+This does not make the 600 concepts numerically complete or identify their actual
+manufacturing recipe.
+
+PMMA sheet preserves published intervals for stiffness, Poisson ratio, heat
+capacity, thermal expansion/conductivity and electrical resistivity; no midpoint
+is selected for elasticity. Rigid PVC stock data does not identify plasticized
+cable insulation. Kevlar 49 axial fibre data does not establish cured laminate or
+meta-aramid paper/honeycomb properties; those mappings remain separate.
+
+Sikafloor 161 HC compressive and flexural data retain the 28-day cure at 23 C;
+its Shore D datum retains the 7-day cure. The manufacturer's mixed-liquid density
+is not assigned to the cured resin. UV22 retains two different glass-transition
+ranges, distinguishing UV-only cure from thermal post-cure. Its refractive index
+is not a spectral model or certified optical transmission curve.
+
+C71 Speedline, Stoving Enamel Hammer and Acrythane SC601 remain named coating
+candidates with only the published temperature and/or coverage-basis dry-film
+thickness recorded. Temperature statements without duration are upper-bound
+manufacturer references, not continuous-use allowables. No cured density, modulus,
+strength or film mass is inferred from paint package weights, liquid densities,
+nominal coverage, visual roughness or colour. Those unknowns remain visible.
+
+The inspected Kuhn PVC page contains blank mechanical cells and a hardness row
+with inconsistent units. Neither is imported. Public reference metadata preserves
+the source relationship without claiming that an openly accessible supplier page
+has a permissive dataset licence. No PDF, table layout, prose, logo or image from
+those publishers is included in this repository.

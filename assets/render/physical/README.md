@@ -1,156 +1,133 @@
-# Physical reference properties for the render material catalog
+# Sourced physical material references
 
-Version 1.0.0, researched and authored 2026-10-22. This collection adds physical
-reference data alongside the visual catalog. Appearance, material chemistry,
-manufacturing process and assigned part physics remain separate decisions.
+Expanded data checkpoint: **2026-10-22**. Physical engineering data is maintained
+separately from the authored render appearance. The original source files below
+are authoritative; exported native cards are reproducible projections, not a
+second independently edited dataset.
 
-## Coverage and actual availability
+## Delivered coverage
 
-| Item | Present in this slice |
+| Collection | Current coverage |
 | --- | --- |
-| Catalog concepts with an explicit physical specification | 600 of 600 |
-| Authored PBR surfaces linked to those specifications | 48 of 48 |
-| Named reference profiles | 51 |
-| Individually sourced numerical records | 373 |
-| Source references | 42 |
-| Concepts with one or more candidate/constituent/comparison references | 292 |
-| Concepts still requiring a specific grade, formulation or construction | 308 |
-| Authored surfaces with candidate references | 43 of 48 |
-| Partial native schema-1 cards containing supported properties | 44 |
-| Profiles whose data is retained only in the extended representation | 7 |
-| Native property blocks | 106 |
-| Profiles having a single point density suitable for an explicit creation plan | 43 |
+| Named reference profiles | **59**, with **416 numerical records** covering **46 quantity types** |
+| Public primary source records | **50**, with locators, retrieval date and review limitations |
+| Material concept specifications | **600/600** have an explicit physical role, identification requirements and unknowns |
+| Concepts with reference candidates | **306**; these can be substrate, constituent, comparison or named-grade candidates |
+| Concepts still requiring a specific formulation | **294**; no unrelated numerical material is substituted |
+| Authored PBR surface associations | **48/48** linked to reviewed reference candidates and explicit physical-role rules |
+| Schema-1 native projections | **59 envelopes**: **48 nonempty**, **11 extended-only**, **113 native property blocks** |
+| References eligible for material creation | **46** have a supported point density; other references do not acquire an invented mass density |
 
-**Specification coverage is not numerical completeness.** A link may identify a
-constituent or an explicitly non-equivalent comparison, not the effective material
-of a complete part. No record is marked certified, simulation-ready or already
-assigned to a model. No live design, appearance, body assignment, mass or saved
-material was changed by producing this collection.
+A surface reference association is **not identification of a manufactured part**.
+A metallic-looking coating is not a metal substrate; a fibre is not a laminate;
+feedstock is not an isotropic printed part; loose granular density is not grain
+density. References remain explicitly named and require grade, processing and
+conditions to match the intended application. No physical material is silently
+assigned to a body, and no appearance edit changes its engineering data.
 
-The five authored surfaces without a numeric candidate remain explicit: matte
-industrial paint (SURF-013), satin industrial paint (SURF-015), hammer-finish enamel
-(SURF-016), automotive clearcoat surrogate (SURF-017) and woven aramid resin
-(SURF-035). Exact formulation/cure, coating stack or fibre/resin/layup data is needed;
-an unrelated generic density or elastic modulus would be misleading.
+## Data and relationships
 
-## Contents and ownership
+- [profiles.json](profiles.json): the 59 exact material identities, numerical
+  values/ranges, original units, SI conversion, measurement conditions and limits.
+- [sources.json](sources.json): primary-source URLs, selected locators and review
+  records. Public availability is not a redistribution licence or authentication.
+- [quantities.json](quantities.json): units, dimensions and bounds. Hardness scales,
+  thermal transitions, frequencies and directional measurements remain distinct.
+- [bindings.json](bindings.json): all 600 concept specifications and 48 authored
+  surface relationships, including substrate/stack/recipe dependencies.
+- [exports/native-cards.json](exports/native-cards.json): conservative native
+  schema-1 projections, with every excluded property identified and retained in
+  the extended profiles. This is not itself a native library import file.
+- [exports/coverage.json](exports/coverage.json): generated coverage and exclusions.
 
-- [profiles.json](profiles.json): editable physical profiles and property-level
-  source, conditions, units, original values, uncertainty and derivation receipts.
-- [sources.json](sources.json): cited public manufacturer, supplier, trade-body
-  and government references, retrieval date and source-review notes.
-- [bindings.json](bindings.json): editable associations for all MAT and SURF IDs,
-  physical roles, remaining definition requirements and safe assignment scope.
-- [quantities.json](quantities.json): reviewed quantity/unit and SI conversion
-  registry, independently checked by the validator's dimensional contract.
-- [exports/native-cards.json](exports/native-cards.json): generated supported
-  schema-1 projections, explicit omissions and partial/extended-only status.
-- [exports/coverage.json](exports/coverage.json): generated counts and scope flags.
-- [INTEGRATION.md](INTEGRATION.md): runtime contract and loss-aware assignment rules.
-- [SOURCE_REVIEW.md](SOURCE_REVIEW.md): source discrepancies and interpretation limits.
+The references cover metals and solders, engineering polymers, silicones and
+resins, additive-manufacturing feedstock and specimens, woods, cork/MDF, glass and
+ceramics, PCB and composite constituents, coatings and terrestrial lunar
+simulants. New named references include PMMA sheet, PVC stock, Kevlar 49 fibre,
+cured epoxy, UV epoxy and specific alkyd, stoving-enamel and acrylic coatings.
 
-The JSON masters are the editable authority. The Python tools validate and derive
-exports; there is no second hard-coded recipe generator to keep synchronized.
-Review reports and command plans belong in ignored `target/`, not in the resource
-collection. No PDFs, copied supplier tables, images or external implementations
-are bundled.
+## Properties preserved
 
-## Physical content
+Mechanical records include density, Young/shear/Poisson measurements, tensile,
+yield, compression, shear, flexural properties, elongation, fracture/tear data
+and explicitly identified hardness scales where published. Thermal records
+include conductivity, expansion, heat capacity, glass transition, melting,
+decomposition and qualified service-temperature statements. Electrical records
+retain frequency-specific permittivity/loss, resistivity and dielectric strength.
+Optical, moisture, granular and application-thickness records retain their own
+units and meaning; they are not reinterpreted as native elastic constants.
 
-The collection includes alloy, stock-polymer, glass, ceramic, elastomer, cured
-resin, printed-coupon, laminate, timber, cork, coating and terrestrial-regolith-
-simulant references. Selected quantities include density, elastic and shear
-moduli, Poisson ratio, tensile/yield/compressive/flexural strength, elongation,
-scale-qualified hardness, thermal conductivity/expansion/heat capacity, transition
-and melting temperatures, electrical resistivity, frequency-qualified permittivity
-and loss, dielectric strength, moisture absorption, porosity and particle data.
+Each numerical record preserves a source, original value/unit, conversion,
+qualifier, condition fields and limitations. A range is not reduced to its
+midpoint; a lower-bound strength is not a typical value. Missing conditions and
+uncertainties remain null/unknown. Per-property cure schedules survive native
+projection. An isotropic elastic block refuses mismatched source, temperature,
+moisture, rate, state or direction rather than combining unrelated constants.
 
-Not every profile has every quantity. A temperature limit is not a melting point;
-a flexural modulus is not silently renamed tensile Young modulus; elastomer stress
-at 100% extension is not a small-strain modulus. Shore A, Shore D, Brinell, Knoop
-and Janka retain their individual definitions. Test speed is not converted to a
-strain rate without a gauge-length definition.
+Some new coating profiles contain only published temperature or film-thickness
+information. Their cured density, modulus and strength remain unknown. In
+particular, liquid/mixed-resin density and package weight are not cured-film
+material properties. See [source review](SOURCE_REVIEW.md).
 
-Native fields are SI: kg/m3, Pa, W/(m K), 1/K and J/(kg K). Rich records retain
-source values and conversions, including affine Celsius/Fahrenheit-to-kelvin
-conversion. Lower bounds, upper bounds, intervals, test directions and reported
-plus/minus spreads remain explicit. A supplier spread is not assumed to be a
-confidence interval or a design tolerance.
+## Validate and inspect
 
-## Use
-
-From the repository root, Python 3.11 or newer; no third-party Python dependencies
-are needed for these physical-data tools:
+All tools use Python 3.11+ standard-library code. From the repository root:
 
 ```sh
 python -B assets/render/physical/tools/physical.py validate
 python -B -m unittest discover -s assets/render/physical/tools -p 'test_*.py'
+python -B assets/render/physical/tools/check_physical.py --cli /trusted/solidcraft-cli
 python -B assets/render/physical/tools/physical.py resolve SURF-001
-python -B assets/render/physical/tools/physical.py resolve MAT-161
-```
-
-After a reviewed edit of the JSON authority, regenerate the two portable exports:
-
-```sh
-python -B assets/render/physical/tools/physical.py build
-```
-
-A selected profile with a supported point density can produce a **non-executing**
-material-creation plan:
-
-```sh
 python -B assets/render/physical/tools/physical.py prepare steel-c45 --acknowledge-reference
 ```
 
-That output is a plan envelope, **not** a native catalog or a directly executed
-script. It names the required modern `material.create` contract, contains the
-schema-1 `physical_card`, converts the explicitly chosen density to g/cm3 for the
-material command, and never assigns a body or changes an appearance. Preparation
-refuses missing or interval-valued density; it does not select a midpoint.
+The native check calls the read-only `material.properties.validate` command. It
+checks numerical admission and property preservation, **not** source authenticity,
+material assignment, solver correctness, persistence or library import. Evidence
+and executable hashes stay in ignored `target/physical-material-review/`.
 
-Run the physical suite and optionally the real read-only native validator:
+## Native library export without data loss
+
+Generate a non-executing plan for all point-density references:
 
 ```sh
-python -B assets/render/physical/tools/check_physical.py
-python -B assets/render/physical/tools/check_physical.py --cli /path/to/trusted/solidcraft-cli
+python -B assets/render/physical/tools/export_library.py --acknowledge-reference
 ```
 
-The optional CLI must be a trusted executable. Its SHA-256 is recorded; this gate
-does not build it. Native card admission checks numerical structure and source
-references, not supplier authenticity, source rights, effective-part behavior,
-persistence or safety. Seven valid but empty native envelopes are counted as
-**extended-data-only**, not ready material cards.
+With a trusted runtime that actually supports physical-card persistence and
+library v2, create and verify a separate reference library:
 
-The existing starter resource gate now includes the physical regression suite,
-read-only export validation and physical-source fingerprints in both its full
-and authoring-only modes. Its existing workflow path filter already covers this
-folder. The standalone native card check remains a separate explicit CLI option;
-the resource workflow does not claim to have built or tested material persistence.
+```sh
+python -B assets/render/physical/tools/export_library.py \
+  --acknowledge-reference --cli /trusted/card-capable/solidcraft-cli
+```
 
-## Assignment principles
+Optional repeated `--profile ID` arguments restrict the selection. The exporter
+first verifies the command contract, then uses a fresh CLI design with no
+geometry, writes a native v2 library and design into a new `target/` directory,
+checks every card/source/condition/density, asks the native library inspector to
+verify content revisions, and cold-reopens/re-exports the design. It does not
+manually approximate Rust's canonical revision serialization. Existing files,
+live GUI sessions, user models and body assignments are untouched.
 
-A painted or anodized part keeps its substrate's physical material. Coating mass
-requires area, thickness, coverage and cured density; thermal/contact behavior
-requires appropriate interfaces. An aluminium-facing thermal blanket is not a
-solid aluminium body. FR-4, copper, solder mask and populated components are not
-one interchangeable homogeneous substance.
+**The baseline Pegasus CLI validates cards but cannot persist them in materials;
+the exporter therefore refuses it before creating anything.** Unit tests and that
+refusal are not a successful end-to-end v2 export. A successful modern-runtime run
+writes its own receipt; no such runtime receipt is implied by the authored data.
+The complete extended dataset must accompany the narrower native library.
+Electrical, hardness, ranges, directional measurements and unsupported quantities
+must not be claimed to have been embedded in schema 1 merely because a profile
+has a native projection.
 
-Timber needs species, moisture and L/R/T axes. Printed parts need feedstock,
-process, infill, porosity, build direction and post-treatment. Fibre properties
-are not laminate properties; a unidirectional coupon does not identify a woven
-composite. Lunar-like visual concepts retain explicitly terrestrial analogues,
-not invented lunar-site measurements or vacuum-ready constitutive models.
+## Integration and publication
 
-Missing properties remain unknown, never zero. Friction, fatigue, creep,
-viscoelasticity, temperature curves, outgassing, radiation response and general
-failure criteria are not supplied merely by assigning an appearance. A future
-solver must refuse unsupported models rather than silently promoting these
-reference cards to complete engineering datasets.
+Use [INTEGRATION.md](INTEGRATION.md) to connect the records to the separate Render
+branch. `runtime_assignment` remains false until actual target selection and
+application acceptance are performed. No native document migration, material-card
+schema expansion, rendering shader, solver, model, appearance texture or optical
+preset is changed here. Full workspace CI remains a separate integration gate.
 
-## Attribution
-
-Original schema, selection, annotations, tools and authored association data are
-contributor work under MIT OR Apache-2.0. Public source documents retain their
-owners' rights; a null source license is not permission to redistribute them.
-Selected numerical facts are attributed individually, not presented as original
-measurements. See the root [ATTRIBUTION.md](../../../ATTRIBUTION.md).
+All new curation, validators and tooling are original contributor work under
+MIT OR Apache-2.0. Publisher data remains attributed to its sources; supplier
+brand/grade names do not imply affiliation or certification. Selected numerical
+facts are documented without bundling supplier tables, PDFs, artwork or code.

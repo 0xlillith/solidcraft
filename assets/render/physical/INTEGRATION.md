@@ -88,7 +88,7 @@ constants to fill those fields.
 
 A structurally valid empty card is not a usable numerical material. The bundle
 labels it `extended_data_only`; the coverage and native report separate those
-seven records from the 44 nonempty partial cards.
+eleven records from the 48 nonempty partial cards.
 
 ## Layers, compounds and analogues
 
@@ -128,3 +128,26 @@ validation. The report identifies its binary hash and explicitly says that it
 was not rebuilt by this gate. Numeric admission is not a source-license decision,
 a physical experiment, a constitutive validation, a safety factor, a whole-app
 build, or evidence of physics-driven rendering.
+
+
+## Safe native library exporter
+
+`tools/export_library.py --acknowledge-reference` prepares a non-executing plan
+for the 46 point-density references and identifies 13 omitted profiles. Omission
+is explicit: the application requires a scalar mass density, but these profiles
+have no defensible scalar value. Full source profiles remain authoritative.
+
+With `--cli` the helper checks the executable's registered command contract before
+creating a new review folder or running a material mutation. It requires explicit
+physical-card support, native inspection and library-v2 export. It uses a fresh
+CLI process, no geometry and no existing user design. The actual application
+serializes the v2 catalog and its revisions; Python does not approximate serde
+canonicalization. Every card, source, condition and density is compared before
+and after a separate-process cold reopen/re-export. The extended unsupported
+properties remain in this package, not falsely marked as embedded in schema 1.
+
+The helper is an offline authoring/integration tool, not an application dependency.
+It never runs `material.assign` or changes a PBR appearance. Passing plan and
+refusal tests does not imply that modern-runtime persistence was executed; only
+a successful helper receipt establishes that separate result. Baseline read-only
+native admission and complete library export are deliberately distinct gates.
