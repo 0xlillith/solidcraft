@@ -62,7 +62,7 @@ fn bounded_id(id: &str, command: &str) -> Result<()> {
     Ok(())
 }
 
-fn item(kind: &str, id: &str, command: &str) -> Result<&'static Value> {
+pub(super) fn item(kind: &str, id: &str, command: &str) -> Result<&'static Value> {
     bounded_id(id, command)?;
     catalog(kind, command)?
         .iter()

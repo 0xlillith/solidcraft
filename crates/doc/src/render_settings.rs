@@ -31,6 +31,8 @@ pub struct RenderSetup {
     /// Selected method's numerical intent and HDR reference; absent means the legacy request protocol.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<RenderJob>,
+    #[serde(skip_serializing_if = "crate::render_surface::SurfaceBindings::is_empty")]
+    pub surfaces: crate::render_surface::SurfaceBindings,
 }
 
 // Reuse Camera's representation and defaults, but reject misspelled saved fields. A remote
@@ -65,6 +67,7 @@ impl Default for RenderSetup {
             environment_intensity: 1.0,
             background: [236, 240, 245],
             job: None,
+            surfaces: Default::default(),
         }
     }
 }
@@ -86,6 +89,10 @@ impl RenderSetup {
     }
 
     fn validate_with_limits(&self, limits: RenderLimits) -> Result<()> {
+        self.surfaces.validate()?;
+        if !self.surfaces.is_empty() && !matches!(self.job, Some(RenderJob::GpuPath { .. })) {
+            return Err(DocError::Invalid("saved surfaces require an explicit GPU job; unsupported methods cannot discard bindings".into()));
+        }
         let (width, height) = (u64::from(self.width), u64::from(self.height));
         if width == 0 || height == 0 {
             return Err(DocError::Invalid("render output must be at least 1 × 1 pixels".into()));

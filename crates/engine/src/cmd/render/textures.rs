@@ -67,13 +67,43 @@ fn load(
     captured.insert(key, map.clone());
     Ok(map)
 }
+pub(super) fn validate_targets(scene: &ProductScene, overrides: &[Override], command: &str) -> Result<()> {
+    if overrides.len() > MAX_TEXTURE_BINDINGS {
+        return Err(bad(command, "at most 128 runtime texture bindings"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for input in overrides {
+        input.frame.validate().map_err(|e| bad(command, e.to_string()))?;
+        if !seen.insert(input.body_index) {
+            return Err(bad(command, "duplicate texture target"));
+        }
+        let body = scene
+            .meshes
+            .get(input.body_index)
+            .filter(|b| b.name == input.body_name)
+            .ok_or_else(|| bad(command, "texture ordinal and name must both match render.scene"))?;
+        if body.transmission.is_some() || body.opacity != 1.0 || body.faces.iter().any(|f| f.transmission.is_some() || f.opacity != 1.0) {
+            return Err(bad(command, "runtime maps support opaque bodies only"));
+        }
+        let bounds = body.mesh.bounds();
+        for x in [bounds.min.x, bounds.max.x] {
+            for y in [bounds.min.y, bounds.max.y] {
+                for z in [bounds.min.z, bounds.max.z] {
+                    input.frame.uv(solidcraft_geom::Vec3::new(x, y, z)).map_err(|e| bad(command, e.to_string()))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
 pub(super) fn capture(scene: &ProductScene, overrides: &[Override], command: &str) -> Result<Option<Arc<RuntimeTextures>>> {
     if overrides.is_empty() {
         return Ok(None);
     }
     if overrides.len() > MAX_TEXTURE_BINDINGS {
-        return Err(bad(command, "at most 16 runtime texture bodies are supported"));
+        return Err(bad(command, "at most 128 runtime texture bodies are supported"));
     }
+    validate_targets(scene, overrides, command)?;
     let mut remaining = MAX_TEXTURE_SOURCE_BYTES;
     let mut captured = std::collections::BTreeMap::new();
     let mut bindings = Vec::new();

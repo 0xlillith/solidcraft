@@ -24,7 +24,7 @@ fn v(a: [f64; 3]) -> Vec3 {
 
 /// `u` and `v` span one full repeat in world-space millimetres. Image v increases
 /// downward; normal-map green points along the caller's positive v direction.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanarFrame {
     pub origin: [f64; 3],

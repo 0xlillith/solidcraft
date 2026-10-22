@@ -18,10 +18,15 @@ mod library_data;
 #[cfg(test)]
 mod light_union_tests;
 mod resources;
+mod surface_bindings;
 mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.library.surface.bind", "Save Surface Binding", surface_bindings::bind).icon("appearance")
+    .params("name: GPU setup; set?: setup patch; surface: same input as render.library.surface.prepare; replace?: false. Pins exact source hashes and definition/feature/occurrence identity with local-mm mapping in one undo. No paths, mesh ordinals or physical material changes."),
+CommandSpec::new("render.library.surface.unbind", "Remove Surface Binding", surface_bindings::unbind).icon("appearance").doc_only()
+    .params("name: setup, target: saved definition/feature/component/occurrence_path, set?: setup patch. Removes only that explicit binding in one undo; no device or current geometry required."),
     CommandSpec::new("render.result.pin", "Retain Displayed Render Result", jobs::pin).icon("inspect").noundo().doc_only()
         .params("job: completed JobId, or null to release the displayed-result pin. Retains at most one completed result independently of a newer completion; preserves exact export bytes and original host memory accounting. No design/undo change; preview or foreign jobs refuse."),
 CommandSpec::new("render.library.targets", "Find Render Library Targets", library::targets).icon("list").noundo()
@@ -137,7 +142,7 @@ fn set_settings(s: &mut Session, params: &Value) -> Result<Value> {
 
 fn patched_settings(s: &Session, name: &str, set: &Value, cmd: &str) -> Result<RenderSetup> {
     RenderSettings::validate_name(name).map_err(|e| bad(cmd, e.to_string()))?;
-    let patch = set.as_object().filter(|p| p.len() <= 11).ok_or_else(|| bad(cmd, "`set` must be an object with at most 11 fields"))?;
+    let patch = set.as_object().filter(|p| p.len() <= 12).ok_or_else(|| bad(cmd, "`set` must be an object with at most 12 fields"))?;
     let current = s.doc.render.setups.get(name).cloned().unwrap_or_default();
     let mut value = serde_json::to_value(&current).map_err(|e| bad(cmd, e.to_string()))?;
     let object = value.as_object_mut().ok_or_else(|| bad(cmd, "invalid render setup"))?;

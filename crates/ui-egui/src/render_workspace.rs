@@ -574,6 +574,9 @@ fn image_request(app: &SolveApp) -> Result<serde_json::Value, String> {
     let view = &app.render_workspace.view;
     // Temporary bindings and unsaved HDR captures use the runtime API. Embedded HDRs
     // still resolve by their document resource ID when a temporary binding is present.
+    if !view.draft.surfaces.is_empty() {
+        return Err(app.tr("render.saved_maps_runtime_conflict").to_string());
+    }
     let settings = RenderSetup { camera: app.cam, job: None, ..view.draft.clone() };
     let mut params = json!({"settings":settings,"transparent_background":view.transparent});
     match view.method {

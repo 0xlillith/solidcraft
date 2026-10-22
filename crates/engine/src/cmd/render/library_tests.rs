@@ -174,3 +174,98 @@ fn studio_adapter_does_not_invent_passive_cards_calibration_or_extra_suns() {
     assert!((actual.angular_radius_rad - 0.00465).abs() < 1e-12);
     assert!(actual.direction[2] > 0.0, "runtime direction points toward the sun, not along incoming photons");
 }
+
+#[test]
+fn saved_authored_maps_roundtrip_and_resolve_without_paths_or_captured_ordinals() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":10,"width":20,"height":5,"body_name":"Coupon"})).unwrap();
+    let before = s.doc.clone();
+    let undo = s.undo.len();
+    let input = json!({"name":"Portable","set":{"job":{"method":"gpu_path","options":{}},"width":32,"height":32},
+        "surface":{"id":"SURF-001","body_index":0,"body_name":"Coupon"}});
+    s.execute("render.library.surface.bind", &input).unwrap();
+    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(s.doc.materials, before.materials);
+    assert_eq!(s.doc.appearances, before.appearances);
+    assert_eq!(s.doc.features, before.features);
+    let saved = s.doc.to_json();
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&saved).unwrap());
+    reopened.execute("render.scene", &json!({})).unwrap();
+    let scene = crate::product_scene::extract(&reopened).unwrap();
+    let bindings = &reopened.doc.render.setups["Portable"].surfaces;
+    let lowered = super::super::surface_bindings::resolve(&reopened, &scene, bindings, "test").unwrap();
+    let maps = super::super::textures::capture(&scene, &lowered, "test").unwrap().unwrap();
+    assert_eq!(maps.bindings().len(), 1);
+    assert_eq!(maps.bindings()[0].body_name, "Coupon");
+    assert_eq!(maps.bindings()[0].base_color_mode, BaseColorMode::Replace);
+    assert!(maps.bindings()[0].flip_v);
+    let mut changed = s.doc.render.setups["Portable"].clone();
+    let mut binding = changed.surfaces.iter().next().unwrap().clone();
+    binding.source.base_color_sha256 = HdrId::of(b"changed");
+    changed.surfaces.set(binding, true).unwrap();
+    assert!(super::super::surface_bindings::resolve(&s, &crate::product_scene::extract(&s).unwrap(), &changed.surfaces, "test").is_err());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc, before);
+}
+
+#[test]
+fn saved_surface_follows_its_occurrence_without_rebinding_another_instance() {
+    let mut s = Session::default();
+    let component = s.execute("component.create", &json!({"name":"Mapped part"})).unwrap();
+    s.execute("solid.box", &json!({"length":10,"width":10,"height":2,"body_name":"Panel"})).unwrap();
+    s.execute("component.activate", &json!({"component":0})).unwrap();
+    s.execute("occurrence.copy", &json!({"component":component["component"],"translate":[30,0,0]})).unwrap();
+    s.execute(
+        "render.library.surface.bind",
+        &json!({"name":"P","set":{"job":{"method":"gpu_path","options":{}}},
+        "surface":{"id":"SURF-003","body_index":0,"body_name":"Panel"}}),
+    )
+    .unwrap();
+    let bindings = s.doc.render.setups["P"].surfaces.clone();
+    let capture = |session: &Session| {
+        let scene = crate::product_scene::extract(session).unwrap();
+        let lowered = super::super::surface_bindings::resolve(session, &scene, &bindings, "test").unwrap();
+        super::super::textures::capture(&scene, &lowered, "test").unwrap().unwrap()
+    };
+    let original = capture(&s);
+    let frame = original.bindings()[0].frame;
+    s.execute("occurrence.move", &json!({"occurrence":component["occurrence"],"translate":[12,0,0]})).unwrap();
+    let moved = capture(&s);
+    assert_eq!(moved.bindings().len(), 1);
+    assert!((moved.bindings()[0].frame.origin[0] - frame.origin[0] - 12.0).abs() < 1e-8);
+    assert_eq!(moved.bindings()[0].frame.u, frame.u);
+    assert_eq!(moved.bindings()[0].frame.v, frame.v);
+    assert_eq!(s.doc.render.setups["P"].surfaces, bindings);
+}
+
+#[test]
+fn saved_surface_rejects_changed_feature_and_hidden_target_and_can_be_removed_offline() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":2,"width":2,"height":2,"body_name":"Panel"})).unwrap();
+    s.execute(
+        "render.library.surface.bind",
+        &json!({"name":"P","set":{"job":{"method":"gpu_path","options":{}}},
+        "surface":{"id":"SURF-002","body_index":0,"body_name":"Panel"}}),
+    )
+    .unwrap();
+    let mut setup = s.doc.render.setups["P"].clone();
+    let target = setup.surfaces.iter().next().unwrap().target.clone();
+    let mut binding = setup.surfaces.iter().next().unwrap().clone();
+    binding.target.feature += 100;
+    setup.surfaces.remove(&target);
+    setup.surfaces.set(binding, false).unwrap();
+    let scene = crate::product_scene::extract(&s).unwrap();
+    assert!(super::super::surface_bindings::resolve(&s, &scene, &setup.surfaces, "test").is_err());
+    s.visibility.hidden_bodies.push("Panel".into());
+    assert!(
+        super::super::surface_bindings::resolve(&s, &crate::product_scene::extract(&s).unwrap(), &s.doc.render.setups["P"].surfaces, "test").is_err()
+    );
+    let previous = s.doc.clone();
+    s.execute("render.library.surface.unbind", &json!({"name":"P","target":target})).unwrap();
+    assert!(s.doc.render.setups["P"].surfaces.is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc, previous);
+    let before = s.doc.to_json();
+    assert!(s.execute("render.settings.set", &json!({"name":"P","set":{"job":{"method":"cpu_raytrace","options":{}}}})).is_err());
+    assert_eq!(s.doc.to_json(), before);
+}

@@ -127,6 +127,7 @@ fn patch(app: &SolveApp) -> Result<Value, String> {
 }
 
 pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    saved_surface_controls(app, ui);
     let title = app.tr("render.library_title").to_string();
     ui_kit::section(ui, "render_resource_library", &title, false, |ui| {
         let mut view = std::mem::take(&mut app.render_workspace.view.library);
@@ -232,6 +233,18 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
             }
             if view.kind == "surfaces" {
                 ui.small(app.tr("render.library_maps_help"));
+                let candidate = patch(app);
+                let enabled = current_target(app, view) && app.render_workspace.view.method == ImageMethod::GpuRaytrace && candidate.is_ok();
+                if ui_kit::button(ui, app.tr("render.library_save_maps"), ui_kit::Button::Enabled(enabled)).clicked()
+                    && let (Some(target), Ok(set)) = (view.target.clone(), candidate)
+                {
+                    let name = app.render_workspace.view.name.clone();
+                    match app.run("render.library.surface.bind",json!({"name":name,"set":set,"surface":{"id":id,"body_index":target.ordinal,"body_name":target.name},"replace":view.acknowledge_projection})) {
+                        Ok(_)=>{setups::load(app);view.target_revision=None;app.set_status(app.tr("render.library_applied").to_string(),false);},
+                        Err(e)=>app.set_status(e,true),
+                    }
+                }
+
                 let enabled = current_target(app, view) && app.render_workspace.view.method == ImageMethod::GpuRaytrace;
                 if ui_kit::button(ui, app.tr("render.library_apply_maps"), ui_kit::Button::Enabled(enabled)).clicked()
                     && let Some(target) = view.target.clone()
@@ -313,4 +326,30 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
             ui.colored_label(Tokens::get().warning, app.tr("render.library_specification_only"));
         }
     }
+}
+
+fn saved_surface_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let title = app.tr("render.saved_surfaces").to_string();
+    let bindings = app.render_workspace.view.draft.surfaces.clone();
+    if bindings.is_empty() {
+        return;
+    }
+    ui_kit::section(ui, "render_saved_surfaces", &title, false, |ui| {
+        ui.small(app.tr("render.saved_surfaces_help"));
+        for (index, binding) in bindings.iter().enumerate() {
+            ui.label(format!(
+                "{} - {} ({}): {:?}",
+                binding.source.id, binding.target.definition, binding.target.feature, binding.target.occurrence_path
+            ));
+            let response = ui_kit::button(ui, app.tr("render.saved_surface_remove"), ui_kit::Button::Normal);
+            crate::scenario::publish_handle(&format!("render:saved-surface-remove:{index}"), response.rect.center());
+            if response.clicked() {
+                let name = app.render_workspace.view.name.clone();
+                match patch(app).and_then(|set| app.run("render.library.surface.unbind", json!({"name":name,"target":binding.target,"set":set}))) {
+                    Ok(_) => setups::load(app),
+                    Err(e) => app.set_status(e, true),
+                }
+            }
+        }
+    });
 }

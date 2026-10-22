@@ -124,6 +124,7 @@ enum SavedHdr {
 struct Normalized {
     params: Value,
     hdr: Option<SavedHdr>,
+    surfaces: solidcraft_doc::render_surface::SurfaceBindings,
 }
 
 fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Option<Normalized>> {
@@ -161,6 +162,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     let Some(job) = settings.job.take() else {
         return Ok(None);
     };
+    let surfaces = std::mem::take(&mut settings.surfaces);
     let mut hdr = None;
     let mut lowered = match job {
         RenderJob::Raster { transparent_background } => json!({"transparent_background":transparent_background}),
@@ -186,7 +188,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     if let Some(replace) = object.get("replace") {
         lowered["replace"] = replace.clone();
     }
-    Ok(Some(Normalized { params: lowered, hdr }))
+    Ok(Some(Normalized { params: lowered, hdr, surfaces }))
 }
 
 fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
@@ -199,7 +201,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
             Some(SavedHdr::Cpu(_)) => return Err(bad(command, "saved CPU HDR cannot enter a GPU request")),
             None => None,
         };
-        return prepare_progressive(s, params, command, normalized.is_some(), hdr);
+        return prepare_progressive(s, params, command, normalized.is_some(), hdr, normalized.as_ref().map(|n| &n.surfaces));
     }
     let gpu_raytrace =
         params.get("raytrace").and_then(Value::as_object).is_some_and(|o| ["clear_coats", "textures"].iter().any(|key| o.contains_key(*key)));
@@ -215,7 +217,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     }
     let mut input: Start = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.progressive {
-        return prepare_progressive(s, params, command, false, None);
+        return prepare_progressive(s, params, command, false, None, None);
     }
     if input.denoise {
         return Err(bad(command, "denoise requires GPU progressive rendering"));
@@ -399,7 +401,14 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     Ok(Prepared { replace: input.replace, scene, request, reply, environment, executor: resolved.executor, options: Default::default() })
 }
 
-fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_path: bool, saved_hdr: Option<GpuHdrEnvironment>) -> Result<Prepared> {
+fn prepare_progressive(
+    s: &Session,
+    params: &Value,
+    command: &str,
+    require_gpu_path: bool,
+    saved_hdr: Option<GpuHdrEnvironment>,
+    saved_surfaces: Option<&solidcraft_doc::render_surface::SurfaceBindings>,
+) -> Result<Prepared> {
     let cpu_raytrace = params
         .get("raytrace")
         .and_then(Value::as_object)
@@ -412,7 +421,7 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
     {
         return Err(bad(command, "progressive rendering does not accept CPU raytrace, environment or LED options"));
     }
-    let input: ProgressiveStart = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
+    let mut input: ProgressiveStart = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.integrator != Integrator::Raster || !input.progressive {
         return Err(bad(command, "progressive rendering requires the registered GPU request method"));
     }
@@ -434,6 +443,12 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
             command,
             "runtime transmission, clear-coat, texture, lens, environment, lighting, tone-map and denoise controls require progressive rendering",
         ));
+    }
+    if let Some(bindings) = saved_surfaces.filter(|bindings| !bindings.is_empty()) {
+        if !input.raytrace.textures.is_empty() {
+            return Err(bad(command, "saved surfaces cannot be combined with runtime texture overrides"));
+        }
+        input.raytrace.textures = super::surface_bindings::resolve(s, &scene, bindings, command)?;
     }
     super::transmission::apply(&mut scene, &input.raytrace.dielectrics, command)?;
     super::clear_coat::apply(&mut scene, &input.raytrace.clear_coats, command)?;
