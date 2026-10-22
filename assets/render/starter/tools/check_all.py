@@ -44,6 +44,7 @@ def input_snapshot() -> dict[str, str]:
     paths += [p for p in (ROOT / "crates/render/src").rglob("*.rs")]
     paths += [p for p in (ROOT / "crates/geom/src").rglob("*.rs")]
     paths += [p for p in (ROOT / "assets/render/selene").rglob("*") if p.is_file()]
+    paths += [p for p in (ROOT / "assets/render/physical").rglob("*") if p.is_file()]
     return fingerprint(ROOT, paths)
 
 
@@ -99,6 +100,8 @@ def stages(authoring_only: bool, independent_decode: bool) -> list[tuple[str, li
     tools = "assets/render/starter/tools"
     commands = [
         ("python-tests", py + ["-m", "unittest", "discover", "-s", tools, "-p", "test_*.py"]),
+        ("physical-tests", py + ["-m", "unittest", "discover", "-s", "assets/render/physical/tools", "-p", "test_*.py"]),
+        ("physical-references", py + ["assets/render/physical/tools/physical.py", "validate"]),
         ("catalog", py + ["docs/render-materials/validate_catalog.py", "--json"]),
         ("selene-prepared", py + ["assets/render/selene/tools/validate_prepared.py", "--json"]),
         ("pack", py + [f"{tools}/validate_pack.py"]),

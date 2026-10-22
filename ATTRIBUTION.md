@@ -967,3 +967,17 @@ on the results branch. No photographs, scans or external image assets are includ
 ### Built-in render resource adapters (personal integration batch, 2026-10-22)
 
 The original adapters in `crates/engine/src/cmd/render/library.rs`, the generated lookup `library_data.rs` and its generator `tools/render-library/generate.py` project the already attributed starter and SELENE resources without replacing their bytes or authoring manifests. The added scalar texture channels, explicit color/V conventions and immutable-source/GPU-payload sharing are original contributor work under MIT OR Apache-2.0. No external code, commercial CAD data or new third-party imagery was imported. Source metadata and the original authoring attribution remain authoritative; pending runtime acceptance is not a photometric or engineering qualification.
+
+## Physical reference resource additions
+
+| File | Author | Source | Licence |
+|---|---|---|---|
+| assets/render/physical/bindings.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/exports/coverage.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/exports/native-cards.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/profiles.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/quantities.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/sources.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/tools/check_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
+| assets/render/physical/tools/physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
+| assets/render/physical/tools/test_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
