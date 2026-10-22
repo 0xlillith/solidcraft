@@ -53,3 +53,8 @@ Diagnostics exposes the exact current request, last preflight, logical-memory es
 Focused regression sources cover atomic native composition, saved-shot conflicts and undo, quality projection refusals, original source-preview identity, per-category navigation, bounded recent inspection, context-page nonmutation, sticky job actions in both layouts/themes, draft confirmation, stale reviews and real UI composition application. Existing dense-inspector interaction tests explicitly select the public All controls section and retain their numerical assertions. They exercise the same production request/actions as the contextual inspector.
 
 Actual application screenshots must be captured from an isolated native application session using a public-safe model fixture, in both themes/layouts, after the coordinated batch build. Review images/logs belong outside production assets. The existing native SELENE master and selected 4K image remain unchanged by this UI work.
+
+
+### Isolated native review profile
+
+The desktop application accepts `SOLIDCRAFT_SETTINGS_DIR` as an explicit absolute directory for its settings, graphics preference and startup marker. Invalid/relative/file paths refuse before startup; an explicit profile never adopts the ordinary or legacy settings. Without the variable, normal behavior is unchanged. This is profile isolation, not a filesystem sandbox. Set the existing recovery/crash/control directory overrides separately when running a disposable native review. It allows the actual hardware application to be exercised without rewriting personal preferences or substituting safe-mode/software behavior.

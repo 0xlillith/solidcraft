@@ -106,7 +106,7 @@ fn saved_shot_commands_preserve_exact_resources_reject_collisions_and_undo() {
 fn quality_projection_never_claims_adaptive_or_unbounded_profiles() {
     let mut s = subject();
     let before = s.doc.to_json();
-    for id in ["Q-001", "Q-002", "Q-003", "Q-009"] {
+    for id in ["Q-001", "Q-002", "Q-003"] {
         let plan = s.execute("render.quality.prepare", &json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true})).unwrap();
         assert_eq!(plan["document_changed"], false);
         assert_eq!(plan["status"], "fixed_budget_projection_not_full_quality_profile");
@@ -114,7 +114,7 @@ fn quality_projection_never_claims_adaptive_or_unbounded_profiles() {
         assert!(plan["gpu_options"]["samples"].as_u64().unwrap() <= 4096);
         assert_eq!(s.doc.to_json(), before);
     }
-    for id in ["Q-004", "Q-005", "Q-006", "Q-007", "Q-010", "missing"] {
+    for id in ["Q-004", "Q-005", "Q-006", "Q-007", "Q-008", "Q-009", "Q-010", "missing"] {
         assert!(s.execute("render.quality.prepare", &json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true})).is_err());
     }
     assert!(s.execute("render.quality.prepare", &json!({"id":"Q-002","variant":"full","acknowledge_omissions":true})).is_err());

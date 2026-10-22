@@ -181,6 +181,9 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                             Page::Diagnostics => diagnostics(app, ui),
                             Page::All => {
                                 ui.small(app.tr("render.all_controls_help"));
+                                camera_actions(app, ui);
+                                let title = app.tr("render.page_camera").to_string();
+                                ui_kit::section(ui, "render_all_camera", &title, false, |ui| camera_controls(app, ui));
                                 super::image_edit_controls(app, ui);
                             }
                         }
@@ -331,6 +334,7 @@ fn browse_button(app: &mut SolveApp, ui: &mut egui::Ui, kind: &str, key: &str) {
 fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.scene_preserves_design"));
     super::method_selector(app, ui);
+    gpu_status(app, ui);
     browse_button(app, ui, "native_scenes", "render.browse_native_scenes");
     browse_button(app, ui, "scenes", "render.browse_scene_specs");
     library::inspect_kinds(app, ui, &["native_scenes", "scenes", "selene_shots"]);
@@ -484,27 +488,7 @@ fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             Err(error) => app.set_status(error, true),
         }
     }
-    ui.horizontal_wrapped(|ui| {
-        if ui_kit::button(ui, app.tr("render.fit"), ui_kit::Button::Normal).clicked() {
-            match solidcraft_engine::product_scene::extract(&app.session) {
-                Ok(scene) if !scene.bounds.is_empty() => {
-                    let mut camera = app.cam;
-                    camera.fit(&scene.bounds);
-                    if app.run("view.apply", json!({"camera":camera})).is_ok() {
-                        app.follow_view_request(false);
-                    }
-                }
-                Err(error) => app.set_status(error.to_string(), true),
-                _ => {}
-            }
-        }
-        if ui_kit::button(ui, app.tr("render.restore_camera"), ui_kit::Button::Normal).clicked() {
-            let name = app.render_workspace.view.name.clone();
-            if app.run("render.settings.apply", json!({"name":name})).is_ok() {
-                app.follow_view_request(false);
-            }
-        }
-    });
+    camera_actions(app, ui);
     if app.render_workspace.view.method == ImageMethod::GpuRaytrace {
         studio::lens_controls(app, ui);
     }
@@ -519,6 +503,7 @@ fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     super::method_selector(app, ui);
+    gpu_status(app, ui);
     let side = match app.render_workspace.view.method {
         ImageMethod::CpuRaytrace => 16384,
         ImageMethod::GpuRaytrace => 8192,
@@ -862,3 +847,43 @@ fn base_appearance(app: &mut SolveApp, ui: &mut egui::Ui) {
 #[cfg(test)]
 #[path = "render_workspace_inspector_tests.rs"]
 mod tests;
+
+fn camera_actions(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        if ui_kit::button(ui, app.tr("render.fit"), ui_kit::Button::Normal).clicked() {
+            match solidcraft_engine::product_scene::extract(&app.session) {
+                Ok(scene) if !scene.bounds.is_empty() => {
+                    let mut camera = app.cam;
+                    camera.fit(&scene.bounds);
+                    if app.run("view.apply", json!({"camera":camera})).is_ok() {
+                        app.follow_view_request(false);
+                    }
+                }
+                Err(error) => app.set_status(error.to_string(), true),
+                _ => {}
+            }
+        }
+        if ui_kit::button(ui, app.tr("render.restore_camera"), ui_kit::Button::Normal).clicked() {
+            let name = app.render_workspace.view.name.clone();
+            if app.run("render.settings.apply", json!({"name":name})).is_ok() {
+                app.follow_view_request(false);
+            }
+        }
+    });
+}
+
+fn gpu_status(app: &SolveApp, ui: &mut egui::Ui) {
+    if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
+        return;
+    }
+    match &app.render_workspace.path_host {
+        super::PathHost::Preparing(_, started) => super::setup_progress(ui, app, *started),
+        super::PathHost::Failed(error) => {
+            ui.colored_label(Tokens::get().warning, format!("{}: {error}", app.tr("render.gpu_path_failed")));
+        }
+        super::PathHost::NotStarted => {
+            ui.small(app.tr("render.gpu_unavailable"));
+        }
+        super::PathHost::Ready(_) => {}
+    }
+}

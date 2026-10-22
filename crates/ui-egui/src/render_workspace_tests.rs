@@ -526,11 +526,12 @@ fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
         h.step(&json!({"click":[at.x,at.y]})).unwrap();
         h.step(&json!({"click":{"handle":"menu:ui.workspace.render"}})).unwrap();
         assert!(active(&h.app));
-        let heading = h.app.tr("cmd.render_settings_get").to_string();
+        let heading = h.app.tr("render.studio_title").to_string();
         let perspective = h.app.tr("render.perspective").to_string();
         let save = h.app.tr("render.save_setup").to_string();
         let back = h.app.tr("render.return_design").to_string();
         assert!(h.widget(&heading).is_some(), "{language}");
+        h.step(&json!({"click":{"handle":"render:page:camera"}})).unwrap();
         h.step(&json!({"widget":perspective})).unwrap();
         assert!(!h.app.session.is_dirty(), "preview edits are staged");
         h.step(&json!({"widget":save})).unwrap();

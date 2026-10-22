@@ -213,7 +213,12 @@ mod tests {
             assert_eq!(detail["physical_assignment"], false);
             assert!(!detail["native_validation"]["analysis_solver_available"].as_bool().unwrap());
         }
-        let missing = associations("SURF-013").unwrap();
+        // The integrated package now supplies references for all 48 authored
+        // surfaces. A genuinely unbound catalog grade remains unknown, not zero.
+        let paint = associations("SURF-013").unwrap();
+        assert!(!paint["candidate_profiles"].as_array().unwrap().is_empty());
+        assert_eq!(paint["auto_assign"], false);
+        let missing = associations("MAT-009").unwrap();
         assert!(missing["candidate_profiles"].as_array().unwrap().is_empty());
         let steel = associations("SURF-001").unwrap();
         assert_eq!(steel["auto_assign"], false);
