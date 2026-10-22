@@ -14,6 +14,11 @@ Editable drawing code, native projects and shipped exports are collected under `
 
 | File | Author | Source | Licence |
 |---|---|---|---|
+| assets/render/starter/tools/check_all.py | SolidCraft contributors | original read-only authored/native resource validation orchestration and evidence receipts | MIT OR Apache-2.0 |
+| assets/render/starter/tools/test_check_all.py | SolidCraft contributors | original validation-runner regression fixtures and subprocess tests | MIT OR Apache-2.0 |
+| assets/render/starter/tools/requirements.txt | SolidCraft contributors | pinned offline authoring tool requirements; no application dependency changes | MIT OR Apache-2.0 |
+| crates/render/examples/validate_starter.rs | SolidCraft contributors | original native resource conformance checker using public SolidCraft decoding, normalization, sampling and mip APIs | MIT OR Apache-2.0 |
+| .github/workflows/render-resources.yml | SolidCraft contributors | original cross-platform authored/native resource gate; action pins identified in workflow | MIT OR Apache-2.0 |
 | .gitattributes | SolidCraft contributors | original canonical line-ending policy for the existing runtime icon-discovery manifest; no artwork or icon-assignment changes | MIT OR Apache-2.0 |
 | assets/render/.gitattributes | SolidCraft contributors | original canonical line-ending policy for SHA-256-pinned renderer authoring resources | MIT OR Apache-2.0 |
 | docs/render-materials/.gitattributes | SolidCraft contributors | original canonical line-ending policy for SHA-256-pinned renderer authoring resources | MIT OR Apache-2.0 |

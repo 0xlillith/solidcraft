@@ -56,9 +56,19 @@ python3 -B assets/render/starter/tools/lighting.py validate
 python3 -B -m unittest discover -s assets/render/starter/tools -p 'test_*.py'
 ```
 
-Run these authoring checks explicitly whenever this pack changes. They are not
-currently registered with `cargo xtask ci`; that command checks the repository
-gates and does not replace the pack's numerical and reproduction checks.
+For a read-only combined authoring and native Rust check, use:
+
+```sh
+python -m pip install -r assets/render/starter/tools/requirements.txt
+python -B assets/render/starter/tools/check_all.py
+```
+
+See [native admission and continuous validation](NATIVE_ADMISSION.md) for the
+192 texture inputs, 48 separately checked height sources, 24 HDR inputs, coordinate
+conventions, test coverage and evidence receipts. The dedicated Render resource
+gate runs these checks for relevant pull requests, including drafts, on Windows
+and Linux. It does not replace complete `cargo xtask ci`, application rendering
+acceptance or persistent resource binding; all runtime availability remains false.
 
 The surface reproduction compares exact decoded pixel arrays; PNG compressed
 bytes may depend on the encoder build and platform even with the same Pillow
