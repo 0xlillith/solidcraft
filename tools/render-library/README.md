@@ -79,3 +79,10 @@ studio.close()
 The original recipe fits all captured body bounding boxes inside an 8% image margin. It resolves six authored material families through public commands, preserves the native paint/PCB/rubber palette where specified, selects twelve explicitly certified closed dielectric bodies in this master, and appends a passive ground rectangle only to the captured scene. The authored three-area-light rig uses an explicit 1/16 creative radiance gain plus a low-intensity HDR fill. It is not the unmodified reference calibration, measured glass data, geometric displacement, LED volumetric emission, or a physics reassignment. Native pose and visibility stay unchanged.
 
 `python -B test_selene_recipe.py` checks camera projection, scale covariance, input rejection and source-data nonmutation without a renderer build. A successful image export is not visual acceptance: inspect complete framing, fine detail, highlights, glass and noise before publishing an image. Keep provisional images and logs outside the repository; a deliberately selected final showcase export is published with its pinned recipe and attribution.
+
+
+### Publishing the selected showcase export
+
+After the complete PNG and unscaled detail crops have actually been inspected, `publish_selene.py --session OUTPUT_DIRECTORY --accept-visual-review` checks the completed native receipt, unchanged master, exact requested execution controls, captured geometry cardinality, original resource hashes, PNG dimensions/CRCs/bounded scanlines and final-frame SHA-256. It refuses an existing showcase destination and never modifies or resamples the pixels. The deliberately shipped output is `assets/render/selene/exports/SELENE-studio-4k.png`, paired with `scenes/studio-hero.json`; it is consumed by the model's `RENDER.md` showcase, not a general review-file inbox. Git publication remains a separate explicit operation.
+
+`python -B test_publish_selene.py` exercises malformed/truncated/wrong-size/expanding PNG refusals and explicit-review consent before any filesystem reads or writes. No renderer build is needed for these tests.

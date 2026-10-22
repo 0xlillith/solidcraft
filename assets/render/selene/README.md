@@ -66,6 +66,8 @@ This drives an in-memory copy and compares native joint readbacks and occurrence
 
 ## Render preparation and the wider catalog
 
+The full-detail [native 4K studio render](RENDER.md#full-detail-4k-path-traced-studio-image--2026-10-22) now provides a path-traced showcase of the unchanged functional master. It preserves all original visible geometry, uses explicit glass and authored materials, and ships with its exact [request/provenance manifest](scenes/studio-hero.json). The Design previews remain distinct geometry-inspection resources.
+
 The ten saved camera/setup records and the model's body appearances are concrete native resources. [RENDER.md](RENDER.md) documents the actual image workflow and any executor limits. Transparent viewport appearances alone do not establish physical refraction, and density does not supply roughness, friction, electrical behavior or optical transmission.
 
 The existing [48-appearance pack](materials/appearance-pack.json), [33 semantic roles](scenes/roles.json), [ten stage specifications](scenes/stages.json), [12 shots](scenes/shots.json), [UI flow](ui/demo-flow.json) and [future sample dynamics sequence](motion/sample-sequence.json) remain a broader authoring specification. The source is now pinned; those resources still need their individual geometry bindings and renderer admission. The catalog's `runtime_ready: false` status is intentional. No lunar terrain, dust dynamics, calibrated optical library or throw-and-catch simulation is implied by the native model's completion.
