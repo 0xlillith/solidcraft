@@ -239,6 +239,39 @@ class PhysicalTests(unittest.TestCase):
         self.assertEqual(c['nonempty_native_cards']+c['extended_only_profiles'],c['profile_count'])
         self.assertEqual(c['concepts_with_reference_candidates']+c['concepts_needing_specific_recipe'],600)
         self.assertFalse(c['numerically_complete_catalog_claim'])
-        self.assertLess(c['surfaces_with_reference_candidates'],48)
+        self.assertEqual(c['surfaces_with_reference_candidates'],48)
+
+    def test_cured_resin_state_survives_native_projection(self):
+        result=p.native_card(self.profiles['sikafloor161-cured'],self.source_map)
+        row=next(r for r in result['card']['properties'] if r['data']['kind']=='compressive_strength')
+        self.assertIn('28 days',row['conditions']['state'])
+        self.assertEqual(row['conditions']['temperature_k'],296.15)
+        self.assertNotIn('density',{r['data']['kind'] for r in result['card']['properties']})
+
+    def test_distinct_elastic_conditions_cannot_be_mixed(self):
+        for field,value in [('state','other temper'),('moisture_dry_basis_kg_kg',.1),('strain_rate_per_s',1.0)]:
+            profile=copy.deepcopy(self.profiles['steel-c45'])
+            nu=next(r for r in profile['properties'] if r['quantity']=='poisson_ratio')
+            nu['conditions'][field]=value
+            with self.subTest(field=field),self.assertRaises(p.Invalid):
+                p.native_card(profile,self.source_map)
+
+    def test_new_reference_ranges_and_fibre_axes_are_not_flattened(self):
+        pmma=p.native_card(self.profiles['pmma-goodfellow-sheet'],self.source_map)
+        self.assertNotIn('elasticity',{r['data']['kind'] for r in pmma['card']['properties']})
+        fibre=p.native_card(self.profiles['kevlar49-fibre'],self.source_map)
+        self.assertNotIn('elasticity',{r['data']['kind'] for r in fibre['card']['properties']})
+        self.assertNotIn('tensile_strength',{r['data']['kind'] for r in fibre['card']['properties']})
+        self.assertNotIn('thermal_expansion',{r['data']['kind'] for r in fibre['card']['properties']})
+
+    def test_named_coating_candidates_do_not_invent_bulk_density(self):
+        for id in ('c71-enamel','hmg-stoving-hammer','hmg-sc601-clear','uv22-coating'):
+            profile=self.profiles[id]
+            self.assertNotIn('density',{r['quantity'] for r in profile['properties']})
+            with self.assertRaises(p.Invalid):p.prepare(id,True)
+
+    def test_para_aramid_not_assigned_as_meta_aramid_honeycomb(self):
+        row=next(r for r in self.bindings['catalog'] if r['catalog_id']=='MAT-482')
+        self.assertNotIn('kevlar49-fibre',{r['profile_id'] for r in row['references']})
 
 if __name__=='__main__':unittest.main()

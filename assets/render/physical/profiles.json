@@ -10764,6 +10764,1340 @@
         "Angle of repose is an apparatus/mass-dependent result, not an internal friction-angle constitutive law."
       ],
       "certified_design_allowables": false
+    },
+    {
+      "id": "pmma-goodfellow-sheet",
+      "designation": "PMMA sheet - Goodfellow stock reference",
+      "family": "polymer",
+      "material_form": "bulk",
+      "reference_state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": true,
+      "source_id": "goodfellow-pmma-sheet",
+      "properties": [
+        {
+          "id": "density",
+          "quantity": "density",
+          "value": 1190.0,
+          "unit": "kg/m^3",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 1.19,
+            "unit": "g/cm^3",
+            "scale_to_si": 1000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "tensile_strength",
+          "quantity": "tensile_strength",
+          "value": 80000000.0,
+          "unit": "Pa",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 80,
+            "unit": "MPa",
+            "scale_to_si": 1000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "young_modulus",
+          "quantity": "young_modulus",
+          "value": [
+            2400000000.0,
+            3300000000.0
+          ],
+          "unit": "Pa",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              2.4,
+              3.3
+            ],
+            "unit": "GPa",
+            "scale_to_si": 1000000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "poisson_ratio",
+          "quantity": "poisson_ratio",
+          "value": [
+            0.35,
+            0.4
+          ],
+          "unit": "1",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              0.35,
+              0.4
+            ],
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "elongation_break",
+          "quantity": "elongation_break",
+          "value": [
+            0.025,
+            0.04
+          ],
+          "unit": "1",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              2.5,
+              4
+            ],
+            "unit": "%",
+            "scale_to_si": 0.01,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "specific_heat",
+          "quantity": "specific_heat",
+          "value": [
+            1400.0,
+            1500.0
+          ],
+          "unit": "J/(kg K)",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              1400,
+              1500
+            ],
+            "unit": "J/(kg K)",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "thermal_expansion",
+          "quantity": "thermal_expansion",
+          "value": [
+            7e-05,
+            7.7e-05
+          ],
+          "unit": "1/K",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              70,
+              77
+            ],
+            "unit": "ppm/K",
+            "scale_to_si": 1e-06,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "refractive_index",
+          "quantity": "refractive_index",
+          "value": 1.49,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 1.49,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "volume_resistivity",
+          "quantity": "volume_resistivity",
+          "value": [
+            20000000000000.0,
+            140000000000000.0
+          ],
+          "unit": "ohm m",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              2000000000000000.0,
+              1.4e+16
+            ],
+            "unit": "ohm cm",
+            "scale_to_si": 0.01,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "dielectric_strength",
+          "quantity": "dielectric_strength",
+          "value": 15000000.0,
+          "unit": "V/m",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 15,
+            "unit": "kV/mm",
+            "scale_to_si": 1000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "thermal_conductivity",
+          "quantity": "thermal_conductivity",
+          "value": [
+            0.17,
+            0.19
+          ],
+          "unit": "W/(m K)",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": [
+              0.17,
+              0.19
+            ],
+            "unit": "W/(m K)",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "relative_permittivity",
+          "quantity": "relative_permittivity",
+          "value": 2.6,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 2.6,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported",
+            "frequency_hz": 1000000.0
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "loss_tangent",
+          "quantity": "loss_tangent",
+          "value": 0.014,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 0.014,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported",
+            "frequency_hz": 1000000.0
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "water_absorption",
+          "quantity": "water_absorption",
+          "value": 0.002,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 0.2,
+            "unit": "%",
+            "scale_to_si": 0.01,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported",
+            "immersion_hours": 24
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "hdt-045mpa",
+          "quantity": "heat_deflection",
+          "value": 378.15,
+          "unit": "K",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 105,
+            "unit": "degC",
+            "scale_to_si": 1.0,
+            "offset_to_si": 273.15
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported",
+            "test_stress_pa": 450000
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "hdt-18mpa",
+          "quantity": "heat_deflection",
+          "value": 368.15,
+          "unit": "K",
+          "qualifier": "typical",
+          "source_id": "goodfellow-pmma-sheet",
+          "source_locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+          "original": {
+            "value": 95,
+            "unit": "degC",
+            "scale_to_si": 1.0,
+            "offset_to_si": 273.15
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplier PMMA film/sheet property ranges; exact stock thickness, grade, processing and conditioning must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported",
+            "test_stress_pa": 1800000
+          },
+          "note": "",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "Ranges are not single design values; no midpoint is selected for an elastic tensor.",
+        "Optical index without wavelength is not a dispersion curve. Cast, extruded and filled variants require their own identification."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "kevlar49-fibre",
+      "designation": "Kevlar 49 fibre - Goodfellow constituent reference",
+      "family": "polymer",
+      "material_form": "fibre_constituent",
+      "reference_state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": false,
+      "source_id": "goodfellow-kevlar49",
+      "properties": [
+        {
+          "id": "density",
+          "quantity": "density",
+          "value": 1440.0,
+          "unit": "kg/m^3",
+          "qualifier": "typical",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": 1.44,
+            "unit": "g/cm^3",
+            "scale_to_si": 1000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "specific_heat",
+          "quantity": "specific_heat",
+          "value": 1400.0,
+          "unit": "J/(kg K)",
+          "qualifier": "typical",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": 1400,
+            "unit": "J/(kg K)",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "thermal_conductivity",
+          "quantity": "thermal_conductivity",
+          "value": 0.04,
+          "unit": "W/(m K)",
+          "qualifier": "typical",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": 0.04,
+            "unit": "W/(m K)",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "Source does not state a direction for this conductivity; not expanded into a directional tensor.",
+          "uncertainty": null
+        },
+        {
+          "id": "thermal_expansion",
+          "quantity": "thermal_expansion",
+          "value": -2e-06,
+          "unit": "1/K",
+          "qualifier": "typical",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": -2,
+            "unit": "ppm/K",
+            "scale_to_si": 1e-06,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "fibre_axis",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "young_modulus",
+          "quantity": "young_modulus",
+          "value": [
+            59000000000.0,
+            124000000000.0
+          ],
+          "unit": "Pa",
+          "qualifier": "reported_range",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": [
+              59,
+              124
+            ],
+            "unit": "GPa",
+            "scale_to_si": 1000000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "fibre_axis",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "tensile_strength",
+          "quantity": "tensile_strength",
+          "value": 2760000000.0,
+          "unit": "Pa",
+          "qualifier": "typical",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": 2760,
+            "unit": "MPa",
+            "scale_to_si": 1000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "fibre_axis",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "water_absorption",
+          "quantity": "water_absorption",
+          "value": 0.035,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "goodfellow-kevlar49",
+          "source_locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+          "original": {
+            "value": 3.5,
+            "unit": "%",
+            "scale_to_si": 0.01,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Supplied Kevlar 49 yarn/fibre. Axial measurements are constituent data, not effective properties of fabric or cured composite.",
+            "direction": "not_reported",
+            "test_method": "supplier equilibrium absorption; humidity and temperature not reported"
+          },
+          "note": "",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "Fibre density must not replace the effective laminate density. Fibre fraction, resin, layup, cure and void fraction remain required.",
+        "The wide modulus range is retained rather than promoted to an isotropic nominal modulus."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "pvc-kuhn-stock",
+      "designation": "PVC stock - Kuhn supplier reference",
+      "family": "polymer",
+      "material_form": "bulk",
+      "reference_state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": true,
+      "source_id": "kuhn-pvc-stock",
+      "properties": [
+        {
+          "id": "density",
+          "quantity": "density",
+          "value": 1400.0,
+          "unit": "kg/m^3",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 1.4,
+            "unit": "g/cm^3",
+            "scale_to_si": 1000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "ISO 1183-1"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "thermal_conductivity",
+          "quantity": "thermal_conductivity",
+          "value": 0.159,
+          "unit": "W/(m K)",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 0.159,
+            "unit": "W/(m K)",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "volume_resistivity",
+          "quantity": "volume_resistivity",
+          "value": 100000000000000.0,
+          "unit": "ohm m",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 1e+16,
+            "unit": "ohm cm",
+            "scale_to_si": 0.01,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "IEC 60093"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "dielectric_strength",
+          "quantity": "dielectric_strength",
+          "value": 39000000.0,
+          "unit": "V/m",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 39,
+            "unit": "kV/mm",
+            "scale_to_si": 1000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "IEC 60243-1"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "permittivity-100",
+          "quantity": "relative_permittivity",
+          "value": 3.2,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 3.2,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "IEC 60250",
+            "frequency_hz": 100
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "loss-100",
+          "quantity": "loss_tangent",
+          "value": 0.03,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 0.03,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "IEC 60250",
+            "frequency_hz": 100
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "permittivity-1000000",
+          "quantity": "relative_permittivity",
+          "value": 3.0,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 3,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "IEC 60250",
+            "frequency_hz": 1000000.0
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "loss-1000000",
+          "quantity": "loss_tangent",
+          "value": 0.02,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "kuhn-pvc-stock",
+          "source_locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+          "original": {
+            "value": 0.02,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Kuhn PVC stock material; not plasticized PVC, foam PVC or an identified wire-jacket formulation.",
+            "direction": "not_reported",
+            "test_method": "IEC 60250",
+            "frequency_hz": 1000000.0
+          },
+          "note": "",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "Blank mechanical cells and the mislabeled hardness units were excluded. Supplier stock reference does not identify all PVC compounds."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "sikafloor161-cured",
+      "designation": "Sikafloor 161 HC - cured epoxy binder reference",
+      "family": "polymer",
+      "material_form": "cured_binder",
+      "reference_state": "Specific cured epoxy binder; laboratory cured-resin data, not an unidentified industrial paint or a flooring composite.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": false,
+      "source_id": "sika-161-cured",
+      "properties": [
+        {
+          "id": "hardness_shore_d",
+          "quantity": "hardness_shore_d",
+          "value": 76.0,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "sika-161-cured",
+          "source_locator": "Cured resin hardness at 7 days and strengths at 28 days, +23 C. Mixed-resin density is not cured density.",
+          "original": {
+            "value": 76,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Sikafloor 161 HC resin cured 7 days at +23 C.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "compressive_strength",
+          "quantity": "compressive_strength",
+          "value": 60000000.0,
+          "unit": "Pa",
+          "qualifier": "typical",
+          "source_id": "sika-161-cured",
+          "source_locator": "Cured resin hardness at 7 days and strengths at 28 days, +23 C. Mixed-resin density is not cured density.",
+          "original": {
+            "value": 60,
+            "unit": "MPa",
+            "scale_to_si": 1000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Sikafloor 161 HC resin cured 28 days at +23 C.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "flexural_strength",
+          "quantity": "flexural_strength",
+          "value": 30000000.0,
+          "unit": "Pa",
+          "qualifier": "typical",
+          "source_id": "sika-161-cured",
+          "source_locator": "Cured resin hardness at 7 days and strengths at 28 days, +23 C. Mixed-resin density is not cured density.",
+          "original": {
+            "value": 30,
+            "unit": "MPa",
+            "scale_to_si": 1000000.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": 296.15,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Sikafloor 161 HC resin cured 28 days at +23 C.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "The published 1.4 kg/L density is mixed liquid resin and is intentionally not a cured-film density.",
+        "Concrete-substrate adhesion is not imported as bulk tensile or shear strength."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "uv22-coating",
+      "designation": "UV22 nanosilica-filled UV epoxy - coating reference",
+      "family": "polymer",
+      "material_form": "coating",
+      "reference_state": "Specific nanosilica-filled cationic UV epoxy; cure schedule and optional thermal post-cure must be identified.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": false,
+      "source_id": "masterbond-uv22",
+      "properties": [
+        {
+          "id": "hardness_shore_d",
+          "quantity": "hardness_shore_d",
+          "value": [
+            75.0,
+            85.0
+          ],
+          "unit": "1",
+          "qualifier": "reported_range",
+          "source_id": "masterbond-uv22",
+          "source_locator": "Typical properties and cure-specific glass-transition ranges; no numerical outgassing result imported.",
+          "original": {
+            "value": [
+              75,
+              85
+            ],
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Specific nanosilica-filled cationic UV epoxy; cure schedule and optional thermal post-cure must be identified.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "thermal_expansion",
+          "quantity": "thermal_expansion",
+          "value": [
+            2.9999999999999997e-05,
+            3.5e-05
+          ],
+          "unit": "1/K",
+          "qualifier": "reported_range",
+          "source_id": "masterbond-uv22",
+          "source_locator": "Typical properties and cure-specific glass-transition ranges; no numerical outgassing result imported.",
+          "original": {
+            "value": [
+              30,
+              35
+            ],
+            "unit": "ppm/K",
+            "scale_to_si": 1e-06,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Specific nanosilica-filled cationic UV epoxy; cure schedule and optional thermal post-cure must be identified.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "refractive_index",
+          "quantity": "refractive_index",
+          "value": 1.52,
+          "unit": "1",
+          "qualifier": "typical",
+          "source_id": "masterbond-uv22",
+          "source_locator": "Typical properties and cure-specific glass-transition ranges; no numerical outgassing result imported.",
+          "original": {
+            "value": 1.52,
+            "unit": "1",
+            "scale_to_si": 1.0,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "Specific nanosilica-filled cationic UV epoxy; cure schedule and optional thermal post-cure must be identified.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "tg-uv-only",
+          "quantity": "glass_transition",
+          "value": [
+            373.15,
+            383.15
+          ],
+          "unit": "K",
+          "qualifier": "reported_range",
+          "source_id": "masterbond-uv22",
+          "source_locator": "Typical properties and cure-specific glass-transition ranges; no numerical outgassing result imported.",
+          "original": {
+            "value": [
+              100,
+              110
+            ],
+            "unit": "degC",
+            "scale_to_si": 1.0,
+            "offset_to_si": 273.15
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "UV22 straight UV cure; wavelength 320-365 nm, dose and thickness require control.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        },
+        {
+          "id": "tg-post-cured",
+          "quantity": "glass_transition",
+          "value": [
+            408.15,
+            413.15
+          ],
+          "unit": "K",
+          "qualifier": "reported_range",
+          "source_id": "masterbond-uv22",
+          "source_locator": "Typical properties and cure-specific glass-transition ranges; no numerical outgassing result imported.",
+          "original": {
+            "value": [
+              135,
+              140
+            ],
+            "unit": "degC",
+            "scale_to_si": 1.0,
+            "offset_to_si": 273.15
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "UV22 after UV cure plus 30-60 minute post-cure at 125 C.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "No cured mass density or complete elastic model was published on the inspected page.",
+        "Marketing qualification claims are not numerical outgassing or flight-acceptance data."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "c71-enamel",
+      "designation": "C71 Speedline enamel - coating-system reference",
+      "family": "polymer",
+      "material_form": "coating",
+      "reference_state": "HMG single-pack synthetic alkyd machinery enamel; matt/satin/gloss and colour-specific formulation must be selected.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": false,
+      "source_id": "hmg-c71",
+      "properties": [
+        {
+          "id": "service_temperature",
+          "quantity": "service_temperature",
+          "value": 443.15,
+          "unit": "K",
+          "qualifier": "upper_bound",
+          "source_id": "hmg-c71",
+          "source_locator": "Manufacturer product description: temperature resistance up to 170 C, dependent on colour; matt, satin and gloss variants.",
+          "original": {
+            "value": 170,
+            "unit": "degC",
+            "scale_to_si": 1.0,
+            "offset_to_si": 273.15
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "HMG single-pack synthetic alkyd machinery enamel; matt/satin/gloss and colour-specific formulation must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "Up to 170 C depending on colour; exposure duration and mechanical performance not specified.",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "Published upper temperature depends on colour; it is not a universal continuous-use design limit.",
+        "Cured density, modulus, strength and heat capacity remain unknown; package weights are not cured-film density."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "hmg-stoving-hammer",
+      "designation": "Stoving Enamel Hammer - cured coating reference",
+      "family": "polymer",
+      "material_form": "coating",
+      "reference_state": "HMG TOPSTV stoving enamel hammer finish; colour, cure and coated substrate must be selected.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": false,
+      "source_id": "hmg-hammer-stoving",
+      "properties": [
+        {
+          "id": "dry_film_thickness",
+          "quantity": "dry_film_thickness",
+          "value": 2.4999999999999998e-05,
+          "unit": "m",
+          "qualifier": "typical",
+          "source_id": "hmg-hammer-stoving",
+          "source_locator": "Technical properties: coverage basis at 25 micrometres DFT and temperature resistance 160 C.",
+          "original": {
+            "value": 25,
+            "unit": "micrometre",
+            "scale_to_si": 1e-06,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "HMG TOPSTV stoving enamel hammer finish; colour, cure and coated substrate must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "Dry-film thickness used in the manufacturer coverage statement, not a dimensional assignment.",
+          "uncertainty": null
+        },
+        {
+          "id": "service_temperature",
+          "quantity": "service_temperature",
+          "value": 433.15,
+          "unit": "K",
+          "qualifier": "upper_bound",
+          "source_id": "hmg-hammer-stoving",
+          "source_locator": "Technical properties: coverage basis at 25 micrometres DFT and temperature resistance 160 C.",
+          "original": {
+            "value": 160,
+            "unit": "degC",
+            "scale_to_si": 1.0,
+            "offset_to_si": 273.15
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "HMG TOPSTV stoving enamel hammer finish; colour, cure and coated substrate must be selected.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "Manufacturer temperature-resistance statement; duration and test method not reported.",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "Application thickness is a source coverage basis, not measured thickness of a rendered object.",
+        "Cured density and elastic data are not supplied; never use solvent-mixture density to fill these fields."
+      ],
+      "certified_design_allowables": false
+    },
+    {
+      "id": "hmg-sc601-clear",
+      "designation": "Acrythane SC601 clearcoat - layer reference",
+      "family": "polymer",
+      "material_form": "coating",
+      "reference_state": "HMG SC601 two-component acrylic cured with isocyanate hardener; clearcoat and sheen/cure selection required.",
+      "identity_status": "specific_reference_not_identification_of_rendered_object",
+      "isotropic_reference_model": false,
+      "source_id": "hmg-sc601-clear",
+      "properties": [
+        {
+          "id": "dry_film_thickness",
+          "quantity": "dry_film_thickness",
+          "value": 2.4999999999999998e-05,
+          "unit": "m",
+          "qualifier": "typical",
+          "source_id": "hmg-sc601-clear",
+          "source_locator": "Two-component acrylic/isocyanate clearcoat; stated coverage basis 25 micrometres DFT. No cured density or modulus stated.",
+          "original": {
+            "value": 25,
+            "unit": "micrometre",
+            "scale_to_si": 1e-06,
+            "offset_to_si": 0.0
+          },
+          "conditions": {
+            "temperature_k": null,
+            "temperature_interval_k": null,
+            "moisture_dry_basis_kg_kg": null,
+            "strain_rate_per_s": null,
+            "state": "HMG SC601 two-component acrylic cured with isocyanate hardener; clearcoat and sheen/cure selection required.",
+            "direction": "not_reported",
+            "test_method": "not_reported"
+          },
+          "note": "Coverage-basis DFT from manufacturer technical properties; not measured cured-film mass.",
+          "uncertainty": null
+        }
+      ],
+      "limitations": [
+        "Dry-film thickness is an application reference only.",
+        "Cured density, elasticity, thermal conductivity and strength remain unknown; a transparent epoxy is not silently substituted."
+      ],
+      "certified_design_allowables": false
     }
   ]
 }

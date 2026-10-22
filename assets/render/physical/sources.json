@@ -420,6 +420,86 @@
       "locator": "Physical Properties; terrestrial simulant reference, not an Apollo sample",
       "license": null,
       "review": "Selected numerical facts transcribed with original structure; no supplier document, image, implementation or complete table is redistributed."
+    },
+    {
+      "id": "goodfellow-pmma-sheet",
+      "title": "Goodfellow PMMA film and sheet reference",
+      "url": "https://www.goodfellow.com/eu/pmma-film-group",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Physical, electrical, mechanical and thermal property sections; ranges retain their endpoints.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "goodfellow-kevlar49",
+      "title": "Goodfellow Kevlar 49 polyaramid fibre",
+      "url": "https://www.goodfellow.com/global/kevlar-49-polyaramid-fibre-group",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Physical, thermal and mechanical properties of the supplied fibre, not a cured woven laminate.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "kuhn-pvc-stock",
+      "title": "Kuhn PVC stock-material reference",
+      "url": "https://www.kuhn-marsberg.de/en/product/PVC/",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Density, thermal conductivity and electrical properties; ambiguous hardness-unit and empty cells excluded.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "sika-161-cured",
+      "title": "Sika Sikafloor 161 HC cured resin reference",
+      "url": "https://phl.sika.com/en/construction/flooring/industry-wet-areas/epoxy-flooring-system/sikafloor-161-hc.html",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Cured resin hardness at 7 days and strengths at 28 days, +23 C. Mixed-resin density is not cured density.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "masterbond-uv22",
+      "title": "Master Bond UV22 UV-cured epoxy",
+      "url": "https://www.masterbond.com/tds/uv22",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Typical properties and cure-specific glass-transition ranges; no numerical outgassing result imported.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "hmg-c71",
+      "title": "HMG C71 Speedline machinery enamel",
+      "url": "https://hmgpaint.mybigcommerce.com/c71-speedline/",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Manufacturer product description: temperature resistance up to 170 C, dependent on colour; matt, satin and gloss variants.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "hmg-hammer-stoving",
+      "title": "HMG Stoving Enamel Hammer TOPSTV",
+      "url": "https://www.hmgpaint.com/products/all-products/topcoat/1928/stoving-enamel-hammer",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Technical properties: coverage basis at 25 micrometres DFT and temperature resistance 160 C.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
+    },
+    {
+      "id": "hmg-sc601-clear",
+      "title": "HMG Acrythane SC601 Clearcoat",
+      "url": "https://hmgpaint.com/products/all-products/topcoat/1942/acrythane-sc601-clearcoat",
+      "accessed_on": "2026-10-22",
+      "kind": "public_reference",
+      "locator": "Two-component acrylic/isocyanate clearcoat; stated coverage basis 25 micrometres DFT. No cured density or modulus stated.",
+      "license": null,
+      "review": "Selected numerical facts and explicit source conditions, not a copied supplier table. Publicly indexed manufacturer/supplier data were reviewed; publisher rights are not relicensed. No safety or grade certificate is implied."
     }
   ]
 }

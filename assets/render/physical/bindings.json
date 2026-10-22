@@ -978,8 +978,13 @@
       "name": "Matte industrial paint",
       "catalog_family": "Paints and general coatings",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "c71-enamel",
+          "relation": "specific_alkyd_coating_candidate_with_colour_and_cure_review_no_bulk_density"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -1025,8 +1030,13 @@
       "name": "Smooth satin paint",
       "catalog_family": "Paints and general coatings",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "c71-enamel",
+          "relation": "specific_alkyd_coating_candidate_with_colour_and_cure_review_no_bulk_density"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -1109,8 +1119,13 @@
       "name": "Hammer-finish enamel",
       "catalog_family": "Paints and general coatings",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "hmg-stoving-hammer",
+          "relation": "specific_hammer_enamel_system_candidate_not_inferred_from_texture"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -1177,8 +1192,13 @@
       "name": "Chipped paint over metal",
       "catalog_family": "Paints and general coatings",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "c71-enamel",
+          "relation": "specific_alkyd_coating_candidate_with_colour_and_cure_review_no_bulk_density"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -1380,8 +1400,13 @@
       "name": "Extruded rigid PVC",
       "catalog_family": "Opaque engineering polymers",
       "physical_role": "bulk",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "pvc-kuhn-stock",
+          "relation": "rigid_PVC_stock_reference_candidate_not_plasticized_compound"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "exact_grade_and_composition",
         "product_form_and_heat_treatment",
@@ -1444,8 +1469,13 @@
       "name": "Clear cast acrylic",
       "catalog_family": "Transparent and translucent polymers",
       "physical_role": "optical",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "pmma-goodfellow-sheet",
+          "relation": "explicit_PMMA_stock_candidate_requires_grade_and_form_review"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "bulk_material_grade",
         "wavelength_and_temperature",
@@ -1465,8 +1495,13 @@
       "name": "Surface-frosted acrylic",
       "catalog_family": "Transparent and translucent polymers",
       "physical_role": "optical",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "pmma-goodfellow-sheet",
+          "relation": "explicit_PMMA_stock_candidate_requires_grade_and_form_review"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "bulk_material_grade",
         "wavelength_and_temperature",
@@ -1486,8 +1521,13 @@
       "name": "Opal acrylic",
       "catalog_family": "Transparent and translucent polymers",
       "physical_role": "optical",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "pmma-goodfellow-sheet",
+          "relation": "explicit_PMMA_stock_candidate_requires_grade_and_form_review"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "bulk_material_grade",
         "wavelength_and_temperature",
@@ -3943,8 +3983,13 @@
       "name": "Woven aramid resin",
       "catalog_family": "Composite reinforcement foundations",
       "physical_role": "composite",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "kevlar49-fibre",
+          "relation": "para_aramid_fibre_constituent_only_not_laminate_effective_properties"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "constituent_grades",
         "mass_or_volume_fractions",
@@ -3973,6 +4018,10 @@
         {
           "profile_id": "carbon-as4-8552-ud",
           "relation": "not_a_woven_laminate_effective_model"
+        },
+        {
+          "profile_id": "kevlar49-fibre",
+          "relation": "para_aramid_fibre_constituent_only_not_laminate_effective_properties"
         }
       ],
       "status": "reference_selection_required",
@@ -5120,8 +5169,13 @@
       "name": "Orange-peel automotive clearcoat",
       "catalog_family": "Automotive paint stacks and correction states",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "hmg-sc601-clear",
+          "relation": "specific_acrylic_clearcoat_candidate_cure_sheen_and_stack_require_selection"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -5141,8 +5195,13 @@
       "name": "Wet-sanded clearcoat state",
       "catalog_family": "Automotive paint stacks and correction states",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "hmg-sc601-clear",
+          "relation": "specific_acrylic_clearcoat_candidate_cure_sheen_and_stack_require_selection"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -5162,8 +5221,13 @@
       "name": "Machine-polished clearcoat with swirls",
       "catalog_family": "Automotive paint stacks and correction states",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "hmg-sc601-clear",
+          "relation": "specific_acrylic_clearcoat_candidate_cure_sheen_and_stack_require_selection"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -5225,8 +5289,13 @@
       "name": "Matte clearcoat over colour base",
       "catalog_family": "Automotive paint stacks and correction states",
       "physical_role": "layer",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "hmg-sc601-clear",
+          "relation": "specific_acrylic_clearcoat_candidate_cure_sheen_and_stack_require_selection"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "host_substrate",
         "layer_chemistry_and_cure",
@@ -5642,6 +5711,10 @@
         {
           "profile_id": "steel-c45",
           "relation": "reference_grade_candidate"
+        },
+        {
+          "profile_id": "c71-enamel",
+          "relation": "specific_alkyd_coating_candidate_with_colour_and_cure_review_no_bulk_density"
         }
       ],
       "status": "reference_selection_required",
@@ -5669,6 +5742,10 @@
         {
           "profile_id": "aluminium-6061-t6",
           "relation": "wrought_6061_comparison_only_not_a_cast_alloy_model"
+        },
+        {
+          "profile_id": "c71-enamel",
+          "relation": "specific_alkyd_coating_candidate_with_colour_and_cure_review_no_bulk_density"
         }
       ],
       "status": "reference_selection_required",
@@ -8198,6 +8275,10 @@
         {
           "profile_id": "epoxy-690",
           "relation": "resin_reference_not_filled_compound"
+        },
+        {
+          "profile_id": "uv22-coating",
+          "relation": "UV_epoxy_coating_candidate_only_if_this_chemistry_and_cure_are_selected"
         }
       ],
       "status": "reference_selection_required",
@@ -10848,6 +10929,10 @@
         {
           "profile_id": "epoxy-690",
           "relation": "cured_reference_not_formulation_matched"
+        },
+        {
+          "profile_id": "sikafloor161-cured",
+          "relation": "specific_cured_epoxy_binder_comparison_not_identified_adhesive_or_laminate"
         }
       ],
       "status": "reference_selection_required",
@@ -10901,6 +10986,10 @@
         {
           "profile_id": "epoxy-690",
           "relation": "cured_reference_not_formulation_matched"
+        },
+        {
+          "profile_id": "sikafloor161-cured",
+          "relation": "specific_cured_epoxy_binder_comparison_not_identified_adhesive_or_laminate"
         }
       ],
       "status": "reference_selection_required",
@@ -11624,8 +11713,13 @@
       "name": "Engraved edge-lit acrylic",
       "catalog_family": "LED diffusers and light guides",
       "physical_role": "optical",
-      "references": [],
-      "status": "specific_recipe_required",
+      "references": [
+        {
+          "profile_id": "pmma-goodfellow-sheet",
+          "relation": "explicit_PMMA_stock_candidate_requires_grade_and_form_review"
+        }
+      ],
+      "status": "reference_selection_required",
       "required_definition_fields": [
         "bulk_material_grade",
         "wavelength_and_temperature",
@@ -15991,7 +16085,7 @@
         "MAT-031"
       ],
       "physical_role": "layer",
-      "status": "specific_recipe_required",
+      "status": "reference_selection_required",
       "auto_assign_body": false,
       "preserve_existing_material": true
     },
@@ -16019,7 +16113,7 @@
         "MAT-033"
       ],
       "physical_role": "layer",
-      "status": "specific_recipe_required",
+      "status": "reference_selection_required",
       "auto_assign_body": false,
       "preserve_existing_material": true
     },
@@ -16033,7 +16127,7 @@
         "MAT-037"
       ],
       "physical_role": "layer",
-      "status": "specific_recipe_required",
+      "status": "reference_selection_required",
       "auto_assign_body": false,
       "preserve_existing_material": true
     },
@@ -16047,7 +16141,7 @@
         "MAT-204"
       ],
       "physical_role": "layer",
-      "status": "specific_recipe_required",
+      "status": "reference_selection_required",
       "auto_assign_body": false,
       "preserve_existing_material": true
     },
@@ -16299,7 +16393,7 @@
         "MAT-157"
       ],
       "physical_role": "composite",
-      "status": "specific_recipe_required",
+      "status": "reference_selection_required",
       "auto_assign_body": false,
       "preserve_existing_material": true
     },
