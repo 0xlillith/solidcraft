@@ -1,16 +1,16 @@
-# SELENE: lunar appearance, stills and future dynamics
+# SELENE: native showcase, lunar stills and future dynamics
 
 ## Demonstration objective
 
 Produce a convincing photographed view of SELENE on original procedural lunar terrain, then use the same validated scene as the basis for a future sample-handling animation. The first milestone is a still-image demonstration. The later animation milestone includes collection, closure of a sample container, release, free flight, contact capture and storage.
 
-This document specifies the work. It does not claim that the model has been rebuilt, its engineering suitability established, a renderer implemented or the animation simulated.
+The [native showcase package](../../assets/render/selene/README.md) now contains the supplied improved source and a reproducible functional derivative: detailed electronics, rolling-element bearings, articulated gripper and suspension, physical-material proxies, PBR appearances and inspection studies. Its [validation record](../../assets/render/selene/VALIDATION.md) states the actual final-build evidence. The lunar scenes and dynamics described below remain a future production contract; they are not implied by the native reconstruction.
 
 ## Selected improved source
 
-The selected base is **`SELENE-showcase.solidcraft`**, the improved rover documented by SychPL in Tangency Labs' [mechanism showcase](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321), [motion export PR](https://github.com/tangency-labs/solidcraft/pull/1680) and [motion analysis PR](https://github.com/tangency-labs/solidcraft/pull/1712). It adds grounded modules, split actuator loops, linked wheels, a rack/pinion track, a geared dish, a screw-driven vial cap, inverse-kinematic arm movement and a combined motion study. These are documented author demonstrations, not results reproduced by this contribution.
+The selected base is **`SELENE-showcase.solidcraft`**, the improved rover documented by SychPL in Tangency Labs' [mechanism showcase](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321), [motion export PR](https://github.com/tangency-labs/solidcraft/pull/1680) and [motion analysis PR](https://github.com/tangency-labs/solidcraft/pull/1712). It adds grounded modules, split actuator loops, linked wheels, a rack/pinion track, a geared dish, a screw-driven vial cap, inverse-kinematic arm movement and a combined motion study. Those source mechanisms are retained or deliberately adapted in the derivative, with the distinction between source facts and current runtime checks recorded in the native package.
 
-The native file itself was not found in the public repository trees, relevant author branches, PR comments or releases reviewed on 2026-10-21. The source lock therefore records `awaiting_native_source`, with no invented native hash, repository path, component IDs or format version. A filename or video is insufficient to bind model targets. See [the precise search and admission record](../../assets/render/selene/SOURCE.md) and [source-lock.json](../../assets/render/selene/source-lock.json).
+On 2026-10-22 the owner supplied that native file. It matches the author-published blob at `SychPL/solidcraft@32ec1720447e3fcc6bb6cc53a63fb5b39cfa21b9` byte for byte: SHA-256 `1b0df486f30da157db27a33e0b5ed67f13d527d4dfdc6c334717a1df4e5b8677`, 314,452 bytes, native format 23. The [source lock](../../assets/render/selene/source-lock.json) is now `pinned_native`. The earlier unsuccessful search is historical evidence, superseded by this attachment and the author's subsequent commit. [SOURCE.md](../../assets/render/selene/SOURCE.md) preserves the exact lineage and notices.
 
 All ten SELENE catalog scenes now require this improved source or its explicitly reviewed derivative. The original v7 is ineligible as a fallback. The [prepared demo package](../../assets/render/selene/README.md) supplies original appearance recipes, swatches, semantic roles, stage and camera recipes, mechanism acceptance requirements, a future dynamics sequence and developer preparation tools.
 
@@ -34,7 +34,7 @@ These values are observations of the historical v7 source and its published stat
 
 The original is an illustrative scientific rover assembly, with wheels, suspension, sampling arm, navigation hardware, solar wings, communications, electronics and sample storage. It is not a certified lunar vehicle. Keep its existing physical dimensions: scaling it into a different class of rover changes the design and would require an explicit derivative with new assumptions.
 
-The source repository's attribution must accompany a later model derivative. In particular, modeled Ubuntu Light lettering has a separate Ubuntu Font Licence 1.0 notice. This package only references the model and does not redistribute its native file or artwork.
+The native package retains the source repository's attribution with the supplied source and the separately named derivative. In particular, modeled Ubuntu Light lettering has a separate Ubuntu Font Licence 1.0 notice. The author's showcase branch has no separate file-specific license declaration for its additions; the provenance record preserves that distinction.
 
 ## Appearance assignment plan
 
@@ -88,11 +88,11 @@ The improved source already demonstrates substantial kinematic work. Preserve it
 | Six-wheel motion-link chain | Resolve exact driver/follower IDs and signs; verify every wheel at several poses. |
 | Four split solar actuators and closed loops | Resolve each barrel/rod/pin graph, keep grounding, and compare stroke/tilt relations and stop reasons. |
 | Grounded formerly floating modules | Check the actual assembly graph and drive results; a successful command must move the intended geometry. |
-| Rack/pinion track, gear and cap screw | Preserve the authored showcase helpers as kinematic demonstrations; record radii, ratios, pitch and reference frames. |
-| Arm IK and combined tour | Keep the original named study, review reachable poses and preserve its limits. |
+| Rack/pinion track, gear and cap screw | Document deliberate changes: the derivative uses a 40 mm track radius, removes the illustrative turret-to-dish gear, and retains the cap's 1.5 mm screw pitch. |
+| Arm IK and combined tour | Retain the author study as an explicitly adapted copy, resolve recreated wheel joints and clamp the documented inspection limits. |
 | Trace, analysis and animation export | Reuse the existing command surfaces; inspect actual support at the integration revision. |
 
-The native file is needed to determine which vial parts are already independent and how the improved hierarchy differs. Do not repeat the historical v7 split plan blindly. The earlier feature IDs and candidate-vial coordinates remain historical evidence only.
+Inspection of the supplied native file resolves the vial arrangement: the cap at `(53, −22, 179)` has the independent screw joint, while the six complete vessels belong to the sample laboratory. The functional derivative joins each glass wall and bottom. Free-vial grasp and flight still require a new assembly/body-state model. Historical v7 IDs remain ineligible as selectors for the improved source.
 
 Create a named derivative only for changes that the admitted source still needs:
 

@@ -3,10 +3,10 @@
     "schema_version": "0.1.0",
     "language": "en",
     "status": "specified_unbound",
-    "authorship": "Original SolidCraft prepared-demo authoring specifications; no external model, image, terrain or shader asset is bundled.",
+    "authorship": "Original SolidCraft prepared-demo authoring specifications. The separately pinned native source is documented in source-lock.json; these semantic resources remain unbound.",
     "provenance_id": "ORIGINAL-2026-10-CATALOG",
     "source_lock": "../source-lock.json",
-    "source_state": "awaiting_native_source",
+    "source_state": "pinned_native",
     "expected_native_label": "SELENE-showcase.solidcraft",
     "source_requirement": "Require ../source-lock.json active_source.status='pinned_native', matching accepted bytes/format/units/+Z, confirmed admission review and reviewed semantic selectors. An expected filename is not proof of identity.",
     "catalog_root": "../../../../docs/render-materials",
@@ -47,7 +47,8 @@
     "stage_registry": "stages.json",
     "role_registry": "roles.json",
     "reference_scene_policy": "Existing SCENE IDs remain unchanged. A reference_scene_id records design lineage; effective composition comes from the explicit fields in each shot.",
-    "native_opaque_compiler_policy": "prepare.py compile is restricted to reviewed native BODY selections for roles with kind=appearance, owner=subject and opaque_proxy_allowed=true. Stage geometry, framing, interaction regions, layered dust, optics and emitters are not compiled by that tool."
+    "native_opaque_compiler_policy": "prepare.py compile is restricted to reviewed native BODY selections for roles with kind=appearance, owner=subject and opaque_proxy_allowed=true. Stage geometry, framing, interaction regions, layered dust, optics and emitters are not compiled by that tool.",
+    "source_snapshot_sha256": "1b0df486f30da157db27a33e0b5ed67f13d527d4dfdc6c334717a1df4e5b8677"
   },
   "items": [
     {
@@ -188,7 +189,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -338,7 +339,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -507,7 +508,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -665,7 +666,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -814,7 +815,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -966,7 +967,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -1177,7 +1178,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request.",
         "Capture coverage needs reviewed independent-container geometry, mass/inertia, closure, grasp and release definitions. Animation additionally requires an approved immutable bake; do not synthesize a successful catch."
@@ -1326,7 +1327,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -1473,7 +1474,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -1653,7 +1654,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -1803,7 +1804,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],
@@ -1955,7 +1956,7 @@
         "CAP-120"
       ],
       "blockers": [
-        "Improved native source is not accepted and semantic geometry selections are not yet bound.",
+        "The improved native source is pinned; semantic geometry selections for this catalog shot are not yet bound.",
         "Material concepts, stage generator and light quantities must resolve to versioned authored resources.",
         "Executor capability and resource-budget preflight must succeed before any render request."
       ],

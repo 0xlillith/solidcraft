@@ -1,8 +1,8 @@
 # SELENE mechanism acceptance
 
-This directory specifies how the **improved `SELENE-showcase.solidcraft` variant** should be reviewed once its native source is available. It contains no executable motion, native joint bindings or successful runtime result.
+This directory records the source-level acceptance contract for **`SELENE-showcase.solidcraft`**. The source is now pinned and its persisted assembly records have been inspected. The checklist binds exact source IDs and parameters; it makes no native runtime claim from that container inspection.
 
-[The source lock](../source-lock.json) is currently `awaiting_native_source`. Source-dependent preparation must stop at that state. The original v7 model cannot satisfy this selection, even if it has a similar appearance or is renamed.
+[The source lock](../source-lock.json) selects the unchanged file supplied by SychPL, matching the author's public commit byte for byte. [SOURCE.md](../SOURCE.md) records that evidence. The functional derivative has a separate mechanism contract in [MECHANISMS.md](../MECHANISMS.md) and an executable native validator in [validate_native.py](../tools/validate_native.py).
 
 ## Three evidence levels
 
@@ -12,7 +12,7 @@ Each item in [mechanism-acceptance.json](mechanism-acceptance.json) separates:
 2. **Native evidence:** exact identities, geometry, parentage, limits and mechanism relationships inspected in the admitted file.
 3. **Runtime evidence:** results produced by a recorded SolidCraft revision from explicit inputs and an approved starting pose.
 
-All native evidence is `not_inspected`; all runtime evidence is `not_executed`. The public descriptions do not fill those fields.
+Native evidence is `inspected_container_only`; source runtime evidence remains `not_executed` in this checklist. The bindings are tied to source SHA-256 `1b0df486f30da157db27a33e0b5ed67f13d527d4dfdc6c334717a1df4e5b8677`. Reading the native container confirms records, references and stored values. It does not evaluate geometry, solve a joint, drive a study or certify a derivative.
 
 `required_for_native_admission` identifies the mechanisms that establish the selected combined showcase. The sampled collision demonstration and flexible-hose visibility treatment are additional review areas. Any differences in the delivered source need explicit explanation; an admission tool cannot infer identity from a count or automatically approve a substitute.
 
@@ -34,6 +34,14 @@ All native evidence is `not_inspected`; all runtime evidence is `not_executed`. 
 | MCA-012 | Flexible-hose visibility | Which rigid hose approximations or sketches were hidden, and how will their treatment be disclosed? |
 
 The detailed checks cite the [mechanism reference](https://github.com/tangency-labs/solidcraft/blob/463cea0615a22be2f7d6c30512211f9eda97ff28/skills/solidcraft-mechanisms/reference.md), the [author's combined showcase](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321), [motion export](https://github.com/tangency-labs/solidcraft/pull/1680), and [motion analysis](https://github.com/tangency-labs/solidcraft/pull/1712).
+
+## Source bindings and deliberate derivative changes
+
+The unchanged source contains 47 occurrences, 49 joints, nine links and one `SELENE tour` study. Structure occurrence `1930` is grounded. Rigid joints `30..47` attach 18 modules to it; the joint graph reaches every source occurrence except the independent rock sample `3458`. The four actuator loops use joint triples `18/19/20`, `21/22/23`, `24/25/26` and `27/28/29`. These are persisted source facts, not evaluated degrees of freedom or a solver result.
+
+The original helper track has a 38 mm rack radius; the functional derivative specifies 40 mm to match the modeled wheel radius. The source's `7 → 16` link couples sensor and dish azimuth at `-24/36`; the derivative deliberately gives those pointing systems independent controls. The source cap keeps its 1.5 mm lead and 0–6 mm axial travel. Source facts remain in the checklist so that an intentional change is visible rather than silently relabeled as the original design.
+
+The source tour has 120 steps and nine keyed joint coordinates. Its three rigid hydraulic-hose sweeps and six associated sketches are hidden. Hiding them avoids presenting a fixed sweep as a deforming hose; flexible routing remains separate work.
 
 ## Numeric planning checks
 
@@ -62,7 +70,7 @@ These inputs give a zero-angle length of **96.277475 mm** and a stroke of **-2.8
 
 The reference reports approximately -2.87 mm at 20 degrees and a stop near 32.23 degrees. The small rounding difference is expected from its published coordinate precision. These rounded points are not exact native geometry and do not define a native replay tolerance.
 
-After admission, calculate a separate expectation from the actual source's hinge, axes and pin positions. Verify closure over the path, not just at the final pose. An endpoint that happens to close can hide an impossible intermediate motion.
+The source bindings now record the full-precision pin positions. They give a 20-degree stroke expectation of **-2.8662098186467375 mm**, used by the functional validator. Verify closure over the path, not just at the final pose. An endpoint that happens to close can hide an impossible intermediate motion.
 
 ### Rack-and-pinion displacement
 
@@ -82,7 +90,7 @@ Under the candidate interpretation that the 24 side drives the 36 side:
 abs(delta_follower_rad) = (24 / 36) * abs(delta_driver_rad)
 ```
 
-A driver increment of **1.5707963268 rad** gives a follower magnitude of **1.0471975512 rad**. The actual driver order, rotation sign and offset remain unbound until native inspection. Do not infer their values from how the dish looks on screen.
+A driver increment of **1.5707963268 rad** gives a follower magnitude of **1.0471975512 rad**. Source inspection confirms turret azimuth drives dish azimuth with ratio `-2/3` and zero offset. This historic analytic example does not apply to the independent pointing controls of the functional derivative.
 
 ### Vial-cap screw
 
@@ -92,11 +100,11 @@ Interpreting the documented 1.5 mm screw as **1.5 mm axial lead per revolution**
 abs(delta_axial_mm) = 1.5 * abs(delta_angle_rad) / (2*pi)
 ```
 
-A full turn yields **1.5 mm** axial travel. Native review must confirm that interpretation, the joint representation, the axis, sign and allowed range. This is a kinematic screw relation; it does not prove thread contact, closure sealing or capture retention.
+A full turn yields **1.5 mm** axial travel. Source joint `49` is cylindrical about +Z, with a screw link from angular coordinate `0` to axial coordinate `1` and travel limits of 0–6 mm. This is a kinematic screw relation; it does not prove thread contact, closure sealing or capture retention.
 
 ## Runtime evidence to record
 
-Once the source is admitted, each executed acceptance case should retain the native-file SHA-256, SolidCraft code revision, exact command inputs, initial pose, selected joint IDs and axes, effective link values, solver tolerances, resolved poses and any stop or collision reports.
+Each executed acceptance case should retain the native-file SHA-256, SolidCraft code revision, exact command inputs, initial pose, selected joint IDs and axes, effective link values, solver tolerances, resolved poses and any stop or collision reports. The functional validator writes actual MCP request/response JSONL, hashes its inputs before and after, resets primary drivers before each case, and records numeric comparisons without saving its in-memory test poses to the master.
 
 A published numerical residual is evidence of that demonstration only. The author's reported arm residual is not a guaranteed precision threshold for arbitrary poses. Select a useful tolerance for the actual model and solver, and report it with the result.
 

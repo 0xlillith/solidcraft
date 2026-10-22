@@ -2,7 +2,7 @@
 
 ## Scope of this contribution
 
-This PR provides English planning content under `docs/render-materials/` and prepared authoring resources plus development tools under `assets/render/selene/`, with exact attribution rows. It changes no application command, shader, renderer backend, native document format or model geometry. The new swatch script uses existing commands. The integration base is the user's `lab/render-materials` branch at the recorded revision. Do not replace it with a newer upstream snapshot as a side effect of integrating this package.
+This PR provides English planning content under `docs/render-materials/` and native SELENE authoring resources plus development tools under `assets/render/selene/`, with exact attribution rows. It changes no application command, shader, renderer backend or native document format. The SELENE continuation reconstructs geometry, assemblies and appearances in a derivative through existing SolidCraft commands; the broader catalog remains a specification backlog. The integration base is the user's `lab/render-materials` branch at the recorded revision. Do not replace it with a newer upstream snapshot as a side effect of integrating this package.
 
 ## Immediate implementation tasks
 
@@ -49,7 +49,7 @@ Use [assets/render/selene](../../assets/render/selene/README.md) as the prepared
 
 `tools/prepare.py` inspects native identity and assembly metadata, makes an unreviewed body-role template, and compiles an opaque overlay only after source and target review. It emits the documented `appearance.assign` envelope, preserving physical materials. `tools/validate_prepared.py` checks the prepared package. Both are Python development tools, not application dependencies.
 
-The active source lock selects the improved `SELENE-showcase.solidcraft` and is currently `awaiting_native_source`. Acquire that exact native file, record its provenance/notices and hash, then resolve roles against evaluated geometry. Do not substitute the historical `selene-bindings.json` IDs. No current native target map is claimed.
+The active [source lock](../../assets/render/selene/source-lock.json) is `pinned_native` and selects the unchanged, owner-supplied [SELENE-showcase.solidcraft](../../assets/render/selene/source/SELENE-showcase.solidcraft). Its exact identity, provenance, notices and executor compatibility are recorded in [SOURCE.md](../../assets/render/selene/SOURCE.md). Source-container mechanism bindings now exist; the derivative's [mechanism work](../../assets/render/selene/MECHANISMS.md), [electronics reconstruction](../../assets/render/selene/ELECTRONICS.md) and [native build tool](../../assets/render/selene/tools/build.py) use the admitted source. Continue verifying exact evaluated targets, joint movement and final-model evidence on the chosen executor. Do not substitute the historical `selene-bindings.json` IDs or infer full-model acceptance from source admission and isolated fixtures.
 
 ## Suggested first resource slice
 
