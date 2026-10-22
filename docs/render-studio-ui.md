@@ -58,3 +58,12 @@ Actual application screenshots must be captured from an isolated native applicat
 ### Isolated native review profile
 
 The desktop application accepts `SOLIDCRAFT_SETTINGS_DIR` as an explicit absolute directory for its settings, graphics preference and startup marker. Invalid/relative/file paths refuse before startup; an explicit profile never adopts the ordinary or legacy settings. Without the variable, normal behavior is unchanged. This is profile isolation, not a filesystem sandbox. Set the existing recovery/crash/control directory overrides separately when running a disposable native review. It allows the actual hardware application to be exercised without rewriting personal preferences or substituting safe-mode/software behavior.
+
+
+## Full-detail live preview and bounded refusal
+
+The live preview preserves all captured visible product triangles. Expanded PBR/legacy/glass vertex bytes are counted before allocating output buffers, which are reserved once and uploaded through the existing device-sized chunk path. Native 64-bit builds admit at most 512 MiB of vertex payload; web/restricted targets retain 128 MiB. These are payload bounds, not promises about total GPU memory, retained CAD history or runtime speed. Output image jobs retain their separate CPU/GPU envelopes.
+
+The Diagnostics page shows the actual admitted live-preview payload. A refused capture is cached, not rebuilt on every repaint. An explicit Retry live preview action or a changed captured scene rechecks it. The shared-kit wrapped error card remains legible independently of the user-selected scene background, and leaves shot editing and image-job controls available. This display remains the fixed-light product preview, not evidence that an authored HDR/material effect has been path traced.
+
+Closing a complex native document must not consume a timeline-sized call stack. Naming ancestry and placed-copy ownership are reclaimed iteratively only when uniquely owned; live shared snapshots retain their geometry and naming identity. The full-master close/quit check is a separate native acceptance step, not inferred from layout screenshots.

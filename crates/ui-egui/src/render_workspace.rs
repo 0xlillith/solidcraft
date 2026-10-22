@@ -15,7 +15,10 @@ use solidcraft_engine::render::{
 use crate::gpu::{Frame, GpuScene, SceneSlot, ViewportCallback};
 use crate::{SolveApp, theme::Tokens};
 
-const MAX_GEOMETRY_BYTES: usize = 128 * 1024 * 1024;
+// Vertex payload only, not an OS/GPU peak-memory promise. Native viewport
+// uploads are already chunked by the installed device's buffer limit.
+const MAX_GEOMETRY_BYTES: usize =
+    if cfg!(all(not(target_arch = "wasm32"), target_pointer_width = "64")) { 512 * 1024 * 1024 } else { 128 * 1024 * 1024 };
 
 #[path = "render_workspace_cpu.rs"]
 mod cpu;
@@ -58,6 +61,8 @@ pub struct State {
     key: Option<u64>,
     scene_signature: Option<(u64, usize, u64)>,
     scene: Option<ProductScene>,
+    scene_error: Option<String>,
+    preview_upload_bytes: Option<usize>,
     image: Option<(solidcraft_engine::render::job::JobId, Result<egui::TextureHandle, String>)>,
     image_info: Option<solidcraft_engine::render::job::FrameInfo>,
     preview_image: Option<PreviewImage>,
@@ -288,6 +293,8 @@ impl Default for State {
             key: None,
             scene_signature: None,
             scene: None,
+            scene_error: None,
+            preview_upload_bytes: None,
             image: None,
             image_info: None,
             preview_image: None,
@@ -399,7 +406,12 @@ pub fn invalidate_scene(app: &mut SolveApp) {
     app.render_workspace.revision = u64::MAX;
     app.render_workspace.scene_signature = None;
     app.render_workspace.scene = None;
+    app.render_workspace.scene_error = None;
+    app.render_workspace.preview_upload_bytes = None;
     app.render_workspace.key = None;
+    if let Ok(mut slot) = app.render_workspace.slot.lock() {
+        *slot = None;
+    }
 }
 
 pub fn enter(app: &mut SolveApp, render: bool) -> Result<(), String> {
@@ -1214,6 +1226,77 @@ fn show_result(app: &mut SolveApp, ui: &mut egui::Ui) {
     painter.galley(badge.min + egui::vec2(t.space_8, t.space_8 * 0.5), label, t.text);
 }
 
+impl State {
+    fn prepare_preview(&mut self, signature: (u64, usize, u64), capture: impl FnOnce() -> Result<ProductScene, String>) -> Result<(), String> {
+        if self.scene_signature != Some(signature) {
+            let prepared = capture().and_then(|scene| gpu_scene(&scene).map(|(key, gpu)| (scene, key, gpu)));
+            self.scene_signature = Some(signature);
+            match prepared {
+                Ok((scene, key, gpu)) => {
+                    let bytes = gpu.pbr.len() + gpu.tris.len() + gpu.glass.len();
+                    if self.key != Some(key) {
+                        let uploaded = match self.slot.lock() {
+                            Ok(mut slot) => {
+                                *slot = Some(gpu);
+                                true
+                            }
+                            Err(_) => false,
+                        };
+                        if !uploaded {
+                            let error = "product preview upload slot unavailable".to_string();
+                            self.scene = None;
+                            self.key = None;
+                            self.preview_upload_bytes = None;
+                            self.scene_error = Some(error.clone());
+                            return Err(error);
+                        }
+                        self.key = Some(key);
+                    }
+                    self.scene = Some(scene);
+                    self.scene_error = None;
+                    self.preview_upload_bytes = Some(bytes);
+                }
+                Err(error) => {
+                    self.scene = None;
+                    self.key = None;
+                    self.preview_upload_bytes = None;
+                    if let Ok(mut slot) = self.slot.lock() {
+                        *slot = None;
+                    }
+                    self.scene_error = Some(error);
+                }
+            }
+        }
+        match &self.scene_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Use the shared kit's wrapped, themed error surface, not text painted directly
+/// on the user-selected background (which may have the opposite theme contrast).
+fn preview_error(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::Rect, error: &str) {
+    let t = Tokens::get();
+    let bounded = rect.shrink(t.space_12);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bounded), |ui| {
+        ui.set_max_width(bounded.width().min(t.form_card_width * 2.0));
+        crate::ui_kit::Panel::feature_frame(ui.ctx(), crate::shell::LayoutMode::Floating, crate::frame::Side::Left).inner_margin(t.space_8).show(
+            ui,
+            |ui| {
+                crate::ui_kit::text(ui, error, crate::ui_kit::Text::Error("render.preview_failure"));
+                crate::ui_kit::text(ui, app.tr("render.preview_unavailable_help"), crate::ui_kit::Text::Note("render.preview_unavailable_help"));
+                let retry = crate::ui_kit::button(ui, app.tr("render.preview_retry"), crate::ui_kit::Button::Normal);
+                crate::scenario::publish_target("render:preview-retry", retry.rect);
+                if retry.clicked() {
+                    invalidate_scene(app);
+                    ui.ctx().request_repaint();
+                }
+            },
+        );
+    });
+}
+
 /// Keep the selected image and overwrite consent fixed while the upstream picker holds model input.
 fn export_image(app: &mut SolveApp, job: solidcraft_engine::render::job::JobId, overwrite: bool) {
     let origin = app.session.doc.clone();
@@ -1227,18 +1310,85 @@ fn export_image(app: &mut SolveApp, job: solidcraft_engine::render::job::JobId, 
     });
 }
 
-/// Convert only product surfaces; geometry budgets are admitted before vertex allocation.
-pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
-    let bytes = scene
-        .meshes
-        .iter()
-        .try_fold(0usize, |n, m| m.mesh.triangles.len().checked_mul(3 * crate::gpu::PBR_SIZE).and_then(|x| n.checked_add(x)))
-        .ok_or("product geometry size overflow")?;
-    if bytes > MAX_GEOMETRY_BYTES {
-        return Err("product preview exceeds the 128 MiB geometry upload budget".into());
+/// An exact expanded vertex payload, counted before allocating its buffers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PreviewUploadPlan {
+    pbr: usize,
+    tris: usize,
+    glass: usize,
+    source_triangles: usize,
+}
+impl PreviewUploadPlan {
+    fn bytes(self) -> Result<usize, String> {
+        self.pbr.checked_add(self.tris).and_then(|n| n.checked_add(self.glass)).ok_or_else(|| "product geometry size overflow".into())
     }
+    fn add(&mut self, pbr: bool, glass: bool, triangles: usize, limit: usize) -> Result<(), String> {
+        let stride = if pbr { crate::gpu::PBR_SIZE } else { crate::gpu::TRI_SIZE };
+        let bytes = triangles.checked_mul(3).and_then(|n| n.checked_mul(stride)).ok_or("product geometry size overflow")?;
+        let count = if pbr {
+            &mut self.pbr
+        } else if glass {
+            &mut self.glass
+        } else {
+            &mut self.tris
+        };
+        *count = count.checked_add(bytes).ok_or("product geometry size overflow")?;
+        if self.bytes()? > limit {
+            return Err(format!("product preview exceeds its {} MiB vertex payload envelope; geometry was not simplified", limit / (1024 * 1024)));
+        }
+        Ok(())
+    }
+}
+
+fn preview_upload_plan(scene: &ProductScene, limit: usize) -> Result<PreviewUploadPlan, String> {
+    if scene.meshes.len() > solidcraft_engine::render::job::MAX_CPU_BODIES {
+        return Err("product preview exceeds its captured-body bound".into());
+    }
+    let mut plan = PreviewUploadPlan::default();
+    for body in &scene.meshes {
+        plan.source_triangles = plan.source_triangles.checked_add(body.mesh.triangles.len()).ok_or("product triangle count overflow")?;
+        if plan.source_triangles > solidcraft_engine::render::job::MAX_CPU_TRIANGLES {
+            return Err("product preview exceeds its eight-million-triangle source bound".into());
+        }
+        if body.faces.len() > 262_144 {
+            return Err("product preview exceeds the face-appearance admission cap".into());
+        }
+        if !body.opacity.is_finite()
+            || !(0.0..=1.0).contains(&body.opacity)
+            || body.faces.iter().any(|face| !face.opacity.is_finite() || !(0.0..=1.0).contains(&face.opacity))
+        {
+            return Err("invalid product appearance opacity".into());
+        }
+        let looks: std::collections::BTreeMap<_, _> = body.faces.iter().map(|face| (face.face, face)).collect();
+        if looks.len() != body.faces.len() {
+            return Err("duplicate product face appearance".into());
+        }
+        for index in 0..body.mesh.triangles.len() {
+            let face = body.mesh.tri_face.get(index).and_then(|id| looks.get(id));
+            let (opacity, pbr) = face.map_or((body.opacity, body.surface.is_some() && body.transmission.is_none()), |face| {
+                (face.opacity, face.surface.is_some() && face.transmission.is_none())
+            });
+            if pbr && opacity != 1.0 {
+                return Err("opaque PBR requires opacity 1".into());
+            }
+            if opacity > 0.0 {
+                plan.add(pbr, opacity < 0.999, 1, limit)?;
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// Convert all captured surfaces, without decimation. The finite, exact payload
+/// plan is admitted first; each output vector is reserved once rather than grown
+/// once per triangle. Device uploads retain their existing chunked buffer path.
+pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
+    let plan = preview_upload_plan(scene, MAX_GEOMETRY_BYTES)?;
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     let mut gpu = GpuScene::default();
+    for (buffer, bytes) in [(&mut gpu.pbr, plan.pbr), (&mut gpu.tris, plan.tris), (&mut gpu.glass, plan.glass)] {
+        buffer.try_reserve_exact(bytes).map_err(|_| "product preview vertex allocation failed".to_string())?;
+    }
     for body in &scene.meshes {
         if body.faces.len() > 262_144 {
             return Err("product preview exceeds the face-appearance admission cap".into());
@@ -1282,14 +1432,6 @@ pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
             });
             let [Some(a), Some(b), Some(c)] = vertices else { return Err("invalid product triangle".into()) };
             let rgba = [color[0], color[1], color[2], (opacity * 255.0).round() as u8];
-            let (buffer, stride) = if surface.is_some() {
-                (&mut gpu.pbr, crate::gpu::PBR_SIZE)
-            } else if opacity < 0.999 {
-                (&mut gpu.glass, crate::gpu::TRI_SIZE)
-            } else {
-                (&mut gpu.tris, crate::gpu::TRI_SIZE)
-            };
-            buffer.try_reserve(3 * stride).map_err(|_| "product preview vertex allocation failed".to_string())?;
             for (p, n) in [a, b, c] {
                 if let Some(surface) = surface {
                     if n.iter().all(|v| *v == 0.0) {
@@ -1303,6 +1445,9 @@ pub fn gpu_scene(scene: &ProductScene) -> Result<(u64, GpuScene), String> {
                 }
             }
         }
+    }
+    if (gpu.pbr.len(), gpu.tris.len(), gpu.glass.len()) != (plan.pbr, plan.tris, plan.glass) {
+        return Err("product preview packing differs from its admitted vertex payload".into());
     }
     Ok((hash.finish(), gpu))
 }
@@ -1372,18 +1517,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.session.visibility.hidden_bodies.hash(&mut visibility);
         app.session.visibility.hidden_occurrences.hash(&mut visibility);
         let signature = (app.session.revision, Arc::as_ptr(&app.session.world_state()) as usize, visibility.finish());
-        if app.render_workspace.scene_signature != Some(signature) {
-            let scene = solidcraft_engine::product_scene::extract(&app.session).map_err(|e| e.to_string())?;
-            let (key, gpu) = gpu_scene(&scene)?;
-            if app.render_workspace.key != Some(key) {
-                if let Ok(mut slot) = app.render_workspace.slot.lock() {
-                    *slot = Some(gpu);
-                }
-                app.render_workspace.key = Some(key);
-            }
-            app.render_workspace.scene = Some(scene);
-            app.render_workspace.scene_signature = Some(signature);
-        }
+        app.render_workspace
+            .prepare_preview(signature, || solidcraft_engine::product_scene::extract(&app.session).map_err(|error| error.to_string()))?;
         let scene = app.render_workspace.scene.as_ref().ok_or("no product scene")?;
         request.features = scene.required_features();
         solidcraft_engine::render::resolve_request(&[app.session.render_backend()], &request).map_err(|e| e.to_string())?;
@@ -1425,13 +1560,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         Ok(())
     })();
     if let Err(error) = result {
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            error,
-            egui::FontId::proportional(crate::theme::Tokens::get().font_heading),
-            Tokens::get().text,
-        );
+        preview_error(app, ui, rect, &error);
     }
     crate::viewport::axis_view(app, ui, rect);
 }

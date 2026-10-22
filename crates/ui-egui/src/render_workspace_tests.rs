@@ -2447,3 +2447,124 @@ fn dirty_indication_preserves_reload_and_resource_picker_hit_targets() {
     assert!(!h.app.render_workspace.view.dirty);
     assert_eq!(h.app.render_workspace.view.draft.exposure_ev, 0.0);
 }
+
+#[test]
+fn product_preview_exact_payload_preserves_mixed_surfaces_and_refuses_overflow() {
+    let mut session = Session::default();
+    for (name, x) in [("Paint", 0), ("Legacy", 20), ("Glass", 40)] {
+        session.execute("solid.box", &json!({"base":[x,0,0],"length":10,"width":10,"height":10,"body_name":name})).unwrap();
+    }
+    session
+        .execute("appearance.assign", &json!({"bodies":["Paint"],"color":"#c07030","pbr":{"metallic":0,"roughness":0.4,"dielectric_ior":1.5}}))
+        .unwrap();
+    session.execute("appearance.assign", &json!({"bodies":["Glass"],"color":"#336699","opacity":0.4})).unwrap();
+    let original = session.doc.to_json();
+    let scene = solidcraft_engine::product_scene::extract(&session).unwrap();
+    let plan = preview_upload_plan(&scene, MAX_GEOMETRY_BYTES).unwrap();
+    let (_, gpu) = gpu_scene(&scene).unwrap();
+    assert_eq!((plan.pbr, plan.tris, plan.glass), (gpu.pbr.len(), gpu.tris.len(), gpu.glass.len()));
+    assert!(plan.pbr > 0 && plan.tris > 0 && plan.glass > 0);
+    assert_eq!(plan.source_triangles, scene.meshes.iter().map(|b| b.mesh.triangles.len()).sum::<usize>());
+    assert!(preview_upload_plan(&scene, plan.bytes().unwrap() - 1).is_err());
+    assert!(PreviewUploadPlan::default().add(true, false, usize::MAX, MAX_GEOMETRY_BYTES).is_err());
+    assert_eq!(session.doc.to_json(), original);
+    let mut invalid = scene.clone();
+    let source = invalid.meshes[0].mesh.clone();
+    Arc::make_mut(&mut invalid.meshes[0].mesh).triangles[0][0] = u32::MAX;
+    assert!(gpu_scene(&invalid).is_err());
+    assert!(gpu_scene(&scene).is_ok());
+    assert!(Arc::ptr_eq(&scene.meshes[0].mesh, &source));
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn full_detail_preview_source_can_exceed_legacy_128_mib_without_mesh_reduction() {
+    use solidcraft_engine::geom::{Mesh, Vec3};
+    use solidcraft_engine::render::{ProductMesh, surface::OpaqueSurface};
+    // One immutable original triangle repeated in the index list; this tests
+    // payload admission only. Actual SELENE upload is separate native evidence.
+    let count = (128 * 1024 * 1024) / (3 * crate::gpu::PBR_SIZE) + 1;
+    let mesh = Arc::new(Mesh {
+        positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+        normals: vec![Vec3::Z; 3],
+        triangles: vec![[0, 1, 2]; count],
+        ..Default::default()
+    });
+    let body = ProductMesh {
+        name: "Original admission fixture".into(),
+        mesh: mesh.clone(),
+        color: [200, 100, 50],
+        opacity: 1.0,
+        surface: Some(OpaqueSurface::new(Vec3::new(0.4, 0.2, 0.1), 0.0, 0.4, 1.5).unwrap()),
+        transmission: None,
+        faces: Vec::new(),
+    };
+    let scene = ProductScene { meshes: vec![body], bounds: mesh.bounds() };
+    assert!(preview_upload_plan(&scene, 128 * 1024 * 1024).is_err());
+    let plan = preview_upload_plan(&scene, MAX_GEOMETRY_BYTES).unwrap();
+    assert_eq!(plan.source_triangles, count);
+    assert_eq!(plan.bytes().unwrap(), count * 3 * crate::gpu::PBR_SIZE);
+    assert!(Arc::ptr_eq(&scene.meshes[0].mesh, &mesh));
+    let mut maximum = PreviewUploadPlan::default();
+    assert!(maximum.add(true, false, MAX_GEOMETRY_BYTES / (3 * crate::gpu::PBR_SIZE) + 1, MAX_GEOMETRY_BYTES).is_err());
+}
+
+#[test]
+fn refused_product_capture_is_cached_until_identity_changes_or_explicit_retry() {
+    let mut h = Harness::new();
+    let calls = std::cell::Cell::new(0);
+    let signature = (7, 123, 99);
+    for _ in 0..8 {
+        assert_eq!(
+            h.app
+                .render_workspace
+                .prepare_preview(signature, || {
+                    calls.set(calls.get() + 1);
+                    Err("original bounded refusal".into())
+                })
+                .unwrap_err(),
+            "original bounded refusal"
+        );
+    }
+    assert_eq!(calls.get(), 1, "same refused source is not rebuilt every frame");
+    assert!(h.app.render_workspace.scene.is_none() && h.app.render_workspace.key.is_none());
+    assert!(h.app.render_workspace.slot.lock().unwrap().is_none());
+    assert!(
+        h.app
+            .render_workspace
+            .prepare_preview((8, 123, 99), || {
+                calls.set(calls.get() + 1);
+                Err("new revision".into())
+            })
+            .is_err()
+    );
+    assert_eq!(calls.get(), 2);
+    invalidate_scene(&mut h.app);
+    assert!(h.app.render_workspace.scene_signature.is_none() && h.app.render_workspace.scene_error.is_none());
+    let mut session = Session::default();
+    session.execute("solid.box", &json!({"length":1,"width":1,"height":1})).unwrap();
+    h.app.render_workspace.prepare_preview(signature, || solidcraft_engine::product_scene::extract(&session).map_err(|e| e.to_string())).unwrap();
+    assert!(h.app.render_workspace.scene_error.is_none());
+    assert!(h.app.render_workspace.preview_upload_bytes.unwrap() > 0);
+    assert!(h.app.render_workspace.key.is_some() && h.app.render_workspace.scene.is_some());
+}
+
+#[test]
+fn product_preview_error_uses_shared_wrapped_surface_and_explicit_retry_target() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1280,"height":800}));
+    enter(&mut h.app, true).unwrap();
+    h.frames(3);
+    let rect = egui::Rect::from_min_size(egui::pos2(260.0, 200.0), egui::vec2(550.0, 360.0));
+    let message = "The original captured product geometry exceeds its bounded preview admission. The renderer must preserve all exact body identities and cannot silently simplify or drop geometry to paint this view.";
+    let output = h.ctx.run_ui(
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), ..Default::default() },
+        |ui| preview_error(&mut h.app, ui, rect, message),
+    );
+    let _ = output;
+    let note = crate::scenario::rect_of("dialog:report:render.preview_failure").unwrap();
+    let retry = crate::scenario::rect_of("render:preview-retry").unwrap();
+    assert!(rect.contains_rect(note) && rect.contains_rect(retry));
+    assert!(note.height() > Tokens::get().font_body, "the detailed failure wraps instead of escaping the viewport");
+    assert!(crate::theme::contrast_ratio(Tokens::get().form_error, Tokens::get().form_error_fill) >= 3.0);
+}

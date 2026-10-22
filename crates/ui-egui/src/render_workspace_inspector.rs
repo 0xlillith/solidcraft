@@ -50,7 +50,7 @@ impl Page {
             Self::Scene => "render_scene",
             Self::Appearance => "appearance",
             Self::Lighting => "settings",
-            Self::Environment => "ws_render",
+            Self::Environment => "environment_map",
             Self::Camera => "camera",
             Self::Output => "export",
             Self::Diagnostics => "inspect",
@@ -763,6 +763,13 @@ fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
     Ok(())
 }
 fn diagnostics(app: &mut SolveApp, ui: &mut egui::Ui) {
+    if let Some(bytes) = app.render_workspace.preview_upload_bytes {
+        ui.label(format!("{}: {:.2} / {} MiB", app.tr("render.preview_upload"), bytes as f64 / 1048576.0, super::MAX_GEOMETRY_BYTES / 1048576));
+        ui_kit::text(ui, app.tr("render.preview_upload_help"), ui_kit::Text::Note("render.preview_upload_help"));
+    }
+    if let Some(error) = &app.render_workspace.scene_error {
+        ui_kit::text(ui, error, ui_kit::Text::Error("render.preview_cached_error"));
+    }
     let request = super::image_request(app);
     ui.strong(app.tr(app.render_workspace.view.method.label()));
     if let Err(error) = super::image_params(app) {
