@@ -71,6 +71,14 @@ class GateChecks(unittest.TestCase):
             self.assertEqual(result["exit_code"], 7)
             self.assertIn("diagnostic", (root / result["stdout"]).read_text())
 
+    def test_physical_references_run_in_both_gate_modes(self):
+        for authoring_only in (True, False):
+            commands = dict(check_all.stages(authoring_only, False))
+            self.assertIn("physical-tests", commands)
+            self.assertIn("physical-references", commands)
+            self.assertIn("validate", commands["physical-references"])
+            self.assertNotIn("build", commands["physical-references"])
+
     def test_authoring_only_is_explicit_and_native_is_default(self):
         self.assertIn("native-admission", {name for name, _ in check_all.stages(False, False)})
         self.assertNotIn("native-admission", {name for name, _ in check_all.stages(True, False)})

@@ -852,3 +852,14 @@ A frame whose meshes the GPU refuses to stage (device lost or out of memory) is
 skipped with a warning instead of panicking (#1469).
 Paint callbacks are prepared only after a drawable is acquired, so a skipped
 surface frame cannot strand cached meshes without their GPU initialization.
+| assets/render/physical/bindings.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/exports/coverage.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/exports/native-cards.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/profiles.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/quantities.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/sources.json | SolidCraft contributors | original physical-reference curation, associations or derived schema-1 export; per-fact public sources retained without relicensing their publications | MIT OR Apache-2.0 |
+| assets/render/physical/tools/check_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
+| assets/render/physical/tools/physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
+| assets/render/physical/tools/test_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
+| assets/render/physical/tools/export_library.py | SolidCraft contributors | original explicit reference-library planner and native no-loss export verifier; no external code | MIT OR Apache-2.0 |
+| assets/render/physical/tools/test_export_library.py | SolidCraft contributors | original regressions for native capability refusal, source identity and physical-card preservation | MIT OR Apache-2.0 |
