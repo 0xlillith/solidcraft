@@ -1564,6 +1564,10 @@ fn texture_fixture(frame: solidcraft_render::job::textures::PlanarFrame) -> Arc<
             normal_strength: 0.75,
             base_color: Some(map(&[128, 64, 255, 0, 255, 0, 32, 255, 64, 128, 192, 0, 0, 255, 128, 255], MapRole::BaseColor)),
             normal: Some(map(&[128, 128, 255, 0, 192, 128, 224, 255, 128, 192, 224, 0, 64, 96, 224, 255], MapRole::NormalOpenGl)),
+            roughness: None,
+            metallic: None,
+            base_color_mode: Default::default(),
+            flip_v: false,
         }])
         .unwrap(),
     )
@@ -2611,5 +2615,83 @@ fn path_devices_are_vulkan_only() {
     }
     if !crate::select::native_backends().contains(wgpu::Backends::VULKAN) {
         assert!(picked.is_none());
+    }
+}
+
+#[test]
+fn identical_maps_pack_once_for_multiple_gpu_bodies() {
+    use solidcraft_render::job::textures::{PlanarFrame, RuntimeTextures};
+    let fixture = texture_fixture(PlanarFrame { origin: [0.0; 3], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0] });
+    let first = fixture.bindings()[0].clone();
+    let mut second = first.clone();
+    second.body_index = 1;
+    second.body_name = "Second body".into();
+    let input = RuntimeTextures::new(vec![first, second]).unwrap();
+    let bytes = textures::flatten(Some(&input), 2, Vec3::ZERO, &CancelToken::default()).unwrap();
+    let word = |i: usize| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+    let a = word(5);
+    let b = word(6);
+    assert_ne!(a, b, "bindings keep separate coordinate records");
+    assert_eq!(word(a + 3), word(b + 3), "one color payload");
+    assert_eq!(word(a + 12), word(b + 12), "one normal payload");
+}
+
+#[test]
+fn gpu_scalar_maps_match_linear_reference_without_touching_ior() {
+    use image::ImageEncoder;
+    use solidcraft_render::{
+        job::textures::{PlanarFrame, RuntimeTextures, TextureMap},
+        texture_input::MapRole,
+    };
+    let Some(executor) = executor() else { return };
+    let context = &executor.context;
+    let scalar = |value: u8, role| {
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes).write_image(&[value, value, value, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+        TextureMap::new(bytes, role).unwrap()
+    };
+    let fixture = texture_fixture(PlanarFrame { origin: [0.0; 3], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0] });
+    let mut binding = fixture.bindings()[0].clone();
+    binding.base_color = None;
+    binding.normal = None;
+    binding.flip_v = true;
+    binding.roughness = Some(scalar(192, MapRole::Roughness));
+    binding.metallic = Some(scalar(64, MapRole::Metallic));
+    let source = Arc::new(RuntimeTextures::new(vec![binding]).unwrap());
+    let shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&context.layout)],
+        immediate_size: 0,
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("texture_scalar_reference"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let mut input = request(2);
+    input.textures = Some(source);
+    let mut task = Task::new(context.clone(), sphere(white()), input, JobOptions::default(), CancelToken::default()).unwrap();
+    let mut params = vec![0; 32];
+    scene::vector(&mut params, Vec3::ZERO, 0.0);
+    scene::vector(&mut params, Vec3::ZERO, 0.0);
+    scene::vector(&mut params, Vec3::Z, 0.0);
+    scene::vector(&mut params, Vec3::Z, 0.0);
+    context.queue.write_buffer(&task.uniform, 0, &params);
+    let mut encoder = context.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &task.bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    context.queue.submit([encoder.finish()]);
+    task.sample = 1;
+    let actual = task.read_linear().unwrap();
+    for (a, b) in actual[0].iter().zip([64.0 / 255.0, 192.0 / 255.0, 1.5]) {
+        assert!((f64::from(*a) - b).abs() < 2e-6, "scalar map {actual:?}");
     }
 }

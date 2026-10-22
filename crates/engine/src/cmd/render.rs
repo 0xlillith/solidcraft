@@ -13,6 +13,8 @@ use crate::{Result, Session};
 mod clear_coat;
 mod environment;
 mod jobs;
+mod library;
+mod library_data;
 #[cfg(test)]
 mod light_union_tests;
 mod resources;
@@ -20,6 +22,22 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.library.targets", "Find Render Library Targets", library::targets).icon("list").noundo()
+    .params("query?: exact-name substring; offset?:0; limit?:128 (1..128). Returns a bounded page of captured body ordinals/names, revision and scene bounds. Settles the model through ordinary command handling; never returns a large mesh payload."),
+CommandSpec::new("render.library.list", "Browse Render Library", library::list).icon("list").noundo().doc_only()
+    .params("kind?: surfaces, selene_appearances, hdr, rigs, scenes, materials, lighting, environments, quality or capabilities; query?: bounded search; offset?:0; limit?:48 (1..128). Returns source status and explicit implemented projections separately. No device, file IO or design change."),
+CommandSpec::new("render.library.describe", "Inspect Render Library Resource", library::describe).icon("inspect").noundo().doc_only()
+    .params("kind, id: exact authored resource. Returns original specification, runtime projection variants and explicit omissions. A concept is not an executable preset."),
+CommandSpec::new("render.library.appearance.apply", "Apply Library Opaque Appearance", library::apply_appearance).icon("appearance")
+    .params("id: SURF-* or SELENE-AP-*; variant: uniform_opaque (required); bodies: 1..256 exact body names. Applies the original scalar baseline through ordinary appearance assignment in one undo, preserving physical properties. Spatial maps and advanced target effects are explicitly excluded."),
+CommandSpec::new("render.library.environment.apply", "Apply Built-in HDR Environment", library::apply_environment).icon("settings").doc_only()
+    .params("id: HDR-*; name: saved setup; set?: typed CPU/GPU setup patch; rotation_rad?: authored rotation (native origin offset is explicit in the reply); intensity?:1; samples?:16 for CPU; replace_environment?:false. Hash-verifies and embeds original bytes, saves one atomic undo without external files or a render device. An HDR-owned sun cannot duplicate an analytic sun."),
+CommandSpec::new("render.library.surface.prepare", "Prepare Authored Surface Maps", library::prepare_surface).icon("appearance").noundo()
+    .params("id: SURF-*; body_index and body_name from render.scene; origin?:[0,0,0]; plane?:xy/yz/zx; scale?:1. Returns an explicit GPU planar map binding with source hashes, original millimetre scale, image-up normal orientation and absolute base-color semantics. No document change; height/displacement and true anisotropy are not included."),
+CommandSpec::new("render.library.studio.prepare", "Prepare Authored Studio Lights", library::prepare_studio).icon("inspect").noundo().doc_only()
+    .params("id: RIG-*; variant: complete for emitter-only rigs, emitters_only for rigs with passive cards; center_mm and subject_extent_mm required. Converts exact rectangular half-edges and solar direction/radius to GPU lighting. Blocked calibration and external-sun rigs refuse. Returns a geometry-clearance review requirement; does not create cards or modify the scene."),
+CommandSpec::new("render.library.studio.apply", "Apply Authored Studio Lights", library::apply_studio).icon("settings").doc_only()
+    .params("rig: render.library.studio.prepare parameters; name; set?: typed GPU setup patch; replace_lighting_and_environment:true required. Saves the explicit rig projection in one undo, removing prior lighting/environment only with that confirmation. Subject clearance still needs review; passive cards are never silently omitted."),
 CommandSpec::new("render.hdr.inspect", "Inspect HDR Source", resources::inspect).icon("inspect").noundo().doc_only()
     .params("path: scoped Radiance HDR file; validates the complete bounded source and returns sha256, width, height, encoded_bytes and primaries without saving or rendering"),
 CommandSpec::new("render.settings.capture_hdr", "Save Render Settings with HDR", resources::capture_settings).icon("settings").doc_only()

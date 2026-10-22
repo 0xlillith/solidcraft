@@ -23,6 +23,9 @@ mod cpu;
 #[path = "render_workspace_hdr.rs"]
 mod hdr;
 
+#[path = "render_workspace_library.rs"]
+mod library;
+
 #[path = "render_workspace_materials.rs"]
 mod materials;
 
@@ -200,6 +203,7 @@ pub struct ViewState {
     seed: u32,
     studio: studio::View,
     materials: materials::View,
+    library: library::View,
 
     cpu: cpu::View,
     overwrite: bool,
@@ -252,6 +256,7 @@ impl Default for ViewState {
             seed: 0,
             studio: studio::View::default(),
             materials: materials::View::default(),
+            library: library::View::default(),
 
             cpu: cpu::View::default(),
             overwrite: false,
@@ -764,6 +769,7 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             studio::controls(app, ui);
         });
     }
+    library::controls(app, ui);
     materials::controls(app, ui);
     let transparent_label = app.tr("render.image_transparent").to_string();
     crate::ui_kit::checkbox(ui, &transparent_label, &mut app.render_workspace.view.transparent);

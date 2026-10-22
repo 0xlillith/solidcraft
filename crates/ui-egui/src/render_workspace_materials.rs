@@ -10,12 +10,17 @@ use solidcraft_engine::{
         appearance_pack::{self, GlassBoundary, Recipe},
     },
     geom::Vec3,
-    render::{clear_coat::ClearCoat, job::textures::PlanarFrame, surface::OpaqueSurface, transmission::Transmission},
+    render::{
+        clear_coat::ClearCoat,
+        job::textures::{BaseColorMode, PlanarFrame},
+        surface::OpaqueSurface,
+        transmission::Transmission,
+    },
 };
 
 use crate::{SolveApp, theme::Tokens, ui_kit};
 
-const MAX_BINDINGS: usize = 64;
+const MAX_BINDINGS: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub(super) struct Target {
@@ -97,6 +102,10 @@ impl Default for Coat {
 pub(super) struct Maps {
     pub color: String,
     pub normal: String,
+    pub roughness: String,
+    pub metallic: String,
+    pub base_color_mode: BaseColorMode,
+    pub flip_v: bool,
     pub strength: f64,
     pub frame: PlanarFrame,
 }
@@ -105,6 +114,10 @@ impl Default for Maps {
         Self {
             color: String::new(),
             normal: String::new(),
+            roughness: String::new(),
+            metallic: String::new(),
+            base_color_mode: BaseColorMode::Modulate,
+            flip_v: false,
             strength: 1.0,
             frame: PlanarFrame { origin: [0.0; 3], u: [10.0, 0.0, 0.0], v: [0.0, 10.0, 0.0] },
         }
@@ -239,28 +252,36 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
         if binding.maps_enabled {
             let value = &binding.maps;
             value.frame.validate().map_err(|e| e.to_string())?;
-            if value.color.is_empty() && value.normal.is_empty() {
+            if value.color.is_empty() && value.normal.is_empty() && value.roughness.is_empty() && value.metallic.is_empty() {
                 return Err(app.tr("render.material_map_required").to_string());
             }
             if !value.strength.is_finite()
                 || !(0.0..=1.0).contains(&value.strength)
-                || [&value.color, &value.normal].iter().any(|p| p.len() > 4096 || p.chars().any(char::is_control))
+                || [&value.color, &value.normal, &value.roughness, &value.metallic].iter().any(|p| p.len() > 4096 || p.chars().any(char::is_control))
             {
                 return Err(app.tr("render.material_map_invalid").to_string());
             }
             let mut wire = identity();
             wire["frame"] = json!(value.frame);
             wire["normal_strength"] = json!(value.strength);
+            wire["base_color_mode"] = json!(value.base_color_mode);
+            wire["flip_v"] = json!(value.flip_v);
             if !value.color.is_empty() {
                 wire["base_color_srgb"] = json!(value.color);
             }
             if !value.normal.is_empty() {
                 wire["normal_opengl"] = json!(value.normal);
             }
+            if !value.roughness.is_empty() {
+                wire["roughness_linear"] = json!(value.roughness);
+            }
+            if !value.metallic.is_empty() {
+                wire["metallic_linear"] = json!(value.metallic);
+            }
             textures.push(wire);
         }
     }
-    if glass.len() > 8 || textures.len() > 16 {
+    if glass.len() > 8 || textures.len() > solidcraft_engine::render::job::textures::MAX_TEXTURE_BINDINGS {
         return Err(app.tr("render.material_limits").to_string());
     }
     params["raytrace"] = json!({"dielectrics":glass,"clear_coats":coats,"textures":textures});
@@ -469,7 +490,32 @@ fn coat_controls(app: &SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
     });
 }
 
-fn choose_map(app: &mut SolveApp, binding: &Binding, normal: bool) {
+#[derive(Clone, Copy)]
+enum MapSlot {
+    Color,
+    Normal,
+    Roughness,
+    Metallic,
+}
+impl MapSlot {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Color => "render.material_color_map",
+            Self::Normal => "render.material_normal_map",
+            Self::Roughness => "render.material_roughness_map",
+            Self::Metallic => "render.material_metallic_map",
+        }
+    }
+    fn field(self, maps: &mut Maps) -> &mut String {
+        match self {
+            Self::Color => &mut maps.color,
+            Self::Normal => &mut maps.normal,
+            Self::Roughness => &mut maps.roughness,
+            Self::Metallic => &mut maps.metallic,
+        }
+    }
+}
+fn choose_map(app: &mut SolveApp, binding: &Binding, slot: MapSlot) {
     let target = binding.target.clone();
     let origin = binding.document.clone();
     let revision = binding.revision;
@@ -486,13 +532,63 @@ fn choose_map(app: &mut SolveApp, binding: &Binding, normal: bool) {
                 .iter_mut()
                 .find(|b| b.target == target && b.revision == revision && Weak::ptr_eq(&b.document, &origin))
         {
-            if normal {
-                binding.maps.normal = path;
-            } else {
-                binding.maps.color = path;
-            }
+            *slot.field(&mut binding.maps) = path;
         }
     });
+}
+
+/// Prepare through the engine, then install only a request-local binding. No
+/// authored material may silently remove a glass override or switch executor.
+pub(super) fn install_library_surface(app: &mut SolveApp, id: &str, target: Target) -> Result<(), String> {
+    if app.render_workspace.view.method != super::ImageMethod::GpuRaytrace {
+        return Err(app.tr("render.material_gpu_required").into());
+    }
+    let existing = app.render_workspace.view.materials.bindings.iter().position(|b| b.target == target);
+    if let Some(index) = existing {
+        let binding = app.render_workspace.view.materials.bindings.get(index).ok_or_else(|| "missing material binding".to_string())?;
+        if !binding.current(app) {
+            return Err(app.tr("render.material_revalidate_needed").into());
+        }
+        if binding.glass_enabled {
+            return Err(app.tr("render.material_glass_exclusive").into());
+        }
+    } else if app.render_workspace.view.materials.bindings.len() >= MAX_BINDINGS {
+        return Err(app.tr("render.material_limits").into());
+    }
+    let reply = app.run("render.library.surface.prepare", json!({"id":id,"body_index":target.ordinal,"body_name":target.name}))?;
+    let texture = &reply["texture"];
+    let frame: PlanarFrame = serde_json::from_value(texture["frame"].clone()).map_err(|e| e.to_string())?;
+    let path = |key: &str| texture[key].as_str().map(str::to_string).ok_or_else(|| "invalid authored surface reply".to_string());
+    let maps = Maps {
+        color: path("base_color_srgb")?,
+        normal: path("normal_opengl")?,
+        roughness: path("roughness_linear")?,
+        metallic: path("metallic_linear")?,
+        strength: 1.0,
+        frame,
+        base_color_mode: BaseColorMode::Replace,
+        flip_v: true,
+    };
+    let mut binding = if let Some(index) = existing {
+        app.render_workspace.view.materials.bindings.get(index).cloned().ok_or_else(|| "missing material binding".to_string())?
+    } else {
+        Binding::new(target, app)
+    };
+    binding.maps = maps;
+    binding.maps_enabled = true;
+    binding.enabled = true;
+    let view = &mut app.render_workspace.view.materials;
+    if let Some(index) = existing {
+        *view.bindings.get_mut(index).ok_or_else(|| "missing material binding".to_string())? = binding;
+        view.selected = Some(index);
+    } else {
+        view.bindings.try_reserve(1).map_err(|_| "could not reserve material binding".to_string())?;
+        view.bindings.push(binding);
+        view.selected = Some(view.bindings.len() - 1);
+    }
+    view.enabled = true;
+    app.render_workspace.view.dirty = true;
+    Ok(())
 }
 
 fn map_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
@@ -503,16 +599,21 @@ fn map_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
             if !binding.maps_enabled {
                 return;
             }
-            for normal in [false, true] {
-                let key = if normal { "render.material_normal_map" } else { "render.material_color_map" };
+            for slot in [MapSlot::Color, MapSlot::Normal, MapSlot::Roughness, MapSlot::Metallic] {
+                let key = slot.key();
                 ui.label(app.tr(key));
-                let path = if normal { &mut binding.maps.normal } else { &mut binding.maps.color };
+                let path = slot.field(&mut binding.maps);
                 ui_kit::bounded_cell_editor(ui, ui.id().with(key), path, "", false, 4096);
                 let label = app.tr("render.material_browse").to_string();
                 if ui_kit::button(ui, label, ui_kit::Button::Enabled(binding.current(app))).clicked() {
-                    choose_map(app, binding, normal);
+                    choose_map(app, binding, slot);
                 }
             }
+            let mut absolute = binding.maps.base_color_mode == BaseColorMode::Replace;
+            if ui_kit::checkbox(ui, app.tr("render.material_color_replace"), &mut absolute).changed() {
+                binding.maps.base_color_mode = if absolute { BaseColorMode::Replace } else { BaseColorMode::Modulate };
+            }
+            ui_kit::checkbox(ui, app.tr("render.material_v_up"), &mut binding.maps.flip_v);
             ui.label(app.tr("render.material_normal_strength"));
             ui_kit::number_field(ui, &mut binding.maps.strength, 0.0..=1.0, 0.01, "");
             vector(app, ui, "render.material_origin", &mut binding.maps.frame.origin, -1e6..=1e6, " mm");

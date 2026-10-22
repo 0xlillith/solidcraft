@@ -707,6 +707,10 @@ fn texture_payload_is_owned_by_admitted_work_not_retained_status() {
                 normal_strength: 1.,
                 base_color: Some(TextureMap::new(bytes, crate::texture_input::MapRole::BaseColor).unwrap()),
                 normal: None,
+                roughness: None,
+                metallic: None,
+                base_color_mode: Default::default(),
+                flip_v: false,
             }])
             .unwrap(),
         );

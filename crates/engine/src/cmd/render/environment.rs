@@ -13,6 +13,13 @@ fn unit() -> f64 {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Input {
+    BuiltinHdr {
+        id: String,
+        #[serde(default)]
+        rotation_rad: f64,
+        #[serde(default = "unit")]
+        intensity: f64,
+    },
     Hdr {
         path: String,
         #[serde(default)]
@@ -45,6 +52,10 @@ pub(super) enum Input {
 impl Input {
     pub(super) fn capture(&self, resources: &HdrResources, command: &str) -> Result<EnvironmentResource> {
         let source = match self {
+            Self::BuiltinHdr { id, rotation_rad, intensity } => {
+                let resource = super::library::hdr_resource(id, command)?;
+                EnvironmentSource::from_hdr(resource.source(), super::library::hdr_rotation(*rotation_rad, command)?, *intensity, false)
+            }
             Self::Hdr { path, expected_sha256, rotation_rad, intensity, assume_linear_srgb } => {
                 if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
                     return Err(bad(command, "bounded HDR path required"));

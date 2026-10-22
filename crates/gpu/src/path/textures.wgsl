@@ -24,14 +24,28 @@ fn texture_sample(offset:u32,size:vec2<u32>,uv:vec2<f32>)->vec3<f32> {
 }
 fn texture_uv(record:u32,position:vec3<f32>)->vec2<f32> {
     let delta=position-texture_vector(record);
-    return vec2<f32>(dot(delta,texture_vector(record+4u)),dot(delta,texture_vector(record+8u)));
+    let uv=vec2<f32>(dot(delta,texture_vector(record+4u)),dot(delta,texture_vector(record+8u)));
+    return vec2<f32>(uv.x,select(uv.y,-uv.y,(texture_words[record+19u]&1u)!=0u));
 }
 fn texture_surface(t:Triangle,position:vec3<f32>)->Triangle {
     let record=texture_record(t);var result=t;
-    if record==0u || texture_words[record+3u]==0u {return result;}
-    let rgb=texture_sample(texture_words[record+3u],vec2<u32>(texture_words[record+7u],texture_words[record+11u]),texture_uv(record,position));
-    // Texture modulates linear reflectance, never emission or scalar alpha.
-    result.base=vec4<f32>(t.base.xyz*rgb,t.base.w);
+    if record==0u {return result;}
+    let uv=texture_uv(record,position);
+    if texture_words[record+3u]!=0u {
+        let rgb=texture_sample(texture_words[record+3u],vec2<u32>(texture_words[record+7u],texture_words[record+11u]),uv);
+        let replace=(texture_words[record+19u]&2u)!=0u;
+        result.base=vec4<f32>(select(t.base.xyz*rgb,rgb,replace),t.base.w);
+    }
+    // Scalar maps are linear data, never sRGB. They replace the corresponding
+    // captured optical parameter; alpha, IOR, coat and medium identity survive.
+    if texture_words[record+16u]!=0u {
+        let roughness=texture_sample(texture_words[record+16u],vec2<u32>(texture_words[record+17u],texture_words[record+18u]),uv).x;
+        result.parameters.y=clamp(roughness,0.045,1.0);
+    }
+    if texture_words[record+20u]!=0u {
+        let metallic=texture_sample(texture_words[record+20u],vec2<u32>(texture_words[record+21u],texture_words[record+22u]),uv).x;
+        result.parameters.x=clamp(metallic,0.0,1.0);
+    }
     return result;
 }
 fn texture_normal(t:Triangle,position:vec3<f32>,n:vec3<f32>,geometric:vec3<f32>)->vec3<f32> {
@@ -55,4 +69,10 @@ fn texture_reference() {
     let mapped=texture_surface(t,u.eye.xyz);
     accumulation[0]=vec4<f32>(mapped.base.xyz,1.0);
     accumulation[1]=vec4<f32>(texture_normal(t,u.eye.xyz,u.up.xyz,u.back.xyz)+vec3<f32>(2.0),1.0);
+}
+
+@compute @workgroup_size(1)
+fn texture_scalar_reference() {
+    let t=texture_surface(triangle(0u),u.eye.xyz);
+    accumulation[0]=vec4<f32>(t.parameters.xyz,1.0);
 }
