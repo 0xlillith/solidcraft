@@ -178,10 +178,10 @@ pub(super) fn prepare(_s: &mut Session, params: &Value) -> Result<Value> {
     let card = ValidatedCard::from_value(&description["native_projection"]["card"]).map_err(|e| bad(command, e.to_string()))?;
     let mut density = None;
     for property in &card.card().properties {
-        if let PropertyData::Density { kg_m3 } = &property.data {
-            if density.replace(*kg_m3).is_some() {
-                return Err(bad(command, "multiple density conditions require an explicit selection; no default is inferred"));
-            }
+        if let PropertyData::Density { kg_m3 } = &property.data
+            && density.replace(*kg_m3).is_some()
+        {
+            return Err(bad(command, "multiple density conditions require an explicit selection; no default is inferred"));
         }
     }
     let density =
