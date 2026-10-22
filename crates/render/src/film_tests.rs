@@ -8,8 +8,8 @@ mod camera_passes {
 
     fn primary() -> PrimaryFilm {
         let options = CpuProgressiveOptions { samples_per_pixel: 4, seed: 7 };
-        let bytes = PrimaryFilm::required_bytes(2, 1, options).unwrap();
-        let mut film = PrimaryFilm::new(2, 1, options, bytes, &CancelToken::default()).unwrap();
+        let bytes = PrimaryFilm::required_bytes(2, 1, options, crate::job::CpuBudget::Compact).unwrap();
+        let mut film = PrimaryFilm::new(2, 1, options, bytes, &CancelToken::default(), crate::job::CpuBudget::Compact).unwrap();
         assert!(!film.ready());
         let mut charged = 0;
         while !film.ready() {
@@ -220,4 +220,23 @@ fn construction_and_complete_pass_share_caller_work_and_cancel() {
         .unwrap();
     assert_eq!(charged, 4);
     assert_eq!(pass.samples_per_pixel(), 1);
+}
+
+#[test]
+fn primary_film_large_profile_keeps_every_sample_and_cancels_before_mutation() {
+    use crate::film::primary::PrimaryFilm;
+    use crate::job::{CancelToken, CpuBudget, CpuProgressiveOptions};
+    let options = CpuProgressiveOptions { samples_per_pixel: 512, seed: 7 };
+    assert!(PrimaryFilm::required_bytes(1, 1, options, CpuBudget::Compact).is_err());
+    let bytes = PrimaryFilm::required_bytes(1, 1, options, CpuBudget::Studio).unwrap();
+    let cancel = CancelToken::default();
+    let mut film = PrimaryFilm::new(1, 1, options, bytes, &cancel, CpuBudget::Studio).unwrap();
+    film.initialize_one(&cancel, &mut || Ok(())).unwrap();
+    for ordinal in 0..512 {
+        film.add(0, ordinal, [1e12, 2.0, 0.0], true, &cancel, &mut || Ok(())).unwrap();
+    }
+    assert_eq!(film.pixel(0).unwrap(), ([1e12, 2.0, 0.0], 512, 512));
+    cancel.cancel();
+    assert!(film.add(0, 512, [0.0; 3], true, &cancel, &mut || Ok(())).is_err());
+    assert_eq!(film.samples(), 512);
 }

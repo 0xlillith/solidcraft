@@ -707,13 +707,15 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ImageMethod::CpuRaytrace => "render.cpu_summary",
         ImageMethod::GpuRaytrace => "render.progressive_image_summary",
     }));
+    // The field's hard range never silently clamps a draft when its budget changes.
+    let side = if app.render_workspace.view.method == ImageMethod::CpuRaytrace { 16384 } else { 4096 };
     ui.horizontal(|ui| {
         ui.label(app.tr("render.image_width"));
-        if crate::ui_kit::number_field(ui, &mut app.render_workspace.view.draft.width, 1..=4096, 1.0, "").changed() {
+        if crate::ui_kit::number_field(ui, &mut app.render_workspace.view.draft.width, 1..=side, 1.0, "").changed() {
             app.render_workspace.view.dirty = true;
         }
         ui.label(app.tr("render.image_height"));
-        if crate::ui_kit::number_field(ui, &mut app.render_workspace.view.draft.height, 1..=4096, 1.0, "").changed() {
+        if crate::ui_kit::number_field(ui, &mut app.render_workspace.view.draft.height, 1..=side, 1.0, "").changed() {
             app.render_workspace.view.dirty = true;
         }
     });
@@ -723,7 +725,7 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         && (w, h) != size
     {
         let limit = if app.render_workspace.view.method == ImageMethod::CpuRaytrace && app.render_workspace.view.raytrace.progressive.is_some() {
-            "render.cpu_progressive_limits"
+            "render.cpu_budget_resize"
         } else {
             "render.image_too_large"
         };

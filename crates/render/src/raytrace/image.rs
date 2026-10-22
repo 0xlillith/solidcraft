@@ -6,7 +6,7 @@ use super::lighting::{DirectionalLight, Lighting, StudioPreset, map_to_display};
 use super::prepared::{PreparedPrimitive, PreparedScene, SharedHit};
 use super::progressive::{self, Progressive};
 use super::reflection;
-use super::{BuildLimits, Bvh, BvhBuilder, MAX_WORK, Ray, TraceError, Triangle, WorkBudget};
+use super::{BuildLimits, Bvh, BvhBuilder, Ray, TraceError, Triangle, WorkBudget};
 use crate::job::{self, Admission, CancelToken, ErrorCode, ImageRequest, JobError, Phase, Progress, RaytraceOptions, TaskPoll};
 use crate::{
     ProductScene,
@@ -40,8 +40,14 @@ fn error(e: TraceError) -> JobError {
 fn invalid(message: &'static str) -> JobError {
     JobError::new(ErrorCode::InvalidScene, message)
 }
-fn limits() -> BuildLimits {
-    BuildLimits { max_triangles: 262_144, max_memory_bytes: 384 * 1024 * 1024, max_work: MAX_WORK, ..Default::default() }
+fn limits(budget: job::CpuBudget) -> BuildLimits {
+    let limits = budget.limits();
+    BuildLimits {
+        max_triangles: limits.max_triangles as usize,
+        max_memory_bytes: limits.max_job_bytes,
+        max_work: limits.max_work_units,
+        ..Default::default()
+    }
 }
 fn lighting(options: &RaytraceOptions) -> job::Result<Lighting> {
     options.validate()?;
@@ -124,9 +130,9 @@ pub fn admit(scene: &ProductScene, request: &ImageRequest, options: &RaytraceOpt
         return Err(invalid("raytrace supports opaque backgrounds only"));
     }
     if let Some(progressive) = options.progressive {
-        progressive.validate_image(request.width, request.height)?;
+        progressive.validate_image_with_budget(request.width, request.height, options.budget)?;
     }
-    let mut a = job::image::admit_base(scene, request)?;
+    let mut a = job::image::admit_raytrace_source(scene, request, options.budget)?;
     let r = options.reflections.as_ref().filter(|r| !r.bodies.is_empty()).map_or(1, |r| r.samples);
     u64::from(request.width)
         .checked_mul(u64::from(request.height))
@@ -219,14 +225,14 @@ pub fn admit(scene: &ProductScene, request: &ImageRequest, options: &RaytraceOpt
     let n = usize::try_from(a.triangles).map_err(|_| error(TraceError::MemoryLimit))?;
     let film_bytes = if let Some(progressive) = options.progressive {
         let checkpoint = a.encoded_limit.checked_add(job::FRAME_METADATA_BYTES).ok_or_else(|| error(TraceError::MemoryLimit))?;
-        PrimaryFilm::required_bytes(request.width, request.height, progressive)?
+        PrimaryFilm::required_bytes(request.width, request.height, progressive, options.budget)?
             .checked_add(u64::from(progressive.preview_count()).checked_mul(checkpoint).ok_or_else(|| error(TraceError::MemoryLimit))?)
             .and_then(|v| v.checked_add(std::mem::size_of::<Progressive>() as u64))
             .ok_or_else(|| error(TraceError::MemoryLimit))?
     } else {
         0
     };
-    let extra = BvhBuilder::required_bytes(n, n, limits())
+    let extra = BvhBuilder::required_bytes(n, n, limits(options.budget))
         .map_err(error)?
         .checked_add(a.triangles.checked_mul(std::mem::size_of::<Look>() as u64).ok_or_else(|| error(TraceError::MemoryLimit))?)
         .and_then(|v| v.checked_add(emission_bytes))
@@ -249,7 +255,7 @@ pub fn admit(scene: &ProductScene, request: &ImageRequest, options: &RaytraceOpt
     // Keep the conservative raster pixel/codec estimate; add every new owned buffer.
     a.preparation_bytes = a.preparation_bytes.checked_add(extra).ok_or_else(|| error(TraceError::MemoryLimit))?;
     a.estimated_total_bytes = a.estimated_total_bytes.checked_add(extra).ok_or_else(|| error(TraceError::MemoryLimit))?;
-    if a.estimated_total_bytes > 384 * 1024 * 1024 {
+    if a.estimated_total_bytes > options.budget.limits().max_job_bytes {
         return Err(error(TraceError::MemoryLimit));
     }
     Ok(a)
@@ -522,12 +528,12 @@ impl ImageTask {
         admission.estimated_total_bytes = admission
             .estimated_total_bytes
             .checked_add(extra)
-            .filter(|v| *v <= job::image::MAX_JOB_BYTES)
+            .filter(|v| *v <= options.budget.limits().max_job_bytes)
             .ok_or_else(|| error(TraceError::MemoryLimit))?;
         admission.preparation_bytes = admission.preparation_bytes.checked_add(extra).ok_or_else(|| error(TraceError::MemoryLimit))?;
         let environment = input.map(|e| e.begin()).transpose().map_err(environment_error)?;
         let lights = lighting(&options)?;
-        let mut work = WorkBudget::new(MAX_WORK).map_err(error)?;
+        let mut work = WorkBudget::new(options.budget.limits().max_work_units).map_err(error)?;
         let anisotropic_targets = anisotropic_faces::prepare(&scene, &options, || work.tick(&cancel).map_err(error))?;
         let mut effects = Vec::new();
         if let Some(values) = &options.surface_effects {
@@ -576,19 +582,20 @@ impl ImageTask {
         looks.try_reserve_exact(admission.triangles as usize).map_err(|_| error(TraceError::AllocationFailed))?;
         pixels.try_reserve_exact(request.width as usize * request.height as usize * 4).map_err(|_| error(TraceError::AllocationFailed))?;
         // Allocator capacities are checked, not assumed equal to requested capacities.
-        let actual = BvhBuilder::required_bytes(admission.triangles as usize, triangles.capacity(), limits()).map_err(error)?;
-        if actual != BvhBuilder::required_bytes(admission.triangles as usize, admission.triangles as usize, limits()).map_err(error)?
+        let actual = BvhBuilder::required_bytes(admission.triangles as usize, triangles.capacity(), limits(options.budget)).map_err(error)?;
+        if actual != BvhBuilder::required_bytes(admission.triangles as usize, admission.triangles as usize, limits(options.budget)).map_err(error)?
             || looks.capacity() != admission.triangles as usize
             || pixels.capacity() != request.width as usize * request.height as usize * 4
         {
             return Err(error(TraceError::MemoryLimit));
         }
         let pending = PendingPixelSlot::new(&cancel)?;
+        let budget = options.budget;
         let progressive = options
             .progressive
             .map(|options| -> job::Result<Progressive> {
-                let bytes = PrimaryFilm::required_bytes(request.width, request.height, options)?;
-                let film = PrimaryFilm::new(request.width, request.height, options, bytes, &cancel)?;
+                let bytes = PrimaryFilm::required_bytes(request.width, request.height, options, budget)?;
+                let film = PrimaryFilm::new(request.width, request.height, options, bytes, &cancel, budget)?;
                 Ok(Progressive { film, options, resolving: false, resolve_pixel: 0 })
             })
             .transpose()?;
@@ -658,8 +665,8 @@ impl ImageTask {
         self.work.tick(&self.cancel).map_err(error)?;
         let Some(body) = self.scene.meshes.get(self.body) else {
             let triangles = std::mem::take(&mut self.triangles);
-            let expected = BvhBuilder::required_bytes(triangles.len(), triangles.capacity(), limits()).map_err(error)?;
-            let builder = BvhBuilder::new(triangles, limits(), &self.cancel).map_err(error)?;
+            let expected = BvhBuilder::required_bytes(triangles.len(), triangles.capacity(), limits(self.options.budget)).map_err(error)?;
+            let builder = BvhBuilder::new(triangles, limits(self.options.budget), &self.cancel).map_err(error)?;
             if builder.admitted_bytes() > expected {
                 return Err(error(TraceError::MemoryLimit));
             }

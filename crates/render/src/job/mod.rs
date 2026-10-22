@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BackendId, Camera, ExecutorId};
 
+mod cpu_budget;
 pub(crate) mod encoding;
 mod host;
 pub(crate) mod image;
@@ -25,6 +26,7 @@ mod punctual;
 mod rt2_tests;
 pub mod textures;
 
+pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGLES, MAX_CPU_WORK, NATIVE_CPU_POOL_BYTES};
 #[cfg(feature = "raytrace-cpu")]
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
@@ -504,18 +506,13 @@ impl CpuProgressiveOptions {
         Ok(())
     }
 
-    /// Pure cardinality/work admission, available before scene or HDR capture.
-    /// Traversal and all resolve/encode work also share one runtime 1e9-unit budget.
+    /// Compatibility entry point: a caller that supplies no profile retains Compact.
     pub fn validate_image(&self, width: u32, height: u32) -> Result<()> {
-        self.validate()?;
-        let pixels = u64::from(width) * u64::from(height);
-        if width == 0 || height == 0 || width > 4096 || height > 4096 || pixels > Self::MAX_PIXELS {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "CPU progressive supports at most 1048576 pixels and dimensions 1..4096"));
-        }
-        if pixels.checked_mul(u64::from(self.samples_per_pixel)).is_none_or(|n| n > Self::MAX_CAMERA_SAMPLES) {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "CPU progressive exceeds its 16777216 camera-sample work admission"));
-        }
-        Ok(())
+        self.validate_image_with_budget(width, height, CpuBudget::Compact)
+    }
+
+    pub fn validate_image_with_budget(&self, width: u32, height: u32, budget: CpuBudget) -> Result<()> {
+        budget.validate_image(width, height, Some(*self))
     }
 
     /// Nonfinal checkpoints whose PNG allocations may remain externally retained.
@@ -528,6 +525,8 @@ impl CpuProgressiveOptions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RaytraceOptions {
+    #[serde(skip_serializing_if = "CpuBudget::is_compact")]
+    pub budget: CpuBudget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progressive: Option<CpuProgressiveOptions>,
     #[serde(deserialize_with = "bounded_dielectrics", skip_serializing_if = "Vec::is_empty")]
@@ -561,6 +560,7 @@ pub struct RaytraceOptions {
 impl Default for RaytraceOptions {
     fn default() -> Self {
         Self {
+            budget: CpuBudget::Compact,
             progressive: None,
             punctual_lights: None,
             area_lights: None,
@@ -744,7 +744,7 @@ impl RaytraceOptions {
     }
     pub fn validate(&self) -> Result<()> {
         if let Some(progressive) = self.progressive {
-            progressive.validate()?;
+            self.budget.validate_samples(progressive.samples_per_pixel)?;
             if self.primary_samples != 1 || self.reflections.as_ref().is_some_and(|r| !r.bodies.is_empty() && r.samples != 1) {
                 return Err(JobError::new(
                     ErrorCode::InvalidRequest,
@@ -942,6 +942,14 @@ pub enum AlphaConvention {
 }
 
 impl ImageRequest {
+    pub fn cpu_budget(&self) -> CpuBudget {
+        if self.integrator == Integrator::Raytrace {
+            self.raytrace.as_ref().map_or(CpuBudget::Compact, |options| options.budget)
+        } else {
+            CpuBudget::Compact
+        }
+    }
+
     /// Small GPU resource summaries survive work completion and keep their own host lease.
     pub fn retained_resource_metadata_bytes(&self) -> u64 {
         let environment = self

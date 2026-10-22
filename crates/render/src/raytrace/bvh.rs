@@ -1,11 +1,11 @@
 //! Flat, deterministic binary hierarchy with resumable constant-size build work.
-use super::{Bounds, Hit, MAX_BUILD_STEP, MAX_WORK, Ray, Result, TraceError, Triangle, WorkBudget, check_cancel, component};
+use super::{Bounds, Hit, MAX_BUILD_STEP, Ray, Result, TraceError, Triangle, WorkBudget, check_cancel, component};
 use crate::job::CancelToken;
 use std::mem::size_of;
 
-pub const MAX_TRIANGLES: usize = 1_000_000;
+pub const MAX_TRIANGLES: usize = crate::job::MAX_CPU_TRIANGLES;
 pub const MAX_DEPTH: u8 = 48;
-pub const MAX_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_MEMORY_BYTES: u64 = 12 * 1024 * 1024 * 1024;
 const STACK_SLOTS: usize = MAX_DEPTH as usize + 1;
 
 /// Logical owned-buffer admission. Does not reserve the host pool or promise OS RSS.
@@ -29,7 +29,7 @@ impl BuildLimits {
             || self.max_memory_bytes == 0
             || self.max_memory_bytes > MAX_MEMORY_BYTES
             || self.max_work == 0
-            || self.max_work > MAX_WORK
+            || self.max_work > crate::job::MAX_CPU_WORK
             || self.max_depth == 0
             || self.max_depth > MAX_DEPTH
             || self.leaf_size == 0

@@ -71,7 +71,21 @@ impl Default for RenderSetup {
 
 impl RenderSetup {
     pub fn validate(&self) -> Result<()> {
-        let limits = RenderLimits::default();
+        let limits = match &self.job {
+            Some(RenderJob::CpuRaytrace { options }) => options.budget.image_limits(options.progressive.is_some()),
+            _ => RenderLimits::default(),
+        };
+        self.validate_with_limits(limits)
+    }
+
+    /// Runtime CPU lowering has already moved typed options out of this setup.
+    /// Saving still uses validate(), so a legacy setup cannot smuggle a large profile.
+    pub fn validate_for_cpu(&self, budget: solidcraft_render::job::CpuBudget) -> Result<()> {
+        budget.validate_image(self.width, self.height, None).map_err(|e| DocError::Invalid(e.to_string()))?;
+        self.validate_with_limits(budget.image_limits(false))
+    }
+
+    fn validate_with_limits(&self, limits: RenderLimits) -> Result<()> {
         let (width, height) = (u64::from(self.width), u64::from(self.height));
         if width == 0 || height == 0 {
             return Err(DocError::Invalid("render output must be at least 1 × 1 pixels".into()));
@@ -114,7 +128,7 @@ impl RenderSetup {
             if let RenderJob::CpuRaytrace { options } = job
                 && let Some(progressive) = options.progressive
             {
-                progressive.validate_image(self.width, self.height).map_err(|e| DocError::Invalid(e.to_string()))?;
+                progressive.validate_image_with_budget(self.width, self.height, options.budget).map_err(|e| DocError::Invalid(e.to_string()))?;
             }
         }
         // Desired mode/format/backend may be unavailable on this host. Saving intent is not preflight.
@@ -651,5 +665,42 @@ mod tests {
         setup.camera = Camera::default();
         setup.environment_intensity = f64::INFINITY;
         assert!(setup.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod cpu_budget_tests {
+    use super::*;
+    use solidcraft_render::job::{CpuBudget, CpuProgressiveOptions};
+
+    #[test]
+    fn resource_profiles_survive_native_intent_roundtrips_without_a_host() {
+        let mut setup = RenderSetup {
+            width: 3840,
+            height: 2160,
+            job: Some(RenderJob::CpuRaytrace {
+                options: CpuJob {
+                    budget: CpuBudget::Studio,
+                    progressive: Some(CpuProgressiveOptions { samples_per_pixel: 128, seed: 82 }),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        };
+        setup.validate().unwrap();
+        let text = serde_json::to_string(&setup).unwrap();
+        let reopened: RenderSetup = serde_json::from_str(&text).unwrap();
+        assert_eq!(setup, reopened);
+        let Some(RenderJob::CpuRaytrace { options }) = &mut setup.job else {
+            panic!("CPU fixture");
+        };
+        options.budget = CpuBudget::Compact;
+        assert!(setup.validate().is_err());
+        let legacy: CpuJob = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.budget, CpuBudget::Compact);
+        assert!(serde_json::to_value(legacy).unwrap().get("budget").is_none());
+        assert!(serde_json::from_str::<CpuJob>(r#"{"budget":"unlimited"}"#).is_err());
+        let legacy_large = RenderSetup { width: 3840, height: 2160, ..Default::default() };
+        assert!(legacy_large.validate().is_err(), "large intent must name an explicit CPU job profile");
     }
 }

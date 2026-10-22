@@ -208,7 +208,7 @@ fn memory_counts_input_capacity_and_hostile_limits_refuse_before_own_allocations
         BuildLimits { leaf_size: 0, ..defaults },
         BuildLimits { max_triangles: MAX_TRIANGLES + 1, ..defaults },
         BuildLimits { max_memory_bytes: MAX_MEMORY_BYTES + 1, ..defaults },
-        BuildLimits { max_work: MAX_WORK + 1, ..defaults },
+        BuildLimits { max_work: crate::job::MAX_CPU_WORK + 1, ..defaults },
     ] {
         assert!(BvhBuilder::required_bytes(1, 1, limits).is_err());
     }

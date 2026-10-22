@@ -268,3 +268,37 @@ fn all_pixel_traversal_to_shading_transitions_debit_at_most_one_unit() {
         assert_eq!(task.step(4).err().unwrap().code, ErrorCode::Cancelled);
     }
 }
+
+#[test]
+fn explicit_cpu_profiles_admit_large_images_without_allocating_a_film() {
+    let empty = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    let mut request = request();
+    request.width = 3840;
+    request.height = 2160;
+    let mut options = request.raytrace.clone().unwrap();
+    options.progressive = Some(job::CpuProgressiveOptions { samples_per_pixel: 128, seed: 9 });
+    request.raytrace = Some(options.clone());
+    assert!(admit(&empty, &request, &options).is_err());
+    if usize::BITS < 64 || cfg!(target_arch = "wasm32") {
+        return;
+    }
+    options.budget = job::CpuBudget::Studio;
+    request.raytrace = Some(options.clone());
+    let studio = admit(&empty, &request, &options).unwrap();
+    assert!(studio.estimated_total_bytes > 384 * 1024 * 1024);
+    assert!(studio.estimated_total_bytes < options.budget.limits().max_job_bytes);
+    request.width = 7680;
+    request.height = 4320;
+    assert!(admit(&empty, &request, &options).is_err());
+    options.budget = job::CpuBudget::Workstation;
+    request.raytrace = Some(options.clone());
+    let workstation = admit(&empty, &request, &options).unwrap();
+    assert!(workstation.estimated_total_bytes > studio.estimated_total_bytes);
+    assert!(workstation.estimated_total_bytes < options.budget.limits().max_job_bytes);
+    for budget in [job::CpuBudget::Studio, job::CpuBudget::Workstation] {
+        let count = budget.limits().max_triangles as usize;
+        let bytes = BvhBuilder::required_bytes(count, count, limits(budget)).unwrap();
+        assert!(bytes < budget.limits().max_job_bytes);
+    }
+    assert!(BvhBuilder::required_bytes(2_000_000, 2_000_000, limits(job::CpuBudget::Compact)).is_err());
+}

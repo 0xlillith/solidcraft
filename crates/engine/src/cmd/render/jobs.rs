@@ -237,20 +237,18 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     }
     if let Some(options) = &input.raytrace {
         options.retained_bytes().map_err(job_error)?;
-        if let Some(progressive) = options.progressive {
-            // Dimensions and the total camera-sample cap are known without
-            // touching geometry or reading a possibly large external HDR file.
-            let dimensions = if let Some(name) = &input.setup {
-                let settings = s.doc.render.setups.get(name).ok_or_else(|| bad(command, "no saved render setup with that name"))?;
-                (settings.width, settings.height)
-            } else if let Some(settings) = &input.settings {
-                (settings.width, settings.height)
-            } else {
-                let defaults = RenderSetup::default();
-                (defaults.width, defaults.height)
-            };
-            progressive.validate_image(dimensions.0, dimensions.1).map_err(job_error)?;
-        }
+        options.budget.validate_execution().map_err(job_error)?;
+        // Check the complete image envelope before any source file is read.
+        let dimensions = if let Some(name) = &input.setup {
+            let settings = s.doc.render.setups.get(name).ok_or_else(|| bad(command, "no saved render setup with that name"))?;
+            (settings.width, settings.height)
+        } else if let Some(settings) = &input.settings {
+            (settings.width, settings.height)
+        } else {
+            let defaults = RenderSetup::default();
+            (defaults.width, defaults.height)
+        };
+        options.budget.validate_image(dimensions.0, dimensions.1, options.progressive).map_err(job_error)?;
     }
     let environment = if let Some(saved_hdr) = saved_hdr {
         let SavedHdr::Cpu(hdr) = saved_hdr else {
@@ -317,11 +315,21 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         }
         settings
     };
-    settings.validate().map_err(|e| bad(command, e.to_string()))?;
+    let budget = input.raytrace.as_ref().map_or(solidcraft_render::job::CpuBudget::Compact, |o| o.budget);
+    if input.integrator == Integrator::Raytrace {
+        settings.validate_for_cpu(budget).map_err(|e| bad(command, e.to_string()))?;
+        budget.validate_execution().map_err(job_error)?;
+        budget.validate_image(settings.width, settings.height, input.raytrace.as_ref().and_then(|o| o.progressive)).map_err(job_error)?;
+    } else {
+        settings.validate().map_err(|e| bad(command, e.to_string()))?;
+    }
     if settings.exposure_ev != 0.0 || settings.environment_rotation != 0.0 || settings.environment_intensity != 1.0 {
         return Err(bad(command, "exposure and environment controls are not supported by the R4a CPU image executor"));
     }
-    let descriptor = host.descriptor_for(input.integrator).map_err(job_error)?;
+    let mut descriptor = host.descriptor_for(input.integrator).map_err(job_error)?;
+    if input.integrator == Integrator::Raytrace {
+        descriptor.limits = budget.image_limits(input.raytrace.as_ref().is_some_and(|o| o.progressive.is_some()));
+    }
     let expected_executor = descriptor.id.clone();
     let mut backend = s.render_backend();
     backend.executors = vec![descriptor];
@@ -373,7 +381,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         .estimated_total_bytes
         .checked_add(environment_bytes)
         .and_then(|v| v.checked_add(retained_request_bytes))
-        .filter(|v| *v <= 384 * 1024 * 1024)
+        .filter(|v| *v <= budget.limits().max_job_bytes)
         .ok_or_else(|| bad(command, "environment job exceeds per-job memory limit"))?;
     admission.preparation_bytes =
         admission.preparation_bytes.checked_add(environment_bytes).ok_or_else(|| bad(command, "environment admission overflow"))?;
@@ -382,7 +390,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         Integrator::Raytrace if refraction => "physical_transmission",
         Integrator::Raytrace => "opaque_only",
     };
-    let reply = json!({"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
+    let reply = json!({"cpu_budget":budget,"cpu_limits":budget.limits(),"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
     Ok(Prepared { replace: input.replace, scene, request, reply, environment, executor: resolved.executor, options: Default::default() })
 }
 

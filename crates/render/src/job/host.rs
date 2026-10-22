@@ -36,6 +36,7 @@ pub enum HostKind {
 
 struct Budget {
     used: AtomicU64,
+    limit: u64,
 }
 pub(crate) struct Reservation {
     budget: Arc<Budget>,
@@ -46,10 +47,9 @@ impl Budget {
     fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         let mut used = self.used.load(Ordering::Acquire);
         loop {
-            let next = used
-                .checked_add(bytes)
-                .filter(|n| *n <= MEMORY_LIMIT)
-                .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "image host's 512 MiB admission pool is full"))?;
+            let next = used.checked_add(bytes).filter(|n| *n <= self.limit).ok_or_else(|| {
+                JobError::new(ErrorCode::LimitExceeded, format!("image host admission pool is full ({} MiB)", self.limit / (1024 * 1024)))
+            })?;
             match self.used.compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(current) => used = current,
@@ -184,7 +184,7 @@ mod light_union_lease_tests {
         let host = CpuHost::for_platform().unwrap();
         let request = request().unwrap();
         let work = admit(&scene(), &request).unwrap().estimated_total_bytes;
-        let fill = host.0.shared.budget.reserve(MEMORY_LIMIT - work).unwrap();
+        let fill = host.0.shared.budget.reserve(host.pool_limit_bytes() - work).unwrap();
         let before = host.admitted_bytes();
         let result = host.submit(JobId { session: 1724, serial: 2, generation: 1 }, 1, scene(), request);
         assert_eq!(result.err().unwrap().code, ErrorCode::LimitExceeded);
@@ -740,12 +740,12 @@ pub struct ImageHost(Arc<Owner>);
 pub type CpuHost = ImageHost;
 
 impl ImageHost {
-    fn shared() -> Arc<Shared> {
+    fn shared(limit: u64) -> Arc<Shared> {
         Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
             active: Mutex::new(None),
             stop: AtomicBool::new(false),
-            budget: Arc::new(Budget { used: AtomicU64::new(0) }),
+            budget: Arc::new(Budget { used: AtomicU64::new(0), limit }),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Condvar::new(),
         })
@@ -754,7 +754,7 @@ impl ImageHost {
     pub fn cooperative() -> Self {
         Self(Arc::new(Owner {
             executor: None,
-            shared: Self::shared(),
+            shared: Self::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -767,7 +767,7 @@ impl ImageHost {
     fn cooperative_with(executor: Arc<dyn ImageExecutor>) -> Self {
         Self(Arc::new(Owner {
             executor: Some(executor),
-            shared: Self::shared(),
+            shared: Self::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -782,7 +782,8 @@ impl ImageHost {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let shared = Self::shared();
+            let pool = if usize::BITS >= 64 { super::NATIVE_CPU_POOL_BYTES } else { MEMORY_LIMIT };
+            let shared = Self::shared(pool);
             let worker_shared = shared.clone();
             let worker = std::thread::Builder::new()
                 .name("solidcraft-render".into())
@@ -804,7 +805,7 @@ impl ImageHost {
         {
             return Err(JobError::new(ErrorCode::InvalidRequest, "image worker currently accepts one Preview/Image/PNG profile"));
         }
-        let shared = Self::shared();
+        let shared = Self::shared(MEMORY_LIMIT);
         let worker_shared = shared.clone();
         let worker = std::thread::Builder::new()
             .name("solidcraft-render".into())
@@ -850,7 +851,7 @@ impl ImageHost {
     }
 
     pub fn pool_limit_bytes(&self) -> u64 {
-        MEMORY_LIMIT
+        self.0.shared.budget.limit
     }
 
     pub fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
@@ -866,6 +867,7 @@ impl ImageHost {
             }
             Ok(admission)
         } else {
+            request.cpu_budget().validate_execution()?;
             if options != JobOptions::default() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "CPU images use raytrace options, not progressive sampling controls"));
             }
@@ -873,9 +875,15 @@ impl ImageHost {
         }
     }
 
-    fn check_request_sum(&self, work: u64, request: u64) -> Result<()> {
+    fn check_request_sum(&self, work: u64, request: u64, budget: super::CpuBudget) -> Result<()> {
         if self.0.executor.is_none() {
-            return admit_request_sum(work, request);
+            if budget == super::CpuBudget::Compact {
+                return admit_request_sum(work, request);
+            }
+            if work.checked_add(request).is_none_or(|n| n > budget.limits().max_job_bytes) {
+                return Err(JobError::new(ErrorCode::LimitExceeded, "CPU work and retained request exceed the selected profile"));
+            }
+            return Ok(());
         }
         if work.checked_add(request).is_none_or(|n| n > MEMORY_LIMIT) {
             return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds 512 MiB"));
@@ -941,9 +949,25 @@ impl ImageHost {
                     vec![crate::RenderFeature::Pbr]
                 },
             }],
-            limits: RenderLimits::default(),
+            limits: if integrator == Integrator::Raytrace && self.kind() == HostKind::NativeWorker && usize::BITS >= 64 {
+                super::CpuBudget::Workstation.image_limits(false)
+            } else {
+                RenderLimits::default()
+            },
             scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
         })
+    }
+
+    /// Resolve a CPU request against its explicit envelope, never the largest advertised one.
+    pub fn descriptor_for_request(&self, request: &ImageRequest) -> Result<ExecutorDescriptor> {
+        let mut descriptor = self.descriptor_for(request.integrator)?;
+        if self.0.executor.is_none() && request.integrator == Integrator::Raytrace {
+            let budget = request.cpu_budget();
+            budget.validate_execution()?;
+            budget.validate_image(request.width, request.height, request.raytrace.as_ref().and_then(|o| o.progressive))?;
+            descriptor.limits = budget.image_limits(request.raytrace.as_ref().is_some_and(|o| o.progressive.is_some()));
+        }
+        Ok(descriptor)
     }
 
     pub fn submit(&self, id: JobId, scene_generation: u64, scene: ProductScene, request: ImageRequest) -> Result<JobHandle> {
@@ -1022,9 +1046,9 @@ impl ImageHost {
         let estimated_total_bytes = estimated_total_bytes
             .checked_add(environment_bytes)
             .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "environment admission overflow"))?;
-        self.check_request_sum(estimated_total_bytes, request_bytes)?;
+        self.check_request_sum(estimated_total_bytes, request_bytes, request.cpu_budget())?;
         let mut backend = crate::builtin_backend();
-        let descriptor = self.descriptor_for(request.integrator)?;
+        let descriptor = self.descriptor_for_request(&request)?;
         let expected_executor = descriptor.id.clone();
         backend.executors = vec![descriptor];
         let resolved = crate::resolve_request(
@@ -1052,7 +1076,7 @@ impl ImageHost {
         if queue.len() >= QUEUE_LIMIT {
             return Err(JobError::new(ErrorCode::QueueFull, "image queue is full"));
         }
-        self.check_request_sum(estimated_total_bytes, request_bytes)?;
+        self.check_request_sum(estimated_total_bytes, request_bytes, request.cpu_budget())?;
         let reservation = self.0.shared.budget.reserve(estimated_total_bytes)?;
         let request_reservation = if request_bytes == 0 { None } else { Some(self.0.shared.budget.reserve(request_bytes)?) };
         // Preserve the original CPU option capacities in the retained request and its lease.
@@ -1175,7 +1199,7 @@ mod retained_request_tests {
             + 32 * std::mem::size_of::<super::super::SurfaceEmission>() as u64
             + 256;
         assert_eq!(retained_request_bytes(&request).unwrap(), expected);
-        let budget = Arc::new(Budget { used: AtomicU64::new(0) });
+        let budget = Arc::new(Budget { used: AtomicU64::new(0), limit: MEMORY_LIMIT });
         let lease = budget.reserve(expected).unwrap();
         assert_eq!(budget.used.load(Ordering::Acquire), expected);
         assert!(admit_request_sum(super::super::image::MAX_JOB_BYTES - expected, expected).is_ok());

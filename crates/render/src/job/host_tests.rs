@@ -735,3 +735,27 @@ fn cpu_film_snapshots_refuse_registered_executors_without_acquiring_a_lease() {
     assert!(failure.message.contains("builtin CPU host"));
     assert_eq!(host.admitted_bytes(), 0);
 }
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn native_cpu_envelopes_do_not_expand_registered_or_cooperative_pools() {
+    use super::super::{CpuBudget, NATIVE_CPU_POOL_BYTES, RaytraceOptions};
+    let cpu = CpuHost::for_platform().unwrap();
+    let cooperative = CpuHost::cooperative();
+    let (registered, _) = probe_host(1024);
+    assert_eq!(cpu.pool_limit_bytes(), NATIVE_CPU_POOL_BYTES);
+    assert_eq!(cooperative.pool_limit_bytes(), 512 * 1024 * 1024);
+    assert_eq!(registered.pool_limit_bytes(), 512 * 1024 * 1024);
+    assert!(cpu.check_request_sum(400 * 1024 * 1024, 0, CpuBudget::Compact).is_err());
+    assert!(cpu.check_request_sum(400 * 1024 * 1024, 0, CpuBudget::Studio).is_ok());
+    assert!(cpu.check_request_sum(u64::MAX, 1, CpuBudget::Workstation).is_err());
+    let mut r = request();
+    r.integrator = Integrator::Raytrace;
+    r.width = 3840;
+    r.height = 2160;
+    r.raytrace = Some(RaytraceOptions { budget: CpuBudget::Studio, ..Default::default() });
+    assert_eq!(cpu.descriptor_for_request(&r).unwrap().limits, CpuBudget::Studio.image_limits(false));
+    r.raytrace.as_mut().unwrap().budget = CpuBudget::Compact;
+    assert!(cpu.descriptor_for_request(&r).is_err());
+    assert_eq!(cpu.admitted_bytes(), 0);
+}

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use solidcraft_render::{
     Camera,
     job::{
-        CpuProgressiveOptions, DirectionalLightOptions, JobOptions, LightingPreset, PunctualLightOptions, RaytraceEnvironmentOptions,
+        CpuBudget, CpuProgressiveOptions, DirectionalLightOptions, JobOptions, LightingPreset, PunctualLightOptions, RaytraceEnvironmentOptions,
         RaytraceOptions, RectangleLightOptions, StudioLighting, ThinLens, ToneMap,
     },
     lighting::environment::SkyGradient,
@@ -61,6 +61,8 @@ impl RenderJob {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CpuJob {
+    #[serde(skip_serializing_if = "CpuBudget::is_compact")]
+    pub budget: CpuBudget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progressive: Option<CpuProgressiveOptions>,
     pub primary_samples: u8,
@@ -86,6 +88,7 @@ pub struct CpuJob {
 impl Default for CpuJob {
     fn default() -> Self {
         Self {
+            budget: CpuBudget::Compact,
             progressive: None,
             primary_samples: 1,
             preset: None,
@@ -114,6 +117,7 @@ impl CpuJob {
         bounded(&self.punctual_lights, 8, "point/spot lights")?;
         bounded(&self.area_lights, 4, "rectangular lights")?;
         let options = RaytraceOptions {
+            budget: self.budget,
             progressive: self.progressive,
             primary_samples: self.primary_samples,
             preset: self.preset,

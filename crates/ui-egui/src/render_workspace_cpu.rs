@@ -1,30 +1,68 @@
 //! Transient CPU image controls; engine commands own file capture and admission.
 use serde_json::{Value, json};
 use solidcraft_engine::render::job::{
-    CpuProgressiveOptions, DirectionalLightOptions, PunctualLightOptions, RaytraceEnvironmentOptions, ReflectionBody, ReflectionMode,
+    CpuBudget, DirectionalLightOptions, PunctualLightOptions, RaytraceEnvironmentOptions, ReflectionBody, ReflectionMode,
 };
 
 use super::hdr;
 use crate::{SolveApp, ui_kit};
 
 pub(super) fn validate_progressive_image(app: &SolveApp) -> Result<(), String> {
-    if app.render_workspace.view.method == super::ImageMethod::CpuRaytrace
-        && let Some(options) = app.render_workspace.view.raytrace.progressive
-    {
-        options.validate_image(app.render_workspace.view.draft.width, app.render_workspace.view.draft.height).map_err(|error| error.to_string())?;
+    if app.render_workspace.view.method == super::ImageMethod::CpuRaytrace {
+        let view = &app.render_workspace.view;
+        view.raytrace.budget.validate_image(view.draft.width, view.draft.height, view.raytrace.progressive).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
 
 pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderLimits {
-    let mut limits = solidcraft_engine::render::RenderLimits::default();
-    if app.render_workspace.view.method == super::ImageMethod::CpuRaytrace
-        && let Some(options) = app.render_workspace.view.raytrace.progressive
-    {
-        limits.max_pixels =
-            CpuProgressiveOptions::MAX_PIXELS.min(CpuProgressiveOptions::MAX_CAMERA_SAMPLES / u64::from(options.samples_per_pixel.max(1)));
+    if app.render_workspace.view.method != super::ImageMethod::CpuRaytrace {
+        return Default::default();
+    }
+    let options = &app.render_workspace.view.raytrace;
+    let mut limits = options.budget.image_limits(options.progressive.is_some());
+    if let Some(progressive) = options.progressive {
+        limits.max_pixels = limits.max_pixels.min(options.budget.limits().max_camera_samples / u64::from(progressive.samples_per_pixel.max(1)));
     }
     limits
+}
+
+fn budget_key(budget: CpuBudget) -> &'static str {
+    match budget {
+        CpuBudget::Compact => "render.cpu_budget_compact",
+        CpuBudget::Studio => "render.cpu_budget_studio",
+        CpuBudget::Workstation => "render.cpu_budget_workstation",
+    }
+}
+
+fn budget_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui.label(app.tr("render.cpu_budget"));
+    let selected = app.render_workspace.view.raytrace.budget;
+    let label = app.tr(budget_key(selected)).to_string();
+    let control = ui_kit::dropdown_menu(ui, "render_cpu_budget", &label, |ui| {
+        for budget in CpuBudget::ALL {
+            let key = budget_key(budget);
+            let response = ui_kit::list_picker(ui, key, app.tr(key), budget == selected);
+            crate::scenario::publish_handle(key, response.rect.center());
+            if response.clicked() {
+                // Preserve incompatible dimensions/samples for explicit correction.
+                app.render_workspace.view.raytrace.budget = budget;
+                app.render_workspace.view.dirty = true;
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_handle("render:cpu-budget", control.rect.center());
+    ui.small(app.tr("render.cpu_budget_help"));
+    let title = app.tr("render.cpu_budget_details").to_string();
+    ui_kit::section(ui, "render_cpu_budget_details", &title, false, |ui| {
+        let limits = app.render_workspace.view.raytrace.budget.limits();
+        ui.label(format!("{}: {:.2} GiB", app.tr("render.cpu_budget_memory"), limits.max_job_bytes as f64 / 1_073_741_824.0));
+        ui.label(format!("{}: {}", app.tr("render.cpu_budget_triangles"), limits.max_triangles));
+        ui.label(format!("{}: {}", app.tr("render.cpu_budget_bodies"), limits.max_bodies));
+        ui.label(format!("{}: {}", app.tr("render.cpu_progressive_spp"), limits.max_samples_per_pixel));
+        ui.small(app.tr("render.cpu_budget_not_guarantee"));
+    });
 }
 
 fn set_progressive(app: &mut SolveApp, enabled: bool) {
@@ -39,6 +77,7 @@ fn set_progressive(app: &mut SolveApp, enabled: bool) {
 }
 
 pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
+    budget_controls(app, ui);
     ui.label(app.tr("render.cpu_sampling_mode"));
     let selected = app.render_workspace.view.raytrace.progressive.is_some();
     let label = app.tr(if selected { "render.cpu_progressive" } else { "render.cpu_fixed" }).to_string();
@@ -57,7 +96,7 @@ pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> boo
     let seed = app.tr("render.cpu_progressive_seed").to_string();
     if let Some(options) = &mut app.render_workspace.view.raytrace.progressive {
         ui.label(spp);
-        let response = ui_kit::number_field(ui, &mut options.samples_per_pixel, 1..=64, 1.0, "");
+        let response = ui_kit::number_field(ui, &mut options.samples_per_pixel, 1..=4096, 1.0, "");
         app.render_workspace.view.dirty |= response.changed();
         crate::scenario::publish_handle("render:cpu-spp", response.rect.center());
         ui.label(seed);
@@ -65,7 +104,11 @@ pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> boo
         app.render_workspace.view.dirty |= response.changed();
         crate::scenario::publish_handle("render:cpu-seed", response.rect.center());
         ui.small(app.tr("render.cpu_progressive_help"));
-        ui.small(app.tr("render.cpu_progressive_limits"));
+        if app.render_workspace.view.raytrace.budget == CpuBudget::Compact {
+            ui.small(app.tr("render.cpu_progressive_limits"));
+        } else {
+            ui.small(app.tr("render.cpu_budget_not_guarantee"));
+        }
         return true;
     }
     false

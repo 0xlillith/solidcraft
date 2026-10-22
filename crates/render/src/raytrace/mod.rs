@@ -70,7 +70,7 @@ pub struct WorkBudget {
 
 impl WorkBudget {
     pub fn new(limit: u64) -> Result<Self> {
-        if limit == 0 || limit > MAX_WORK {
+        if limit == 0 || limit > crate::job::MAX_CPU_WORK {
             return Err(TraceError::InvalidInput("work limit outside 1..=MAX_WORK"));
         }
         Ok(Self { limit, used: 0 })

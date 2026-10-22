@@ -62,6 +62,7 @@ fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
             let options = &view.raytrace;
             RenderJob::CpuRaytrace {
                 options: CpuJob {
+                    budget: options.budget,
                     primary_samples: options.primary_samples,
                     progressive: options.progressive,
                     preset: options.preset,
@@ -149,6 +150,7 @@ pub(super) fn load(app: &mut SolveApp) {
         Some(RenderJob::CpuRaytrace { options }) => {
             view.method = ImageMethod::CpuRaytrace;
             view.raytrace = RaytraceOptions {
+                budget: options.budget,
                 primary_samples: options.primary_samples,
                 progressive: options.progressive,
                 preset: options.preset,

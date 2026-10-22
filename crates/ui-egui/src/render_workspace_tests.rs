@@ -2313,3 +2313,32 @@ fn embedded_hdr_runtime_requests_preserve_temporary_bindings_without_serializing
         assert_eq!(image_request(&h.app).unwrap(), params);
     }
 }
+
+#[test]
+fn cpu_resource_profile_edits_preserve_resolution_samples_and_saved_intent() {
+    use solidcraft_engine::render::job::{CpuBudget, CpuProgressiveOptions};
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":2600}));
+    enter(&mut h.app, true).unwrap();
+    h.app.session.set_render_job_host(None).unwrap();
+    select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    h.app.render_workspace.view.name = "Studio output".into();
+    h.app.render_workspace.view.draft.width = 3840;
+    h.app.render_workspace.view.draft.height = 2160;
+    h.app.render_workspace.view.raytrace.budget = CpuBudget::Studio;
+    h.app.render_workspace.view.raytrace.progressive = Some(CpuProgressiveOptions { samples_per_pixel: 128, seed: 82 });
+    h.frames(3);
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    h.step(&json!({"click":{"handle":"render:cpu-budget"}})).unwrap();
+    h.step(&json!({"click":{"handle":"render.cpu_budget_compact"}})).unwrap();
+    h.frames(3);
+    assert_eq!((h.app.render_workspace.view.draft.width, h.app.render_workspace.view.draft.height), (3840, 2160));
+    assert_eq!(h.app.render_workspace.view.raytrace.progressive.unwrap().samples_per_pixel, 128);
+    assert!(setups::snapshot(&h.app).is_err());
+    assert!(h.app.render_workspace.view.dirty);
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+}
