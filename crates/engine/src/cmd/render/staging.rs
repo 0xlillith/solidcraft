@@ -59,6 +59,9 @@ pub(super) fn ground(s: &mut Session, params: &Value) -> Result<Value> {
     {
         return Err(bad(command, "ground margin must be 0..10 and explicit clearance gap 0.0001..1000 mm"));
     }
+    if !input.replace_stage && s.doc.render.setups.get(&input.name).is_some_and(|setup| !setup.stage.is_empty()) {
+        return Err(bad(command, "existing stage requires replace_stage: true"));
+    }
     let mut setup = super::patched_settings(s, &input.name, &input.set, command)?;
     if !matches!(setup.job, Some(RenderJob::CpuRaytrace { .. } | RenderJob::GpuPath { .. })) {
         return Err(bad(command, "ground requires an explicit CPU raytrace or GPU path setup"));

@@ -28,6 +28,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         "surface binding changed engineering/appearance authority",
     )?;
     let saved = session.doc.to_json();
+    require(
+        session
+            .execute(
+                "render.library.surface.bind",
+                &json!({"name":"Mapped","set":{"surfaces":[]},
+        "surface":{"id":"SURF-002","body_index":0,"body_name":"Coupon"}}),
+            )
+            .is_err(),
+        "a setup patch bypassed surface replacement consent",
+    )?;
+    require(session.doc.to_json() == saved, "failed surface reset mutated the design")?;
     let reopened = Document::from_json(&saved)?;
     require(reopened.render.setups["Mapped"] == session.doc.render.setups["Mapped"], "surface setup changed on reopen")?;
     let mut restored = Session::new(reopened);
@@ -76,6 +87,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stage = restored.execute(
         "render.stage.ground",
         &json!({"name":"Ground","set":{"width":96,"height":64,"job":{"method":"cpu_raytrace","options":{"budget":"studio"}}}}),
+    )?;
+    require(
+        restored.execute("render.stage.ground", &json!({"name":"Ground","set":{"stage":[]}})).is_err(),
+        "a setup patch bypassed stage replacement consent",
+    )?;
+    let hdr_request = json!({"id":"HDR-001","name":"HDR","set":{"job":{"method":"cpu_raytrace","options":{}}}});
+    restored.execute("render.library.environment.apply", &hdr_request)?;
+    require(
+        restored.execute("render.library.environment.apply", &hdr_request).is_err(),
+        "a full job patch bypassed environment replacement consent",
     )?;
     let preflight = restored.execute("render.preflight", &json!({"setup":"Ground"}))?;
     require(preflight["stage_panels"] == 1, "preflight omitted saved ground")?;

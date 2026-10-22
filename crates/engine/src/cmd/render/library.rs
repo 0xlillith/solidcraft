@@ -322,9 +322,21 @@ struct EnvironmentApply {
     replace_environment: bool,
 }
 
+fn has_environment(setup: &solidcraft_doc::render_settings::RenderSetup) -> bool {
+    match &setup.job {
+        Some(RenderJob::CpuRaytrace { options }) => options.hdr.is_some() || options.environment.is_some(),
+        Some(RenderJob::GpuPath { options, .. }) => options.hdr.is_some() || options.environment.is_some(),
+        _ => false,
+    }
+}
 pub(super) fn apply_environment(s: &mut Session, params: &Value) -> Result<Value> {
     let command = "render.library.environment.apply";
     let input: EnvironmentApply = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
+    // Consent is checked against the existing authority, not merely a patch that
+    // can replace the entire job object and thereby hide its previous environment.
+    if !input.replace_environment && s.doc.render.setups.get(&input.name).is_some_and(has_environment) {
+        return Err(bad(command, "existing environment requires replace_environment: true"));
+    }
     let metadata = item("hdr", &input.id, command)?;
     let rotation = hdr_rotation(input.rotation_rad, command)?;
     let mut setup = super::patched_settings(s, &input.name, &input.set, command)?;
@@ -577,6 +589,9 @@ pub(super) fn apply_studio(s: &mut Session, params: &Value) -> Result<Value> {
     let input: StudioApply = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if !input.replace_lighting_and_environment {
         return Err(bad(command, "confirm replacing lighting and environment explicitly to preserve a single energy owner"));
+    }
+    if !input.replace_stage && s.doc.render.setups.get(&input.name).is_some_and(|setup| !setup.stage.is_empty()) {
+        return Err(bad(command, "existing stage requires replace_stage: true"));
     }
     let (lighting, projection) = rig_lighting(&input.rig, command)?;
     let mut setup = super::patched_settings(s, &input.name, &input.set, command)?;

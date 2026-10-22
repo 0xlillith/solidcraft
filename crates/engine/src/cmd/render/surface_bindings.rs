@@ -130,6 +130,10 @@ pub(super) fn bind(s: &mut Session, params: &Value) -> Result<Value> {
     let command = "render.library.surface.bind";
     let input: Bind = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     let mut setup = super::patched_settings(s, &input.name, &input.set, command)?;
+    if s.doc.render.setups.get(&input.name).is_some_and(|old| old.surfaces != setup.surfaces) {
+        return Err(bad(command, "setup patch cannot erase or replace saved surface bindings; use explicit bind/unbind commands"));
+    }
+
     if !matches!(setup.job, Some(RenderJob::GpuPath { .. })) {
         return Err(bad(command, "persistent authored maps require an explicit GPU setup"));
     }

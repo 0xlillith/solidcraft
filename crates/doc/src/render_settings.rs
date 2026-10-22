@@ -592,7 +592,7 @@ mod tests {
             json!({"exposure_ev":1,"job":{"method":"raster"}}),
             json!({"environment_rotation":0.5,"job":{"method":"gpu_path"}}),
             json!({"environment_intensity":0,"job":{"method":"cpu_raytrace"}}),
-            json!({"job":{"method":"cpu_raytrace","options":{"seed":1}}}),
+            json!({"job":{"method":"cpu_raytrace","options":{"seed":-1}}}),
             json!({"job":{"method":"cpu_raytrace","options":{"preset":"neutral","lights":[]}}}),
             json!({"job":{"method":"cpu_raytrace","options":{"environment":{"path":"not-portable.hdr"}}}}),
             json!({"job":{"method":"gpu_path","options":{"environment":{"kind":"hdr","path":"not-portable.hdr"}}}}),
@@ -686,6 +686,18 @@ mod tests {
 mod cpu_budget_tests {
     use super::*;
     use solidcraft_render::job::{CpuBudget, CpuProgressiveOptions};
+
+    #[test]
+    fn inactive_area_tuning_roundtrips_without_leaking_into_runtime_options() {
+        let saved: CpuJob = serde_json::from_str(r#"{"seed":1,"area_samples":16,"area_lights":[]}"#).unwrap();
+        let runtime = saved.to_runtime(0.0).unwrap();
+        assert_eq!((saved.seed, saved.area_samples), (Some(1), Some(16)));
+        assert_eq!((runtime.seed, runtime.area_samples), (None, None));
+        let roundtrip: CpuJob = serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(roundtrip, saved);
+        let raw = solidcraft_render::job::RaytraceOptions { seed: Some(1), ..Default::default() };
+        assert!(raw.validate().is_err(), "runtime requests still reject tuning without active emitters");
+    }
 
     #[test]
     fn resource_profiles_survive_native_intent_roundtrips_without_a_host() {

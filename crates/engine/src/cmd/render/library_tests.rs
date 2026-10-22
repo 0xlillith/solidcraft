@@ -329,3 +329,32 @@ fn complete_authored_rig_keeps_passive_cards_nonemissive_and_scales_exactly_once
     assert_eq!(projected["projection"]["passive_cards_omitted"], 1);
     assert_eq!(projected["stage"], json!([]));
 }
+
+#[test]
+fn patch_cannot_hide_existing_resources_from_replacement_consent() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":10,"width":10,"height":2,"body_name":"Panel"})).unwrap();
+    let base = json!({"job":{"method":"gpu_path","options":{}}});
+    s.execute("render.library.surface.bind", &json!({"name":"P","set":base,"surface":{"id":"SURF-001","body_index":0,"body_name":"Panel"}})).unwrap();
+    let before = s.doc.to_json();
+    assert!(
+        s.execute(
+            "render.library.surface.bind",
+            &json!({"name":"P","set":{"surfaces":[]},"surface":{"id":"SURF-002","body_index":0,"body_name":"Panel"}})
+        )
+        .is_err()
+    );
+    assert_eq!(s.doc.to_json(), before);
+    s.execute("render.stage.ground", &json!({"name":"P"})).unwrap();
+    let before = s.doc.to_json();
+    assert!(s.execute("render.stage.ground", &json!({"name":"P","set":{"stage":[]}})).is_err());
+    assert!(
+        s.execute(
+            "render.library.studio.apply",
+            &json!({"name":"P","set":{"stage":[]},"replace_lighting_and_environment":true,
+        "rig":{"id":"RIG-002","variant":"complete","center_mm":[0,0,0],"subject_extent_mm":1000}})
+        )
+        .is_err()
+    );
+    assert_eq!(s.doc.to_json(), before);
+}

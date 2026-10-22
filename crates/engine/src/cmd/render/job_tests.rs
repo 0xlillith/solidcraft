@@ -553,7 +553,8 @@ fn progressive_limits_and_incompatibilities_fail_before_hdr_or_scene_capture() {
             "environment":{"path":"deliberately-absent-film-admission.hdr"}});
         for command in ["render.preflight", "render.start"] {
             let message = s.execute(command, &params).unwrap_err().to_string();
-            assert!(message.contains("CPU progressive"), "{message}");
+            let expected = if primary != 1 { "CPU progressive" } else { "CPU Compact" };
+            assert!(message.contains(expected), "{message}");
             assert!(!message.contains("deliberately-absent"), "HDR was read before numerical admission");
             assert_eq!(host.admitted_bytes(), 0);
         }

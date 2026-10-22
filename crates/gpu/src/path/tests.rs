@@ -2674,7 +2674,9 @@ fn gpu_scalar_maps_match_linear_reference_without_touching_ior() {
     });
     let mut input = request(2);
     input.textures = Some(source);
-    let mut task = Task::new(context.clone(), sphere(white()), input, JobOptions::default(), CancelToken::default()).unwrap();
+    // An explicit non-default optical fixture catches accidental IOR rewrites.
+    let original = OpaqueSurface::new(Vec3::new(0.2, 0.4, 0.6), 0.6, 0.2, 1.7).unwrap();
+    let mut task = Task::new(context.clone(), sphere(original), input, JobOptions::default(), CancelToken::default()).unwrap();
     let mut params = vec![0; 32];
     scene::vector(&mut params, Vec3::ZERO, 0.0);
     scene::vector(&mut params, Vec3::ZERO, 0.0);
@@ -2691,7 +2693,7 @@ fn gpu_scalar_maps_match_linear_reference_without_touching_ior() {
     context.queue.submit([encoder.finish()]);
     task.sample = 1;
     let actual = task.read_linear().unwrap();
-    for (a, b) in actual[0].iter().zip([64.0 / 255.0, 192.0 / 255.0, 1.5]) {
+    for (a, b) in actual[0].iter().zip([64.0 / 255.0, 192.0 / 255.0, original.dielectric_ior()]) {
         assert!((f64::from(*a) - b).abs() < 2e-6, "scalar map {actual:?}");
     }
 }
