@@ -1,6 +1,6 @@
 //! Colour themes as files (#2255): a `solidcraft-theme/1` JSON file names a base palette (the
 //! built-in Dark or Light) and sets any of its [`Tokens`] by name, so a theme can be a handful of
-//! lines. Built-in themes (the Gruvbox family) are such files under `assets/styles/ui/themes/`;
+//! lines. Built-in themes (Gruvbox and others) are such files under `assets/styles/ui/themes/`;
 //! imported ones are kept in the preferences (`Prefs::custom_themes`), so they also work in the
 //! browser. Colour vision modes still apply on top of a theme (`Tokens::with_vision`).
 //!
@@ -263,14 +263,28 @@ pub fn export(name: &str, base: Base, t: &Tokens) -> Value {
     json!({"format": FORMAT, "name": name, "base": base, "colors": colors})
 }
 
-/// The theme files that come with SolidCraft (original files; Gruvbox's palette, MIT).
-const BUILTIN: [(&str, &str); 6] = [
+/// The theme files that come with SolidCraft (original files; Gruvbox, Tokyo Night, Solarized, Nord, Nosferatu and Catppuccin map open-source palettes, MIT).
+const BUILTIN: [(&str, &str); 20] = [
     ("gruvbox-dark", include_str!("../../../assets/styles/ui/themes/gruvbox-dark.json")),
     ("gruvbox-dark-hard", include_str!("../../../assets/styles/ui/themes/gruvbox-dark-hard.json")),
     ("gruvbox-dark-soft", include_str!("../../../assets/styles/ui/themes/gruvbox-dark-soft.json")),
     ("gruvbox-light", include_str!("../../../assets/styles/ui/themes/gruvbox-light.json")),
     ("gruvbox-light-hard", include_str!("../../../assets/styles/ui/themes/gruvbox-light-hard.json")),
     ("gruvbox-light-soft", include_str!("../../../assets/styles/ui/themes/gruvbox-light-soft.json")),
+    ("solidcraft-95", include_str!("../../../assets/styles/ui/themes/solidcraft-95.json")),
+    ("platinum-9", include_str!("../../../assets/styles/ui/themes/platinum-9.json")),
+    ("cupertino", include_str!("../../../assets/styles/ui/themes/cupertino.json")),
+    ("green-phosphor", include_str!("../../../assets/styles/ui/themes/green-phosphor.json")),
+    ("amber-phosphor", include_str!("../../../assets/styles/ui/themes/amber-phosphor.json")),
+    ("blueprint", include_str!("../../../assets/styles/ui/themes/blueprint.json")),
+    ("one-dark", include_str!("../../../assets/styles/ui/themes/one-dark.json")),
+    ("tokyo-night", include_str!("../../../assets/styles/ui/themes/tokyo-night.json")),
+    ("solarized-light", include_str!("../../../assets/styles/ui/themes/solarized-light.json")),
+    ("nord", include_str!("../../../assets/styles/ui/themes/nord.json")),
+    ("high-contrast", include_str!("../../../assets/styles/ui/themes/high-contrast.json")),
+    ("graphite", include_str!("../../../assets/styles/ui/themes/graphite.json")),
+    ("nosferatu", include_str!("../../../assets/styles/ui/themes/nosferatu.json")),
+    ("catppuccin-mocha", include_str!("../../../assets/styles/ui/themes/catppuccin-mocha.json")),
 ];
 
 /// The built-in themes, read once (one that fails to read is left out; a test reads them all).
@@ -326,7 +340,9 @@ mod tests {
         for t in builtin() {
             let base = if t.base.is_dark() { Tokens::dark() } else { Tokens::light() };
             assert_ne!(resolve(t), base, "{}", t.id);
-            assert_eq!(t.base.is_dark(), t.id.contains("dark"), "{}", t.id);
+            if t.id.starts_with("gruvbox-") {
+                assert_eq!(t.base.is_dark(), t.id.contains("dark"), "{}", t.id);
+            }
         }
     }
 
@@ -406,15 +422,15 @@ mod tests {
         let mk = |name: &str| ThemeFile { id: slug(name), name: name.into(), ..Default::default() };
         assert_eq!(add(&mut custom, mk("Gruvbox Dark")).unwrap(), "custom-gruvbox-dark");
         assert_eq!(add(&mut custom, mk("Dark")).unwrap(), "custom-dark");
-        assert_eq!(add(&mut custom, mk("Nord")).unwrap(), "nord");
-        let again = ThemeFile { base: Base::Light, ..mk("Nord") };
-        assert_eq!(add(&mut custom, again).unwrap(), "nord");
+        assert_eq!(add(&mut custom, mk("Mine")).unwrap(), "mine");
+        let again = ThemeFile { base: Base::Light, ..mk("Mine") };
+        assert_eq!(add(&mut custom, again).unwrap(), "mine");
         assert_eq!(custom.len(), 3);
-        assert_eq!(custom.iter().find(|t| t.id == "nord").map(|t| t.base), Some(Base::Light));
+        assert_eq!(custom.iter().find(|t| t.id == "mine").map(|t| t.base), Some(Base::Light));
         for i in custom.len()..MAX_CUSTOM {
             add(&mut custom, mk(&format!("t{i}"))).unwrap();
         }
         assert!(add(&mut custom, mk("one too many")).is_err());
-        assert!(find("gruvbox-dark", &custom).is_some() && find("nord", &custom).is_some() && find("dark", &custom).is_none());
+        assert!(find("gruvbox-dark", &custom).is_some() && find("mine", &custom).is_some() && find("dark", &custom).is_none());
     }
 }
