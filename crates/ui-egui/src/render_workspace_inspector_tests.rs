@@ -371,3 +371,21 @@ fn saved_bloom_intent_roundtrips_and_rejects_unsupported_transparent_output() {
     super::super::select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
     assert!(super::super::image_request(&h.app).is_ok(), "inactive GPU settings remain portable but are not sent to CPU");
 }
+
+#[test]
+fn ribbon_frame_preserves_explicit_roll_world_up_and_saved_view_authority() {
+    let mut h = fixture();
+    h.app.cam.roll = 0.37;
+    h.app.cam.yaw = 0.21;
+    h.app.cam.pitch = 0.43;
+    h.app.cam.up = solidcraft_engine::render::UpAxis::Y;
+    let orientation = (h.app.cam.roll, h.app.cam.yaw, h.app.cam.pitch, h.app.cam.up);
+    let document = h.app.session.doc.to_json();
+    let undo = h.app.session.undo.len();
+    h.app.start("render.camera.fit");
+    assert_eq!((h.app.cam.roll, h.app.cam.yaw, h.app.cam.pitch, h.app.cam.up), orientation);
+    assert_eq!(h.app.session.doc.to_json(), document);
+    assert_eq!(h.app.session.undo.len(), undo);
+    assert!(h.app.session.camera.is_none(), "the explicit view request was consumed by the viewport");
+    assert_eq!(h.app.ui.up_axis, h.app.cam.up);
+}
