@@ -1,6 +1,6 @@
 # Prepared SELENE demonstration scenes
 
-This directory contains **12 shot specifications, 10 stages and 33 semantic roles** for the improved Tangency Labs SELENE model. They are editable authoring inputs with status `specified_unbound`. The required native file is currently unresolved. `SELENE-showcase.solidcraft` is an expected label, not a verified file identity; none of these specifications reuses the old rover's component or feature IDs.
+This directory contains **12 shot specifications, 10 stages and 33 semantic roles** for the improved SELENE model. They are editable authoring inputs with status `specified_unbound`. The native source is now pinned in [source-lock.json](../source-lock.json); the complete catalog's semantic roles and renderer resources still require explicit binding. None of these specifications substitutes old rover component or feature IDs for a reviewed selection.
 
 The files prepare composition, lighting ownership, material intent and review gates. They do not install a renderer, create native geometry, simulate a catch or demonstrate a finished image.
 
@@ -19,19 +19,19 @@ The existing [render/materials catalog](../../../../docs/render-materials/README
 
 ## Source and native-body preparation
 
-Run from the repository root, using the improved native file when it is available:
+Run from the repository root, using the pinned improved native file:
 
 ```sh
-python3 assets/render/selene/tools/prepare.py inspect --model /path/to/SELENE-showcase.solidcraft --out target/render-selene/inspection.json
-python3 assets/render/selene/tools/prepare.py template --model /path/to/SELENE-showcase.solidcraft --out target/render-selene/bindings.json
+python3 assets/render/selene/tools/prepare.py inspect --model assets/render/selene/source/SELENE-showcase.solidcraft --out target/render-selene/inspection.json
+python3 assets/render/selene/tools/prepare.py template --model assets/render/selene/source/SELENE-showcase.solidcraft --out target/render-selene/bindings.json
 ```
 
-Inspection and template generation do not approve a model. Review the source identity, license/admission record and exact body selections. Preserve the unreviewed template and save the reviewed bindings separately. The source lock must contain `active_source.status = "pinned_native"` and match the accepted file's SHA-256, byte size, format, units and Z-up frame. Admission review must confirm source identity and licensing. The current unresolved lock blocks compilation.
+Inspection and template generation do not approve a model. Review the source identity, license/admission record and exact body selections. Preserve the unreviewed template and save the reviewed bindings separately. The source lock contains `active_source.status = "pinned_native"` and records the accepted file's SHA-256, byte size, format, units and Z-up frame. It must match the selected file exactly. Reviewed body bindings remain necessary before compilation.
 
 After those checks, the prepared opaque-body subset can be compiled:
 
 ```sh
-python3 assets/render/selene/tools/prepare.py compile --model /path/to/SELENE-showcase.solidcraft --bindings target/render-selene/bindings-reviewed.json --lock assets/render/selene/source-lock.json --out target/render-selene/opaque-overlay.json
+python3 assets/render/selene/tools/prepare.py compile --model assets/render/selene/source/SELENE-showcase.solidcraft --bindings target/render-selene/bindings-reviewed.json --lock assets/render/selene/source-lock.json --out target/render-selene/opaque-overlay.json
 ```
 
 The tool does not overwrite outputs. Use a new output path for a new inspection, review or compilation. The compiled overlay is a reviewed native **BODY-only opaque diagnostic subset**. It does not apply these complete shot specifications, create terrain, reproduce layered materials or enable a future renderer.
@@ -106,10 +106,10 @@ Editorial staging keeps the vacuum rules but deliberately permits `STU-024` fill
 
 ## Staged animation work
 
-1. **Source and appearance diagnosis.** Accept the improved native source, review semantic selections, compile the eligible opaque body subset and inspect native scale. No dynamics is involved.
+1. **Source and appearance diagnosis.** Verify the pinned native source, review semantic selections, compile the eligible opaque body subset and inspect native scale. No dynamics is involved.
 2. **Still-image reference.** Bind stage geometry, materials, the Sun and optional hardware source. Review the physical hero, macro, lighting comparison and shadow audit before using the scene as an animation reference.
 3. **Planning poses.** Use `SELENE-SHOT-007` to inspect release, candidate flight, capture/miss and storage coverage. Joint limits, clearances, closure and reach remain explicit checks. The file assigns no physical event times or launch velocities.
 4. **Independent physical validation.** Establish mass/inertia, contact, actuation, constraint transitions and the millimeter/SI boundary. Use [lunar-physics-fixtures.json](../../../../docs/render-materials/lunar-physics-fixtures.json) as analytic checks, not as a ready-made rover trajectory. Rendering roughness does not determine friction or restitution.
 5. **Approved bake and image sequence.** After the [36 simulation requirements](../../../../docs/render-materials/simulation-requirements.json) are satisfied for the chosen approximation, record an immutable bake and source/resource hashes. The future `SCENE-020`, `Q-008` and `Q-009` references define preview/final intent. Preserve misses and solver failures, and keep physics timing independent of output frame rate.
 
-The current files prepare those stages without claiming that any model admission, native regeneration, contact simulation, renderer binding or final image has already been completed.
+These catalog specifications prepare those stages. Source admission is recorded separately in the source lock; native derivative results and concrete showcase renders are reported by their own build and validation records. The catalog itself does not establish contact simulation, complete renderer binding or final images for all 12 shots.

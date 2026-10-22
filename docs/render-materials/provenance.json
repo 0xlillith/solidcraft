@@ -37,7 +37,7 @@
     {
       "id": "SRC-SOLIDCRAFT-BASE",
       "name": "SolidCraft personal integration base",
-      "url": "https://github.com/0xlillith/solvecraft/tree/93a2922c5ee272fb605703ae84c05825b4a74607",
+      "url": "https://github.com/0xlillith/solidcraft/tree/93a2922c5ee272fb605703ae84c05825b4a74607",
       "use": "Own-project rules and documented architecture.",
       "accessed": "2026-10-21",
       "redistribution": "Reference only; no external source assets or implementation bundled."
@@ -45,7 +45,7 @@
     {
       "id": "SRC-SETTINGS",
       "name": "Published render settings contract",
-      "url": "https://github.com/0xlillith/solvecraft/blob/93a2922c5ee272fb605703ae84c05825b4a74607/docs/render-settings.md",
+      "url": "https://github.com/0xlillith/solidcraft/blob/93a2922c5ee272fb605703ae84c05825b4a74607/docs/render-settings.md",
       "use": "Bounds and fields for six baseline examples.",
       "accessed": "2026-10-21",
       "redistribution": "Reference only; no external source assets or implementation bundled."
@@ -110,9 +110,9 @@
       "id": "SRC-SELENE-SHOWCASE",
       "name": "Improved SELENE mechanism demonstration",
       "url": "https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321",
-      "use": "Documented improved mechanisms; exact native file remains unavailable.",
+      "use": "Documented improved mechanisms; the owner-supplied native file is now pinned separately in assets/render/selene/source-lock.json.",
       "accessed": "2026-10-21",
-      "redistribution": "Reference only; no external source assets, media or implementation bundled."
+      "redistribution": "This public comment is reference only; published demonstration media are not bundled. The separately supplied native file has its own admission and retained-notice record."
     },
     {
       "id": "SRC-SELENE-EXPORT",

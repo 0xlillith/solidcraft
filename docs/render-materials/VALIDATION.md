@@ -1,8 +1,16 @@
 # Validation record
 
-Date: 2026-10-21. Scope: the English catalog, preset specification and prepared SELENE resource contribution in PR #3.
+The original catalog, preset and prepared-resource review below is dated **2026-10-21**. The **2026-10-22** native-source update supersedes its missing-source finding; other historical results retain their original scope.
 
-## Package checks
+## Current native-source status — 2026-10-22
+
+The owner supplied the improved [SELENE-showcase.solidcraft](../../assets/render/selene/source/SELENE-showcase.solidcraft), and the [source lock](../../assets/render/selene/source-lock.json) is now `pinned_native`. [SOURCE.md](../../assets/render/selene/SOURCE.md) records the verified author commit, SHA-256, retained notices and executor/format boundary. The [native package](../../assets/render/selene/README.md) now includes source-container mechanism bindings and reproducible command generators for [mechanisms](../../assets/render/selene/MECHANISMS.md) and [electronics](../../assets/render/selene/ELECTRONICS.md).
+
+The [native package validation record](../../assets/render/selene/VALIDATION.md) is the authority for the derivative's actual model hash, native executor, sampled mechanism checks, scoped interference and preview exports. [RENDER.md](../../assets/render/selene/RENDER.md) records the separately executed product-render checks and whole-model executor limits. Source-container inspection, component fixtures, final-model acceptance and renderer results retain their individual scopes. The broader catalog remains unbound; repository-wide gate results are reported explicitly rather than inferred from the native runs.
+
+The catalog and prepared-resource data validators were rerun for this status update: both passed with **0 errors**, and the catalog reported **0 warnings**. The prepared-resource result reports `native_source_status: pinned_native` and `runtime_ready: false`. Local links in the three updated Markdown documents and the UI contract's native-source paths resolved; whitespace checks passed. These are documentation/data checks, not additional native solver or renderer runs.
+
+## Historical package checks — 2026-10-21
 
 The package validator completed with **0 errors and 0 warnings** on the authored data:
 
@@ -38,13 +46,13 @@ Six deliberately invalid temporary variants were rejected: a duplicated solar so
 
 Internal Markdown file links and exact attribution paths were checked. The data and documentation were reviewed for English wording, stable legacy IDs, source ownership, availability claims and clean-room scope. A second review identified and corrected missing quality dependencies, ambiguous temporal budgets, insufficient inertia constraints, inconsistent UX level names and publication sequencing.
 
-## Source-model verification
+## Historical source-model verification — 2026-10-21
 
-The historical v7 SELENE native file was read as a container and its document inspected. SHA-256, file size, format, units, component/occurrence inventory, revolute joints, angle limits and selected vial feature/body references were recorded. No native-file rebuild, geometry regeneration, collision simulation or application render was performed by this contribution. The model itself is not bundled here.
+The historical v7 SELENE native file was read as a container and its document inspected. SHA-256, file size, format, units, component/occurrence inventory, revolute joints, angle limits and selected vial feature/body references were recorded. No native-file rebuild, geometry regeneration, collision simulation or application render was performed during that review. The historical v7 model was not bundled; the currently admitted improved source is described above.
 
-## Prepared-resource continuation
+## Historical prepared-resource continuation — 2026-10-21
 
-The prepared package under `assets/render/selene/` contains 48 appearance recipes, a 99-command swatch input, 33 semantic roles, 10 stages, 12 shots, 12 mechanism review areas, a five-command read-only preflight, an eleven-state future dynamics sequence, a UI integration flow and two development tools.
+At that review, the prepared package under `assets/render/selene/` contained 48 appearance recipes, a 99-command swatch input, 33 semantic roles, 10 stages, 12 shots, 12 mechanism review areas, a five-command read-only preflight, an eleven-state future dynamics sequence, a UI integration flow and two development tools.
 
 Reproduce its read-only data check:
 
@@ -60,9 +68,9 @@ Four mechanism planning calculations were independently recomputed from the docu
 
 An independent review corrected two appearance-to-concept associations, confirmed the explicit layered/anodized surrogate descriptions, and identified input validation and shared-definition scope issues in the preparation tool. The final tool parses the same byte snapshot that it hashes and requires explicit review of all occurrences affected by a body-definition appearance edit.
 
-The improved `SELENE-showcase.solidcraft` native file was not found in the bounded public-source search documented in `assets/render/selene/SOURCE.md`. Its source lock remains `awaiting_native_source`; native selectors, runtime mechanism evidence and full scene execution remain unresolved. The opaque swatch script was checked against existing command shapes but has not been executed or rendered in this environment.
+The improved `SELENE-showcase.solidcraft` native file was not found in the bounded public-source search performed for that review. Its source lock was then `awaiting_native_source`; native selectors, runtime mechanism evidence and full scene execution were unresolved. That missing-source finding is superseded by the 2026-10-22 admission recorded above and in [SOURCE.md](../../assets/render/selene/SOURCE.md). The opaque swatch script was checked against existing command shapes but was not executed or rendered during the historical review.
 
-## Redesign-aligned UI continuation
+## Historical redesign-aligned UI continuation — 2026-10-21
 
 The UI specification was reconciled with the implemented upstream design at `728f753b8094e1a54c5cc8b7e453982afa028023` (0.18.4), keeping the personal integration base at `93a2922c5ee272fb605703ae84c05825b4a74607` (0.18.2). All 21 source-record blob pairs in `ui-integration.json` were checked against Git objects: 17 are identical; the recorded toolbar, navigation, document and shell-composition source files have differences that do not authorize an automatic base update.
 
@@ -74,7 +82,7 @@ An independent source review corrected the Render tab's selected treatment to `r
 
 At this review, **99 local Markdown links** resolved and the new JSON contract had an exact attribution row. The existing commands and source metadata were inspected, not executed. No new runtime UI, render, screenshot, screen-reader result, usability measurement or platform-parity result is claimed. The acceptance matrix is work for the runtime implementation.
 
-## Repository gate limitation
+## Historical repository gate limitation — 2026-10-21
 
 The required commands `cargo xtask ci`, `cargo xtask assets` and `cargo xtask icons` were attempted in the isolated checkout and could not start:
 
@@ -82,11 +90,11 @@ The required commands `cargo xtask ci`, `cargo xtask assets` and `cargo xtask ic
 cargo: command not found
 ```
 
-The environment lacks the Rust toolchain. The PR therefore remains a **draft** until the relevant repository checks run on the submitted tree in a suitable environment. This is an actual uncompleted gate, not a claim that documentation requires no checks. The root attribution file is embedded by the UI and can expand CI's affected scope.
+The environment at that review lacked the Rust toolchain, so the PR was left as a **draft** pending the relevant repository checks on the submitted tree. This records an uncompleted historical gate; it does not describe the current toolchain or establish a later CI outcome. The root attribution file is embedded by the UI and can expand CI's affected scope.
 
 The same three required commands were attempted for the UI continuation and again could not start because `cargo` is unavailable. No successful Rust gate is inferred from the Python data checks.
 
-The package validator and whitespace review do not substitute for repository CI, renderer reference images, native/WASM execution or physics validation. There are no screenshots of new runtime behavior because this PR introduces no runtime behavior.
+The package validator and whitespace review do not substitute for repository CI, renderer reference images, native/WASM execution or physics validation. The historical catalog/UI review produced no application screenshots of new runtime behavior.
 
 ## Not established by this contribution
 

@@ -12,7 +12,7 @@
   "id": "SOLIDCRAFT-RENDER-UI-001",
   "source_snapshots": {
     "integration_base": {
-      "repository": "0xlillith/solvecraft",
+      "repository": "0xlillith/solidcraft",
       "branch": "lab/render-materials",
       "commit": "93a2922c5ee272fb605703ae84c05825b4a74607",
       "version": "0.18.2",
@@ -759,7 +759,12 @@
   "selene": {
     "flow": "../../assets/render/selene/ui/demo-flow.json",
     "source_lock": "../../assets/render/selene/source-lock.json",
-    "source_status_at_review": "awaiting_native_source",
+    "source_status_at_review": "pinned_native",
+    "source_reviewed_on": "2026-10-22",
+    "native_package": "../../assets/render/selene/README.md",
+    "native_source": "../../assets/render/selene/source/SELENE-showcase.solidcraft",
+    "native_work": "../../assets/render/selene/MECHANISMS.md",
+    "source_status_scope": "The owner-supplied improved native source is pinned and reconstruction commands are available. Final derivative validation is separate; this does not make the catalog or UI specification runtime-ready.",
     "physical_scene_default": "lunar_physical",
     "primary_adjustments": [
       "Sun azimuth",

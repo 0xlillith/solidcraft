@@ -1,81 +1,64 @@
-# SELENE improved showcase source
+# SELENE native source and lineage
 
-**The selected baseline is `SELENE-showcase.solidcraft`, the improved mechanism demonstration described by SychPL in Tangency Labs' SolidCraft project. Its native source has not been located in the public material inspected.** The active source is therefore `awaiting_native_source`.
+The owner supplied **`SELENE-showcase.solidcraft`**, the improved mechanism demonstration published by **SychPL (Mateusz Sych)**. Its bytes match the file added to the author's `media/selene-showcase` branch on 2026-10-21. The unchanged source is retained at [source/SELENE-showcase.solidcraft](source/SELENE-showcase.solidcraft); [source-lock.json](source-lock.json) pins its identity and records the review.
 
-[source-lock.json](source-lock.json) is the authority for this selection and its admission state. The package does not substitute the original `Rover-v7.solidcraft`, reconstruct an assumed derivative, or treat a recording as an inspected native assembly. Source-dependent scene and motion compilation must remain blocked until the actual improved source is admitted.
+The functional showcase is a new derivative of this file. The older `Rover-v7.solidcraft` remains a historical reference, not the modeling input.
 
-## Why this variant is selected
+## Exact identity
 
-The author's [showcase comment on PR 1540](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321) describes additions to the original rover: anchored modules, solar-actuator loops, a six-wheel motion chain, a rack-driven demonstration track, a turret/dish gear coupling, a vial-cap screw, arm inverse kinematics, motion traces and a coordinated study. [PR 1680](https://github.com/tangency-labs/solidcraft/pull/1680) explicitly names `SELENE-showcase.solidcraft` as its input file.
+| Field | Verified value |
+|---|---|
+| Author repository | `SychPL/solidcraft` |
+| Source branch | `media/selene-showcase` |
+| Commit | `32ec1720447e3fcc6bb6cc53a63fb5b39cfa21b9` |
+| Published timestamp | `2026-10-21T20:00:01Z` |
+| Repository path | `SELENE-showcase.solidcraft` |
+| Git blob SHA-1 | `a06fee2c8a839f5efccc75ae6de4e68f951cb266` |
+| SHA-256 | `1b0df486f30da157db27a33e0b5ed67f13d527d4dfdc6c334717a1df4e5b8677` |
+| Length | 314,452 bytes |
+| Native container | ZIP with `document.json` and `container.json` |
+| Native source format | `solidcraft/23` |
+| Units | Millimeters; Z up. Stored angles are radians; joint commands accept degrees. |
 
-This establishes the intended variant and the published behavior to investigate. It does not provide the file bytes, native IDs, full assembly inventory or exact saved pose. The author says that joints and helper parts were added; the derivative must therefore be inspected as its own artifact.
+The [source commit](https://github.com/SychPL/solidcraft/commit/32ec1720447e3fcc6bb6cc53a63fb5b39cfa21b9) identifies the design as Rover-v7 with closed-loop actuators, links, gears and the SELENE tour study. Both the Git blob hash and SHA-256 were computed independently from the supplied attachment on 2026-10-22.
 
-The [pinned mechanism reference](https://github.com/tangency-labs/solidcraft/blob/463cea0615a22be2f7d6c30512211f9eda97ff28/skills/solidcraft-mechanisms/reference.md) documents the actuator setup and several earlier SELENE experiments. Its descriptions are useful acceptance evidence. Counts mentioned in different examples must not be combined into an invented inventory of the later showcase.
+Read-only container inspection found **3,378 features, 47 component definitions, 47 occurrences, 49 joints, nine motion links and one motion study**. These are source-document counts. They do not establish that every feature evaluates, that every body survives the timeline, or that the assembly is collision-free. Native evaluation and derivative checks are separate evidence.
 
-## Authoritative evidence
+## Following the original clue
 
-| Evidence | Pinned identity or discussion | What it establishes |
-|---|---|---|
-| Mechanism reference | [`463cea0615a22be2f7d6c30512211f9eda97ff28`](https://github.com/tangency-labs/solidcraft/blob/463cea0615a22be2f7d6c30512211f9eda97ff28/skills/solidcraft-mechanisms/reference.md) | Actuator splitting, closed loops, mirrored tilt, wheel links, anchoring and visibility treatment described by the project. |
-| Author's improved-showcase comment | [PR 1540, comment 6205857321](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321) | The particular combined demonstration and its added mechanisms. Discussion text is mutable; it was inspected on 2026-10-21. |
-| Inverse kinematics change | [PR 1540](https://github.com/tangency-labs/solidcraft/pull/1540), merged as `4d862cd76ccfa3a171c66c48d9a184209a33a945` | Published reach and jointed-drag behavior. The change explicitly excludes contact-set checking from `joint.reach`. |
-| Motion export change | [PR 1680](https://github.com/tangency-labs/solidcraft/pull/1680), merged as `2ae21143ee2cb8ffb3af916ee2ffadac956a9faa` | Exact input filename, named tour and headless export examples. |
-| Motion analysis change | [PR 1712](https://github.com/tangency-labs/solidcraft/pull/1712), merged as `37496198bf2c99285de703899a67a5f87ac60b7a` | Plots and sampled arm-versus-wing interference demonstrations, with stated sampling limitations. |
-| Combined-showcase recordings | [SychPL media tree `df2e74230e6659409d65501b5d9396b55c6503d3`](https://github.com/SychPL/solidcraft/tree/df2e74230e6659409d65501b5d9396b55c6503d3) | Three linked GIF artifacts; no native model in this tree. |
-| Motion-export recordings | [SychPL media tree `1e2ad6842a5ad5c3b2cedee3e6508a8e4e3eb3d4`](https://github.com/SychPL/solidcraft/tree/1e2ad6842a5ad5c3b2cedee3e6508a8e4e3eb3d4) | Two GIFs and a dialog image; no native model in this tree. |
+The owner's [exact pinned mechanism reference](https://github.com/tangency-labs/solidcraft/blob/ac1768e08b83ed33212459951f5b50aa7a57cddc/skills/solidcraft-mechanisms/reference.md) describes the SELENE solar-actuator loops, wheel and solar motion links, grounded modules and visibility treatment. It also specifies command units, joint-origin conventions and validation methods. Those descriptions led to the author's showcase history.
 
-The JSON references preserve the original author, media filenames, upstream merge revisions, source URLs and evidence levels. A software merge revision identifies a code change; it is not a native-model revision or model hash.
+| Evidence | What it establishes |
+|---|---|
+| [Native source at `32ec1720`](https://github.com/SychPL/solidcraft/blob/32ec1720447e3fcc6bb6cc53a63fb5b39cfa21b9/SELENE-showcase.solidcraft) | The exact improved design supplied by the owner. |
+| [Parent media commit `df2e7423`](https://github.com/SychPL/solidcraft/commit/df2e74230e6659409d65501b5d9396b55c6503d3) | Three earlier GIF demonstrations, with credit to 0xlillith and Apache-2.0/MIT for the original model. |
+| [Author's showcase comment on PR 1540](https://github.com/tangency-labs/solidcraft/pull/1540#issuecomment-6205857321) | The combined demonstration and the motivation for its added mechanisms. |
+| [Motion export PR 1680](https://github.com/tangency-labs/solidcraft/pull/1680) | The exact showcase filename and tour/export examples. |
+| [Original rover repository](https://github.com/0xlillith/solidcraft-rover/tree/b32437915372d32b71419dc8f5143fe22ff1e869) | The owner's original Rover-v7 model and its attribution. |
 
-## What was searched
+The source lock preserves the earlier bounded public search as historical evidence. That search had inspected the media branch before the native file was added. Its former `awaiting_native_source` outcome is superseded by the supplied file and the new author commit; it is not a current blocker.
 
-The read-only public search was performed on **2026-10-21**. Its exact scope is recorded under `public_search` in the source lock.
+## Authorship and notices
 
-| Location | Scope | Result |
-|---|---|---|
-| `tangency-labs/solidcraft` | Complete observed main tree, 2,583 entries with no truncation; relevant documentation; all 42 returned releases and their asset inventories. | No improved native SELENE model in those locations. |
-| `tangency-labs/models` | Complete tree at `57abdd6f71c4202fcda78d19dcfdb54dde80a7a9`, README, license and four-commit setup history. | No models at all: documentation, templates, checks and CI only. |
-| `0xlillith/solidcraft-rover` | README, attribution and complete branch inventory, with one `main` branch at `b32437915372d32b71419dc8f5143fe22ff1e869`. | The original v7 and construction-recording variants remain the documented downloads. |
-| `SychPL/solidcraft` | Complete inventory of 109 branch names; four relevant source trees; one release's asset inventory. | No improved native model in the examined source trees or release. This does not claim that every branch tree was inspected. |
-| Six SychPL media branches | `media/joint-reach`, `media/motion-analysis`, `media/motion-animation`, `media/motion-traces`, `media/selene-demo`, `media/selene-showcase`; complete trees and histories. | Thirteen GIF/PNG files. Each branch is one root commit with no parent history; none contains a native file. |
-| PRs 1540, 1680 and 1712 | Combined issue comments, inline review comments and review submissions, plus separate review-thread queries. | Respectively 3, 1 and 0 discussion records; no review threads and no native or ZIP attachments. |
+The [original rover attribution](https://github.com/0xlillith/solidcraft-rover/blob/b32437915372d32b71419dc8f5143fe22ff1e869/ATTRIBUTION.md) offers the original model under **MIT OR Apache-2.0** and credits the SolidCraft emblem to SolidCraft contributors. The original modeled lettering follows **Ubuntu Light** outlines by Canonical Ltd., under the **Ubuntu Font Licence 1.0**. Its exact notice is retained in [licenses/UFL.txt](licenses/UFL.txt). No font binary is added.
 
-This bounded search did not locate the file. It does not establish that no copy exists elsewhere, and no guessed repository path or download URL has been inserted.
+SychPL is credited for the improved assembly, helper geometry and showcase study. The author branch contains the native file and three GIFs; it has no separate license file. Its parent commit records the original model's Apache-2.0/MIT attribution. This review preserves that evidence and does not invent a separate file-specific license declaration for the additions. The owner supplied the model and requested further work in their personal repository.
 
-## Source-lock contract
+New procedural geometry, English documentation and command generators in this derivative are original contributions. Raspberry Pi references inform dimensions and component identity; manufacturer CAD, logos, PCB artwork, electrical netlists and photographs are not embedded. No commercial CAD assets or GPL geometry implementations are imported.
 
-`active_source` deliberately contains:
+## Authoring runtime and format compatibility
 
-- The selected variant and expected filename.
-- `status: "awaiting_native_source"`.
-- `null` repository, commit, path, download URL, SHA-256, byte length and format.
-- Required millimeter units and Z-up orientation. These are admission requirements, not observations of the missing source.
+The reconstruction workflow selects the official **SolidCraft v0.18.2 Linux x86_64 CLI**. Its [published release](https://github.com/tangency-labs/solidcraft/releases/tag/v0.18.2) identifies source commit `4927214976ff20758fde35af03bd6b2d6cf73e18`. The release archive SHA-256 is `9d0c922ac72204f34ad22ca7a171be78016ab002e304ace3c07d34d187d830ff`; the extracted CLI SHA-256 is `e50fe78292d569c36052b24f46f1732bc4e43d1ecdac6a64092aa1cee3b97086`. The executor is an external development dependency and is not bundled as a model asset.
 
-`admission_review` keeps identity confirmation and license review as separate false flags. Reviewer, review date and evidence URL remain null. `license_review` holds the detailed license expression, notices and supporting records once the actual artifact is reviewed.
+This runtime writes **`solidcraft/28`**, which the personal render branch's format-29 reader can migrate. The unchanged source remains in format 23. The newer official v0.19.0 writes format 30, beyond that render branch's reader, so its isolated component fixtures remain development evidence rather than the authoritative final build. Final acceptance must name the actual executor and final model hash; success in a different runtime does not replace that run. No native format marker is rewritten by these tools.
 
-A future admission must identify the actual file through provenance-bearing HTTPS evidence, verify its bytes, inspect native assembly references and complete the license review. Only an explicit reviewed transition may set `active_source.status` to `pinned_native`. The local preparation tool must not mark either review flag true automatically.
+## Reproducibility boundaries
 
-Matching geometry, a plausible filename, extra joints or familiar feature counts cannot admit a source. The native review must resolve the actual components, occurrences, joint/link graph, limits, grounded roots, study keys and helper geometry. Ambiguous bindings block preparation without changing a scene.
+- Keep the pinned source unchanged. Author geometry, appearances, components, joints and studies through SolidCraft commands into a separately named derivative.
+- Record the executor version and binary hash with each native build. A newer native format is not backwards compatible merely because geometry looks similar. Do not edit a file's format marker to bypass this restriction.
+- Bind exact evaluated body names and component identities. Feature declarations alone are not a body inventory.
+- Verify joint movement and followers against independent calculations. A successful command without actual movement is not a successful mechanism test.
+- Preserve execution failures and incomplete checks explicitly. Do not carry validation claims from a lost intermediate checkpoint into a newly rebuilt model.
+- A native model suitable for inspection and render preparation is not a certified manufacturing design, an electrical design, or a physically simulated lunar rover.
 
-A pinned file still has no runtime validation by itself. Replay, collision checking, dynamic simulation and rendering require their own recorded evidence. A source hash change invalidates source-dependent bindings and motion evidence.
-
-## Legacy comparison and licenses
-
-The original `Rover-v7.solidcraft` remains only a historical comparison in `legacy_sources`. Its known SHA-256 is:
-
-```text
-fcb08540b1db08325f366fd0ff235f84f66d96406961482736bc097d7248c6d6
-```
-
-That hash is explicitly ineligible for the active source, including if the file is renamed. Its 17 revolute joints and original component IDs are not bindings for the improved variant.
-
-The [original rover attribution](https://github.com/0xlillith/solidcraft-rover/blob/b32437915372d32b71419dc8f5143fe22ff1e869/ATTRIBUTION.md) declares MIT OR Apache-2.0 for the original model and records Ubuntu Light lettering under the Ubuntu Font Licence 1.0. The actual improved native file and any added helper geometry still need a file-specific inventory and review.
-
-Tangency's [existing rover recording attribution](https://github.com/tangency-labs/solidcraft/blob/463cea0615a22be2f7d6c30512211f9eda97ff28/ATTRIBUTION.md) concerns the construction replay of `Rover-recorded.solidcraft`. Those rows do not identify this improved native file. The separate [Tangency benchmark-model collection](https://github.com/tangency-labs/models/blob/57abdd6f71c4202fcda78d19dcfdb54dde80a7a9/README.md) uses CC0; that does not change SELENE's licenses.
-
-These source and mechanism manifests are original SolidCraft metadata and prose under MIT OR Apache-2.0. No third-party model, screenshot, GIF, extracted commercial asset or GPL implementation is bundled.
-
-## Mechanism review
-
-[motion/mechanism-acceptance.json](motion/mechanism-acceptance.json) contains twelve review areas with independent documentation, native-inspection and runtime statuses. [The motion guide](motion/README.md) explains their use and four original analytic planning checks.
-
-The mechanism demonstration is kinematic. Lunar gravity, actuator effort, traction, flexible cables, granular contact, sample release and capture remain separate simulation work.
+The prepared appearance catalog, scene specifications and future dynamics sequence have their own evidence status. Admitting this source does not automatically bind or validate those resources.
