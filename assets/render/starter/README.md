@@ -64,8 +64,7 @@ The surface reproduction compares exact decoded pixel arrays; PNG compressed
 bytes may depend on the encoder build and platform even with the same Pillow
 version. All 240 decoded images were verified equal on Linux and Windows.
 Scoped Git attributes preserve LF in hashed text sources and binary map bytes.
-Environment and lighting
-reproduction checks compare encoded bytes. Every submitted export also has an
+Environment and lighting reproduction checks compare encoded bytes. Every submitted export also has an
 exact SHA-256 receipt. Altering a receipt is not a substitute for reviewing and
 rebuilding a changed recipe.
 

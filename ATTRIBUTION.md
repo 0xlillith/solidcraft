@@ -14,7 +14,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 
 | File | Author | Source | Licence |
 |---|---|---|---|
-| assets/icons/ui/design/.gitattributes | SolidCraft contributors | original canonical line-ending policy for the existing runtime icon-discovery manifest; no artwork or icon-assignment changes | MIT OR Apache-2.0 |
+| .gitattributes | SolidCraft contributors | original canonical line-ending policy for the existing runtime icon-discovery manifest; no artwork or icon-assignment changes | MIT OR Apache-2.0 |
 | assets/render/.gitattributes | SolidCraft contributors | original canonical line-ending policy for SHA-256-pinned renderer authoring resources | MIT OR Apache-2.0 |
 | docs/render-materials/.gitattributes | SolidCraft contributors | original canonical line-ending policy for SHA-256-pinned renderer authoring resources | MIT OR Apache-2.0 |
 | assets/render/starter/environments/exports/assembly-bench-soft.hdr | SolidCraft contributors | original analytic relative-radiance HDR export; recipe, linear-sRGB primaries and SHA-256 in assets/render/starter/environments/manifest.json; not measured photometry | MIT OR Apache-2.0 |

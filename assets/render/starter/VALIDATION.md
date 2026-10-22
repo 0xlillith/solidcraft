@@ -100,10 +100,33 @@ does not assign invented numbers to make these records look ready.
 
 ## Repository and runtime gates
 
-The local authoring environment has no `cargo` executable. Required repository
-commands are also being checked from an isolated Pegasus worktree. Their actual
-result must be recorded before the draft is presented as ready to merge; the
-Python and format checks above do not substitute for `cargo xtask ci`.
+Additional Pegasus verification on **2026-10-22** used a separate Windows worktree
+based on the frozen catalog commit, without changing the renderer implementation
+or other branches:
+
+- **53/53 focused Python authoring tests passed** again, along with the combined
+  manifest/PNG/HDR/lighting pack validator. The lighting numerical export hash
+  remained `52cac74c3b9ca2d66f0c36734336f498a4b8992d203d3305a9113a7753956617`.
+- The repository attribution checker reported **725 attributed assets**; Rust
+  formatting and the targeted icon standards were also checked on Pegasus.
+- The first `cargo xtask ci` attempt reached and passed workspace Clippy, WASM
+  checking and many test groups. The **icon audit did fail on Windows** because
+  the existing `requested_icons.txt` had been checked out as CRLF whereas the
+  runtime snapshot compared the canonical LF bytes. The entries were identical
+  after line-ending normalization; no artwork or assignments changed.
+- Added a path-scoped policy in the root `.gitattributes` to pin the existing icon
+  manifest to LF, restored its exact Git blob, and **reran the failing
+  `requested_menu_icons_have_artwork_and_match_manifest` test: PASS (1/1)**.
+  The policy is recorded in root attribution and kept outside the closed icon-artwork directory, as required by `cargo xtask icons`. The complete aggregate
+  `cargo xtask ci` has **not** been rerun after that fix; this draft must
+  not be represented as having an end-to-end green repository CI.
+- FFmpeg was unavailable on Pegasus, so independent HDR decoding was not
+  repeated on Windows. The separate original Linux independent-decoder and
+  reproduction checks are the evidence for that claim.
+
+These resource-specific tests are not automatically invoked by
+`cargo xtask ci`. Both the portable authoring suite and the full repository
+gate are required before a production merge.
 
 Still required for an application release:
 
