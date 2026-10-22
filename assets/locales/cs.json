@@ -617,6 +617,7 @@
   "cmd.plastic_snap_fit": "Zacvakávací spoj",
   "cmd.render_backends": "Renderovací jádra",
   "cmd.render_camera_fit": "Zarámovat objekt renderu",
+  "cmd.render_camera_get": "Prohlédnout kameru renderu",
   "cmd.render_cancel": "Zrušit render",
   "cmd.render_export": "Exportovat obrázek renderu",
   "cmd.render_preflight": "Zkontrolovat požadavek na render",

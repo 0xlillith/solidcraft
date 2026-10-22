@@ -285,6 +285,7 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
         ("render.stage.backdrop", Page::Scene),
         ("render.quality.prepare", Page::Output),
         ("render.status", Page::Diagnostics),
+        ("render.camera.get", Page::Camera),
     ] {
         h.app.start(id);
         h.frames(3);

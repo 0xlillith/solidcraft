@@ -302,7 +302,7 @@ pub const SECTIONS: &[Section] = &[
             "render.settings.capture_hdr",
         ],
     },
-    Section { tab: "RENDER", panel: "CAMERA", promoted: 2, ids: &["render.camera.fit", "render.settings.apply"] },
+    Section { tab: "RENDER", panel: "CAMERA", promoted: 2, ids: &["render.camera.get", "render.camera.fit", "render.settings.apply"] },
     Section {
         tab: "RENDER",
         panel: "IMAGE",
@@ -315,6 +315,7 @@ pub const SECTIONS: &[Section] = &[
 /// retain the engine label. Route these through `tr_label`, like other UI labels.
 pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("render.camera.fit", "Frame"),
+    ("render.camera.get", "Camera"),
     ("render.preset.resolve", "Studios"),
     ("render.settings.get", "Shots"),
     ("render.library.appearance.apply", "Materials"),

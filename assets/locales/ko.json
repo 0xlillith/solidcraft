@@ -617,6 +617,7 @@
   "cmd.plastic_snap_fit": "스냅핏",
   "cmd.render_backends": "렌더링 백엔드",
   "cmd.render_camera_fit": "렌더 대상 화면 맞춤",
+  "cmd.render_camera_get": "렌더 카메라 확인",
   "cmd.render_cancel": "렌더링 취소",
   "cmd.render_export": "PNG 내보내기",
   "cmd.render_hdr_inspect": "HDR 소스 검사",

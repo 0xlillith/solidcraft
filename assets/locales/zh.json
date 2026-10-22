@@ -623,6 +623,7 @@
   "cmd.plastic_snap_fit": "卡扣",
   "cmd.render_backends": "渲染后端",
   "cmd.render_camera_fit": "为渲染主体取景",
+  "cmd.render_camera_get": "检查渲染相机",
   "cmd.render_cancel": "取消渲染",
   "cmd.render_export": "导出 PNG",
   "cmd.render_preflight": "检查渲染请求",

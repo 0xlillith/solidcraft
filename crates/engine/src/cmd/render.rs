@@ -27,6 +27,8 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("render.camera.get", "Inspect Render Camera", get_camera).icon("camera").noundo()
+        .params("No parameters. Returns the explicitly defined current view camera, or null if the session has no camera override. No camera is fitted, no job is started and no saved setup or engineering document is changed."),
 CommandSpec::new("render.camera.fit", "Frame Render Subject", fit_camera).icon("camera").noundo()
     .params("No parameters. Fits the current camera to the visible product bounds through the shared Camera::fit contract; changes only view state, not a saved setup, rendering job, stage or engineering geometry."),
 CommandSpec::new("render.preset.resolve", "Review Native Studio", studio_presets::resolve).icon("render_scene").noundo()
@@ -100,6 +102,13 @@ CommandSpec::new("render.scene", "Inspect Render Scene", scene).noundo().at("REN
 CommandSpec::new("render.settings.apply", "Apply Render Camera", apply_settings).icon("camera").noundo().doc_only()
     .params("name: saved setup. Applies its existing Camera snapshot including roll/up as view state, without modifying the document or starting a render."),
 ];
+
+fn get_camera(s: &mut Session, params: &Value) -> Result<Value> {
+    if !params.as_object().is_some_and(|p| p.is_empty()) {
+        return Err(bad("render.camera.get", "expected an empty parameter object"));
+    }
+    Ok(json!({"camera":s.camera,"explicit_view":s.camera.is_some(),"document_changed":false}))
+}
 
 fn fit_camera(s: &mut Session, params: &Value) -> Result<Value> {
     if !params.as_object().is_some_and(|p| p.is_empty()) {

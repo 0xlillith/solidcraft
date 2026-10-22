@@ -623,6 +623,7 @@
   "cmd.plastic_snap_fit": "Encaje a presión",
   "cmd.render_backends": "Motores de renderizado",
   "cmd.render_camera_fit": "Encuadrar sujeto de render",
+  "cmd.render_camera_get": "Inspeccionar cámara de render",
   "cmd.render_cancel": "Cancelar renderizado",
   "cmd.render_export": "Exportar imagen renderizada",
   "cmd.render_hdr_inspect": "Inspeccionar fuente HDR",

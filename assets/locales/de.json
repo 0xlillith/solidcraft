@@ -617,6 +617,7 @@
   "cmd.plastic_snap_fit": "Rastverbindung",
   "cmd.render_backends": "Render-Backends",
   "cmd.render_camera_fit": "Renderobjekt einpassen",
+  "cmd.render_camera_get": "Renderkamera prüfen",
   "cmd.render_cancel": "Rendering abbrechen",
   "cmd.render_export": "PNG exportieren",
   "cmd.render_hdr_inspect": "HDR-Quelle untersuchen",

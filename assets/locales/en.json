@@ -623,6 +623,7 @@
   "cmd.plastic_snap_fit": "Snap Fit",
   "cmd.render_backends": "Render Backends",
   "cmd.render_camera_fit": "Frame Render Subject",
+  "cmd.render_camera_get": "Inspect Render Camera",
   "cmd.render_cancel": "Cancel Render",
   "cmd.render_export": "Export Render Image",
   "cmd.render_hdr_inspect": "Inspect HDR Source",

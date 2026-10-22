@@ -623,6 +623,7 @@
   "cmd.plastic_snap_fit": "スナップ フィット",
   "cmd.render_backends": "レンダリング バックエンド",
   "cmd.render_camera_fit": "レンダー対象をフレームに合わせる",
+  "cmd.render_camera_get": "レンダーカメラを確認",
   "cmd.render_cancel": "レンダリングをキャンセル",
   "cmd.render_export": "PNGをエクスポート",
   "cmd.render_hdr_inspect": "HDRソースを調査",

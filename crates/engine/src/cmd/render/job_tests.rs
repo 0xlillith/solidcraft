@@ -1109,6 +1109,10 @@ fn registered_product_camera_fit_changes_only_view_and_keeps_orientation() {
     s.execute("view.apply", &json!({"camera":camera})).unwrap();
     let doc = s.doc.to_json();
     let undo = s.undo.len();
+    let inspected = s.execute("render.camera.get", &json!({})).unwrap();
+    assert_eq!(inspected["camera"], json!(camera));
+    assert_eq!(inspected["document_changed"], false);
+    assert!(s.execute("render.camera.get", &json!({"fit":true})).is_err());
     let fitted = s.execute("render.camera.fit", &json!({})).unwrap();
     assert_eq!(fitted["document_changed"], false);
     let after = s.camera.unwrap();
