@@ -983,3 +983,5 @@ The original adapters in `crates/engine/src/cmd/render/library.rs`, the generate
 | assets/render/physical/tools/test_physical.py | SolidCraft contributors | original offline physical-reference validation and projection tool | MIT OR Apache-2.0 |
 | assets/render/physical/tools/export_library.py | SolidCraft contributors | original explicit reference-library planner and native no-loss export verifier; no external code | MIT OR Apache-2.0 |
 | assets/render/physical/tools/test_export_library.py | SolidCraft contributors | original regressions for native capability refusal, source identity and physical-card preservation | MIT OR Apache-2.0 |
+
+| tools/render-library/selene_studio.py | SolidCraft contributors | original bounded native MCP studio orchestration with pinned editable master, explicit GPU policy and request/export receipts; no generated model or image substitutes | MIT OR Apache-2.0 |
