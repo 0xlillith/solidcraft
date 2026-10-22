@@ -2,7 +2,7 @@
 
 **An English, clean-room product specification for the personal render/materials fork.**
 
-This contribution defines what to build and how to verify it: 600 appearance concepts, 280 lighting recipes, 280 environments, 120 renderer capabilities, 56 UX requirements and 36 requirements for a future animation and dynamics module. It also supplies numeric preset specifications, scene combinations, current-contract setup examples and an improved-source SELENE demonstration plan.
+This contribution defines what to build and how to verify it: 600 appearance concepts, 280 lighting recipes, 280 environments, 120 renderer capabilities, 56 UX requirements and 36 requirements for a future animation and dynamics module. It also supplies numeric preset specifications, scene combinations, current-contract setup examples, and native SELENE reconstruction and validation tools.
 
 The preset set contains **82 future specifications**: 10 quality profiles, 24 studio rigs, 24 environment recipes and 24 complete scene combinations. Six additional current-contract setup examples and six analytic physics fixtures support integration and review.
 
@@ -21,7 +21,7 @@ The catalog is a content and implementation backlog. Its entries are not install
 | [UI integration](UI_INTEGRATION.md) | Exact alignment with the implemented SolidCraft redesign: ribbon groups, existing icons/tokens, library, inspector, responsiveness and accessibility. |
 | [Renderer plan](RENDERER.md) | Quality foundations, expensive features and evidence for competitive claims. |
 | [SELENE](SELENE.md) | Improved showcase source selection, lunar stills, model upgrades and future sample-handling dynamics. |
-| [Prepared SELENE resources](../../assets/render/selene/README.md) | 48 authored appearance recipes, executable swatches, 33 roles, 10 stages, 12 shots and source-admission tools. |
+| [Native SELENE package](../../assets/render/selene/README.md) | Pinned source, functional derivative, native verification and render preparation, plus the broader appearance/scene specifications. |
 | [Implementation handoff](IMPLEMENTATION_HANDOFF.md) | Integration tasks, boundaries, priorities and acceptance gates. |
 | [Clean-room record](CLEAN_ROOM.md) | Authorship, sources, exclusions and future asset-admission rules. |
 | [Sources](SOURCES.md) | Public specifications, scientific facts and pinned project references. |
@@ -62,12 +62,12 @@ The first shipped pack should be smaller than the full inventory: select approxi
 
 ## Repository placement
 
-The requested integration base is `0xlillith/solvecraft`, branch `lab/render-materials`, inspected at `93a2922c5ee272fb605703ae84c05825b4a74607`. The repository slug is recorded only as its actual location; the product is **SolidCraft**. Work is isolated in `docs/render-catalog-selene`, tracked by [issue #2](https://github.com/0xlillith/solvecraft/issues/2) and [PR #3](https://github.com/0xlillith/solvecraft/pull/3).
+The requested integration base is `0xlillith/solidcraft`, branch `lab/render-materials`, inspected at `93a2922c5ee272fb605703ae84c05825b4a74607`. The catalog work is isolated in `docs/render-catalog-selene`, tracked by [issue #2](https://github.com/0xlillith/solidcraft/issues/2) and [PR #3](https://github.com/0xlillith/solidcraft/pull/3). The native SELENE continuation is isolated in `showcase/selene-functional`, based on catalog commit `10ada1b45a4eb285ce752ac72f9aaa968ff8b5c4`.
 
 The implementation already under way in the other thread remains the authority for runtime behavior. Resolve this specification against the code that actually lands there; do not infer support from the existence of a catalog row.
 
 ## Prepared resource continuation
 
-The [prepared package](../../assets/render/selene/README.md) moves a first slice beyond concept names into original numerical appearance recipes and reviewable scene configuration. Its current opaque PBR projections can be inspected through the supplied swatch command script. Advanced optics, terrain generators, final-quality output and model-specific assignments remain gated on actual executor support and source review.
+The [SELENE package](../../assets/render/selene/README.md) contains original numerical appearance recipes, reviewable scene configuration and the current native reconstruction workflow. Its opaque PBR projections can be inspected through the supplied swatch command script. Advanced optics, terrain generators and final-quality output remain gated on actual executor support and validation.
 
-The selected `SELENE-showcase.solidcraft` native file has not yet been obtained from the reviewed public sources. Its hash and targets remain unresolved, and no scene silently falls back to the original v7. This does not block preparation of reusable appearances, semantic roles, shots or the future physics contract.
+The owner supplied the improved [SELENE-showcase.solidcraft](../../assets/render/selene/source/SELENE-showcase.solidcraft). The [source lock](../../assets/render/selene/source-lock.json) is now `pinned_native`; [SOURCE.md](../../assets/render/selene/SOURCE.md) records its exact hash, author provenance, retained notices and runtime compatibility. The current native work adds [mechanism improvements](../../assets/render/selene/MECHANISMS.md) and a [Raspberry Pi 5 visual reconstruction](../../assets/render/selene/ELECTRONICS.md) through reproducible SolidCraft commands. The [native validation record](../../assets/render/selene/VALIDATION.md) identifies the saved derivative, executor, completed checks and remaining limits. The broader catalog remains unbound, and historical v7 remains excluded as a substitute.

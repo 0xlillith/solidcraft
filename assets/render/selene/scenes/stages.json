@@ -3,10 +3,10 @@
     "schema_version": "0.1.0",
     "language": "en",
     "status": "specified_unbound",
-    "authorship": "Original SolidCraft prepared-demo authoring specifications; no external model, image, terrain or shader asset is bundled.",
+    "authorship": "Original SolidCraft prepared-demo authoring specifications. The separately pinned native source is documented in source-lock.json; these semantic resources remain unbound.",
     "provenance_id": "ORIGINAL-2026-10-CATALOG",
     "source_lock": "../source-lock.json",
-    "source_state": "awaiting_native_source",
+    "source_state": "pinned_native",
     "expected_native_label": "SELENE-showcase.solidcraft",
     "source_requirement": "Require ../source-lock.json active_source.status='pinned_native', matching accepted bytes/format/units/+Z, confirmed admission review and reviewed semantic selectors. An expected filename is not proof of identity.",
     "catalog_root": "../../../../docs/render-materials",
@@ -50,7 +50,8 @@
       "accessed": "2026-10-21",
       "use": "Apparent solar diameter context; inherited 0.53-degree value remains an approximate authoring default, not a calibrated lunar ephemeris."
     },
-    "native_opaque_compiler_policy": "prepare.py compile is restricted to reviewed native BODY selections for roles with kind=appearance, owner=subject and opaque_proxy_allowed=true. Stage geometry, framing, interaction regions, layered dust, optics and emitters are not compiled by that tool."
+    "native_opaque_compiler_policy": "prepare.py compile is restricted to reviewed native BODY selections for roles with kind=appearance, owner=subject and opaque_proxy_allowed=true. Stage geometry, framing, interaction regions, layered dust, optics and emitters are not compiled by that tool.",
+    "source_snapshot_sha256": "1b0df486f30da157db27a33e0b5ed67f13d527d4dfdc6c334717a1df4e5b8677"
   },
   "items": [
     {
@@ -187,7 +188,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -334,7 +335,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -485,7 +486,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -634,7 +635,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -775,7 +776,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -921,7 +922,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -1060,7 +1061,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -1201,7 +1202,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -1354,7 +1355,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."
@@ -1499,7 +1500,7 @@
         "CAP-120"
       ],
       "blocking_requirements": [
-        "Accept the improved native source through source-lock.json.",
+        "Verify the pinned improved source against source-lock.json and review selectors for this stage.",
         "Resolve a versioned stage generator and all appearance roles.",
         "Verify subject physical scale, placement, stage clearance and one owner per light contribution.",
         "Bind an executor with every required capability; retain an explicit unsupported result otherwise."

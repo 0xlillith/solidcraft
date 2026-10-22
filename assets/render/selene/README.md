@@ -1,90 +1,87 @@
-# Prepared SELENE render and motion resources
+# SELENE functional showcase
 
-This is the concrete authoring slice of the [render/materials catalog](../../../docs/render-materials/README.md), prepared for the personal SolidCraft render branch. It includes **48 original appearance recipes, an executable 48-swatch script, 33 semantic roles, 10 stages, 12 shots, 12 mechanism acceptance areas and an 11-state future dynamics sequence**.
+This package develops the **author-supplied improved SELENE** into an editable native model for close-up rendering and subsequent mechanism animation. The input is SychPL's `SELENE-showcase.solidcraft`, matched byte for byte to his published file. The original is retained unchanged; the enhanced derivative is [models/SELENE-functional.solidcraft](models/SELENE-functional.solidcraft).
 
-**The selected native source is the improved `SELENE-showcase.solidcraft`, documented in Tangency Labs' project. Its file has not been obtained from the public locations reviewed.** [source-lock.json](source-lock.json) therefore remains `awaiting_native_source`. Exact improved-source hashes, IDs and transforms are deliberately unresolved. The historical Rover v7 is excluded as a substitute. [SOURCE.md](SOURCE.md) records the evidence, search scope and admission requirements.
+Open the derivative in the personal SolidCraft render branch. The model contains the geometry, component ownership, joints, motion links, physical-material proxies, appearances, browser groups, saved views and inspection studies. Python is only a development tool for reproducing the changes; opening and using the design does not require Python.
 
-## What is ready, and what it means
+![SELENE functional showcase in native Design shading](exports/SELENE-overview.png)
 
-| Files | Prepared content | Current meaning |
-|---|---|---|
-| [Appearance pack](materials/appearance-pack.json) and [guide](materials/appearance-pack.md) | 48 original numerical recipes; separate current opaque projection and advanced optical intent | Authored values, unmeasured and not visually validated. The manifest is not a portable scalar library. |
-| [Appearance swatches](materials/appearance-swatches.json) | 99 existing-command operations: new design, 49 boxes and 49 appearance assignments | A complete input for a current opaque preview. No native SELENE file is needed. It has not been replayed in this environment. |
-| [Roles](scenes/roles.json) | 33 geometry, appearance, layer, optical and source roles | Semantic selections awaiting review against the improved native source or an original stage generator. |
-| [Stages](scenes/stages.json) and [shots](scenes/shots.json) | 10 explicit stage configurations and 12 camera/composition recipes | Future renderer inputs with source ownership, capability gates and no guessed native transforms. |
-| [Mechanism acceptance](motion/mechanism-acceptance.json) | 12 review areas and four analytic planning examples | Documented behavior to preserve, with native/runtime evidence still unresolved. |
-| [Read-only preflight](motion/preflight-commands.json) | Five supported inspection commands | Inventory of joints, studies, appearances, physical materials and render scene on an opened design. |
-| [Sample sequence](motion/sample-sequence.json) | 11 states for collection, closure, release, flight, capture, storage and failure | A future dynamics contract, not a canned motion clip or simulated result. |
-| [Demo UI flow](ui/demo-flow.json) | Three-step scene/quality/render flow, three exact quality recommendations for each shot and contextual disclosure | An unbound integration specification aligned with the implemented Render ribbon, icons and shared UI kit. |
-| [Preparation tool](tools/prepare.py) and [validator](tools/validate_prepared.py) | Native inspection, review templates, guarded opaque overlay compilation and package checks | Python 3.11 development tools only; no application runtime dependency. |
+*Actual native Design preview of the neutral master. Close-ups and the product-render executor's current limits are documented in [RENDER.md](RENDER.md).*
 
-The 600-material, 280-light and 280-environment catalog remains the broader design inventory. These 48 appearances are realizations of existing concepts, not 48 additional concept IDs. The 10 stages and 12 shots specialize existing presets for SELENE.
+## What changed
 
-## Inspect the available opaque previews
+| Area | Native implementation |
+|---|---|
+| Rolling-element bearings | Ten open radial bearings at the arm and sensor head. Each has grooved steel races, eight individually represented balls and a brass cage. The inner race follows the shaft, the outer race follows the housing, and linked revolutes drive cage orbit and relative ball spin. |
+| Arm joints | Revised plate spacing, bored seats, stepped clamp hubs, shafts, spacers, locking screws and a machined wrist tongue. Rigid decorative hydraulic cylinders that would detach during movement are removed. |
+| Gripper | Two separate moving jaw components, concentric brass plain sleeves, opposite revolute motion and elastomer contact pads. Its commanded range is −15° to +18° at the driver. |
+| Suspension | Six hinged trailing carriers with reinforcing gussets. Separate hollow damper barrels and rods form six closed revolute–slider–revolute loops. Local support reliefs clear the moving eyes and arms over the bounded travel. |
+| Drivetrain | Wheel shafts, hubs, flanges and retaining screws belong to the rotating wheels. Wheel joints attach to the moving carriers. The optional demonstration track uses a 40 mm nominal rolling radius. |
+| Yaw supports and pointing | Three solid-disk placeholders become journal supports with flanged brass bushings, hollow rotating journals and recessed axial retaining pins. Sensor and dish pointing are independent; the illustrative gear coupling is removed. |
+| Raspberry Pi 5 | A board with rounded corners, mounting holes, plated pads and vias, plus 491 new bodies for packages, shields, passives, headers, connector housings, contacts, solder details and mounting tabs. Hollow ports replace solid envelopes. |
+| Materials and appearance | Retained orange/charcoal identity with distinct metals, polymer, elastomer, FR4, silicon and optical surfaces. Opaque bodies carry PBR values; physical density proxies are explicitly separate from optical properties. |
+| Sample laboratory | Each glass vial is one hollow native solid with an integral bottom, retaining its original external dimensions. The existing screw-driven cap retains 1.5 mm travel per revolution. The source rock is grounded as demonstration scenery. |
+| Inspection | Body groups by function, ten named views with render setup records, seven focused motion studies, and an adapted copy of the author's original tour. |
 
-From the repository root, in an environment with the built SolidCraft CLI:
+The native build and independent acceptance run have separate evidence. See [VALIDATION.md](VALIDATION.md) for the final hash, actual counts, executor, completed checks and remaining limitations. [MECHANISMS.md](MECHANISMS.md) gives the joint conventions and independent equations; [ELECTRONICS.md](ELECTRONICS.md) explains the board reconstruction and its fidelity boundaries.
 
-```sh
-mkdir -p target/render-selene
-solidcraft-cli run assets/render/selene/materials/appearance-swatches.json --save target/render-selene/swatches.solidcraft --results
-solidcraft-cli render target/render-selene/swatches.solidcraft --out target/render-selene/swatches.png --width 768 --height 576
-```
+## Using the model
 
-The script starts a **new design**. Use it as a standalone CLI input, never as an overlay on a working assembly. Save native output with `--save`; `--out` on `run` selects a geometry export. The render command uses the current fixed-light opaque preview. These boxes do not demonstrate transmission, emission, texture detail, coatings, anisotropy, terrain or path tracing. Image generation and visual review remain pending; no preview screenshot is bundled as evidence.
+The file opens in the neutral pose: all independent drivers are at zero, including sensor elevation. Saved views are named `SELENE - Whole rover`, `Electronics`, `Shoulder bearing`, `Elbow bearing`, `Gripper`, `Sensor head`, `Sample laboratory`, `Drivetrain`, `Suspension` and `Solar cells`, each with the same `SELENE - ` prefix.
 
-The numerical projection has exactly `color`, `opacity: 1` and `pbr: {metallic, roughness, dielectric_ior}`, plus a custom appearance label. All values are original illustrative controls. Glass, window and diffuser swatches are clearly named opaque inspection surrogates; the LED phosphor face is unpowered. Physical density, friction, electrical properties and flight qualification are not inferred.
+Use the seven inspection studies for drivetrain, solar deployment, arm articulation, gripper, independent sensor pointing, sample cap and suspension. They return their independent drivers to neutral. The inherited tour is named **`SELENE - Legacy author tour (adapted limits)`**; it preserves the author's keyed motion while resolving recreated wheel joints and clamping the selected limits. A keyed study is an authoring resource, not evidence that every frame of every combined pose has been cleared.
 
-## Admit and prepare the improved native model
+For suspension motion, hide the six rigid spring solids and twelve motor leads. They remain useful neutral-pose render details but do not deform. The `motion` visibility profile in [tools/presentation.py](tools/presentation.py) performs this selection and also hides the optional track and source flexible-hose display geometry. Export or save inspection poses to a separate file; keep the master neutral.
 
-The missing external input is the actual improved native file, with a source link or original attachment establishing its identity. Once available:
+The source cap has an ideal screw relation. The six complete vials remain in the sample laboratory assembly. Independent grasp, release, free flight and capture are future work; the current cap motion does not implement those events.
 
-1. Keep an unchanged copy as the source authority and inspect its bytes and metadata.
-2. Review the source record and notices, including retained original-model lettering and any helper geometry. Fill the source lock from actual evidence and complete its explicit admission review.
-3. Review the mechanism manifest against native components, joints, links and studies. Preserve the improved tour and model hierarchy; create a named derivative for any further work.
-4. Generate a body-role template and resolve its eligible opaque targets against the **evaluated** model. A declared history name alone does not prove that a body survives the feature history.
-5. Compile and apply the reviewed subset to a new native output, then inspect the result and run the mechanism regressions. Keep the source hash, review file and applied command script beside the derivative.
+## Reproduce the native derivative
+
+Use Python 3.11+ and the **official SolidCraft v0.18.2 CLI** identified in [SOURCE.md](SOURCE.md). That executor writes `solidcraft/28`, readable by the personal render branch's format-29 reader. The newer official v0.19.0 writes format 30 and is unsuitable as a drop-in authoring replacement for that branch. No format marker is edited to bypass compatibility.
+
+From the repository root:
 
 ```sh
-python3 assets/render/selene/tools/prepare.py inspect --model path/to/SELENE-showcase.solidcraft --out target/render-selene/source-inspection.json
-python3 assets/render/selene/tools/prepare.py template --model path/to/SELENE-showcase.solidcraft --out target/render-selene/body-bindings.json
+PYTHONDONTWRITEBYTECODE=1 python3 assets/render/selene/tools/build.py \
+  --cli /path/to/solidcraft-cli \
+  --work target/selene/rebuild \
+  --output target/selene/SELENE-functional.solidcraft
 ```
 
-Those commands **do not approve a source**. After explicit source and target review, the compiler can be used:
+The builder checks the pinned original, evaluates it, then uses only native commands. Stages run in fresh processes so the large model's undo history remains bounded. Each stage retains its command script, full native results, timing trace and saved checkpoint under the selected work directory. Every checkpoint must have a clean feature timeline, unique live body names and a clean joint graph. The build history records hashes of the source, executor, recipes, results and checkpoints.
+
+Resume an interrupted build by repeating the command with `--resume`. The builder rejects changed recipes, executables, results or checkpoints. `--until` stops at a named stage for inspection. Inspect failures in their logs; use a separate work directory when changing an already completed stage.
+
+Run independent acceptance on the saved derivative:
 
 ```sh
-python3 assets/render/selene/tools/prepare.py compile --model path/to/SELENE-showcase.solidcraft --lock path/to/pinned-source-lock.json --bindings path/to/reviewed-body-bindings.json --out target/render-selene/opaque-overlay.json
-solidcraft-cli run target/render-selene/opaque-overlay.json --in path/to/SELENE-showcase.solidcraft --save target/render-selene/SELENE-opaque-review.solidcraft --results
+PYTHONDONTWRITEBYTECODE=1 python3 assets/render/selene/tools/validate_native.py \
+  --cli /path/to/solidcraft-cli \
+  --model target/selene/SELENE-functional.solidcraft \
+  --interference-pairs assets/render/selene/motion/interference-pairs.json \
+  --out target/selene/acceptance
 ```
 
-The committed pending lock intentionally blocks compilation. A pinned lock must match the actual source digest, size, format and units and contain a recorded identity/notice review. The current adapter is checked against native format 21 and the pinned opaque appearance contract; a newer source format requires adapter review against the executor that will open it.
+This drives an in-memory copy and compares native joint readbacks and occurrence centers of mass with independent calculations. It never saves test poses over the master. Optional exact-name interference pairs are bounded and report unchecked pairs as incomplete. Detailed execution evidence stays in `target/`; production native files and English documentation are the shipped resources.
 
-An overlay is a sequence of existing commands, not an atomic engine transaction. A failed script can leave the in-memory copy partially changed. Work on a separate process/copy and retain the original file. The tool never opens the application, executes commands or rewrites a native design. Outputs refuse replacement. Do not use `timeline.export_script` to round-trip the assembly: its current contract omits appearance overrides and does not support component/joint designs.
+## Render preparation and the wider catalog
 
-The adapter emits only reviewed **subject-body opaque appearances**. It excludes glass and other optical roles, dust layers, emitting surfaces, light sources, framing selections and generated terrain. Those require their own bound renderer resources. It rejects duplicate targets, unresolved roles and the known historical v7 hash. A different concept than the suggested role material requires a recorded override reason. This is a preparation aid, not a geometric selector, solver, visual approval or proof of photorealism.
+The ten saved camera/setup records and the model's body appearances are concrete native resources. [RENDER.md](RENDER.md) documents the actual image workflow and any executor limits. Transparent viewport appearances alone do not establish physical refraction, and density does not supply roughness, friction, electrical behavior or optical transmission.
 
-Body appearance edits can affect every occurrence of a shared component definition. The review must explicitly confirm that scope. Generated instance names are not accepted as stable source-body names; two instances that need different finishes require a separately supported binding or an explicit reviewed model derivative. The compiler does not create occurrence-specific appearance overrides.
-
-## Scene and UI integration
-
-The [scene guide](scenes/README.md) explains the 12 prepared shots: low/high Sun, sampling macro, LED work patch, polar ridge, transfer, release/capture coverage, full-shadow audit, neutral studio, turntable, labeled editorial hero and vial closure detail.
-
-Resolve stage geometry, appearances, source ownership, camera framing and executor support before mutation. Physical lunar scenes have one finite-angular Sun, reflected light from actual geometry and explicitly owned hardware emitters where requested. They have no automatic sky fill, atmosphere, Earth disk or star overlay. The terrain is an original conceptual procedural stage, with no implied named-site accuracy. Exact contact placement and swept-volume clearance require the admitted rover bounds.
-
-Integrate the authored UI flow using the [shared UI integration contract](../../../docs/render-materials/UI_INTEGRATION.md): the existing Render workspace, one Render tab, Scene/Image ribbon groups and the current icon/token vocabulary. The default flow is **choose scene → choose quality → render**, with availability and actual blockers visible. Scenes, Materials, Lighting and Environments are local library categories. Quick is the default collapsed inspector; Detailed and Expert open sections of the same state. At most six primary adjustments appear together, while layers, units, mapping, lighting, camera, output and provenance remain accessible. A preset never changes engineering or simulation properties, and unsupported features are never silently removed.
-
-## Reuse motion; add validated dynamics
-
-Keep the improved source's existing IK, motion links, closed loops, traces and tour. The [motion guide](motion/README.md) separates published demonstrations from native inspection and runtime replay.
-
-The future sample sequence extends that foundation with a complete independent vial, closure and grasp states, mass/inertia, contact proxies, bounded actuation, continuous collision detection, regolith bookkeeping and release/capture events. It includes a visible failure path. A visually plausible parabola alone does not validate a catch. An approved bake remains independent of render resolution, sample count and frame rate.
-
-## Validation and provenance
+The existing [48-appearance pack](materials/appearance-pack.json), [33 semantic roles](scenes/roles.json), [ten stage specifications](scenes/stages.json), [12 shots](scenes/shots.json), [UI flow](ui/demo-flow.json) and [future sample dynamics sequence](motion/sample-sequence.json) remain a broader authoring specification. The source is now pinned; those resources still need their individual geometry bindings and renderer admission. The catalog's `runtime_ready: false` status is intentional. No lunar terrain, dust dynamics, calibrated optical library or throw-and-catch simulation is implied by the native model's completion.
 
 ```sh
 python3 docs/render-materials/validate_catalog.py
 python3 assets/render/selene/tools/validate_prepared.py
+cargo xtask ci
 ```
 
-These validate authored data and command projections. They do not run the application or establish runtime readiness. [The validation record](../../../docs/render-materials/VALIDATION.md) records actual checks and the Rust-toolchain limitation. Full repository gates and actual visual/mechanism evidence are required before merge and production publication.
+The Python checks validate prepared data and the source contract. They do not replace native geometry, mechanism or visual checks. Repository-wide gate status is recorded separately in the validation report.
 
-All added recipes, procedural choices, metadata, scripts and prose are original clean-room work under the repository's MIT OR Apache-2.0 choice. Exact non-Markdown paths are listed in [ATTRIBUTION.md](../../../ATTRIBUTION.md). No external native model, texture, HDRI, media, commercial CAD asset or GPL implementation is bundled. [The clean-room record](../../../docs/render-materials/CLEAN_ROOM.md) and source lock document the limited public references.
+## Provenance and scope
+
+[SOURCE.md](SOURCE.md) and [source-lock.json](source-lock.json) pin the exact source bytes and author history. The original rover is credited to 0xlillith, the improved showcase assembly to SychPL, and the emblem to SolidCraft contributors. Ubuntu Light lettering retains its [Ubuntu Font Licence notice](licenses/UFL.txt). The source branch has no separate file-specific license declaration for the showcase additions; that provenance distinction is preserved.
+
+New geometry, procedural scripts and documentation are original contributions under MIT OR Apache-2.0. Exact non-Markdown asset rows are in [ATTRIBUTION.md](../../../ATTRIBUTION.md). Manufacturer CAD, PCB artwork, logos and netlists are not embedded.
+
+The model demonstrates geometric detail and ideal kinematics. It is not a manufacturing release, a complete electrical design, a load-rated bearing selection or a physics simulation. Joint limits are a documented inspection envelope; sampled checks do not certify every simultaneous arm, solar and suspension configuration.

@@ -119,6 +119,23 @@ class Validation:
             catalog_ids.update(catalog[filename])
         for path in sorted(self.directory.rglob("*.json")):
             relative = path.relative_to(self.directory).as_posix()
+            if relative == "motion/interference-pairs.json":
+                # This native-validation input is an explicit array, unlike catalog documents.
+                with path.open("rb") as stream:
+                    data = stream.read(65537)
+                if len(data) > 65536:
+                    raise ValueError(relative + ": selection exceeds 64 KiB")
+                pairs = json.loads(data)
+                valid = (isinstance(pairs, list) and 0 < len(pairs) <= 20
+                         and all(isinstance(pair, list) and len(pair) == 2
+                                 and all(isinstance(name, str) and 0 < len(name) <= 256 for name in pair)
+                                 and pair[0] != pair[1] for pair in pairs))
+                self.check(valid, relative + ": expected 1–20 pairs of distinct exact body names")
+                if valid:
+                    self.counts[relative + " pairs"] = len(pairs)
+                    self.check(len({tuple(sorted(pair)) for pair in pairs}) == len(pairs),
+                               relative + ": duplicate pair")
+                continue
             document = read_json(path)
             self.documents[relative] = document
             if "metadata" in document:
@@ -247,8 +264,9 @@ class Validation:
         return {
             "valid": not self.errors, "counts": self.counts, "errors": self.errors,
             "native_source_status": source["status"], "runtime_ready": False,
-            "outstanding": ["Obtain, inspect and admit the improved native file.",
-                            "Review exact native targets and execute the overlay on a saved derivative.",
+            "outstanding": (["Obtain, inspect and admit the improved native file."]
+                            if source["status"] == "awaiting_native_source" else []) +
+                           ["Review exact native targets and execute the overlay on a saved derivative.",
                             "Bind optical, terrain, lighting and final-output resources to the actual renderer.",
                             "Run required repository gates, runtime previews and mechanism/dynamics validation."],
             "scope": "Prepared data, source-state honesty, references, hashes, opaque command projections and composition checks; no native solver or renderer execution.",
