@@ -1808,7 +1808,7 @@ fn delayed_cpu_hdr_picker_cannot_write_into_another_document_or_revision() {
         if other_document {
             h.app.session = Session::default();
         } else {
-            h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
+            h.app.session.execute("solid.box", &json!({"length":10,"width":20,"height":5})).unwrap();
         }
         *slot.borrow_mut() = Some(Some("late.hdr".into()));
         crate::file_picker::tick(&mut h.app, &ctx);
@@ -2341,4 +2341,49 @@ fn cpu_resource_profile_edits_preserve_resolution_samples_and_saved_intent() {
     assert!(h.app.render_workspace.view.dirty);
     setups::load(&mut h.app);
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+}
+
+#[test]
+fn large_image_display_uses_captured_profile_and_keeps_export_pixels_unchanged() {
+    use solidcraft_engine::render::job::{CpuBudget, ImageRequest, RaytraceOptions};
+    let request = ImageRequest {
+        integrator: Integrator::Raytrace,
+        raytrace: Some(RaytraceOptions { budget: CpuBudget::Studio, ..Default::default() }),
+        camera: Camera::default(),
+        width: 8,
+        height: 8,
+        background: [0; 3],
+        transparent_background: false,
+        environment: None,
+        textures: None,
+    };
+    let limits = captured_image_limits(&request);
+    assert_eq!(limits, CpuBudget::Studio.image_limits(false));
+    assert_eq!(display_dimensions(7680, 4320, 4096).unwrap(), (4096, 2304));
+    assert_eq!(display_dimensions(1920, 1080, 4096).unwrap(), (1920, 1080));
+    assert!(display_dimensions(u32::MAX, 1, 0).is_err());
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(8200, 2, image::Rgba([42, 88, 123, 255])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let encoded = png.into_inner();
+    let before = encoded.clone();
+    assert!(decode_image(&encoded, 8200, 2).is_err(), "legacy default remains compact");
+    let display = decode_render_image(&encoded, 8200, 2, CpuBudget::Workstation.image_limits(false), 1024).unwrap();
+    assert!(display.size[0] <= 1024 && display.size[1] >= 1);
+    assert_eq!(encoded, before, "the retained image is not rewritten for its display cache");
+    assert!(decode_render_image(&encoded, 8199, 2, CpuBudget::Workstation.image_limits(false), 1024).is_err());
+}
+
+#[test]
+fn setup_actions_and_return_design_stay_visible_with_long_render_controls() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1280,"height":900}));
+    enter(&mut h.app, true).unwrap();
+    select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    h.frames(3);
+    for key in ["render.save_setup", "render.reload_settings", "render.return_design"] {
+        let label = h.app.tr(key).to_string();
+        assert!(h.widget(&label).is_some(), "sticky action {key}");
+    }
+    h.step(&json!({"widget":h.app.tr("render.return_design")})).unwrap();
+    assert!(!active(&h.app));
 }

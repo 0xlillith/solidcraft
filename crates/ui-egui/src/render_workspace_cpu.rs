@@ -284,6 +284,13 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     }
     let view = &app.render_workspace.view.cpu;
     let mut options = base.clone();
+    if options.area_samples.is_some_and(|n| !matches!(n, 1 | 4 | 16 | 64)) {
+        return Err("area_samples must be 1, 4, 16 or 64".into());
+    }
+    if options.area_lights.as_ref().is_none_or(Vec::is_empty) {
+        options.area_samples = None;
+        options.seed = None;
+    }
     options.exposure_ev = app.render_workspace.view.draft.exposure_ev;
     // Runtime CPU requests keep the same single saved EV authority as typed jobs.
     params["settings"]["exposure_ev"] = json!(0.0);

@@ -116,6 +116,12 @@ impl CpuJob {
         bounded(&self.lights, 8, "directional lights")?;
         bounded(&self.punctual_lights, 8, "point/spot lights")?;
         bounded(&self.area_lights, 4, "rectangular lights")?;
+        if self.area_samples.is_some_and(|n| !matches!(n, 1 | 4 | 16 | 64)) {
+            return Err(DocError::Invalid("saved area_samples must be 1, 4, 16 or 64".into()));
+        }
+        // Preserve hidden editable intent in CpuJob, but do not submit tuning for
+        // a light family that is explicitly absent. This does not rewrite the file.
+        let active_area = self.area_lights.as_ref().is_some_and(|lights| !lights.is_empty());
         let options = RaytraceOptions {
             budget: self.budget,
             progressive: self.progressive,
@@ -124,8 +130,8 @@ impl CpuJob {
             lights: self.lights.clone(),
             punctual_lights: self.punctual_lights.clone(),
             area_lights: self.area_lights.clone(),
-            area_samples: self.area_samples,
-            seed: self.seed,
+            area_samples: if active_area { self.area_samples } else { None },
+            seed: if active_area { self.seed } else { None },
             shadows: self.shadows,
             environment: self.environment,
             exposure_ev,

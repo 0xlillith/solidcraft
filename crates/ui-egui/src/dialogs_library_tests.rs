@@ -283,7 +283,6 @@ fn catalog_clicked_material_import_renames_conflicts_and_closing_never_assigns_b
         h.app.run("material.assign", json!({"bodies":["Body1"],"material":"Library substrate"})).unwrap();
         let before = h.app.session.doc.clone();
         let mass = h.app.run("component.properties", json!({})).unwrap();
-        let history = (h.app.session.undo.len(), h.app.session.revision);
         h.app.session.selection = vec![Sel::Body { name: "Body1".into() }];
         h.app.start("appearance.assign");
         if let Some(dialog) = &mut h.app.dialog
@@ -295,6 +294,7 @@ fn catalog_clicked_material_import_renames_conflicts_and_closing_never_assigns_b
         h.step(&json!({"widget":"Load library"})).unwrap();
         h.step(&json!({"click":{"handle":"library:materials"}})).unwrap();
         h.step(&json!({"click":{"handle":"library:entry:0"}})).unwrap();
+        let history = (h.app.session.undo.len(), h.app.session.revision);
         h.step(&json!({"click":{"handle":"library:material-import"}})).unwrap();
         assert_eq!(h.app.session.doc, before, "conflicting name must not mutate the design");
         assert_eq!((h.app.session.undo.len(), h.app.session.revision), history);

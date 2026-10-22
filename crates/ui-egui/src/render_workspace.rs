@@ -384,6 +384,12 @@ pub fn reset_document(app: &mut SolveApp) {
     sync_backend(app);
 }
 
+pub(crate) fn invalidate_images(app: &mut SolveApp) {
+    app.render_workspace.image = None;
+    app.render_workspace.image_info = None;
+    app.render_workspace.preview_image = None;
+}
+
 pub fn invalidate_scene(app: &mut SolveApp) {
     app.render_workspace.revision = u64::MAX;
     app.render_workspace.scene_signature = None;
@@ -432,42 +438,55 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         .frame(egui::Frame::NONE.fill(Tokens::get().panel).inner_margin(10))
         .show(ui, |ui| {
             crate::ui_kit::scope(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.heading(app.tr("cmd.render_settings_get"));
+                // Setup identity and save/reload stay reachable independently of
+                // how many lighting, material or library sections are expanded.
+                ui.heading(app.tr("cmd.render_settings_get"));
+                let names: Vec<_> = app.session.doc.render.setups.keys().cloned().collect();
+                let old_name = app.render_workspace.view.name.clone();
+                let mut selected_setup = None;
+                let picker = crate::ui_kit::dropdown_menu(ui, "render_setups", &old_name, |ui| {
+                    for name in names {
+                        let response = crate::ui_kit::list_picker(ui, &name, &name, name == app.render_workspace.view.name);
+                        crate::scenario::publish_handle(&format!("render:setup:{name}"), response.rect.center());
+                        if response.clicked() {
+                            selected_setup = Some(name);
+                            ui.close();
+                        }
+                    }
+                });
+                crate::scenario::publish_handle("render:setups", picker.rect.center());
+                if let Some(name) = selected_setup {
+                    app.render_workspace.view.name = name;
+                    setups::load(app);
+                }
+                ui.label(app.tr("render.setup_name"));
+                let name_field =
+                    crate::ui_kit::bounded_cell_editor(ui, ui.id().with("render_setup_name"), &mut app.render_workspace.view.name, "", false, 128);
+                crate::scenario::publish_handle("render:setup-name", name_field.rect.center());
+                if name_field.changed() {
+                    // Editing the name is Save As; choosing an existing setup is explicit above.
+                    app.render_workspace.view.dirty = true;
+                }
+                let portable = setups::snapshot(app);
+                if crate::ui_kit::button(ui, app.tr("render.save_setup"), crate::ui_kit::Button::Enabled(portable.is_ok())).clicked()
+                    && let Err(error) = setups::save(app)
+                {
+                    app.set_status(error, true);
+                }
+                if app.render_workspace.view.dirty {
+                    ui.label(app.tr("render.unsaved"));
+                }
+                if crate::ui_kit::button(ui, app.tr("render.reload_settings"), crate::ui_kit::Button::Normal).clicked() {
+                    setups::load(app);
+                }
+
+                let remaining = (ui.available_height() - 74.0).max(32.0);
+                egui::ScrollArea::vertical().id_salt("render_settings_scroll").max_height(remaining).auto_shrink([false, false]).show(ui, |ui| {
                     ui.label(app.tr("render.preview"));
                     ui.small(app.tr("render.opaque_preview_help"));
                     ui.separator();
-                    let names: Vec<_> = app.session.doc.render.setups.keys().cloned().collect();
-                    let old_name = app.render_workspace.view.name.clone();
-                    let mut selected_setup = None;
-                    let picker = crate::ui_kit::dropdown_menu(ui, "render_setups", &old_name, |ui| {
-                        for name in names {
-                            let response = crate::ui_kit::list_picker(ui, &name, &name, name == app.render_workspace.view.name);
-                            crate::scenario::publish_handle(&format!("render:setup:{name}"), response.rect.center());
-                            if response.clicked() {
-                                selected_setup = Some(name);
-                                ui.close();
-                            }
-                        }
-                    });
-                    crate::scenario::publish_handle("render:setups", picker.rect.center());
-                    if let Some(name) = selected_setup {
-                        app.render_workspace.view.name = name;
-                        setups::load(app);
-                    }
-                    ui.label(app.tr("render.setup_name"));
-                    let name_field = crate::ui_kit::bounded_cell_editor(
-                        ui,
-                        ui.id().with("render_setup_name"),
-                        &mut app.render_workspace.view.name,
-                        "",
-                        false,
-                        128,
-                    );
-                    crate::scenario::publish_handle("render:setup-name", name_field.rect.center());
-                    if name_field.changed() {
-                        // Editing the name is Save As; choosing an existing setup is explicit above.
-                        app.render_workspace.view.dirty = true;
+                    if let Err(error) = &portable {
+                        ui.colored_label(Tokens::get().warning, error);
                     }
                     ui.separator();
                     ui.label(app.tr("render.background"));
@@ -493,21 +512,6 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                         }
                     }
                     ui.small(app.tr("render.setup_numeric_help"));
-                    let portable = setups::snapshot(app);
-                    if let Err(error) = &portable {
-                        ui.colored_label(Tokens::get().warning, error);
-                    }
-                    if crate::ui_kit::button(ui, app.tr("render.save_setup"), crate::ui_kit::Button::Enabled(portable.is_ok())).clicked()
-                        && let Err(error) = setups::save(app)
-                    {
-                        app.set_status(error, true);
-                    }
-                    if app.render_workspace.view.dirty {
-                        ui.label(app.tr("render.unsaved"));
-                    }
-                    if crate::ui_kit::button(ui, app.tr("render.reload_settings"), crate::ui_kit::Button::Normal).clicked() {
-                        setups::load(app);
-                    }
                     if app.render_workspace.view.draft.backend.as_str() != "builtin" || app.render_workspace.view.draft.mode != RenderMode::Preview {
                         ui.label(app.tr("render.unavailable_preview"));
                         if crate::ui_kit::button(ui, app.tr("render.use_preview"), crate::ui_kit::Button::Normal).clicked() {
@@ -519,14 +523,14 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                     ui.separator();
                     image_controls(app, ui);
                     setups::refresh_dirty(app);
-                    ui.separator();
-                    ui.small(app.tr("render.navigation_help"));
-                    if crate::ui_kit::button(ui, app.tr("render.return_design"), crate::ui_kit::Button::Normal).clicked()
-                        && let Err(e) = enter(app, false)
-                    {
-                        app.set_status(e, true);
-                    }
                 });
+                ui.separator();
+                ui.small(app.tr("render.navigation_help"));
+                if crate::ui_kit::button(ui, app.tr("render.return_design"), crate::ui_kit::Button::Normal).clicked()
+                    && let Err(e) = enter(app, false)
+                {
+                    app.set_status(e, true);
+                }
             });
         });
 }
@@ -700,7 +704,10 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             if crate::ui_kit::button(ui, app.tr("render.result_fit"), crate::ui_kit::Button::Normal).clicked() {
                 fit_result(app);
             }
-            if crate::ui_kit::button(ui, "100%", crate::ui_kit::Button::Normal).on_hover_text(app.tr("render.result_actual_help")).clicked() {
+            if crate::ui_kit::button(ui, "100%", crate::ui_kit::Button::Enabled(!reduced_display(app)))
+                .on_hover_text(app.tr("render.result_actual_help"))
+                .clicked()
+            {
                 app.render_workspace.view.result_scale = ResultScale::Actual;
             }
         });
@@ -902,7 +909,10 @@ fn cache_completed_image(app: &mut SolveApp, ctx: &egui::Context) {
         let result = (|| -> Result<egui::TextureHandle, String> {
             let handle = app.session.render_job_handle(job).map_err(|e| e.to_string())?;
             let frame = handle.frame().map_err(|e| e.to_string())?.ok_or("render has no completed image")?;
-            let image = decode_image(frame.png(), frame.info.width, frame.info.height)?;
+            let captured = handle.status().map_err(|e| e.to_string())?;
+            let budget = captured_image_limits(&captured.request);
+            let image = decode_render_image(frame.png(), frame.info.width, frame.info.height, budget, ctx.input(|i| i.max_texture_side))?;
+            app.session.execute("render.result.pin", &json!({"job":job})).map_err(|e| e.to_string())?;
             app.render_workspace.image_info = Some(frame.info.clone());
             Ok(ctx.load_texture("sc_render_image", image, egui::TextureOptions::LINEAR))
         })();
@@ -934,12 +944,23 @@ fn cache_preview_frame(app: &mut SolveApp, ctx: &egui::Context, info: &PreviewIn
         return;
     }
     let result = (|| -> Result<egui::TextureHandle, String> {
-        if info.frame_sequence == 0 || !(1..=64).contains(&info.samples_per_pixel) {
+        if info.frame_sequence == 0 || !(1..=4096).contains(&info.samples_per_pixel) {
             return Err("invalid provisional render identity or sample count".into());
         }
-        let limits = solidcraft_engine::render::job::CpuProgressiveOptions { samples_per_pixel: info.samples_per_pixel, seed: 0 };
-        limits.validate_image(info.frame.width, info.frame.height).map_err(|error| error.to_string())?;
-        let image = decode_image(png, info.frame.width, info.frame.height)?;
+        let handle = app.session.render_job_handle(info.frame.job).map_err(|e| e.to_string())?;
+        let captured = handle.status().map_err(|e| e.to_string())?;
+        if (info.frame.width, info.frame.height) != (captured.request.width, captured.request.height) {
+            return Err("checkpoint dimensions differ from the captured request".into());
+        }
+        let options = solidcraft_engine::render::job::CpuProgressiveOptions { samples_per_pixel: info.samples_per_pixel, seed: 0 };
+        options.validate_image_with_budget(info.frame.width, info.frame.height, captured.request.cpu_budget()).map_err(|error| error.to_string())?;
+        let image = decode_render_image(
+            png,
+            info.frame.width,
+            info.frame.height,
+            captured_image_limits(&captured.request),
+            ctx.input(|i| i.max_texture_side),
+        )?;
         Ok(ctx.load_texture("sc_render_preview", image, egui::TextureOptions::LINEAR))
     })();
     // Cache errors by identity too: a malformed publication cannot decode on every repaint.
@@ -984,23 +1005,59 @@ fn cache_render_images(app: &mut SolveApp, ctx: &egui::Context) {
     remember_displayed_job(app, preserve_view);
 }
 
-fn decode_image(png: &[u8], width: u32, height: u32) -> Result<egui::ColorImage, String> {
-    let size = (u64::from(width), u64::from(height));
-    let budget = RenderLimits::default();
-    if budget.fit(size.0, size.1, None) != Some(size) {
-        return Err("render image exceeds preview limits".into());
+fn captured_image_limits(request: &solidcraft_engine::render::job::ImageRequest) -> RenderLimits {
+    if request.integrator == Integrator::Raytrace {
+        request.cpu_budget().image_limits(request.raytrace.as_ref().is_some_and(|o| o.progressive.is_some()))
+    } else {
+        RenderLimits::default()
     }
+}
+
+/// This is a display cache only: the authoritative PNG/frame and export remain
+/// full resolution. Avoid asking a viewport device for an unsupported texture.
+fn display_dimensions(width: u32, height: u32, max_texture_side: usize) -> Result<(u32, u32), String> {
+    if width == 0 || height == 0 || max_texture_side == 0 {
+        return Err("invalid image display dimensions".into());
+    }
+    let max_side = max_texture_side.min(8192) as u64;
+    let display = RenderLimits { max_dimension: max_side, max_pixels: 16_777_216, max_scratch_bytes: 512 * 1024 * 1024 };
+    let (w, h) = display.fit(u64::from(width), u64::from(height), None).ok_or("image display cannot fit this device")?;
+    Ok((u32::try_from(w).map_err(|_| "display width overflow")?, u32::try_from(h).map_err(|_| "display height overflow")?))
+}
+
+#[cfg(test)]
+fn decode_image(png: &[u8], width: u32, height: u32) -> Result<egui::ColorImage, String> {
+    decode_render_image(png, width, height, RenderLimits::default(), 8192)
+}
+
+fn decode_render_image(png: &[u8], width: u32, height: u32, budget: RenderLimits, max_texture_side: usize) -> Result<egui::ColorImage, String> {
+    let size = (u64::from(width), u64::from(height));
+    if budget.fit(size.0, size.1, None) != Some(size) {
+        return Err("render image exceeds its captured resource profile".into());
+    }
+    let display_size = display_dimensions(width, height, max_texture_side)?;
     let mut reader = image::ImageReader::with_format(std::io::Cursor::new(png), image::ImageFormat::Png);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(width);
     limits.max_image_height = Some(height);
-    limits.max_alloc = Some(budget.max_pixels * 16);
+    limits.max_alloc = Some(size.0.checked_mul(size.1).and_then(|n| n.checked_mul(16)).ok_or("image decode budget overflow")?);
     reader.limits(limits);
     let image = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
     if image.dimensions() != (width, height) {
         return Err("render image dimensions do not match its job".into());
     }
-    Ok(egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], image.as_raw()))
+    let image = if display_size != (width, height) {
+        image::imageops::resize(&image, display_size.0, display_size.1, image::imageops::FilterType::Triangle)
+    } else {
+        image
+    };
+    Ok(egui::ColorImage::from_rgba_unmultiplied([display_size.0 as usize, display_size.1 as usize], image.as_raw()))
+}
+
+fn reduced_display(app: &SolveApp) -> bool {
+    displayed_image(app).is_some_and(|display| {
+        display.image.as_ref().is_ok_and(|texture| texture.size() != [display.info.width as usize, display.info.height as usize])
+    })
 }
 
 /// The image has its own per-document orthographic camera. Shared navigation can temporarily
@@ -1104,6 +1161,9 @@ fn show_result(app: &mut SolveApp, ui: &mut egui::Ui) {
                 info.scene_generation
             ));
         });
+        if reduced_display(app) {
+            ui.colored_label(t.warning, app.tr("render.result_reduced_display"));
+        }
         let stale = info.scene_generation != app.session.revision;
         ui.colored_label(if stale { t.warning } else { t.text_dim }, app.tr(if stale { "render.image_stale" } else { "render.result_current" }));
         if app.render_workspace.view.job.is_some_and(|job| job != info.job) {

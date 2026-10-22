@@ -66,3 +66,7 @@ This increment does not introduce CPU diffuse global illumination, adaptive samp
 ## Prepared regression coverage
 
 Tests cover explicit 4K/8K admission without allocating a large film, BVH cardinality estimates for larger profiles, old/unknown profile handling, offline saved round trips, preservation of incompatible UI drafts, host-pool isolation, arithmetic overflow and linear film accumulation above 64 samples. Their execution belongs to the consolidated batch gate; formatting or static source checks alone do not constitute a passing test run.
+
+## Display is separate from output
+
+The result canvas validates image dimensions against the captured job, not a subsequently edited profile. The exported PNG is never resized or re-encoded for display. If a viewport's texture-side limit or the finite display-cache pixel limit is smaller than the result, only its UI preview is reduced, with an explicit warning and native 100% inspection disabled. Full-resolution tiled inspection remains pending. One displayed completed result may be pinned while a newer job completes, preserving exact export and accounting for its retained memory.

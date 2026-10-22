@@ -12,6 +12,7 @@ use solidcraft_render::{
 #[serde(default, deny_unknown_fields)]
 struct Start {
     progressive: bool,
+    denoise: bool,
     samples: Option<u32>,
     max_depth: Option<u32>,
     seed: Option<u32>,
@@ -204,7 +205,8 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         params.get("raytrace").and_then(Value::as_object).is_some_and(|o| ["clear_coats", "textures"].iter().any(|key| o.contains_key(*key)));
     if gpu_raytrace
         || params.get("environment").is_some_and(|e| e.get("kind").is_some())
-        || ["lens", "lighting", "tone_map", "denoise"].iter().any(|key| params.get(*key).is_some())
+        || ["lens", "lighting", "tone_map"].iter().any(|key| params.get(*key).is_some())
+        || params.get("denoise").is_some_and(|value| value != &json!(false))
     {
         return Err(bad(
             command,
@@ -214,6 +216,9 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     let mut input: Start = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.progressive {
         return prepare_progressive(s, params, command, false, None);
+    }
+    if input.denoise {
+        return Err(bad(command, "denoise requires GPU progressive rendering"));
     }
     if input.samples.is_some() || input.max_depth.is_some() || input.seed.is_some() {
         return Err(bad(command, "sampling controls require progressive rendering"));
@@ -468,6 +473,12 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
     options.tone_map = input.tone_map.unwrap_or_default();
     options.denoise = input.denoise;
     options.validate().map_err(job_error)?;
+    if let Some(super::environment::Input::BuiltinHdr { id, .. }) = &input.environment
+        && options.lighting.as_ref().is_some_and(|lighting| lighting.sun.is_some())
+        && super::library::owns_sun(id, command)?
+    {
+        return Err(bad(command, "built-in HDR and analytic lighting cannot both own the sun"));
+    }
     let environment = if let Some(hdr) = saved_hdr {
         if input.environment.is_some() {
             return Err(bad(command, "saved GPU HDR cannot have a runtime environment override"));
@@ -586,6 +597,19 @@ struct Job {
 pub(super) fn status(s: &mut Session, params: &Value) -> Result<Value> {
     let input: Job = serde_json::from_value(params.clone()).map_err(|e| bad("render.status", e.to_string()))?;
     Ok(json!(s.render_jobs.status(input.job).map_err(job_error)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pin {
+    job: Option<JobId>,
+}
+pub(super) fn pin(s: &mut Session, params: &Value) -> Result<Value> {
+    if params.get("job").is_none() {
+        return Err(bad("render.result.pin", "job or explicit null is required"));
+    }
+    let input: Pin = serde_json::from_value(params.clone()).map_err(|e| bad("render.result.pin", e.to_string()))?;
+    Ok(json!({"frame":s.render_jobs.pin(input.job).map_err(job_error)?}))
 }
 
 pub(super) fn cancel(s: &mut Session, params: &Value) -> Result<Value> {

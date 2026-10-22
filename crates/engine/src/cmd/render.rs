@@ -22,6 +22,8 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("render.result.pin", "Retain Displayed Render Result", jobs::pin).icon("inspect").noundo().doc_only()
+        .params("job: completed JobId, or null to release the displayed-result pin. Retains at most one completed result independently of a newer completion; preserves exact export bytes and original host memory accounting. No design/undo change; preview or foreign jobs refuse."),
 CommandSpec::new("render.library.targets", "Find Render Library Targets", library::targets).icon("list").noundo()
     .params("query?: exact-name substring; offset?:0; limit?:128 (1..128). Returns a bounded page of captured body ordinals/names, revision and scene bounds. Settles the model through ordinary command handling; never returns a large mesh payload."),
 CommandSpec::new("render.library.list", "Browse Render Library", library::list).icon("list").noundo().doc_only()

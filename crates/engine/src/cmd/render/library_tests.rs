@@ -142,7 +142,7 @@ fn uniform_appearance_requires_acknowledged_projection_and_preserves_physical_da
     let reply = s.execute("render.library.appearance.apply", &json!({"id":"SURF-001","variant":"uniform_opaque","bodies":["Target"]})).unwrap();
     assert_eq!(reply["engineering_properties_unchanged"], true);
     let after: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
-    assert_eq!(after["materials"], before_value["materials"]);
+    assert_eq!(after["user_materials"], before_value["user_materials"]);
     assert_eq!(s.undo.len(), undo + 1);
     s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.doc.to_json(), before);

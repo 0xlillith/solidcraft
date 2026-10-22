@@ -213,6 +213,10 @@ pub(super) fn texture_bytes(key: &str, role: MapRole, maximum: u64, command: &st
     asset_bytes(key, maximum, command)
 }
 
+pub(super) fn owns_sun(id: &str, command: &str) -> Result<bool> {
+    Ok(item("hdr", id, command)?["solar_disk"] == true)
+}
+
 pub(super) fn hdr_resource(id: &str, command: &str) -> Result<HdrResource> {
     item("hdr", id, command)?;
     HdrResource::new(asset_bytes(id, solidcraft_render::lighting::MAX_HDR_BYTES as u64, command)?).map_err(|e| bad(command, e.to_string()))
