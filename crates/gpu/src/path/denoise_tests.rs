@@ -219,10 +219,17 @@ fn denoise_admission_counts_guides_and_ping_pong_only_when_enabled() {
     assert_eq!(filtered.estimated_total_bytes - plain.estimated_total_bytes, 32 * 32 * 80);
     let large = ImageRequest { width: 2000, height: 2000, ..request.clone() };
     assert!(super::super::admission(&scene, &large, JobOptions::default()).is_ok());
-    assert_eq!(
-        super::super::admission(&scene, &large, JobOptions { denoise: true, ..Default::default() }).unwrap_err().code,
-        solidcraft_render::job::ErrorCode::LimitExceeded
-    );
+    // The production envelope deliberately admits this former 512 MiB refusal.
+    // Still charge the guides/ping-pong in full, and reject outside the new edge.
+    let large_plain = super::super::admission(&scene, &large, JobOptions::default()).unwrap();
+    let large_filtered = super::super::admission(&scene, &large, JobOptions { denoise: true, ..Default::default() }).unwrap();
+    assert_eq!(large_filtered.pixel_scratch_bytes - large_plain.pixel_scratch_bytes, 2000 * 2000 * 80);
+    assert!(large_filtered.estimated_total_bytes > 512 * 1024 * 1024);
+    assert!(large_filtered.estimated_total_bytes <= solidcraft_render::job::GPU_PATH_LIMITS.max_scratch_bytes);
+    let excessive = ImageRequest { width: (solidcraft_render::job::GPU_PATH_LIMITS.max_dimension + 1) as u32, ..request.clone() };
+    for denoise in [false, true] {
+        assert!(super::super::admission(&scene, &excessive, JobOptions { denoise, ..Default::default() }).is_err());
+    }
     assert!(!serde_json::from_str::<JobOptions>("{}").unwrap().denoise);
     assert!(serde_json::from_str::<JobOptions>(r#"{"denoise":"true"}"#).is_err());
 }

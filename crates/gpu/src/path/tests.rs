@@ -531,7 +531,7 @@ fn shader_validates_without_a_device() {
 fn admission_rejects_hostile_parameters_and_transparency() {
     let mut scene = sphere(white());
     let mut r = request(16);
-    for size in [0, 4097, u32::MAX] {
+    for size in [0, (GPU_PATH_LIMITS.max_dimension + 1) as u32, u32::MAX] {
         r.width = size;
         assert!(admission(&scene, &r, JobOptions::default()).is_err());
     }
