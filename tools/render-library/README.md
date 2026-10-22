@@ -61,3 +61,21 @@ profile completes a real image containing geometry, and retained host reservatio
 return to zero. A separately identified 20,000-body admission-only control is not
 confused with the rendered case. The job wait is bounded at 300 seconds; failure
 or timeout is reported, never silently retried at reduced quality.
+
+
+## Full-detail functional SELENE studio
+
+`selene_studio.py` starts the explicitly selected native CLI with `mcp --render-gpu`, loads the pinned functional master once, restricts file writes to a new output directory, and retains request/preflight/export receipts. The immutable master hash and CLI binary hash are checked separately. It is an authoring workflow, not an automatic background service.
+
+```python
+# Start in this directory with an explicitly built CLI and an unused output path:
+# python -i selene_studio.py --cli /path/to/solidcraft-cli --out /new/render/output
+from selene_recipe import hero_request
+request = hero_request(studio, width=3840, height=2400, samples=1024)
+receipt = studio.render("selene-studio-4k", request, timeout=7200)
+studio.close()
+```
+
+The original recipe fits all captured body bounding boxes inside an 8% image margin. It resolves six authored material families through public commands, preserves the native paint/PCB/rubber palette where specified, selects twelve explicitly certified closed dielectric bodies in this master, and appends a passive ground rectangle only to the captured scene. The authored three-area-light rig uses an explicit 1/16 creative radiance gain plus a low-intensity HDR fill. It is not the unmodified reference calibration, measured glass data, geometric displacement, LED volumetric emission, or a physics reassignment. Native pose and visibility stay unchanged.
+
+`python -B test_selene_recipe.py` checks camera projection, scale covariance, input rejection and source-data nonmutation without a renderer build. A successful image export is not visual acceptance: inspect complete framing, fine detail, highlights, glass and noise before publishing an image. Keep provisional images and logs outside the repository; a deliberately selected final showcase export is published with its pinned recipe and attribution.

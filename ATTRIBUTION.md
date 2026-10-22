@@ -985,3 +985,6 @@ The original adapters in `crates/engine/src/cmd/render/library.rs`, the generate
 | assets/render/physical/tools/test_export_library.py | SolidCraft contributors | original regressions for native capability refusal, source identity and physical-card preservation | MIT OR Apache-2.0 |
 
 | tools/render-library/selene_studio.py | SolidCraft contributors | original bounded native MCP studio orchestration with pinned editable master, explicit GPU policy and request/export receipts; no generated model or image substitutes | MIT OR Apache-2.0 |
+
+| tools/render-library/selene_recipe.py | SolidCraft contributors | original full-detail SELENE material/light composition and analytic camera fit; unchanged pinned native master, no external imagery or measured optical dataset | MIT OR Apache-2.0 |
+| tools/render-library/test_selene_recipe.py | SolidCraft contributors | original independent projection, scaling, nonmutation and input-refusal fixtures for the SELENE studio recipe | MIT OR Apache-2.0 |
