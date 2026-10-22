@@ -203,8 +203,20 @@ fn admit_request_sum(work_bytes: u64, request_bytes: u64) -> Result<()> {
 }
 
 /// Borrow encoded bytes through the frame, so retaining the data also retains its admission lease.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinearColourEncoding {
+    SceneLinearSrgbD65,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinearAlphaConvention {
+    CoveragePremultiplied,
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct LinearMasterInfo {
+    pub encoding: LinearColourEncoding,
+    pub alpha: LinearAlphaConvention,
     pub bytes: u64,
     pub sha256: String,
 }
@@ -711,7 +723,12 @@ impl Running {
             return Ok(true);
         }
         let exr = exr.map(|bytes| {
-            let info = LinearMasterInfo { bytes: bytes.len() as u64, sha256: format!("{:x}", exr_digest.finalize()) };
+            let info = LinearMasterInfo {
+                bytes: bytes.len() as u64,
+                sha256: format!("{:x}", exr_digest.finalize()),
+                encoding: LinearColourEncoding::SceneLinearSrgbD65,
+                alpha: LinearAlphaConvention::CoveragePremultiplied,
+            };
             (bytes, info)
         });
         let retained = png.capacity() as u64 + exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64) + FRAME_METADATA_BYTES;

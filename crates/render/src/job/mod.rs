@@ -32,7 +32,10 @@ pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGL
 #[cfg(feature = "raytrace-cpu")]
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
-pub use host::{CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, LinearMasterInfo, PreviewInfo, RenderFrame, RenderPreview};
+pub use host::{
+    CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, LinearAlphaConvention, LinearColourEncoding, LinearMasterInfo,
+    PreviewInfo, RenderFrame, RenderPreview,
+};
 pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geometry_with_limits};
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};

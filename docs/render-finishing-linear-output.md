@@ -53,6 +53,8 @@ Export selects an exact completed job:
 {"job":{"session":3,"serial":1,"generation":1},"path":"output.exr","format":"exr","overwrite":false}
 ```
 
+Export metadata names the actual encoding and alpha convention explicitly. The `frame` field retains canonical job identity and PNG-companion metadata; `linear_master` supplies the raw file length, digest, scene-linear encoding and premultiplied coverage convention. Never compare an EXR file against `frame.png_sha256`.
+
 The default export remains PNG. File suffix and explicit format must agree. Request scope, atomic create/overwrite and existing-file protections are unchanged. An old completed PNG without a raw companion cannot be exported as EXR, even if the current editor has since enabled retention. The asynchronous UI picker captures the original job, document, format and overwrite consent; it cannot silently substitute a newer result.
 
 ## Shared UI

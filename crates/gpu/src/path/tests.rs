@@ -2861,8 +2861,8 @@ fn gpu_raw_master_keeps_hdr_samples_before_denoise_gain_tone_and_camera_backdrop
     let mut maximum = 0_f32;
     for y in 0..16 {
         let offset = u64::from_le_bytes(raw[cursor + y * 8..cursor + y * 8 + 8].try_into().unwrap()) as usize;
-        for bytes in raw[offset + 8 + 64..offset + 8 + 256].chunks_exact(4) {
-            maximum = maximum.max(f32::from_le_bytes(bytes.try_into().unwrap()));
+        for bytes in raw[offset + 8 + 64..offset + 8 + 256].as_chunks::<4>().0 {
+            maximum = maximum.max(f32::from_le_bytes(*bytes));
         }
     }
     assert!(maximum > 2.0, "raw highlight radiance must not be clipped or reconstructed from PNG: {maximum}");
@@ -2952,6 +2952,9 @@ fn engine_exports_raw_master_from_the_exact_completed_job_without_png_conversion
     let output = s.execute("render.export", &json!({"job":id,"path":path,"format":"exr"})).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), frame.linear_exr().unwrap());
     assert_eq!(output["linear_master"]["sha256"], frame.linear_master_info().unwrap().sha256);
+    assert_eq!(output["encoding"], "scene_linear_srgb_d65");
+    assert_eq!(output["alpha"], "coverage_premultiplied");
+    assert_eq!(output["linear_master"]["encoding"], output["encoding"]);
     s.execute("render.export", &json!({"job":id,"path":png})).unwrap();
     assert_eq!(std::fs::read(&png).unwrap(), frame.png());
     assert!(s.execute("render.export", &json!({"job":id,"path":path,"format":"exr"})).is_err());

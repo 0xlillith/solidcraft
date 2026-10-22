@@ -699,6 +699,6 @@ pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
         if input.overwrite { solidcraft_io::write_atomic(path, bytes, false) } else { solidcraft_io::safe_write::create_atomic(path, bytes) };
     result.map_err(|e| bad("render.export", format!("could not export completed {}: {e}", input.format.extension())))?;
     Ok(
-        json!({"job":input.job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"frame":frame.info,"linear_master":frame.linear_master_info()}),
+        json!({"job":input.job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"encoding":if input.format==ExportFormat::Exr {"scene_linear_srgb_d65"} else {"srgb"},"alpha":if input.format==ExportFormat::Exr {"coverage_premultiplied"} else {"straight"},"frame":frame.info,"linear_master":frame.linear_master_info()}),
     )
 }
