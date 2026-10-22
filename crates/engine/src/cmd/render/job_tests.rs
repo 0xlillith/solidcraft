@@ -1100,3 +1100,20 @@ fn dielectric_preflight_refuses_wrong_captured_identity_without_changing_design(
         assert_eq!(host.admitted_bytes(), 0);
     }
 }
+
+#[test]
+fn registered_product_camera_fit_changes_only_view_and_keeps_orientation() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":20,"width":15,"height":10})).unwrap();
+    let camera = solidcraft_render::Camera { yaw: 0.2, pitch: 0.3, roll: 0.1, ..Default::default() };
+    s.execute("view.apply", &json!({"camera":camera})).unwrap();
+    let doc = s.doc.to_json();
+    let undo = s.undo.len();
+    let fitted = s.execute("render.camera.fit", &json!({})).unwrap();
+    assert_eq!(fitted["document_changed"], false);
+    let after = s.camera.unwrap();
+    assert_eq!((after.yaw, after.pitch, after.roll), (camera.yaw, camera.pitch, camera.roll));
+    assert_eq!(s.doc.to_json(), doc);
+    assert_eq!(s.undo.len(), undo);
+    assert!(s.execute("render.camera.fit", &json!({"scale":0})).is_err());
+}

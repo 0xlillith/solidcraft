@@ -870,6 +870,9 @@ impl SolveApp {
             self.set_status(format!("{label}: {why}"), true);
             return;
         }
+        if render_workspace::start_interactive(self, id) {
+            return;
+        }
         workspace::select_command_tab(self, id);
         // Move a selected assembly placement the same way as its Browser menu, retaining
         // the exact instance path and the grounding/rigid-group restrictions.

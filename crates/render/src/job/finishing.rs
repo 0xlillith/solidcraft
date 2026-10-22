@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Finishing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bloom: Option<super::bloom::Bloom>,
     /// Explicit creative linear RGB gains, not a measured illuminant temperature.
     pub rgb_gain: [f64; 3],
     /// Display-linear contrast about 18% gray, after the selected tone response.
@@ -16,7 +18,7 @@ pub struct Finishing {
 }
 impl Default for Finishing {
     fn default() -> Self {
-        Self { rgb_gain: [1.; 3], contrast: 1., saturation: 1., vignette: 0. }
+        Self { bloom: None, rgb_gain: [1.; 3], contrast: 1., saturation: 1., vignette: 0. }
     }
 }
 impl Finishing {
@@ -24,6 +26,9 @@ impl Finishing {
         *self == Self::default()
     }
     pub fn validate(self) -> Result<()> {
+        if let Some(bloom) = self.bloom {
+            bloom.validate()?;
+        }
         if self.rgb_gain.iter().any(|v| !v.is_finite() || !(0.1..=8.0).contains(v))
             || !self.contrast.is_finite()
             || !(0.25..=4.).contains(&self.contrast)

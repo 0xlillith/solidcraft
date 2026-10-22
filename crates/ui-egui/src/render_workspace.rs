@@ -20,6 +20,9 @@ use crate::{SolveApp, theme::Tokens};
 const MAX_GEOMETRY_BYTES: usize =
     if cfg!(all(not(target_arch = "wasm32"), target_pointer_width = "64")) { 512 * 1024 * 1024 } else { 128 * 1024 * 1024 };
 
+#[path = "render_workspace_ribbon.rs"]
+mod ribbon;
+
 #[path = "render_workspace_cpu.rs"]
 mod cpu;
 
@@ -783,23 +786,27 @@ fn job_controls(app: &mut SolveApp, ui: &mut egui::Ui, compact: bool) {
         }
     }
     ui.horizontal_wrapped(|ui| {
-        let check = crate::ui_kit::button(ui, app.tr("cmd.render_preflight"), crate::ui_kit::Button::Enabled(params.is_ok()));
+        let check = crate::ui_kit::button(
+            ui,
+            app.tr("cmd.render_preflight"),
+            crate::ui_kit::Button::Enabled(ribbon::action_ready(app, "render.preflight").is_ok()),
+        );
         crate::scenario::publish_target("render:check", check.rect);
         if check.clicked()
-            && let Ok(params) = image_params(app)
-            && let Ok(reply) = app.run("render.preflight", params.clone())
+            && let Err(error) = ribbon::perform_job(app, "render.preflight")
         {
-            cpu::record_checked(app, &params, &reply);
-            inspector::record_check(app, &params, &reply);
-            app.set_status(app.tr("render.image_supported").to_string(), false);
+            app.set_status(error, true);
         }
-        let start = crate::ui_kit::button(ui, app.tr("render.image_start"), crate::ui_kit::Button::Enabled(!busy && params.is_ok()));
+        let start = crate::ui_kit::button(
+            ui,
+            app.tr("render.image_start"),
+            crate::ui_kit::Button::Enabled(ribbon::action_ready(app, "render.start").is_ok()),
+        );
         crate::scenario::publish_target("render:start", start.rect);
-        if start.clicked()
-            && let Ok(params) = image_params(app)
-            && let Ok(reply) = app.run("render.start", params)
-        {
-            app.render_workspace.view.job = serde_json::from_value(reply["job"].clone()).ok();
+        if start.clicked() {
+            if let Err(error) = ribbon::perform_job(app, "render.start") {
+                app.set_status(error, true);
+            }
             ui.ctx().request_repaint();
         }
     });
@@ -840,30 +847,27 @@ fn job_controls(app: &mut SolveApp, ui: &mut egui::Ui, compact: bool) {
         }
     }
     ui.horizontal_wrapped(|ui| {
-        let cancel = crate::ui_kit::button(ui, app.tr("cmd.render_cancel"), crate::ui_kit::Button::Enabled(busy));
+        let cancel = crate::ui_kit::button(
+            ui,
+            app.tr("cmd.render_cancel"),
+            crate::ui_kit::Button::Enabled(ribbon::action_ready(app, "render.cancel").is_ok()),
+        );
         crate::scenario::publish_target("render:cancel", cancel.rect);
         if cancel.clicked()
-            && let Some(job) = app.render_workspace.view.job
+            && let Err(error) = ribbon::perform_job(app, "render.cancel")
         {
-            let _ = app.run("render.cancel", json!({"job":job}));
+            app.set_status(error, true);
         }
         let export = crate::ui_kit::button(
             ui,
             app.tr("render.image_export"),
-            crate::ui_kit::Button::Enabled(
-                app.render_workspace.view.completed.is_some()
-                    && (!app.render_workspace.view.studio.export_exr || studio::linear_export_available(app)),
-            ),
+            crate::ui_kit::Button::Enabled(ribbon::action_ready(app, "render.export").is_ok()),
         );
         crate::scenario::publish_target("render:export", export.rect);
         if export.clicked()
-            && let Some(job) = app.render_workspace.view.completed
+            && let Err(error) = ribbon::perform_job(app, "render.export")
         {
-            if app.render_workspace.view.studio.export_exr {
-                export_linear_image(app, job, app.render_workspace.view.overwrite);
-            } else {
-                export_image(app, job, app.render_workspace.view.overwrite);
-            }
+            app.set_status(error, true);
         }
     });
     if !compact {
@@ -1588,4 +1592,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         preview_error(app, ui, rect, &error);
     }
     crate::viewport::axis_view(app, ui, rect);
+}
+
+pub(crate) fn interactive_command_info(app: &SolveApp, command: &solidcraft_engine::CommandSpec) -> solidcraft_engine::CommandInfo {
+    ribbon::command_info(app, command)
+}
+pub(crate) fn start_interactive(app: &mut SolveApp, id: &str) -> bool {
+    ribbon::start(app, id)
 }

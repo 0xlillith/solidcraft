@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BackendId, Camera, ExecutorId};
 
+pub mod bloom;
 mod cpu_budget;
 pub(crate) mod encoding;
 pub mod finishing;
@@ -130,6 +131,9 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_bloom(&self) -> bool {
+        false
+    }
     fn supports_finishing(&self) -> bool {
         false
     }

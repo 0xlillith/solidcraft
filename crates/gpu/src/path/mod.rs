@@ -238,6 +238,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
     options.validate()?;
+    if request.transparent_background && options.finishing.bloom.is_some_and(|b| b.active()) {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "display bloom requires opaque output; no implicit alpha expansion is supported"));
+    }
     if options.backdrop.is_some() && request.transparent_background {
         return Err(JobError::new(ErrorCode::InvalidRequest, "choose a camera backdrop or transparent PNG, not both"));
     }
@@ -292,6 +295,15 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
             .checked_add(solidcraft_render::job::linear_exr::encoded_limit(request.width, request.height)?)
             .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "linear master admission overflow"))?;
     }
+    let bloom_bytes = options.finishing.bloom.map_or(Ok(0), |b| b.scratch_bytes(request.width, request.height))?;
+    admission.pixel_scratch_bytes = admission
+        .pixel_scratch_bytes
+        .checked_add(bloom_bytes)
+        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "bloom pixel estimate overflow"))?;
+    admission.preparation_bytes = admission
+        .preparation_bytes
+        .checked_add(bloom_bytes)
+        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "bloom preparation estimate overflow"))?;
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
     if admission.estimated_total_bytes > GPU_PATH_LIMITS.max_scratch_bytes {
         return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its bounded 8 GiB admission estimate"));
@@ -300,6 +312,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_bloom(&self) -> bool {
+        true
+    }
     fn supports_finishing(&self) -> bool {
         true
     }
@@ -356,6 +371,7 @@ struct Task {
     epsilon: f32,
     png: Option<PngTask>,
     exr_work: Option<solidcraft_render::job::linear_exr::ExrTask>,
+    bloom_work: Option<solidcraft_render::job::bloom::BloomTask>,
     exr: Option<Vec<u8>>,
     started: Instant,
     // Uniform environment is used only by the numerical furnace test, never advertised as HDRI.
@@ -473,6 +489,7 @@ impl Task {
             epsilon: upload.epsilon,
             png: None,
             exr_work: None,
+            bloom_work: None,
             exr: None,
             started: Instant::now(),
             environment: 0.0,
@@ -634,7 +651,14 @@ impl Display {
     fn encode(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken) -> Result<()> {
         self.encode_at(input, output, cancel, 0)
     }
+    #[cfg(test)]
     fn encode_at(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken, offset: usize) -> Result<()> {
+        self.encode_bloom_at(input, output, cancel, offset, None)
+    }
+    fn encode_bloom_at(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken, offset: usize, bloom: Option<&[[f32; 3]]>) -> Result<()> {
+        if bloom.is_some_and(|pixels| pixels.len() != input.len()) {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "bloom/display length mismatch"));
+        }
         for (index, (pixel, rgba)) in input.iter().zip(output.as_chunks_mut::<4>().0).enumerate() {
             if index % 4096 == 0 {
                 cancel.check()?;
@@ -651,8 +675,12 @@ impl Display {
                 self.tone_map.map(c)
             });
             let mapped = self.finishing.display(mapped, position);
-            for ((c, b), out) in mapped.into_iter().zip(background).zip(rgba.iter_mut()) {
-                let value = if self.transparent { c } else { c * alpha + b * (1. - alpha) };
+            for (channel, ((c, b), out)) in mapped.into_iter().zip(background).zip(rgba.iter_mut()).enumerate() {
+                let mut value = if self.transparent { c } else { c * alpha + b * (1. - alpha) };
+                if let Some(glow) = bloom.and_then(|pixels| pixels.get(index)) {
+                    let strength = self.finishing.bloom.map_or(0.0, |b| b.strength);
+                    value += strength * self.tone_map.map(f64::from(glow[channel]) * self.exposure * self.finishing.rgb_gain[channel]);
+                }
                 let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1. / 2.4) - 0.055 };
                 *out = (encoded.clamp(0., 1.) * 255.).round() as u8;
             }
@@ -673,6 +701,16 @@ impl ImageWork for Task {
         if self.sample < self.options.samples {
             self.dispatch()?;
             return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.options.samples) }));
+        }
+        if let Some(mut bloom) = self.bloom_work.take() {
+            if !bloom.step(8)? {
+                let done = bloom.completed_lines();
+                let total = bloom.total_lines();
+                self.bloom_work = Some(bloom);
+                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done, total }));
+            }
+            let (pixels, glow) = bloom.finish()?;
+            return self.encode_output(pixels, Some(glow));
         }
         if self.exr_work.is_none() {
             log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
@@ -702,6 +740,20 @@ impl ImageWork for Task {
             denoiser.run(self)?;
             linear = self.read_linear_buffer(denoiser.output())?;
         }
+        if let Some(options) = self.options.finishing.bloom.filter(|options| options.active()) {
+            self.bloom_work =
+                Some(solidcraft_render::job::bloom::BloomTask::new(self.request.width, self.request.height, linear, options, self.cancel.clone())?);
+            return Ok(TaskPoll::Pending(Progress {
+                phase: Phase::Encoding,
+                done: 0,
+                total: u64::from(self.request.height) * 4 + u64::from(self.request.width) * 3,
+            }));
+        }
+        self.encode_output(linear, None)
+    }
+}
+impl Task {
+    fn encode_output(&mut self, linear: Vec<[f32; 4]>, bloom: Option<Vec<[f32; 3]>>) -> Result<TaskPoll> {
         let mut rgba = scene::reserved(linear.len() * 4)?;
         rgba.resize(linear.len() * 4, 0);
         let display = Display {
@@ -723,7 +775,10 @@ impl ImageWork for Task {
                 .chunks(chunk)
                 .zip(rgba.chunks_mut(chunk * 4))
                 .enumerate()
-                .map(|(i, (input, output))| scope.spawn(move || display.encode_at(input, output, cancel, i * chunk)))
+                .map(|(i, (input, output))| {
+                    let glow = bloom.as_ref().map(|pixels| &pixels[i * chunk..i * chunk + input.len()]);
+                    scope.spawn(move || display.encode_bloom_at(input, output, cancel, i * chunk, glow))
+                })
                 .collect();
             jobs.into_iter()
                 .try_for_each(|job| job.join().unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "display encoding worker failed"))))

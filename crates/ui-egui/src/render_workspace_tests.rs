@@ -2582,7 +2582,8 @@ fn finishing_backdrop_and_raw_retention_save_reload_without_a_gpu_or_hidden_tran
     select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
     h.app.render_workspace.view.inspector.page = inspector::Page::Output;
     h.app.render_workspace.view.name = "Linear studio".into();
-    h.app.render_workspace.view.studio.finishing = Finishing { rgb_gain: [1.3, 0.8, 0.9], saturation: 0.4, contrast: 1.2, vignette: 0.3 };
+    h.app.render_workspace.view.studio.finishing =
+        Finishing { rgb_gain: [1.3, 0.8, 0.9], saturation: 0.4, contrast: 1.2, vignette: 0.3, ..Default::default() };
     h.app.render_workspace.view.studio.backdrop_enabled = true;
     h.app.render_workspace.view.studio.backdrop = Backdrop { mode: BackdropMode::Radial, center: [0.25, 0.7], ..Default::default() };
     h.app.render_workspace.view.studio.linear_exr = true;

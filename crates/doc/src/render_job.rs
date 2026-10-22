@@ -50,6 +50,9 @@ impl RenderJob {
                     return Err(DocError::Invalid("choose a camera backdrop or transparent PNG, not both".into()));
                 }
                 options.to_runtime(exposure_ev)?;
+                if *transparent_background && options.finishing.bloom.is_some_and(|b| b.active()) {
+                    return Err(DocError::Invalid("display bloom requires opaque output".into()));
+                }
                 if camera.fov == 0.0 && options.lens.is_some_and(|lens| lens.aperture_radius_mm > 0.0) {
                     return Err(DocError::Invalid("saved thin-lens depth of field requires a perspective camera".into()));
                 }

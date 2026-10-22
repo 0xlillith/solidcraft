@@ -2785,7 +2785,7 @@ fn display_identity_matches_the_legacy_response_and_spatial_filters_ignore_chunk
     display.encode(&input, &mut neutral, &cancel).unwrap();
     assert_eq!(neutral, reference);
     let changed = Display {
-        finishing: Finishing { rgb_gain: [1.2, 0.9, 0.7], contrast: 1.2, saturation: 0.3, vignette: 0.45 },
+        finishing: Finishing { rgb_gain: [1.2, 0.9, 0.7], contrast: 1.2, saturation: 0.3, vignette: 0.45, ..Default::default() },
         backdrop: Some(Backdrop { mode: BackdropMode::Radial, ..Default::default() }),
         ..display
     };
@@ -2989,4 +2989,31 @@ fn engine_exports_raw_master_from_the_exact_completed_job_without_png_conversion
     drop(frame);
     assert_eq!(host.admitted_bytes(), 0);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn gpu_bloom_changes_display_only_with_explicit_scratch_and_opaque_contract() {
+    use solidcraft_render::job::{bloom::Bloom, finishing::Finishing};
+    let Some(executor) = executor() else { return };
+    let options = JobOptions { samples: 16, seed: 17, max_depth: 3, linear_exr: true, ..Default::default() };
+    let (png, raw) = complete_linear_fixture(executor.context.clone(), options);
+    let bloom = Bloom { strength: 0.4, threshold: 1.0, radius: 2 };
+    let modified = JobOptions { finishing: Finishing { bloom: Some(bloom), ..Default::default() }, ..options };
+    let a = admission(&sphere(white()), &request(16), options).unwrap();
+    let b = admission(&sphere(white()), &request(16), modified).unwrap();
+    assert_eq!(b.estimated_total_bytes - a.estimated_total_bytes, 16 * 16 * 24);
+    assert_eq!(b.pixel_scratch_bytes - a.pixel_scratch_bytes, 16 * 16 * 24);
+    let (glowing, untouched) = complete_linear_fixture(executor.context.clone(), modified);
+    assert_eq!(raw, untouched, "bloom cannot alter the retained linear master or original estimator");
+    assert_ne!(png, glowing);
+    let (neutral, same) = complete_linear_fixture(
+        executor.context.clone(),
+        JobOptions { finishing: Finishing { bloom: Some(Bloom { strength: 0.0, ..bloom }), ..Default::default() }, ..options },
+    );
+    assert_eq!(png, neutral);
+    assert_eq!(raw, same);
+    let transparent = ImageRequest { transparent_background: true, ..request(16) };
+    assert!(executor.admit(&sphere(white()), &transparent, modified).is_err());
+    let decoded = image::load_from_memory(&glowing).unwrap().to_rgba8();
+    assert!(decoded.pixels().all(|p| p.0[3] == 255));
 }

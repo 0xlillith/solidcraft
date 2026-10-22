@@ -61,6 +61,7 @@ impl Page {
 #[derive(Clone, Debug)]
 pub(super) struct View {
     pub page: Page,
+    reveal: Option<&'static str>,
     pub library_open: bool,
     pending: Option<Pending>,
     shot_name: String,
@@ -164,6 +165,7 @@ impl Default for View {
     fn default() -> Self {
         Self {
             page: Page::Scene,
+            reveal: None,
             library_open: false,
             pending: None,
             shot_name: String::new(),
@@ -397,6 +399,7 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         library::inspect_kinds(app, ui, &["native_scenes", "scenes", "selene_shots"]);
     }
     let title = app.tr("render.passive_stage").to_string();
+    reveal_section(app, ui, "render_ground_details");
     ui_kit::section(ui, "render_ground_details", &title, false, |ui| {
         ui.label(app.tr("render.ground_margin"));
         ui_kit::number_field(ui, &mut app.render_workspace.view.inspector.ground_margin, 0.0..=10.0, 0.05, " x");
@@ -446,6 +449,7 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 fn shot_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.shot_manager").to_string();
+    reveal_section(app, ui, "render_shot_manager");
     ui_kit::section(ui, "render_shot_manager", &title, false, |ui| {
         ui_kit::text(ui, app.tr("render.shot_saved_only"), ui_kit::Text::Note("render.shot_saved_only"));
         let label = app.tr("render.shot_new_name").to_string();
@@ -970,28 +974,48 @@ fn base_appearance(app: &mut SolveApp, ui: &mut egui::Ui) {
 #[path = "render_workspace_inspector_tests.rs"]
 mod tests;
 
+pub(super) fn fit_subject(app: &mut SolveApp) -> Result<(), String> {
+    // Capture the current navigation orientation before the engine's view command.
+    app.run("view.apply", json!({"camera":app.cam}))?;
+    app.run("render.camera.fit", json!({}))?;
+    app.follow_view_request(false);
+    Ok(())
+}
+
+pub(super) fn restore_camera(app: &mut SolveApp) -> Result<(), String> {
+    let name = app.render_workspace.view.name.clone();
+    app.run("render.settings.apply", json!({"name":name}))?;
+    app.follow_view_request(false);
+    Ok(())
+}
 fn camera_actions(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.horizontal_wrapped(|ui| {
-        if ui_kit::button(ui, app.tr("render.fit"), ui_kit::Button::Normal).clicked() {
-            match solidcraft_engine::product_scene::extract(&app.session) {
-                Ok(scene) if !scene.bounds.is_empty() => {
-                    let mut camera = app.cam;
-                    camera.fit(&scene.bounds);
-                    if app.run("view.apply", json!({"camera":camera})).is_ok() {
-                        app.follow_view_request(false);
-                    }
-                }
-                Err(error) => app.set_status(error.to_string(), true),
-                _ => {}
-            }
+        if ui_kit::button(ui, app.tr("render.fit"), ui_kit::Button::Normal).clicked()
+            && let Err(error) = fit_subject(app)
+        {
+            app.set_status(error, true);
         }
-        if ui_kit::button(ui, app.tr("render.restore_camera"), ui_kit::Button::Normal).clicked() {
-            let name = app.render_workspace.view.name.clone();
-            if app.run("render.settings.apply", json!({"name":name})).is_ok() {
-                app.follow_view_request(false);
-            }
+        if ui_kit::button(ui, app.tr("render.restore_camera"), ui_kit::Button::Normal).clicked()
+            && let Err(error) = restore_camera(app)
+        {
+            app.set_status(error, true);
         }
     });
+}
+
+pub(super) fn confirmation_open(app: &SolveApp) -> bool {
+    app.render_workspace.view.inspector.pending.is_some()
+}
+pub(super) fn reveal(app: &mut SolveApp, section: &'static str) {
+    app.render_workspace.view.inspector.reveal = Some(section);
+}
+fn reveal_section(app: &mut SolveApp, ui: &mut egui::Ui, section: &'static str) {
+    if app.render_workspace.view.inspector.reveal == Some(section) {
+        let identity = ui.make_persistent_id(section);
+        ui.ctx().data_mut(|data| data.insert_persisted(identity, true));
+        ui.scroll_to_cursor(Some(egui::Align::Min));
+        app.render_workspace.view.inspector.reveal = None;
+    }
 }
 
 fn gpu_status(app: &SolveApp, ui: &mut egui::Ui) {

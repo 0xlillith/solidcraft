@@ -266,3 +266,107 @@ fn native_composition_review_actions_are_visible_before_auxiliary_resource_detai
         }
     }
 }
+
+#[test]
+fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
+    let mut h = fixture();
+    h.app.render_workspace.view.samples = 37;
+    h.app.render_workspace.view.draft.width = 777;
+    let doc = h.app.session.doc.to_json();
+    let undo = h.app.session.undo.len();
+    for (id, page) in [
+        ("render.preset.resolve", Page::Scene),
+        ("render.settings.get", Page::Scene),
+        ("render.library.appearance.apply", Page::Appearance),
+        ("render.library.surface.bind", Page::Appearance),
+        ("render.library.studio.prepare", Page::Lighting),
+        ("render.library.studio.apply", Page::Lighting),
+        ("render.library.environment.apply", Page::Environment),
+        ("render.stage.backdrop", Page::Scene),
+        ("render.quality.prepare", Page::Output),
+        ("render.status", Page::Diagnostics),
+    ] {
+        h.app.start(id);
+        h.frames(3);
+        assert_eq!(h.app.render_workspace.view.inspector.page, page, "{id}");
+        assert_eq!(h.app.render_workspace.view.samples, 37);
+        assert_eq!(h.app.render_workspace.view.draft.width, 777);
+        assert_eq!(h.app.session.doc.to_json(), doc, "navigation may not execute a parameterless apply");
+        assert_eq!(h.app.session.undo.len(), undo);
+        assert!(!crate::icon_svg::resolve(solidcraft_engine::find_command(id).unwrap().icon).placeholder);
+    }
+}
+
+#[test]
+fn render_ribbon_has_six_shared_groups_and_keeps_image_actions_at_narrow_widths() {
+    assert_eq!(crate::workspace::panels("RENDER"), vec!["SCENE", "APPEARANCE", "LIGHTING", "ENVIRONMENT", "CAMERA", "IMAGE"]);
+    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+        let mut h = fixture();
+        h.app.ui.layout = layout;
+        for width in [800, 1024, 1440, 2000] {
+            h.call("ui.resize", json!({"width":width,"height":900}));
+            h.frames(3);
+            for id in ["render.start", "render.preflight"] {
+                let r = crate::scenario::rect_of(&format!("button:{id}")).expect("pinned Image action");
+                assert!(r.left() >= 0. && r.right() <= width as f32, "{layout:?} {width} {id}: {r:?}");
+            }
+        }
+        h.app.toolbar_custom.panels.insert("DESIGN/RENDER/SCENE".into(), vec!["render.scene".into()]);
+        h.app.toolbar_custom.panels.insert("DESIGN/RENDER/IMAGE".into(), vec!["render.export".into(), "render.start".into()]);
+        let before = h.app.toolbar_custom.prefs();
+        h.frames(3);
+        assert_eq!(h.app.toolbar_custom.prefs(), before, "default expansion must not replace personal pins");
+        assert!(crate::scenario::rect_of("button:render.scene").is_some());
+        assert!(crate::scenario::rect_of("button:render.export").is_some());
+    }
+}
+
+#[test]
+fn ribbon_and_sticky_footer_submit_the_current_draft_not_defaults_or_saved_shot() {
+    let mut h = fixture();
+    h.app.render_workspace.view.draft.width = 32;
+    h.app.render_workspace.view.draft.height = 24;
+    h.app.render_workspace.view.draft.background = [24, 63, 107];
+    let before = h.app.session.doc.to_json();
+    let export = solidcraft_engine::find_command("render.export").unwrap();
+    assert!(!super::super::interactive_command_info(&h.app, export).enabled);
+    assert!(export.info(&h.app.session).enabled, "UI state must not alter direct engine API semantics");
+    h.app.start("render.preflight");
+    let request = super::super::image_request(&h.app).unwrap();
+    h.app.start("render.start");
+    let job = h.app.render_workspace.view.job.expect("ribbon submitted an actual job");
+    let handle = h.app.session.render_job_handle(job).unwrap();
+    assert_eq!((handle.status().unwrap().request.width, handle.status().unwrap().request.height), (32, 24));
+    assert_eq!(handle.status().unwrap().request.background, [24, 63, 107]);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.app.render_workspace.view.completed != Some(job) {
+        assert!(std::time::Instant::now() < deadline, "CPU fixture did not complete");
+        h.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(super::super::image_request(&h.app).unwrap(), request);
+    assert_eq!(h.app.session.doc.to_json(), before);
+    assert!(super::super::interactive_command_info(&h.app, export).enabled);
+    h.app.render_workspace.view.studio.export_exr = true;
+    assert!(!super::super::interactive_command_info(&h.app, export).enabled, "a PNG-only result never pretends to have EXR");
+}
+
+#[test]
+fn saved_bloom_intent_roundtrips_and_rejects_unsupported_transparent_output() {
+    use solidcraft_engine::render::job::bloom::Bloom;
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    h.app.render_workspace.view.studio.finishing.bloom = Some(Bloom { strength: 0.25, threshold: 2.5, radius: 12 });
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio.finishing.bloom = None;
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups[&h.app.render_workspace.view.name], expected);
+    h.app.render_workspace.view.transparent = true;
+    assert!(setups::snapshot(&h.app).is_err());
+    h.app.render_workspace.view.transparent = false;
+    super::super::select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    assert!(super::super::image_request(&h.app).is_ok(), "inactive GPU settings remain portable but are not sent to CPU");
+}

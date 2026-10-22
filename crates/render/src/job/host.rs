@@ -937,6 +937,9 @@ impl ImageHost {
             if options.linear_exr && !executor.supports_linear_exr() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot retain a raw linear EXR"));
             }
+            if options.finishing.bloom.is_some_and(|b| b.active()) && !executor.supports_bloom() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement display bloom"));
+            }
             if (!options.finishing.is_identity() || options.backdrop.is_some()) && !executor.supports_finishing() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot apply the requested finishing/backdrop"));
             }

@@ -27,6 +27,8 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.camera.fit", "Frame Render Subject", fit_camera).icon("camera").noundo()
+    .params("No parameters. Fits the current camera to the visible product bounds through the shared Camera::fit contract; changes only view state, not a saved setup, rendering job, stage or engineering geometry."),
 CommandSpec::new("render.preset.resolve", "Review Native Studio", studio_presets::resolve).icon("render_scene").noundo()
     .params("id: NATIVE-STUDIO-001..004; name; set?: typed GPU setup patch; expected_revision?:u64. Resolves original built-in HDR/rig/passive ground with conservative geometry clearance, returns all replacements and preserved fields without mutation. Unbound SCENE-* concepts are not accepted."),
 CommandSpec::new("render.preset.apply", "Apply Native Studio", studio_presets::apply).icon("render_scene")
@@ -98,6 +100,19 @@ CommandSpec::new("render.scene", "Inspect Render Scene", scene).noundo().at("REN
 CommandSpec::new("render.settings.apply", "Apply Render Camera", apply_settings).icon("camera").noundo().doc_only()
     .params("name: saved setup. Applies its existing Camera snapshot including roll/up as view state, without modifying the document or starting a render."),
 ];
+
+fn fit_camera(s: &mut Session, params: &Value) -> Result<Value> {
+    if !params.as_object().is_some_and(|p| p.is_empty()) {
+        return Err(bad("render.camera.fit", "expected an empty parameter object"));
+    }
+    let scene = crate::product_scene::extract(s)?;
+    let mut camera = s.camera.unwrap_or_default();
+    if !scene.bounds.is_empty() {
+        camera.fit(&scene.bounds);
+    }
+    s.camera = Some(camera);
+    Ok(json!({"camera":camera,"empty":scene.bounds.is_empty(),"document_changed":false}))
+}
 
 fn scene(s: &mut Session, params: &Value) -> Result<Value> {
     if !params.as_object().is_some_and(|p| p.is_empty()) {
