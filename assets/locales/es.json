@@ -1283,7 +1283,7 @@
   "render.library_unfavorite": "Quitar favorito",
   "render.library_uniform_ack": "Usar la aproximación uniforme sin efectos espaciales ni avanzados",
   "render.library_usable": "Proyecciones ejecutables",
-  "render.linear_help": "Conserva un máster RGBA de 32 bits en coma flotante antes del ruido, exposición, mapeo tonal, filtros y fondo. sRGB lineal/D65, premultiplicado por cobertura. Requiere memoria adicional. Sin compresión ni pases extra.",
+  "render.linear_help": "Conserva un máster RGBA de 32 bits en coma flotante antes de la reducción de ruido, exposición, mapeo tonal, filtros y fondo. sRGB lineal/D65, premultiplicado por cobertura. Requiere memoria adicional. Sin compresión ni pases extra.",
   "render.linear_retain": "Conservar EXR lineal sin procesar",
   "render.linear_unavailable": "La imagen terminada seleccionada no conserva EXR. Activa la opción antes de renderizar; no se puede recuperar la radiancia original de un PNG.",
   "render.mapping_scale": "Multiplicador de repetición física",

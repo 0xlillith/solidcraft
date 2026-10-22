@@ -2802,9 +2802,13 @@ fn display_identity_matches_the_legacy_response_and_spatial_filters_ignore_chunk
 }
 
 fn complete_linear_fixture(context: Arc<Context>, options: JobOptions) -> (Vec<u8>, Option<Vec<u8>>) {
+    // Use the public environment-lighting contract, not the test-only numerical
+    // furnace path. Primary misses remain transparent black in the linear master.
+    let options = JobOptions {
+        lighting: Some(solidcraft_render::job::StudioLighting { environment: [8.0; 3], sun: None, area_lights: Default::default() }),
+        ..options
+    };
     let mut task = Task::new(context, sphere(white()), request(16), options, CancelToken::default()).unwrap();
-    task.environment = 8.0;
-    task.studio = 0.0;
     for _ in 0..5000 {
         match task.step(16384).unwrap() {
             TaskPoll::Pending(_) => {}
@@ -2910,6 +2914,14 @@ fn gpu_host_retains_linear_companion_under_the_same_exact_frame_lease() {
     drop(handle);
     assert!(host.admitted_bytes() > 0);
     drop(frame);
+    // Cancellation/completion notification and worker-owned resource destruction
+    // are distinct events. Require the actual reservation to drain, without
+    // forcing premature release or changing the host's asynchronous contract.
+    let released_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while host.admitted_bytes() != 0 {
+        assert!(std::time::Instant::now() < released_by, "worker did not release its completed/cancelled reservation");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     assert_eq!(host.admitted_bytes(), 0);
     let handle = host.submit_with_options(JobId { serial: 2, ..id }, 7, source, req, JobOptions { samples: 4096, ..options }).unwrap();
     handle.cancel().unwrap();
@@ -2917,6 +2929,14 @@ fn gpu_host_retains_linear_companion_under_the_same_exact_frame_lease() {
     assert_eq!(status.progress.phase, Phase::Cancelled);
     assert!(handle.frame().unwrap().is_none());
     drop(handle);
+    // Cancellation/completion notification and worker-owned resource destruction
+    // are distinct events. Require the actual reservation to drain, without
+    // forcing premature release or changing the host's asynchronous contract.
+    let released_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while host.admitted_bytes() != 0 {
+        assert!(std::time::Instant::now() < released_by, "worker did not release its completed/cancelled reservation");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     assert_eq!(host.admitted_bytes(), 0);
 }
 

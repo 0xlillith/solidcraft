@@ -31,3 +31,12 @@ The grouped whole-workspace/all-target type check passed. Formatting and whitesp
 ## Explicit remaining units
 
 Adaptive sample scheduling, additional transmission-path convergence work, compressed/multipart/AOV EXR, bloom, volumetric effects, post-hoc interactive regrading and remaining advanced scene/material implementations are not made operational by this batch. They stay visible as separate planned work. Further acceptance must exercise the actual producer rather than merely expose a control or upgrade a catalog readiness flag.
+
+
+## Grouped execution checkpoint
+
+On frozen `9db56e70` / tree `f7292256c2392f09c7ca61b88daa2e82ace01c94`, strict workspace/all-target Clippy and the grouped test build passed. Execution: **462 renderer tests; 301 document tests (one explicit ignore); 68 Render engine tests; 81 Render UI tests; 16 shared-kit guards** all passed. The GPU suite passed 98 tests and exposed one new test synchronization error, with three existing explicit ignores.
+
+The failing assertion queried the reservation immediately after a queued cancellation notification; the native worker still owned that queued source until it drained it. The follow-up test waits for actual bounded resource release while still requiring zero retained bytes and no published frame. It changes neither production cancellation nor memory accounting. The raw-output fixture is also strengthened to use the public uniform-environment contract rather than the internal numerical furnace hook, so primary misses must decode as transparent black.
+
+The initial raw GPU output decoded independently with the official OpenEXR 3.5.2 reader as FLOAT32 RGBA, with correct dimensions, scanline order and D65 chromaticities and radiance above one. Tests prove PNG-only versus retained-master PNG identity and raw-master byte identity across denoise/exposure/tone/filter/backdrop changes. The public-lighting version and corrected cancellation assertion are pending the focused re-execution recorded next. Actual engine PNG/EXR atomic export, wrong-suffix/session rejection and existing-file preservation passed already. Core production Rust remains unchanged by these test corrections.

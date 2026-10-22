@@ -996,3 +996,5 @@ The original adapters in `crates/engine/src/cmd/render/library.rs`, the generate
 
 | tools/render-library/package_selene.py | SolidCraft contributors | original byte-preserving packaging of the reviewed native SELENE PNG, public provenance and checksums; bounded resource/PNG verification, no fonts, executables or new render execution | MIT OR Apache-2.0 |
 | .github/workflows/selene-showcase.yml | SolidCraft contributors | original read-only artifact-delivery workflow for the reviewed native SELENE export; existing pinned repository actions, no compilation, package installation, secret use or renderer claims | MIT OR Apache-2.0 |
+
+| tools/render-library/verify_linear_master.py | SolidCraft contributors | original independent validation driver for native linear EXR output using the official OpenEXR Python reader as an external test oracle; no codec implementation copied or production dependency added | MIT OR Apache-2.0 |
