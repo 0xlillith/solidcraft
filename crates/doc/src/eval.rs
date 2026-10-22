@@ -3320,7 +3320,17 @@ fn blend_target(state: &ModelState, body: &Option<crate::BodyName>, edges: &[Vec
     })
 }
 
-pub(crate) fn revolve_axis(ss: &SolvedSketch, axis: &AxisRef) -> Result<(Vec2, Vec2)> {
+/// The revolve axis in the sketch's 2D coordinates (a point on it, its direction). `construct`
+/// gives a construction axis, by name, in the sketch's 3D frame.
+pub(crate) fn revolve_axis(ss: &SolvedSketch, axis: &AxisRef, construct: &dyn Fn(&str) -> Result<(Vec3, Vec3)>) -> Result<(Vec2, Vec2)> {
+    let in_plane = |origin: Vec3, dir: Vec3| {
+        let pl = &ss.plane;
+        let d = dir.normalized().ok_or_else(|| DocError::Invalid("revolve axis has no direction".into()))?;
+        if d.dot(pl.normal()).abs() > 1e-9 || pl.height(origin).abs() > 1e-6 {
+            return Err(DocError::Invalid("the revolve axis does not lie in the sketch plane".into()));
+        }
+        Ok((pl.to_local(origin), Vec2::new(d.dot(pl.x), d.dot(pl.y))))
+    };
     match axis {
         AxisRef::SketchLine { curve } => {
             let ci = ss.sketch.curve_index(curve).ok_or_else(|| DocError::Unknown(format!("sketch line `{curve}`")))?;
@@ -3350,15 +3360,35 @@ pub(crate) fn revolve_axis(ss: &SolvedSketch, axis: &AxisRef) -> Result<(Vec2, V
             }
             Ok((pl.to_local(Vec3::ZERO), Vec2::new(d.dot(pl.x), d.dot(pl.y))))
         }
-        AxisRef::Line { origin, dir } => {
-            let pl = &ss.plane;
-            let d = dir.normalized().ok_or_else(|| DocError::Invalid("revolve axis has no direction".into()))?;
-            if d.dot(pl.normal()).abs() > 1e-9 || pl.height(origin.0).abs() > 1e-6 {
-                return Err(DocError::Invalid("the revolve axis does not lie in the sketch plane".into()));
-            }
-            Ok((pl.to_local(origin.0), Vec2::new(d.dot(pl.x), d.dot(pl.y))))
+        AxisRef::Line { origin, dir } => in_plane(origin.0, dir.0),
+        AxisRef::Construction { name } => {
+            let (origin, dir) = construct(name)?;
+            in_plane(origin, dir)
         }
     }
+}
+
+/// A construction axis `name` of the timeline so far, as evaluated, in the frame of component
+/// `comp`: a point on it and its direction. Without a document (`doc` None) it is taken in its
+/// own component's frame.
+pub(crate) fn construction_axis_in(doc: Option<&Document>, st: &ModelState, name: &str, comp: u64) -> Result<(Vec3, Vec3)> {
+    let c = st
+        .construct
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| DocError::Unknown(format!("construction axis `{name}` (it must come earlier in the timeline)")))?;
+    let crate::construct::ConstructGeom::Axis { origin, dir } = &c.geom else {
+        return Err(DocError::Invalid(format!("`{name}` is not a construction axis")));
+    };
+    let Some(doc) = doc else { return Ok((*origin, *dir)) };
+    let owner = doc.feature(c.feature).map_or(0, |f| f.component);
+    if owner == comp || doc.occurrences.is_empty() {
+        return Ok((*origin, *dir));
+    }
+    let inverse =
+        crate::mat_inverse(&doc.component_transform(comp)).ok_or_else(|| DocError::Invalid("the feature's component frame is invalid".into()))?;
+    let relative = crate::mat_mul(&inverse, &doc.component_transform(owner));
+    Ok((crate::apply_point(&relative, *origin), crate::apply_vector(&relative, *dir)))
 }
 
 /// Whether a drill from `p` along `d` reaches material: it starts into a body (`touches`), or,
@@ -4395,7 +4425,7 @@ fn feature_tools_with_constructor(
                 f.component,
             )?;
             let regions = solidcraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
-            let (o, d) = revolve_axis(&ss, axis)?;
+            let (o, d) = revolve_axis(&ss, axis, &|name| construction_axis_in(Some(doc), st, name, f.component))?;
             // To Object is in this feature's component frame: the model as seen from there.
             let tst = if to.is_some() { state_in_frame(doc, st, f.component) } else { std::borrow::Cow::Borrowed(st) };
             // Where the tool meets its targets is measured where they are shown (#3383).
@@ -5179,7 +5209,11 @@ fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &Model
                 out.push(m);
             }
         }
-        crate::PatternKind::Circular { origin, axis, count: c, angle, alignment, reversed } => {
+        crate::PatternKind::Circular { origin, axis, count: c, angle, alignment, reversed, axis_feature } => {
+            let (origin, axis) = match axis_feature {
+                Some(name) => construction_axis_in(Some(doc), st, name, component)?,
+                None => (origin.0, axis.0),
+            };
             let n = count(c)?;
             let total = val(vals, angle, Kind::Angle)?;
             let full = (total.abs() - std::f64::consts::TAU).abs() < 1e-9;
@@ -5191,7 +5225,7 @@ fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &Model
                 0.0
             };
             for i in 1..n {
-                out.push(rotation(origin.0, axis.0, step * alignment.multiplier(i, *reversed)));
+                out.push(rotation(origin, axis, step * alignment.multiplier(i, *reversed)));
             }
         }
     }
