@@ -17,6 +17,7 @@ mod library;
 mod library_data;
 #[cfg(test)]
 mod light_union_tests;
+mod physical_library;
 mod resources;
 mod staging;
 mod surface_bindings;
@@ -24,6 +25,8 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.library.physical.prepare", "Prepare Physical Reference", physical_library::prepare).icon("inspect").noundo().doc_only()
+    .params("id: named built-in physical profile, name: proposed new material label, acknowledge_reference:true. Read-only loss-aware creation plan using native ValidatedCard admission and one point density; returns source receipts, extended fields and omissions. Does not execute material.create, assign bodies or infer effective-part physics."),
 CommandSpec::new("render.stage.ground", "Save Render Ground", staging::ground).icon("render_scene")
     .params("name: typed raytrace setup, set?: setup patch, margin_fraction?:0.25, gap_mm?:0.1, reflectance_linear?:[0.18,0.18,0.18], replace_stage?:false. Fits one finite passive ground below the visible product once and saves its physical transforms in one undo. Product AABB separation is rechecked on every render."),
 CommandSpec::new("render.stage.clear", "Remove Render Stage", staging::clear).icon("render_scene").doc_only()
@@ -71,7 +74,7 @@ CommandSpec::new("render.backends", "Render Backends", backends).icon("list")
 CommandSpec::new("render.settings.get", "Render Settings", get_settings).icon("settings").noundo().doc_only()
     .params("name?: saved setup. Without name returns {setups, defaults}; with name returns {name, setup}. Does not evaluate the model or apply a camera. See docs/render-settings.md"),
 CommandSpec::new("render.settings.set", "Save Render Settings", set_settings).icon("settings").doc_only()
-    .params("name: setup name, set: object of fields to replace (backend, mode, camera, width, height, format, exposure_ev, environment_rotation, environment_intensity, background, job). job?: typed active raster/cpu_raytrace/gpu_path configuration with optional validated embedded HDR reference; omitted preserves, null clears, object replaces the complete job. Creates from defaults and saves without a host, validates atomically, one undo step; identical edits are no-ops. See docs/render-settings.md"),
+    .params("name: setup name, set: object of fields to replace (backend, mode, camera, width, height, format, exposure_ev, environment_rotation, environment_intensity, background, job, surfaces, stage). job?: typed active raster/cpu_raytrace/gpu_path configuration with optional validated embedded HDR reference; omitted preserves, null clears, object replaces the complete job. Creates from defaults and saves without a host, validates atomically, one undo step; identical edits are no-ops. See docs/render-settings.md"),
 CommandSpec::new("render.scene", "Inspect Render Scene", scene).noundo().at("RENDER", "SCENE").icon("render_scene")
     .params("No parameters. Authoritative product-scene metadata, without modelling overlays or mesh payloads. Explicitly settles stale geometry; does not render an image. See docs/render-workspace.md"),
 CommandSpec::new("render.settings.apply", "Apply Render Camera", apply_settings).icon("camera").noundo().doc_only()

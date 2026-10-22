@@ -27,6 +27,9 @@ pub(super) struct View {
     replace_studio: bool,
     replace_surface: bool,
     include_cards: bool,
+    physical_name: String,
+    physical_ack: bool,
+    physical_plan: Option<Value>,
     center: [f64; 3],
     extent: f64,
 }
@@ -52,6 +55,9 @@ impl Default for View {
             replace_studio: false,
             replace_surface: false,
             include_cards: true,
+            physical_name: "Reference material".into(),
+            physical_ack: false,
+            physical_plan: None,
             center: [0.0; 3],
             extent: 1000.0,
         }
@@ -67,6 +73,8 @@ fn refresh(app: &mut SolveApp, view: &mut View) -> Result<(), String> {
     view.selected = None;
     view.details = None;
     view.acknowledge_projection = false;
+    view.physical_ack = false;
+    view.physical_plan = None;
     Ok(())
 }
 fn current_target(app: &SolveApp, view: &View) -> bool {
@@ -138,6 +146,7 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         let mut view = std::mem::take(&mut app.render_workspace.view.library);
         let kinds = [
             ("surfaces", "render.library_surfaces"),
+            ("physical_profiles", "render.library_physical_profiles"),
             ("selene_appearances", "render.library_selene"),
             ("hdr", "render.library_hdr"),
             ("rigs", "render.library_rigs"),
@@ -198,6 +207,8 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                     view.details = Some(reply);
                     view.selected = Some(id);
                     view.acknowledge_projection = false;
+                    view.physical_ack = false;
+                    view.physical_plan = None;
                 }
                 Err(e) => app.set_status(e, true),
             }
@@ -215,8 +226,47 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
     if let Some(description) = source["description"].as_str().or_else(|| source["purpose"].as_str()) {
         ui.small(description);
     }
+    if let Some(specifications) = detail["physical_references"]["specifications"].as_array() {
+        let title = app.tr("render.physical_associations").to_string();
+        ui_kit::section(ui, ("physical_associations", id), &title, false, |ui| {
+            ui.small(app.tr("render.physical_separate"));
+            for spec in specifications {
+                ui.label(format!("{}: {}", spec["catalog_id"].as_str().unwrap_or(""), spec["physical_role"].as_str().unwrap_or("")));
+                ui.small(spec["reason"].as_str().unwrap_or(""));
+                if let Some(references) = spec["references"].as_array() {
+                    for reference in references {
+                        ui.label(format!("{} - {}", reference["profile_id"].as_str().unwrap_or(""), reference["relation"].as_str().unwrap_or("")));
+                    }
+                }
+            }
+            if let Some(profiles) = detail["physical_references"]["candidate_profiles"].as_array() {
+                if profiles.is_empty() {
+                    ui.small(app.tr("render.physical_unknown"));
+                }
+                for profile in profiles {
+                    let profile_id = profile["id"].as_str().unwrap_or("");
+                    if ui_kit::button(ui, profile["name"].as_str().unwrap_or(profile_id), ui_kit::Button::Normal).clicked() {
+                        match app.run("render.library.describe", json!({"kind":"physical_profiles","id":profile_id})) {
+                            Ok(detail) => {
+                                view.kind = "physical_profiles".into();
+                                view.selected = Some(profile_id.into());
+                                view.details = Some(detail);
+                                view.physical_ack = false;
+                                view.physical_plan = None;
+                                view.entries.clear();
+                                view.total = 0;
+                                view.next = None;
+                            }
+                            Err(e) => app.set_status(e, true),
+                        }
+                    }
+                }
+            }
+        });
+    }
     ui.small(app.tr("render.library_authored_help"));
     match view.kind.as_str() {
+        "physical_profiles" => physical_controls(app, ui, view, id, &detail),
         "surfaces" | "selene_appearances" => {
             target_controls(app, ui, view);
             ui_kit::checkbox(ui, app.tr("render.library_uniform_ack"), &mut view.acknowledge_projection);
@@ -398,4 +448,55 @@ fn stage_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         }
     });
+}
+
+fn physical_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id: &str, detail: &Value) {
+    ui.small(app.tr("render.physical_separate"));
+    let resource = &detail["resource"];
+    ui.strong(resource["designation"].as_str().unwrap_or(id));
+    ui.small(resource["reference_state"].as_str().unwrap_or(""));
+    if let Some(properties) = resource["properties"].as_array() {
+        for (index, property) in properties.iter().enumerate() {
+            let name = property["quantity"].as_str().unwrap_or("property");
+            let title = format!("{}: {} {}", name, property["value"], property["unit"].as_str().unwrap_or(""));
+            ui_kit::section(ui, ("physical_property", id, index), &title, false, |ui| {
+                ui.small(format!("Source: {} - {}", property["source_id"].as_str().unwrap_or(""), property["source_locator"].as_str().unwrap_or("")));
+                ui.small(format!("Qualifier: {}", property["qualifier"].as_str().unwrap_or("unknown")));
+                ui.small(format!("Conditions: {}", property["conditions"]));
+                ui.small(format!("Uncertainty: {}", property["uncertainty"]));
+                ui.small(property["note"].as_str().unwrap_or(""));
+            });
+        }
+    }
+    if let Some(omissions) = detail["native_projection"]["not_projected"].as_array() {
+        let title = app.tr("render.physical_omissions").to_string();
+        ui_kit::section(ui, ("physical_omissions", id), &title, false, |ui| {
+            for item in omissions {
+                ui.small(format!("{}: {}", item["quantity"].as_str().unwrap_or(""), item["reason"].as_str().unwrap_or("")));
+            }
+        });
+    }
+    if let Some(sources) = detail["sources"].as_array() {
+        for source in sources {
+            if let Some(url) = source["url"].as_str() {
+                ui.hyperlink_to(source["title"].as_str().unwrap_or(url), url);
+            }
+        }
+    }
+    ui.label(app.tr("render.physical_material_name"));
+    ui_kit::bounded_cell_editor(ui, ui.id().with("physical_reference_name"), &mut view.physical_name, "", false, 128);
+    ui_kit::checkbox(ui, app.tr("render.physical_acknowledge"), &mut view.physical_ack);
+    if ui_kit::button(ui, app.tr("render.physical_prepare_plan"), ui_kit::Button::Enabled(view.physical_ack)).clicked() {
+        match app.run("render.library.physical.prepare", json!({"id":id,"name":view.physical_name,"acknowledge_reference":true})) {
+            Ok(plan) => view.physical_plan = Some(plan),
+            Err(e) => app.set_status(e, true),
+        }
+    }
+    if let Some(plan) = &view.physical_plan {
+        ui.small(app.tr("render.physical_plan_only"));
+        let text = serde_json::to_string_pretty(plan).unwrap_or_default();
+        if ui_kit::button(ui, app.tr("render.physical_copy_plan"), ui_kit::Button::Normal).clicked() {
+            ui.ctx().copy_text(text);
+        }
+    }
 }

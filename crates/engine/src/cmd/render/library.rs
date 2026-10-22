@@ -73,7 +73,7 @@ pub(super) fn item(kind: &str, id: &str, command: &str) -> Result<&'static Value
 fn projection(kind: &str, value: &Value) -> Value {
     match kind {
         "surfaces" => json!({"status":"implemented_pending_batch_validation","variants":["uniform_opaque","gpu_planar_maps"],
-            "omitted":["height_displacement","true_anisotropic_brdf","manufacturing_geometry"],"maps_portability":"built_in_request_only"}),
+            "omitted":["height_displacement","true_anisotropic_brdf","manufacturing_geometry"],"maps_portability":"version_and_digest_pinned_builtin_setup_bindings"}),
         "selene_appearances" => json!({"status":"implemented_pending_batch_validation","variants":["uniform_opaque"],
             "omitted":value["baseline_projection"]["omitted_target_features"]}),
         "hdr" => json!({"status":"implemented_pending_batch_validation","variants":["embedded_hdr"],
@@ -107,6 +107,9 @@ impl Default for Query {
 }
 
 pub(super) fn list(_s: &mut Session, params: &Value) -> Result<Value> {
+    if params.get("kind").and_then(Value::as_str) == Some("physical_profiles") {
+        return super::physical_library::list(params);
+    }
     let command = "render.library.list";
     let input: Query = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.query.len() > 256 || input.query.chars().any(char::is_control) || input.limit == 0 || input.limit > 128 || input.offset > 4096 {
@@ -178,8 +181,15 @@ struct Identify {
 pub(super) fn describe(_s: &mut Session, params: &Value) -> Result<Value> {
     let command = "render.library.describe";
     let input: Identify = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
+    if input.kind == "physical_profiles" {
+        return super::physical_library::describe(&input.id);
+    }
     let value = item(&input.kind, &input.id, command)?;
-    Ok(json!({"kind":input.kind,"resource":value,"projection":projection(&input.kind,value),"source_manifest_unchanged":true}))
+    let mut reply = json!({"kind":input.kind,"resource":value,"projection":projection(&input.kind,value),"source_manifest_unchanged":true});
+    if matches!(input.kind.as_str(), "materials" | "surfaces") {
+        reply["physical_references"] = super::physical_library::associations(&input.id)?;
+    }
+    Ok(reply)
 }
 
 /// The key is matched against generated constants, never joined to a filesystem path.
