@@ -778,12 +778,14 @@ mod studio_browser_tests {
     use crate::scenario::Harness;
     #[test]
     fn category_navigation_preserves_queries_pages_selection_and_declared_scope() {
-        let mut view = View::default();
-        view.query = "brushed".into();
-        view.offset = 48;
-        view.selected = Some("SURF-001".into());
-        view.details = Some(json!({"resource":{"id":"SURF-001"}}));
-        view.availability = "usable".into();
+        let mut view = View {
+            query: "brushed".into(),
+            offset: 48,
+            selected: Some("SURF-001".into()),
+            details: Some(json!({"resource":{"id":"SURF-001"}})),
+            availability: "usable".into(),
+            ..Default::default()
+        };
         switch_kind(&mut view, "hdr");
         assert!(view.query.is_empty());
         assert!(view.selected.is_none());
