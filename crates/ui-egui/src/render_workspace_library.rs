@@ -4,7 +4,10 @@ use super::{ImageMethod, materials, setups};
 use crate::{SolveApp, theme::Tokens, ui_kit};
 use serde_json::{Value, json};
 use solidcraft_engine::{doc::Document, geom::Vec3};
-use std::sync::{Arc, Weak};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::{Arc, Weak},
+};
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
@@ -32,6 +35,34 @@ pub(super) struct View {
     physical_plan: Option<Value>,
     center: [f64; 3],
     extent: f64,
+    availability: String,
+    collection: usize,
+    navigation: BTreeMap<String, Navigation>,
+    favorites: BTreeSet<(String, String)>,
+    recent: VecDeque<(String, String)>,
+    preview: Option<SourcePreview>,
+    preview_error: Option<String>,
+    mapping_plane: usize,
+    mapping_scale: f64,
+}
+#[derive(Clone, Debug)]
+struct Navigation {
+    query: String,
+    offset: usize,
+    selected: Option<String>,
+    details: Option<Value>,
+    availability: String,
+}
+#[derive(Clone)]
+struct SourcePreview {
+    id: String,
+    sha256: String,
+    texture: egui::TextureHandle,
+}
+impl std::fmt::Debug for SourcePreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourcePreview").field("id", &self.id).field("sha256", &self.sha256).finish()
+    }
 }
 impl Default for View {
     fn default() -> Self {
@@ -60,18 +91,26 @@ impl Default for View {
             physical_plan: None,
             center: [0.0; 3],
             extent: 1000.0,
+            availability: "all".into(),
+            collection: 0,
+            navigation: Default::default(),
+            favorites: Default::default(),
+            recent: Default::default(),
+            preview: None,
+            preview_error: None,
+            mapping_plane: 0,
+            mapping_scale: 1.0,
         }
     }
 }
 
 fn refresh(app: &mut SolveApp, view: &mut View) -> Result<(), String> {
-    let reply = app.run("render.library.list", json!({"kind":view.kind,"query":view.query,"offset":view.offset,"limit":48}))?;
+    let reply = app.run("render.library.list", json!({"kind":view.kind,"query":view.query,"offset":view.offset,"limit":48,"availability":if view.kind=="physical_profiles" {"all"} else {&view.availability}}))?;
     view.entries = reply["items"].as_array().cloned().ok_or_else(|| "invalid render-library response".to_string())?;
     view.total = reply["total"].as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
     view.next = reply["next_offset"].as_u64().and_then(|n| usize::try_from(n).ok());
     view.loaded = true;
-    view.selected = None;
-    view.details = None;
+    // Search/page changes preserve the independently inspected resource.
     view.acknowledge_projection = false;
     view.physical_ack = false;
     view.physical_plan = None;
@@ -138,59 +177,190 @@ fn patch(app: &SolveApp) -> Result<Value, String> {
     serde_json::to_value(setups::snapshot(app)?).map_err(|e| e.to_string())
 }
 
-pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
-    stage_controls(app, ui);
-    saved_surface_controls(app, ui);
-    let title = app.tr("render.library_title").to_string();
-    ui_kit::section(ui, "render_resource_library", &title, false, |ui| {
-        let mut view = std::mem::take(&mut app.render_workspace.view.library);
-        let kinds = [
-            ("surfaces", "render.library_surfaces"),
-            ("physical_profiles", "render.library_physical_profiles"),
-            ("selene_appearances", "render.library_selene"),
-            ("hdr", "render.library_hdr"),
-            ("rigs", "render.library_rigs"),
-            ("scenes", "render.library_scenes"),
-            ("materials", "render.library_material_concepts"),
-            ("lighting", "render.library_light_concepts"),
-            ("environments", "render.library_environment_concepts"),
-            ("quality", "render.library_quality_concepts"),
+const KINDS: &[(&str, &str)] = &[
+    ("native_scenes", "render.library_native_scenes"),
+    ("surfaces", "render.library_surfaces"),
+    ("hdr", "render.library_hdr"),
+    ("rigs", "render.library_rigs"),
+    ("selene_appearances", "render.library_selene"),
+    ("physical_profiles", "render.library_physical_profiles"),
+    ("scenes", "render.library_scenes"),
+    ("selene_shots", "render.library_selene_shots"),
+    ("materials", "render.library_material_concepts"),
+    ("lighting", "render.library_light_concepts"),
+    ("environments", "render.library_environment_concepts"),
+    ("quality", "render.library_quality_concepts"),
+    ("capabilities", "render.library_capabilities"),
+];
+
+fn switch_kind(view: &mut View, kind: &str) {
+    if view.kind == kind || !KINDS.iter().any(|(value, _)| *value == kind) {
+        return;
+    }
+    view.navigation.insert(
+        view.kind.clone(),
+        Navigation {
+            query: view.query.clone(),
+            offset: view.offset,
+            selected: view.selected.clone(),
+            details: view.details.clone(),
+            availability: view.availability.clone(),
+        },
+    );
+    view.kind = kind.into();
+    if let Some(saved) = view.navigation.get(kind) {
+        view.query = saved.query.clone();
+        view.offset = saved.offset;
+        view.selected = saved.selected.clone();
+        view.details = saved.details.clone();
+        view.availability = saved.availability.clone();
+    } else {
+        view.query.clear();
+        view.offset = 0;
+        view.selected = None;
+        view.details = None;
+        view.availability = "all".into();
+    }
+    view.loaded = false;
+    view.preview = None;
+    view.preview_error = None;
+    view.physical_plan = None;
+    view.acknowledge_projection = false;
+    view.physical_ack = false;
+}
+pub(super) fn open_category(app: &mut SolveApp, kind: &str) {
+    switch_kind(&mut app.render_workspace.view.library, kind);
+    app.render_workspace.view.inspector.library_open = true;
+    app.ui.show_browser = true;
+}
+fn choose(app: &mut SolveApp, view: &mut View, kind: &str, id: &str) -> Result<(), String> {
+    switch_kind(view, kind);
+    let detail = app.run("render.library.describe", json!({"kind":kind,"id":id}))?;
+    view.details = Some(detail);
+    view.selected = Some(id.into());
+    view.preview = None;
+    view.preview_error = None;
+    view.acknowledge_projection = false;
+    view.physical_ack = false;
+    view.physical_plan = None;
+    app.render_workspace.view.inspector.clear_resource_reviews();
+    let key = (kind.to_string(), id.to_string());
+    view.recent.retain(|old| old != &key);
+    view.recent.push_front(key);
+    view.recent.truncate(32);
+    app.render_workspace.view.inspector.page = match kind {
+        "native_scenes" | "scenes" | "selene_shots" => super::inspector::Page::Scene,
+        "hdr" | "environments" => super::inspector::Page::Environment,
+        "rigs" | "lighting" => super::inspector::Page::Lighting,
+        "quality" => super::inspector::Page::Output,
+        "capabilities" => super::inspector::Page::Diagnostics,
+        _ => super::inspector::Page::Appearance,
+    };
+    Ok(())
+}
+
+/// The existing browser card owns layout and occlusion in both shell modes.
+pub(super) fn browse(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let mut view = std::mem::take(&mut app.render_workspace.view.library);
+    let label = KINDS.iter().find(|(kind, _)| *kind == view.kind).map_or("", |(_, key)| app.tr(key)).to_string();
+    let menu = ui_kit::dropdown_menu(ui, "render_library_kind", &label, |ui| {
+        for &(kind, key) in KINDS {
+            let r = ui_kit::list_picker(ui, kind, app.tr(key), view.kind == kind);
+            crate::scenario::publish_handle(&format!("render:library-kind:{kind}"), r.rect.center());
+            if r.clicked() {
+                switch_kind(&mut view, kind);
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_target("render:library-category", menu.rect);
+    let collection_labels =
+        [app.tr("render.library_all").to_string(), app.tr("render.library_favorites").to_string(), app.tr("render.library_recent").to_string()];
+    ui_kit::segmented(ui, &mut view.collection, &collection_labels.iter().map(String::as_str).collect::<Vec<_>>(), Default::default());
+    let search = ui_kit::bounded_cell_editor(ui, ui.id().with("render_library_search"), &mut view.query, app.tr("render.library_search"), false, 128);
+    crate::scenario::publish_target("render:library-search", search.rect);
+    let enter = search.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+    ui.horizontal(|ui| {
+        if ui_kit::button(ui, app.tr("render.library_search"), ui_kit::Button::Normal).clicked() || enter {
+            view.offset = 0;
+            view.loaded = false;
+        }
+        if ui_kit::button(ui, app.tr("render.library_clear_search"), ui_kit::Button::Normal).clicked() {
+            view.query.clear();
+            view.offset = 0;
+            view.loaded = false;
+        }
+    });
+    if view.collection == 0 && view.kind != "physical_profiles" {
+        let choices = [
+            ("all", "render.library_all_states"),
+            ("usable", "render.library_usable"),
+            ("specification", "render.library_specs"),
+            ("blocked", "render.library_blocked"),
         ];
-        let label = kinds.iter().find(|(kind, _)| *kind == view.kind).map_or("", |(_, key)| app.tr(key)).to_string();
-        ui_kit::dropdown_menu(ui, "render_library_kind", &label, |ui| {
-            for (kind, key) in kinds {
-                if ui_kit::list_picker(ui, kind, app.tr(key), view.kind == kind).clicked() {
-                    view.kind = kind.into();
+        let label = choices.iter().find(|(id, _)| *id == view.availability).map_or("", |(_, key)| app.tr(key)).to_string();
+        ui_kit::dropdown_menu(ui, "render_library_availability", &label, |ui| {
+            for (id, key) in choices {
+                if ui_kit::list_picker(ui, id, app.tr(key), view.availability == id).clicked() {
+                    view.availability = id.into();
                     view.offset = 0;
                     view.loaded = false;
                     ui.close();
                 }
             }
         });
-        ui_kit::bounded_cell_editor(ui, ui.id().with("render_library_search"), &mut view.query, app.tr("render.library_search"), false, 128);
-        if ui_kit::button(ui, app.tr("render.library_search"), ui_kit::Button::Normal).clicked() {
-            view.offset = 0;
-            view.loaded = false;
-        }
-        if !view.loaded
-            && let Err(e) = refresh(app, &mut view)
-        {
-            view.loaded = true;
-            app.set_status(e, true);
-        }
-        ui.small(format!("{}: {}", app.tr("render.library_results"), view.total));
-        let mut choose = None;
-        egui::ScrollArea::vertical().id_salt("render_library_items").max_height(210.0).show(ui, |ui| {
-            for entry in &view.entries {
-                let Some(id) = entry["id"].as_str() else { continue };
-                let name = entry["name"].as_str().unwrap_or(id);
-                let response = ui_kit::list_picker(ui, id, &format!("{id} · {name}"), view.selected.as_deref() == Some(id));
-                crate::scenario::publish_handle(&format!("render:library:{id}"), response.rect.center());
-                if response.clicked() {
-                    choose = Some(id.to_string());
+    }
+    if !view.loaded
+        && let Err(error) = refresh(app, &mut view)
+    {
+        view.loaded = true;
+        app.set_status(error, true);
+    }
+    let entries: Vec<(String, String, String, Value)> = if view.collection == 0 {
+        view.entries
+            .iter()
+            .filter_map(|entry| {
+                Some((
+                    view.kind.clone(),
+                    entry["id"].as_str()?.to_string(),
+                    entry["name"].as_str().unwrap_or("").to_string(),
+                    entry["projection"].clone(),
+                ))
+            })
+            .collect()
+    } else {
+        let keys: Vec<_> = if view.collection == 1 { view.favorites.iter().cloned().collect() } else { view.recent.iter().cloned().collect() };
+        keys.into_iter()
+            .filter(|(kind, id)| format!("{kind} {id}").to_lowercase().contains(&view.query.to_lowercase()))
+            .map(|(kind, id)| (kind, id.clone(), id, Value::Null))
+            .collect()
+    };
+    ui.small(format!("{}: {}", app.tr("render.library_results"), if view.collection == 0 { view.total } else { entries.len() }));
+    if entries.is_empty() {
+        ui.small(app.tr("render.library_empty"));
+    }
+    let mut selected = None;
+    let height = (ui.available_height() - 80.0).clamp(96.0, 1000.0);
+    let row_height = crate::ui_kit::row_height() + Tokens::get().space_4;
+    egui::ScrollArea::vertical()
+        .id_salt(("render_library_items", &view.kind, view.collection))
+        .max_height(height)
+        .auto_shrink([false, false])
+        .show_rows(ui, row_height, entries.len(), |ui, range| {
+            for index in range {
+                let Some((kind, id, name, projection)) = entries.get(index) else { continue };
+                let text = format!("{id}  {name}");
+                let r = ui_kit::list_picker(ui, &format!("{kind}:{id}"), &text, view.kind == *kind && view.selected.as_ref() == Some(id));
+                crate::scenario::publish_handle(&format!("render:library:{id}"), r.rect.center());
+                let selected_here = r.clicked();
+                let _ =
+                    r.on_hover_text(format!("{}\n{}", projection["status"].as_str().unwrap_or("reference"), app.tr("render.library_inspect_only")));
+                if selected_here {
+                    selected = Some((kind.clone(), id.clone()));
                 }
             }
         });
+    if view.collection == 0 {
         ui.horizontal(|ui| {
             if ui_kit::button(ui, app.tr("render.library_previous"), ui_kit::Button::Enabled(view.offset > 0)).clicked() {
                 view.offset = view.offset.saturating_sub(48);
@@ -201,22 +371,118 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 view.loaded = false;
             }
         });
-        if let Some(id) = choose {
-            match app.run("render.library.describe", json!({"kind":view.kind,"id":id})) {
-                Ok(reply) => {
-                    view.details = Some(reply);
-                    view.selected = Some(id);
-                    view.acknowledge_projection = false;
-                    view.physical_ack = false;
-                    view.physical_plan = None;
-                }
-                Err(e) => app.set_status(e, true),
+    }
+    if let Some((kind, id)) = selected
+        && let Err(error) = choose(app, &mut view, &kind, &id)
+    {
+        app.set_status(error, true);
+    }
+    ui.small(app.tr("render.library_inspect_only"));
+    app.render_workspace.view.library = view;
+}
+
+pub(super) fn inspect_kinds(app: &mut SolveApp, ui: &mut egui::Ui, kinds: &[&str]) {
+    if kinds.contains(&app.render_workspace.view.library.kind.as_str()) {
+        inspect(app, ui);
+    } else {
+        ui.small(app.tr("render.library_select_hint"));
+    }
+}
+pub(super) fn inspect(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let mut view = std::mem::take(&mut app.render_workspace.view.library);
+    if let Some(id) = view.selected.clone() {
+        ui.strong(view.details.as_ref().and_then(|d| d["resource"]["name"].as_str()).unwrap_or(&id));
+        ui.small(&id);
+        let key = (view.kind.clone(), id.clone());
+        let favorite = view.favorites.contains(&key);
+        if ui_kit::button(
+            ui,
+            app.tr(if favorite { "render.library_unfavorite" } else { "render.library_favorite" }),
+            ui_kit::Button::Enabled(favorite || view.favorites.len() < 256),
+        )
+        .clicked()
+        {
+            if favorite {
+                view.favorites.remove(&key);
+            } else {
+                view.favorites.insert(key);
             }
         }
-        if let Some(id) = view.selected.clone() {
-            resource_controls(app, ui, &mut view, &id);
+        if let Some(detail) = &view.details {
+            ui.small(format!("{}: {}", app.tr("render.library_status"), detail["projection"]["status"].as_str().unwrap_or("reference_only")));
+            if let Some(omitted) = detail["projection"]["omitted"].as_array() {
+                for item in omitted {
+                    ui.small(format!("{}: {}", app.tr("render.library_omitted"), item.as_str().unwrap_or("unknown")));
+                }
+            }
         }
-        app.render_workspace.view.library = view;
+        if view.kind == "surfaces" {
+            source_preview(app, ui, &mut view, &id);
+        }
+        resource_controls(app, ui, &mut view, &id);
+        if let Some(detail) = &view.details {
+            let title = app.tr("render.library_details").to_string();
+            ui_kit::section(ui, ("render_library_detail", &id), &title, false, |ui| {
+                let text = serde_json::to_string_pretty(detail).unwrap_or_default();
+                if ui_kit::button(ui, app.tr("render.copy_request"), ui_kit::Button::Normal).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                }
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    ui.monospace(text);
+                });
+            });
+        }
+    } else {
+        ui.small(app.tr("render.library_select_hint"));
+    }
+    app.render_workspace.view.library = view;
+}
+fn source_preview(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id: &str) {
+    if view.preview.as_ref().is_none_or(|preview| preview.id != id)
+        && view.preview_error.is_none()
+        && ui_kit::button(ui, app.tr("render.library_source_preview"), ui_kit::Button::Normal).clicked()
+    {
+        let result = (|| -> Result<SourcePreview, String> {
+            let reply = app.run("render.library.preview", json!({"id":id}))?;
+            let bytes: Vec<u8> = serde_json::from_value(reply["bytes"].clone()).map_err(|e| e.to_string())?;
+            if bytes.len() > 2 * 1024 * 1024 {
+                return Err("source preview exceeds its byte envelope".into());
+            }
+            let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), image::ImageFormat::Png);
+            let mut limits = image::Limits::default();
+            limits.max_image_width = Some(1024);
+            limits.max_image_height = Some(1024);
+            limits.max_alloc = Some(16 * 1024 * 1024);
+            reader.limits(limits);
+            let pixels = reader.decode().map_err(|e| e.to_string())?.to_rgba8();
+            let size = [pixels.width() as usize, pixels.height() as usize];
+            let image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_raw());
+            Ok(SourcePreview {
+                id: id.into(),
+                sha256: reply["sha256"].as_str().unwrap_or("").into(),
+                texture: ui.ctx().load_texture(format!("source-map-{id}"), image, egui::TextureOptions::LINEAR),
+            })
+        })();
+        match result {
+            Ok(preview) => view.preview = Some(preview),
+            Err(e) => view.preview_error = Some(e),
+        }
+    }
+    if let Some(preview) = &view.preview {
+        ui.add(egui::Image::new(&preview.texture).max_size(egui::vec2(ui.available_width(), 180.0)).shrink_to_fit());
+        ui.small(app.tr("render.library_source_preview_help"));
+    }
+    if let Some(error) = &view.preview_error {
+        ui.small(error);
+    }
+}
+pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    stage_controls(app, ui);
+    saved_surface_controls(app, ui);
+    let title = app.tr("render.library_title").to_string();
+    ui_kit::section(ui, "render_resource_library", &title, false, |ui| {
+        browse(app, ui);
+        inspect(app, ui);
     });
 }
 
@@ -266,6 +532,8 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
     }
     ui.small(app.tr("render.library_authored_help"));
     match view.kind.as_str() {
+        "native_scenes" => super::inspector::scene_resource(app, ui, id),
+        "quality" => super::inspector::quality_resource(app, ui, id),
         "physical_profiles" => physical_controls(app, ui, view, id, &detail),
         "surfaces" | "selene_appearances" => {
             target_controls(app, ui, view);
@@ -289,13 +557,16 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
             if view.kind == "surfaces" {
                 ui.small(app.tr("render.library_maps_help"));
                 ui_kit::checkbox(ui, app.tr("render.replace_saved_surface"), &mut view.replace_surface);
+                ui.label(app.tr("render.mapping_scale"));
+                ui_kit::number_field(ui, &mut view.mapping_scale, 0.001..=1000.0, 0.01, " x");
+                ui_kit::segmented(ui, &mut view.mapping_plane, &["XY", "YZ", "ZX"], Default::default());
                 let candidate = patch(app);
                 let enabled = current_target(app, view) && app.render_workspace.view.method == ImageMethod::GpuRaytrace && candidate.is_ok();
                 if ui_kit::button(ui, app.tr("render.library_save_maps"), ui_kit::Button::Enabled(enabled)).clicked()
                     && let (Some(target), Ok(set)) = (view.target.clone(), candidate)
                 {
                     let name = app.render_workspace.view.name.clone();
-                    match app.run("render.library.surface.bind",json!({"name":name,"set":set,"surface":{"id":id,"body_index":target.ordinal,"body_name":target.name},"replace":view.replace_surface})) {
+                    match app.run("render.library.surface.bind",json!({"name":name,"set":set,"surface":{"id":id,"body_index":target.ordinal,"body_name":target.name,"scale":view.mapping_scale,"plane":(["xy","yz","zx"].get(view.mapping_plane).copied().unwrap_or("xy"))},"replace":view.replace_surface})) {
                         Ok(_)=>{setups::load(app);view.target_revision=None;app.set_status(app.tr("render.library_applied").to_string(),false);},
                         Err(e)=>app.set_status(e,true),
                     }
@@ -390,7 +661,7 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
     }
 }
 
-fn saved_surface_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn saved_surface_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.saved_surfaces").to_string();
     let bindings = app.render_workspace.view.draft.surfaces.clone();
     if bindings.is_empty() {
@@ -418,7 +689,7 @@ fn saved_surface_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     });
 }
 
-fn stage_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn stage_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.passive_stage").to_string();
     ui_kit::section(ui, "render_passive_stage", &title, false, |ui| {
         ui.small(app.tr("render.passive_stage_help"));
@@ -498,5 +769,51 @@ fn physical_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
         if ui_kit::button(ui, app.tr("render.physical_copy_plan"), ui_kit::Button::Normal).clicked() {
             ui.ctx().copy_text(text);
         }
+    }
+}
+
+#[cfg(test)]
+mod studio_browser_tests {
+    use super::*;
+    use crate::scenario::Harness;
+    #[test]
+    fn category_navigation_preserves_queries_pages_selection_and_declared_scope() {
+        let mut view = View::default();
+        view.query = "brushed".into();
+        view.offset = 48;
+        view.selected = Some("SURF-001".into());
+        view.details = Some(json!({"resource":{"id":"SURF-001"}}));
+        view.availability = "usable".into();
+        switch_kind(&mut view, "hdr");
+        assert!(view.query.is_empty());
+        assert!(view.selected.is_none());
+        view.query = "studio".into();
+        switch_kind(&mut view, "surfaces");
+        assert_eq!(view.query, "brushed");
+        assert_eq!(view.offset, 48);
+        assert_eq!(view.selected.as_deref(), Some("SURF-001"));
+        assert_eq!(view.availability, "usable");
+        switch_kind(&mut view, "invalid");
+        assert_eq!(view.kind, "surfaces");
+        switch_kind(&mut view, "hdr");
+        assert_eq!(view.query, "studio");
+    }
+    #[test]
+    fn choosing_resources_is_read_only_and_recent_history_is_bounded() {
+        let mut h = Harness::new();
+        let before = h.app.session.doc.to_json();
+        let mut view = View::default();
+        for n in 1..=48 {
+            choose(&mut h.app, &mut view, "surfaces", &format!("SURF-{n:03}")).unwrap();
+        }
+        assert_eq!(view.recent.len(), 32);
+        assert_eq!(h.app.session.doc.to_json(), before);
+        assert!(h.app.session.undo.is_empty());
+        choose(&mut h.app, &mut view, "surfaces", "SURF-048").unwrap();
+        assert_eq!(view.recent.len(), 32);
+        assert_eq!(h.app.render_workspace.view.inspector.page, super::super::inspector::Page::Appearance);
+        choose(&mut h.app, &mut view, "native_scenes", "NATIVE-STUDIO-002").unwrap();
+        assert_eq!(h.app.render_workspace.view.inspector.page, super::super::inspector::Page::Scene);
+        assert_eq!(h.app.session.doc.to_json(), before);
     }
 }

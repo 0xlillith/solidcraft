@@ -338,7 +338,7 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.cpu_runtime_help"));
 }
 
-fn reflection_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn reflection_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.cpu_reflection_help"));
     let entries = app.render_workspace.view.raytrace.reflections.as_ref().map(|r| r.bodies.clone()).unwrap_or_default();
     for entry in entries {
@@ -425,7 +425,7 @@ fn reflection_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
-fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let selected = app.render_workspace.view.cpu.environment;
     let key = match selected {
         Environment::None => "render.cpu_environment_none",
@@ -486,7 +486,7 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
     });
 }
 
-fn light_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn light_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let mut custom = app.render_workspace.view.raytrace.lights.is_some();
     if ui_kit::checkbox(ui, app.tr("render.cpu_custom_directions"), &mut custom).changed() {
         let options = &mut app.render_workspace.view.raytrace;
@@ -546,6 +546,26 @@ fn light_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ui_kit::number_field(ui, &mut light.reference_distance_mm, 0.001..=1e6, 1.0, " mm");
                 ui.label(minimum);
                 ui_kit::number_field(ui, &mut light.minimum_distance_mm, 0.001..=1e6, 0.01, " mm");
+                let mut spot = light.cone.is_some();
+                if ui_kit::checkbox(ui, "Spot cone", &mut spot).changed() {
+                    light.cone = spot.then_some(solidcraft_engine::render::job::SpotConeOptions {
+                        emitted_axis: [0.0, 0.0, -1.0],
+                        inner_half_angle_radians: 0.2,
+                        outer_half_angle_radians: 0.5,
+                    });
+                }
+                if let Some(cone) = &mut light.cone {
+                    vector(ui, "Emitted axis", &mut cone.emitted_axis, -1e8..=1e8, 0.01, "");
+                    for (label, value) in
+                        [("Inner half angle", &mut cone.inner_half_angle_radians), ("Outer half angle", &mut cone.outer_half_angle_radians)]
+                    {
+                        ui.label(label);
+                        let mut degrees = value.to_degrees();
+                        if ui_kit::number_field(ui, &mut degrees, 0.0..=90.0, 0.1, " deg").changed() {
+                            *value = degrees.to_radians();
+                        }
+                    }
+                }
             }
             if ui_kit::button(ui, app.tr("render.cpu_light_remove"), ui_kit::Button::Normal).clicked() {
                 remove = Some(index);
@@ -571,6 +591,7 @@ fn light_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
     }
     ui.small(app.tr("render.cpu_point_help"));
+    area_controls(app, ui);
 }
 
 pub(super) fn record_checked(app: &mut SolveApp, params: &Value, reply: &Value) {
@@ -622,4 +643,67 @@ pub(super) fn captured_status(app: &SolveApp, ui: &mut egui::Ui, status: &Value)
         let title = app.tr("render.cpu_captured_hdr").to_string();
         ui_kit::section(ui, "cpu_captured_hdr", &title, false, |ui| metadata(app, ui, &status["environment"]));
     }
+}
+
+fn area_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let title = app.tr("render.cpu_area_editor").to_string();
+    ui_kit::section(ui, "render_cpu_areas", &title, false, |ui| {
+        ui.small(app.tr("render.cpu_area_editor_help"));
+        let count = app.render_workspace.view.raytrace.area_lights.as_ref().map_or(0, Vec::len);
+        let mut remove = None;
+        for index in 0..count {
+            ui_kit::section(ui, ("render_cpu_area", index), &format!("{} {}", title, index + 1), false, |ui| {
+                let position = app.tr("render.cpu_light_position").to_string();
+                let u = app.tr("render.cpu_area_full_u").to_string();
+                let v = app.tr("render.cpu_area_full_v").to_string();
+                let color = app.tr("render.cpu_linear_color").to_string();
+                let intensity = app.tr("render.cpu_light_intensity").to_string();
+                if let Some(light) = app.render_workspace.view.raytrace.area_lights.as_mut().and_then(|lights| lights.get_mut(index)) {
+                    vector(ui, &position, &mut light.center_mm, -1e12..=1e12, 1.0, " mm");
+                    vector(ui, &u, &mut light.edge_u_mm, -1e6..=1e6, 1.0, " mm");
+                    vector(ui, &v, &mut light.edge_v_mm, -1e6..=1e6, 1.0, " mm");
+                    vector(ui, &color, &mut light.color, 0.0..=1.0, 0.01, "");
+                    ui.label(intensity);
+                    ui_kit::number_field(ui, &mut light.intensity, 0.0..=64.0, 0.1, "");
+                }
+                if ui_kit::button(ui, app.tr("render.cpu_light_remove"), ui_kit::Button::Normal).clicked() {
+                    remove = Some(index);
+                }
+            });
+        }
+        if let Some(index) = remove
+            && let Some(lights) = &mut app.render_workspace.view.raytrace.area_lights
+            && index < lights.len()
+        {
+            lights.remove(index);
+        }
+        if ui_kit::button(ui, app.tr("render.cpu_area_add"), ui_kit::Button::Enabled(count < solidcraft_engine::render::job::MAX_AREA_LIGHTS))
+            .clicked()
+        {
+            let center = app.cam.target;
+            let size = app.cam.distance.clamp(1.0, 1e6) * 0.25;
+            let options = &mut app.render_workspace.view.raytrace;
+            options.area_lights.get_or_insert_default().push(solidcraft_engine::render::job::RectangleLightOptions {
+                center_mm: [center.x, center.y, center.z + size * 3.0],
+                edge_u_mm: [size, 0.0, 0.0],
+                edge_v_mm: [0.0, -size, 0.0],
+                color: [1.0; 3],
+                intensity: 1.0,
+            });
+            options.area_samples.get_or_insert(16);
+            options.seed.get_or_insert(0);
+        }
+        if app.render_workspace.view.raytrace.area_lights.as_ref().is_some_and(|v| !v.is_empty()) {
+            let value = app.render_workspace.view.raytrace.area_samples.unwrap_or(16);
+            ui.label(app.tr("render.cpu_area_samples"));
+            ui_kit::dropdown_menu(ui, "cpu_area_samples", &value.to_string(), |ui| {
+                for count in [1, 4, 16, 64] {
+                    if ui_kit::list_picker(ui, &count.to_string(), &count.to_string(), count == value).clicked() {
+                        app.render_workspace.view.raytrace.area_samples = Some(count);
+                        ui.close();
+                    }
+                }
+            });
+        }
+    });
 }

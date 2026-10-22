@@ -104,7 +104,7 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
     });
 }
 
-pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn finishing_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.label(app.tr("render.studio_tone_map"));
     let selected = app.render_workspace.view.studio.tone_map;
     let label = match selected {
@@ -124,6 +124,9 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.render_workspace.view.studio.denoise {
         ui.small(app.tr("render.studio_denoise_help"));
     }
+}
+
+pub(super) fn lens_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let lens = app.tr("render.studio_lens").to_string();
     ui_kit::checkbox(ui, &lens, &mut app.render_workspace.view.studio.lens_enabled);
     if app.render_workspace.view.studio.lens_enabled {
@@ -132,6 +135,11 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui.label(app.tr("render.studio_focus"));
         ui_kit::number_field(ui, &mut app.render_workspace.view.studio.lens.focus_distance_mm, 1e-6..=1e9, 1.0, " mm");
     }
+}
+
+pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    finishing_controls(app, ui);
+    lens_controls(app, ui);
     let title = app.tr("render.studio_environment").to_string();
     ui_kit::section(ui, "render_environment", &title, false, |ui| environment_controls(app, ui));
     let title = app.tr("render.studio_lighting").to_string();
@@ -139,7 +147,7 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.studio_runtime_help"));
 }
 
-fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let variants =
         [(Environment::None, "render.studio_environment_none"), (Environment::Sky, "render.studio_sky"), (Environment::Hdr, "render.studio_hdr")];
     let selected = app.render_workspace.view.studio.environment;
@@ -167,6 +175,21 @@ fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui.small(app.tr("render.studio_hdr_help"));
     } else {
         ui.small(app.tr("render.studio_sky_help"));
+        for (index, key) in [(0, "render.sky_zenith"), (1, "render.sky_horizon"), (2, "render.sky_ground")] {
+            let label = app.tr(key).to_string();
+            let gradient = &mut app.render_workspace.view.studio.gradient;
+            let field = match index {
+                0 => &mut gradient.zenith,
+                1 => &mut gradient.horizon,
+                _ => &mut gradient.ground,
+            };
+            let mut editable = field.map(f64::from);
+            let before = editable;
+            vector(ui, &label, &mut editable, 0.0..=1e6, 0.01);
+            if editable != before {
+                *field = editable.map(|value| value as f32);
+            }
+        }
     }
     ui.label(app.tr("render.studio_intensity"));
     ui_kit::number_field(ui, &mut app.render_workspace.view.studio.intensity, 0.0..=100.0, 0.1, "");
@@ -177,7 +200,7 @@ fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
-fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let label = app.tr("render.studio_lighting_enable").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.lighting_enabled);
     if !app.render_workspace.view.studio.lighting_enabled {

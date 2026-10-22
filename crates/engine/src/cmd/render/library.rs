@@ -18,13 +18,14 @@ use solidcraft_render::{
 
 use crate::{Result, Session, params::bad};
 
-const KINDS: [&str; 11] = [
+const KINDS: [&str; 12] = [
     "materials",
     "lighting",
     "environments",
     "surfaces",
     "surface_manifest",
     "selene_appearances",
+    "selene_shots",
     "hdr",
     "rigs",
     "scenes",
@@ -34,6 +35,14 @@ const KINDS: [&str; 11] = [
 static CATALOGS: OnceLock<std::result::Result<BTreeMap<&'static str, Value>, String>> = OnceLock::new();
 
 fn catalog(kind: &str, command: &str) -> Result<&'static [Value]> {
+    if kind == "native_scenes" {
+        static NATIVE: OnceLock<Value> = OnceLock::new();
+        return NATIVE
+            .get_or_init(super::studio_presets::entries)
+            .as_array()
+            .map(Vec::as_slice)
+            .ok_or_else(|| bad(command, "native studio entries missing"));
+    }
     let cached = CATALOGS.get_or_init(|| {
         let mut catalogs = BTreeMap::new();
         for kind in KINDS {
@@ -72,6 +81,8 @@ pub(super) fn item(kind: &str, id: &str, command: &str) -> Result<&'static Value
 
 fn projection(kind: &str, value: &Value) -> Value {
     match kind {
+        "native_scenes" => json!({"status":"native_composition","executor":"gpu-path","variants":["review_then_apply"],
+            "preserves":["camera","materials","geometry","engineering_properties"],"requires_subject_and_explicit_replacement_consent":true}),
         "surfaces" => json!({"status":"implemented_pending_batch_validation","variants":["uniform_opaque","gpu_planar_maps"],
             "omitted":["height_displacement","true_anisotropic_brdf","manufacturing_geometry"],"maps_portability":"version_and_digest_pinned_builtin_setup_bindings"}),
         "selene_appearances" => json!({"status":"implemented_pending_batch_validation","variants":["uniform_opaque"],
@@ -99,10 +110,11 @@ struct Query {
     query: String,
     offset: usize,
     limit: usize,
+    availability: String,
 }
 impl Default for Query {
     fn default() -> Self {
-        Self { kind: "surfaces".into(), query: String::new(), offset: 0, limit: 48 }
+        Self { kind: "surfaces".into(), query: String::new(), offset: 0, limit: 48, availability: "all".into() }
     }
 }
 
@@ -115,9 +127,30 @@ pub(super) fn list(_s: &mut Session, params: &Value) -> Result<Value> {
     if input.query.len() > 256 || input.query.chars().any(char::is_control) || input.limit == 0 || input.limit > 128 || input.offset > 4096 {
         return Err(bad(command, "query is bounded to 256 bytes, page size to 1..128 and offset to 4096"));
     }
+    if !matches!(input.availability.as_str(), "all" | "usable" | "specification" | "blocked") {
+        return Err(bad(command, "unknown availability filter"));
+    }
     let query = input.query.to_lowercase();
     let matches = |v: &&Value| {
-        [v.get("id"), v.get("name"), v.get("family"), v.get("description"), v.get("domains")]
+        let state = projection(&input.kind, v);
+        let available = state["status"].as_str().unwrap_or("specification_only");
+        let admitted = match input.availability.as_str() {
+            "usable" => matches!(available, "implemented_pending_batch_validation" | "native_composition"),
+            "blocked" => available == "blocked",
+            "specification" => available == "specification_only",
+            _ => true,
+        };
+        admitted
+            && [
+                v.get("id"),
+                v.get("name"),
+                v.get("family"),
+                v.get("description"),
+                v.get("domains"),
+                v.get("process"),
+                v.get("intended_use"),
+                v.get("tags"),
+            ]
             .into_iter()
             .flatten()
             .any(|field| field.to_string().to_lowercase().contains(&query))
@@ -164,7 +197,10 @@ pub(super) fn targets(s: &mut Session, params: &Value) -> Result<Value> {
         .filter(|(_, body)| body.name.to_lowercase().contains(&query))
         .skip(input.offset)
         .take(input.limit)
-        .map(|(ordinal, body)| json!({"ordinal":ordinal,"name":body.name}))
+        .map(|(ordinal, body)| {
+            json!({"ordinal":ordinal,"name":body.name,"color":body.color,"opacity":body.opacity,
+            "pbr":body.surface.map(|v|json!({"metallic":v.metallic(),"roughness":v.roughness(),"dielectric_ior":v.dielectric_ior()}))})
+        })
         .collect();
     let end = input.offset.saturating_add(items.len());
     Ok(json!({"items":items,"total":count,"offset":input.offset,"next_offset":(end<count).then_some(end),"revision":s.revision,
@@ -190,6 +226,20 @@ pub(super) fn describe(_s: &mut Session, params: &Value) -> Result<Value> {
         reply["physical_references"] = super::physical_library::associations(&input.id)?;
     }
     Ok(reply)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Preview {
+    id: String,
+}
+pub(super) fn preview(_s: &mut Session, params: &Value) -> Result<Value> {
+    let command = "render.library.preview";
+    let input: Preview = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
+    item("surfaces", &input.id, command)?;
+    let bytes = asset_bytes(&format!("{}/base_color", input.id), 2 * 1024 * 1024, command)?;
+    Ok(json!({"id":input.id,"mime":"image/png","sha256":HdrId::of(&bytes),"bytes":bytes,
+        "fidelity":"authored_base_color_source_map_not_a_render","document_changed":false}))
 }
 
 /// The key is matched against generated constants, never joined to a filesystem path.
@@ -442,14 +492,14 @@ pub(super) fn prepare_surface(s: &mut Session, params: &Value) -> Result<Value> 
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RigInput {
-    id: String,
-    variant: String,
-    center_mm: [f64; 3],
-    subject_extent_mm: f64,
+pub(super) struct RigInput {
+    pub(super) id: String,
+    pub(super) variant: String,
+    pub(super) center_mm: [f64; 3],
+    pub(super) subject_extent_mm: f64,
 }
 
-fn rig_lighting(input: &RigInput, command: &str) -> Result<(StudioLighting, Value)> {
+pub(super) fn rig_lighting(input: &RigInput, command: &str) -> Result<(StudioLighting, Value)> {
     let value = item("rigs", &input.id, command)?;
     if value["state"] != "authored_numeric_unbound" {
         return Err(bad(command, "rig requires unresolved calibration or an existing external sun"));
@@ -510,7 +560,7 @@ fn rig_lighting(input: &RigInput, command: &str) -> Result<(StudioLighting, Valu
     ))
 }
 
-fn rig_stage(input: &RigInput, command: &str) -> Result<solidcraft_render::stage::Stage> {
+pub(super) fn rig_stage(input: &RigInput, command: &str) -> Result<solidcraft_render::stage::Stage> {
     use solidcraft_render::stage::{Stage, StagePanel};
     if input.variant != "complete" {
         return Ok(Stage::default());
@@ -548,7 +598,7 @@ fn rig_stage(input: &RigInput, command: &str) -> Result<solidcraft_render::stage
     }
     Stage::new(panels).map_err(|e| bad(command, e.to_string()))
 }
-fn rig_clearance(scene: &solidcraft_render::ProductScene, lighting: &StudioLighting, command: &str) -> Result<()> {
+pub(super) fn rig_clearance(scene: &solidcraft_render::ProductScene, lighting: &StudioLighting, command: &str) -> Result<()> {
     for (i, light) in lighting.area_lights.iter().enumerate() {
         let panel = solidcraft_render::stage::StagePanel {
             id: format!("emitter_{i}"),

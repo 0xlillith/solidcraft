@@ -72,10 +72,12 @@ struct Query {
     query: String,
     offset: usize,
     limit: usize,
+    #[serde(default)]
+    availability: Option<String>,
 }
 impl Default for Query {
     fn default() -> Self {
-        Self { kind: "physical_profiles".into(), query: String::new(), offset: 0, limit: 48 }
+        Self { kind: "physical_profiles".into(), query: String::new(), offset: 0, limit: 48, availability: None }
     }
 }
 pub(super) fn list(params: &Value) -> Result<Value> {
@@ -88,6 +90,9 @@ pub(super) fn list(params: &Value) -> Result<Value> {
         || !(1..=128).contains(&input.limit)
     {
         return Err(bad(command, "bounded physical profile query required"));
+    }
+    if input.availability.as_deref().is_some_and(|v| !matches!(v, "all" | "usable")) {
+        return Err(bad(command, "physical profiles are reference-only; use all or usable for read-only inspection"));
     }
     let data = data(command)?;
     let profiles = items(&data.profiles, "profiles", command)?;

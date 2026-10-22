@@ -17,6 +17,7 @@ CATALOGS = {
     "surfaces": "assets/render/starter/materials/source/recipes.json",
     "surface_manifest": "assets/render/starter/materials/manifest.json",
     "selene_appearances": "assets/render/selene/materials/appearance-pack.json",
+    "selene_shots": "assets/render/selene/scenes/shots.json",
     "hdr": "assets/render/starter/environments/manifest.json",
     "rigs": "assets/render/starter/lighting/exports/rigs.json",
     "scenes": "docs/render-materials/scene-presets.json",
