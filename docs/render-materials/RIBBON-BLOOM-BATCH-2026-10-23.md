@@ -47,3 +47,12 @@ Only public platform semantics informed this change (no external implementation 
 - https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-
 
 The Camera group also exposes its implemented numerical inspector directly through the registered, read-only `render.camera.get` command, alongside Frame and the saved-camera menu action. Direct engine inspection returns an explicit current camera or null rather than inventing a saved view.
+
+
+## Wider guards found inherited locale gaps and a real camera-field loss
+
+The next frozen-source run passed 465 renderer, 85 Render UI, 27 shared ribbon, two pin-state, 16 search, nine atomic-write and five file-scope tests; the remaining document/GPU and shared-kit checks also passed. The intentionally broader localization guard exposed three existing completeness issues: 166 missing Japanese and 253 missing Simplified Chinese Render messages, a missing English registry label for physical backgrounds, and a duplicate English `Center X` label selecting an untranslated UK key. The complete-catalog contract is retained: the missing Japanese/Chinese messages receive explicit original translations rather than English-filled placeholders or a downgraded completeness test. The physical-background registry label is catalogued, UK center labels are explicit, and the contradictory EXR diagnostic is corrected.
+
+The new orientation test also caught a real earlier bug: explicit `view.apply` parsed a live Camera through the legacy NamedView shape and silently discarded `roll` and `up`. The explicit-camera path now validates and preserves those two optional fields, with unchanged zero-roll/Z-up defaults when omitted. Named-view document storage remains unchanged. Engine tests cover both world-up conventions, malformed-field atomic refusal and legacy defaults; the Render ribbon has an exact orientation-preservation regression. This is a production correction, not relaxation of the failed test.
+
+All source changes in this correction are grouped before the next compilation. Earlier failing receipts remain available and are not relabelled green.
