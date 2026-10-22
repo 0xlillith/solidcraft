@@ -18,11 +18,16 @@ mod library_data;
 #[cfg(test)]
 mod light_union_tests;
 mod resources;
+mod staging;
 mod surface_bindings;
 mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("render.stage.ground", "Save Render Ground", staging::ground).icon("render_scene")
+    .params("name: typed raytrace setup, set?: setup patch, margin_fraction?:0.25, gap_mm?:0.1, reflectance_linear?:[0.18,0.18,0.18], replace_stage?:false. Fits one finite passive ground below the visible product once and saves its physical transforms in one undo. Product AABB separation is rechecked on every render."),
+CommandSpec::new("render.stage.clear", "Remove Render Stage", staging::clear).icon("render_scene").doc_only()
+    .params("name: setup, set?: setup patch. Removes saved render-only panels atomically; CAD geometry and lighting are unchanged."),
 CommandSpec::new("render.library.surface.bind", "Save Surface Binding", surface_bindings::bind).icon("appearance")
     .params("name: GPU setup; set?: setup patch; surface: same input as render.library.surface.prepare; replace?: false. Pins exact source hashes and definition/feature/occurrence identity with local-mm mapping in one undo. No paths, mesh ordinals or physical material changes."),
 CommandSpec::new("render.library.surface.unbind", "Remove Surface Binding", surface_bindings::unbind).icon("appearance").doc_only()
@@ -43,7 +48,7 @@ CommandSpec::new("render.library.surface.prepare", "Prepare Authored Surface Map
     .params("id: SURF-*; body_index and body_name from render.scene; origin?:[0,0,0]; plane?:xy/yz/zx; scale?:1. Returns an explicit GPU planar map binding with source hashes, original millimetre scale, image-up normal orientation and absolute base-color semantics. No document change; height/displacement and true anisotropy are not included."),
 CommandSpec::new("render.library.studio.prepare", "Prepare Authored Studio Lights", library::prepare_studio).icon("inspect").noundo().doc_only()
     .params("id: RIG-*; variant: complete for emitter-only rigs, emitters_only for rigs with passive cards; center_mm and subject_extent_mm required. Converts exact rectangular half-edges and solar direction/radius to GPU lighting. Blocked calibration and external-sun rigs refuse. Returns a geometry-clearance review requirement; does not create cards or modify the scene."),
-CommandSpec::new("render.library.studio.apply", "Apply Authored Studio Lights", library::apply_studio).icon("settings").doc_only()
+CommandSpec::new("render.library.studio.apply", "Apply Authored Studio Lights", library::apply_studio).icon("settings")
     .params("rig: render.library.studio.prepare parameters; name; set?: typed GPU setup patch; replace_lighting_and_environment:true required. Saves the explicit rig projection in one undo, removing prior lighting/environment only with that confirmation. Subject clearance still needs review; passive cards are never silently omitted."),
 CommandSpec::new("render.hdr.inspect", "Inspect HDR Source", resources::inspect).icon("inspect").noundo().doc_only()
     .params("path: scoped Radiance HDR file; validates the complete bounded source and returns sha256, width, height, encoded_bytes and primaries without saving or rendering"),
@@ -142,7 +147,7 @@ fn set_settings(s: &mut Session, params: &Value) -> Result<Value> {
 
 fn patched_settings(s: &Session, name: &str, set: &Value, cmd: &str) -> Result<RenderSetup> {
     RenderSettings::validate_name(name).map_err(|e| bad(cmd, e.to_string()))?;
-    let patch = set.as_object().filter(|p| p.len() <= 12).ok_or_else(|| bad(cmd, "`set` must be an object with at most 12 fields"))?;
+    let patch = set.as_object().filter(|p| p.len() <= 13).ok_or_else(|| bad(cmd, "`set` must be an object with at most 13 fields"))?;
     let current = s.doc.render.setups.get(name).cloned().unwrap_or_default();
     let mut value = serde_json::to_value(&current).map_err(|e| bad(cmd, e.to_string()))?;
     let object = value.as_object_mut().ok_or_else(|| bad(cmd, "invalid render setup"))?;

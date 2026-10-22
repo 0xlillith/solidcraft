@@ -305,7 +305,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     } else {
         None
     };
-    let scene = crate::product_scene::extract(s)?;
+    let mut scene = crate::product_scene::extract(s)?;
     if environment.is_some() {
         input.raytrace.as_ref().unwrap_or(&RaytraceOptions::default()).validate_environment_reflections(&scene).map_err(job_error)?;
     }
@@ -322,6 +322,10 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         }
         settings
     };
+    if input.integrator == Integrator::Raster && !settings.stage.is_empty() {
+        return Err(bad(command, "passive stages require a raytrace executor"));
+    }
+    super::staging::apply(&mut scene, &settings, command)?;
     let budget = input.raytrace.as_ref().map_or(solidcraft_render::job::CpuBudget::Compact, |o| o.budget);
     if input.integrator == Integrator::Raytrace {
         settings.validate_for_cpu(budget).map_err(|e| bad(command, e.to_string()))?;
@@ -397,7 +401,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         Integrator::Raytrace if refraction => "physical_transmission",
         Integrator::Raytrace => "opaque_only",
     };
-    let reply = json!({"cpu_budget":budget,"cpu_limits":budget.limits(),"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
+    let reply = json!({"stage_panels":settings.stage.len(),"stage_transport":"CPU direct/specular only; no diffuse interreflection", "cpu_budget":budget,"cpu_limits":budget.limits(),"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
     Ok(Prepared { replace: input.replace, scene, request, reply, environment, executor: resolved.executor, options: Default::default() })
 }
 
@@ -472,6 +476,7 @@ fn prepare_progressive(
     if !input.progressive && (input.samples.is_some() || input.max_depth.is_some() || input.seed.is_some() || settings.exposure_ev != 0.0) {
         return Err(bad(command, "sampling and exposure controls require progressive rendering"));
     }
+    super::staging::apply(&mut scene, &settings, command)?;
     let mut options = solidcraft_render::job::JobOptions::default();
     if let Some(samples) = input.samples {
         options.samples = samples;
@@ -570,7 +575,7 @@ fn prepare_progressive(
         .filter(|bytes| *bytes <= host.job_limit_bytes())
         .ok_or_else(|| bad(command, "GPU work and retained metadata exceed the per-job limit"))?;
     let refraction = input.progressive && scene.has_transmission();
-    let reply = json!({"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
+    let reply = json!({"stage_panels":settings.stage.len(),"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
     let mut reply = reply;
     if options.denoise {
         reply["denoising"] = json!({

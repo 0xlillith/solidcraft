@@ -33,6 +33,8 @@ pub struct RenderSetup {
     pub job: Option<RenderJob>,
     #[serde(skip_serializing_if = "crate::render_surface::SurfaceBindings::is_empty")]
     pub surfaces: crate::render_surface::SurfaceBindings,
+    #[serde(skip_serializing_if = "solidcraft_render::stage::Stage::is_empty")]
+    pub stage: solidcraft_render::stage::Stage,
 }
 
 // Reuse Camera's representation and defaults, but reject misspelled saved fields. A remote
@@ -68,6 +70,7 @@ impl Default for RenderSetup {
             background: [236, 240, 245],
             job: None,
             surfaces: Default::default(),
+            stage: Default::default(),
         }
     }
 }
@@ -90,6 +93,10 @@ impl RenderSetup {
 
     fn validate_with_limits(&self, limits: RenderLimits) -> Result<()> {
         self.surfaces.validate()?;
+        self.stage.validate().map_err(|e| DocError::Invalid(e.to_string()))?;
+        if !self.stage.is_empty() && matches!(self.job, Some(RenderJob::Raster { .. })) {
+            return Err(DocError::Invalid("passive stage geometry requires raytracing; raster cannot silently discard it".into()));
+        }
         if !self.surfaces.is_empty() && !matches!(self.job, Some(RenderJob::GpuPath { .. })) {
             return Err(DocError::Invalid("saved surfaces require an explicit GPU job; unsupported methods cannot discard bindings".into()));
         }

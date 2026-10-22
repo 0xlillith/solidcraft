@@ -163,7 +163,12 @@ fn studio_adapter_does_not_invent_passive_cards_calibration_or_extra_suns() {
     }
     let mut with_cards = request.clone();
     with_cards["id"] = json!("RIG-001");
-    assert!(s.execute("render.library.studio.prepare", &with_cards).is_err());
+    let complete = s.execute("render.library.studio.prepare", &with_cards).unwrap();
+    assert_eq!(complete["stage"].as_array().unwrap().len(), 1);
+    assert_eq!(complete["projection"]["passive_cards_omitted"], 0);
+    let mut unknown_variant = with_cards.clone();
+    unknown_variant["variant"] = json!("silently_drop_cards");
+    assert!(s.execute("render.library.studio.prepare", &unknown_variant).is_err());
     with_cards["variant"] = json!("emitters_only");
     assert_eq!(s.execute("render.library.studio.prepare", &with_cards).unwrap()["projection"]["passive_cards_omitted"], 1);
     let mut sun = request;
@@ -268,4 +273,59 @@ fn saved_surface_rejects_changed_feature_and_hidden_target_and_can_be_removed_of
     let before = s.doc.to_json();
     assert!(s.execute("render.settings.set", &json!({"name":"P","set":{"job":{"method":"cpu_raytrace","options":{}}}})).is_err());
     assert_eq!(s.doc.to_json(), before);
+}
+
+#[test]
+fn saved_passive_ground_keeps_cad_unchanged_and_is_revalidated_after_product_motion() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":10,"width":20,"height":5,"body_name":"Subject"})).unwrap();
+    let before = s.doc.clone();
+    let history = s.undo.len();
+    let request = json!({"name":"Stage","set":{"job":{"method":"cpu_raytrace","options":{"budget":"studio"}}}});
+    s.execute("render.stage.ground", &request).unwrap();
+    assert_eq!(s.undo.len(), history + 1);
+    assert_eq!(s.doc.features, before.features);
+    assert_eq!(s.doc.materials, before.materials);
+    let setup = s.doc.render.setups["Stage"].clone();
+    assert_eq!(setup.stage.len(), 1);
+    let original = crate::product_scene::extract(&s).unwrap();
+    assert_eq!(original.meshes.len(), 1);
+    let mut staged = original.clone();
+    super::super::staging::apply(&mut staged, &setup, "test").unwrap();
+    assert_eq!(staged.meshes.len(), 2);
+    assert!(Arc::ptr_eq(&staged.meshes[0].mesh, &original.meshes[0].mesh));
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups["Stage"], setup);
+    assert!(s.execute("render.stage.ground", &request).is_err(), "never replace a stage silently");
+    s.execute("render.stage.clear", &json!({"name":"Stage"})).unwrap();
+    assert!(s.doc.render.setups["Stage"].stage.is_empty());
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.doc.render.setups["Stage"], setup);
+    let mut intersects = setup;
+    let mut panel = intersects.stage.iter().next().unwrap().clone();
+    panel.center_mm[2] = 0.0;
+    intersects.stage = solidcraft_render::stage::Stage::new(vec![panel]).unwrap();
+    assert!(super::super::staging::apply(&mut original.clone(), &intersects, "test").is_err());
+}
+
+#[test]
+fn complete_authored_rig_keeps_passive_cards_nonemissive_and_scales_exactly_once() {
+    let mut s = Session::default();
+    let rig = json!({"id":"RIG-001","variant":"complete","center_mm":[10,20,30],"subject_extent_mm":100});
+    let prepared = s.execute("render.library.studio.prepare", &rig).unwrap();
+    assert_eq!(prepared["projection"]["passive_cards_omitted"], 0);
+    assert_eq!(prepared["projection"]["passive_cards_included"], 1);
+    assert_eq!(prepared["stage"][0]["center_mm"], json!([90.0, 10.0, 30.0]));
+    let stage: solidcraft_render::stage::Stage = serde_json::from_value(prepared["stage"].clone()).unwrap();
+    assert_eq!(stage.iter().next().unwrap().reflectance_linear, [0.75; 3]);
+    let input = json!({"name":"Rig","set":{"job":{"method":"gpu_path","options":{}}},"rig":rig,"replace_lighting_and_environment":true});
+    s.execute("render.library.studio.apply", &input).unwrap();
+    assert_eq!(s.doc.render.setups["Rig"].stage, stage);
+    assert!(s.doc.features.is_empty());
+    assert!(s.doc.materials.is_empty());
+    let mut emitter_only = rig;
+    emitter_only["variant"] = json!("emitters_only");
+    let projected = s.execute("render.library.studio.prepare", &emitter_only).unwrap();
+    assert_eq!(projected["projection"]["passive_cards_omitted"], 1);
+    assert_eq!(projected["stage"], json!([]));
 }

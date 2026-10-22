@@ -106,6 +106,13 @@ fn fresnel(f0: vec3<f32>, c: f32) -> vec3<f32> {
     let t = 1.0 - clamp(c, 0.0, 1.0);
     return f0 + (vec3<f32>(1.0) - f0) * (t*t*t*t*t);
 }
+// An index-matched dielectric has no interface reflection at any angle.
+// Metal fractions still contribute their independently weighted grazing limit.
+fn base_fresnel(f0:vec3<f32>,cosine:f32,metallic:f32,ior:f32)->vec3<f32> {
+    let x=1.0-clamp(cosine,0.0,1.0);
+    let grazing=select(1.0,metallic,ior==1.0);
+    return f0+(vec3<f32>(grazing)-f0)*(x*x*x*x*x);
+}
 fn distribution(nh: f32, a2: f32) -> f32 {
     let d = (1.0 - nh*nh) + nh*nh*a2;
     return a2 / (PI*d*d);
@@ -123,9 +130,9 @@ fn brdf(t: Triangle, n: vec3<f32>, v: vec3<f32>, l: vec3<f32>) -> vec3<f32> {
     let ratio = (t.parameters.z - 1.0) / (t.parameters.z + 1.0);
     let f0 = mix(vec3<f32>(ratio*ratio), t.base.xyz, t.parameters.x);
     let diffuse = t.base.xyz * ((1.0-t.parameters.x)/PI);
-    let base = fresnel(f0, dot(v,h)) * (d*0.25*gv*gl)
-        + (vec3<f32>(1.0)-fresnel(f0,nv)) * (vec3<f32>(1.0)-fresnel(f0,nl)) * diffuse;
-    if t.coat.x <= 0.0 { return base; }
+    let base = base_fresnel(f0,dot(v,h),t.parameters.x,t.parameters.z) * (d*0.25*gv*gl)
+        + (vec3<f32>(1.0)-base_fresnel(f0,nv,t.parameters.x,t.parameters.z)) * (vec3<f32>(1.0)-base_fresnel(f0,nl,t.parameters.x,t.parameters.z)) * diffuse;
+    if t.coat.x <= 0.0 || t.coat.z == 1.0 { return base; }
     let coat_a = t.coat.y*t.coat.y;
     let coat_a2 = coat_a*coat_a;
     let coat_d = distribution(clamp(dot(n,h),0.0,1.0),coat_a2);

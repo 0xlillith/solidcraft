@@ -84,8 +84,8 @@ fn projection(kind: &str, value: &Value) -> Value {
             if state != "authored_numeric_unbound" {
                 json!({"status":"blocked","reason":state,"source_state_preserved":true})
             } else {
-                json!({"status":"implemented_pending_batch_validation","variants":if cards == 0 {vec!["complete"]} else {vec!["emitters_only"]},
-                    "passive_cards_omitted":cards,"requires_explicit_scale_and_placement":true,"executor":"gpu-path"})
+                json!({"status":"implemented_pending_batch_validation","variants":if cards == 0 {vec!["complete"]} else {vec!["complete","emitters_only"]},
+                    "passive_cards":cards,"requires_explicit_scale_and_placement":true,"executor":"gpu-path"})
             }
         }
         _ => json!({"status":"specification_only","reason":"requires capability and target binding; not an executable complete preset"}),
@@ -439,9 +439,8 @@ fn rig_lighting(input: &RigInput, command: &str) -> Result<(StudioLighting, Valu
         return Err(bad(command, "explicit bounded subject center and extent in millimetres required"));
     }
     let cards = value["modifiers"].as_array().map_or(0, Vec::len);
-    let expected = if cards == 0 { "complete" } else { "emitters_only" };
-    if input.variant != expected {
-        return Err(bad(command, format!("rig requires explicit {expected} variant; passive geometry is never silently omitted")));
+    if input.variant != "complete" && !(cards > 0 && input.variant == "emitters_only") {
+        return Err(bad(command, "rig requires complete or an explicit card-omitting emitters_only variant"));
     }
     let scale = input.subject_extent_mm / 1000.0;
     let lights = value["lights"].as_array().ok_or_else(|| bad(command, "authored rig has no light array"))?;
@@ -484,16 +483,72 @@ fn rig_lighting(input: &RigInput, command: &str) -> Result<(StudioLighting, Valu
     lighting.validate().map_err(|e| bad(command, e.to_string()))?;
     Ok((
         lighting,
-        json!({"id":input.id,"variant":input.variant,"passive_cards_omitted":cards,"scale":scale,
+        json!({"id":input.id,"variant":input.variant,"passive_cards_omitted":if input.variant=="emitters_only" {cards}else{0},"passive_cards_included":if input.variant=="complete" {cards}else{0},"scale":scale,
         "physical_units":"world millimetres; authored relative linear-sRGB radiance","reference_calibration_not_remeasured":true}),
     ))
 }
 
+fn rig_stage(input: &RigInput, command: &str) -> Result<solidcraft_render::stage::Stage> {
+    use solidcraft_render::stage::{Stage, StagePanel};
+    if input.variant != "complete" {
+        return Ok(Stage::default());
+    }
+    let source = item("rigs", &input.id, command)?;
+    let modifiers = source["modifiers"].as_array().ok_or_else(|| bad(command, "rig modifier array missing"))?;
+    if modifiers.len() > solidcraft_render::stage::MAX_STAGE_PANELS {
+        return Err(bad(command, "too many rig cards"));
+    }
+    let scale = input.subject_extent_mm / 1000.0;
+    let mut panels = Vec::new();
+    panels.try_reserve_exact(modifiers.len()).map_err(|_| bad(command, "could not reserve rig cards"))?;
+    for card in modifiers {
+        if card["type"] != "diffuse_card"
+            || card["material"]["model"] != "lambertian"
+            || card["emission"] != 0
+            || card["casts_shadow"] != true
+            || card["two_sided"] != true
+        {
+            return Err(bad(command, "unsupported passive rig modifier; it cannot be silently omitted"));
+        }
+        let position = triple(&card["position_mm"], command)?;
+        let u = triple(&card["width_axis"], command)?;
+        let v = triple(&card["height_axis"], command)?;
+        let width = number(&card["width_mm"], command)? * scale * 0.5;
+        let height = number(&card["height_mm"], command)? * scale * 0.5;
+        let id = card["id"].as_str().ok_or_else(|| bad(command, "rig card has no identity"))?;
+        panels.push(StagePanel {
+            id: format!("{}_{id}", input.id),
+            center_mm: std::array::from_fn(|i| input.center_mm[i] + position[i] * scale),
+            half_u_mm: u.map(|x| x * width),
+            half_v_mm: v.map(|x| x * height),
+            reflectance_linear: triple(&card["material"]["reflectance_linear_srgb"], command)?,
+        });
+    }
+    Stage::new(panels).map_err(|e| bad(command, e.to_string()))
+}
+fn rig_clearance(scene: &solidcraft_render::ProductScene, lighting: &StudioLighting, command: &str) -> Result<()> {
+    for (i, light) in lighting.area_lights.iter().enumerate() {
+        let panel = solidcraft_render::stage::StagePanel {
+            id: format!("emitter_{i}"),
+            center_mm: light.center,
+            half_u_mm: light.u,
+            half_v_mm: light.v,
+            reflectance_linear: [0.; 3],
+        };
+        for body in &scene.meshes {
+            if !panel.separated_from(body.mesh.bounds()).map_err(|e| bad(command, e.to_string()))? {
+                return Err(bad(command, format!("rig emitter {i} intersects or touches {} bounds", body.name)));
+            }
+        }
+    }
+    Ok(())
+}
 pub(super) fn prepare_studio(_s: &mut Session, params: &Value) -> Result<Value> {
     let command = "render.library.studio.prepare";
     let input: RigInput = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     let (lighting, projection) = rig_lighting(&input, command)?;
-    Ok(json!({"lighting":lighting,"projection":projection,"requires_geometry_clearance_review":true,"document_changed":false}))
+    let stage = rig_stage(&input, command)?;
+    Ok(json!({"lighting":lighting,"stage":stage,"projection":projection,"requires_geometry_clearance_review":true,"document_changed":false}))
 }
 
 #[derive(Deserialize)]
@@ -504,6 +559,8 @@ struct StudioApply {
     #[serde(default = "empty_patch")]
     set: Value,
     replace_lighting_and_environment: bool,
+    #[serde(default)]
+    replace_stage: bool,
 }
 pub(super) fn apply_studio(s: &mut Session, params: &Value) -> Result<Value> {
     let command = "render.library.studio.apply";
@@ -516,17 +573,27 @@ pub(super) fn apply_studio(s: &mut Session, params: &Value) -> Result<Value> {
     let Some(RenderJob::GpuPath { options, .. }) = &mut setup.job else {
         return Err(bad(command, "authored area/sun rigs require an explicit GPU job"));
     };
+    let stage = rig_stage(&input.rig, command)?;
+    if !setup.stage.is_empty() && !input.replace_stage {
+        return Err(bad(command, "existing stage requires replace_stage: true"));
+    }
+    setup.stage = stage;
     options.lighting = Some(lighting);
     options.environment = None;
     options.hdr = None;
     setup.validate().map_err(|e| bad(command, e.to_string()))?;
+    let mut scene = crate::product_scene::extract(s)?;
+    super::staging::apply(&mut scene, &setup, command)?;
+    rig_clearance(&scene, &lighting, command)?;
     let mut settings = (*s.doc.render).clone();
     settings.setups.insert(input.name.clone(), setup.clone());
     settings.validate().map_err(|e| bad(command, e.to_string()))?;
     if settings != *s.doc.render {
         s.doc_mut().render = Arc::new(settings);
     }
-    Ok(json!({"name":input.name,"setup":setup,"projection":projection,"requires_geometry_clearance_review":true}))
+    Ok(
+        json!({"name":input.name,"setup":setup,"projection":projection,"clearance":"conservative product/stage AABB separation passed; not exact B-rep collision"}),
+    )
 }
 
 #[cfg(test)]

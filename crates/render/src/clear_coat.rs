@@ -36,6 +36,9 @@ impl ClearCoat {
         self.ior
     }
     fn fresnel(self, c: f64) -> f64 {
+        if self.ior == 1.0 {
+            return 0.0;
+        }
         let ratio = (self.ior - 1.0) / (self.ior + 1.0);
         let f0 = ratio * ratio;
         f0 + (1.0 - f0) * (1.0 - c).powi(5)
@@ -47,6 +50,9 @@ impl ClearCoat {
         self.fresnel(cosine / (2.0 * (1.0 + (1.0 - cosine * cosine).max(0.0).sqrt())).sqrt())
     }
     pub(crate) fn layer(self, base: Vec3, nv: f64, nl: f64, nh: f64, vh: f64) -> Vec3 {
+        if self.ior == 1.0 {
+            return base;
+        }
         let a2 = self.roughness.powi(4);
         let denom = (1.0 - nh * nh) + nh * nh * a2;
         let d = a2 / (PI * denom * denom);
@@ -85,6 +91,21 @@ pub fn surface_pdf(surface: OpaqueSurface, normal: Vec3, view: Vec3, light: Vec3
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn index_matched_coat_does_not_attenuate_or_add_grazing_specular() {
+        let base = OpaqueSurface::new(Vec3::new(0.2, 0.5, 0.8), 0.0, 0.3, 1.5).unwrap();
+        for roughness in [0.045, 0.5, 1.0] {
+            let coat = ClearCoat::new(1.0, roughness, 1.0).unwrap();
+            let coated = base.with_clear_coat(coat);
+            for nv in [1e-10_f64, 0.02, 0.5, 1.0] {
+                let view = Vec3::new((1.0 - nv * nv).sqrt(), 0.0, nv);
+                let light = Vec3::new(0.2, 0.3, 0.8);
+                assert_eq!(base.brdf(Vec3::Z, view, light).unwrap(), coated.brdf(Vec3::Z, view, light).unwrap());
+                assert_eq!(coat.fresnel(nv), 0.0);
+                assert_eq!(coat.energy_bound(nv), 0.0);
+            }
+        }
+    }
     #[test]
     fn admission_zero_coat_and_reciprocity() {
         for bad in [f64::NAN, f64::INFINITY, -0.1, 1.1] {

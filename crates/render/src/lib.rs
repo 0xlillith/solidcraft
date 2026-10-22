@@ -19,6 +19,7 @@ mod raster;
 #[cfg(feature = "raytrace-cpu")]
 pub mod raytrace;
 mod scene;
+pub mod stage;
 pub mod studio;
 pub mod surface;
 pub mod surface_patterns;

@@ -57,7 +57,7 @@ fn targets(s: &Session, command: &str) -> Result<BTreeMap<RenderBodyTarget, Stri
             return Err(bad(command, "ambiguous surface definition identity"));
         }
     }
-    let frames = s.doc.body_frames_with_source(state);
+    let frames = s.doc.body_frames_with_source(&state);
     if frames.len() > solidcraft_render::job::MAX_CPU_BODIES {
         return Err(bad(command, "too many placed surface targets"));
     }

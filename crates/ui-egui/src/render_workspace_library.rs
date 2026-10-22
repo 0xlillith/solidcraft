@@ -25,6 +25,8 @@ pub(super) struct View {
     acknowledge_projection: bool,
     replace_environment: bool,
     replace_studio: bool,
+    replace_surface: bool,
+    include_cards: bool,
     center: [f64; 3],
     extent: f64,
 }
@@ -48,6 +50,8 @@ impl Default for View {
             acknowledge_projection: false,
             replace_environment: false,
             replace_studio: false,
+            replace_surface: false,
+            include_cards: true,
             center: [0.0; 3],
             extent: 1000.0,
         }
@@ -127,6 +131,7 @@ fn patch(app: &SolveApp) -> Result<Value, String> {
 }
 
 pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    stage_controls(app, ui);
     saved_surface_controls(app, ui);
     let title = app.tr("render.library_title").to_string();
     ui_kit::section(ui, "render_resource_library", &title, false, |ui| {
@@ -233,13 +238,14 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
             }
             if view.kind == "surfaces" {
                 ui.small(app.tr("render.library_maps_help"));
+                ui_kit::checkbox(ui, app.tr("render.replace_saved_surface"), &mut view.replace_surface);
                 let candidate = patch(app);
                 let enabled = current_target(app, view) && app.render_workspace.view.method == ImageMethod::GpuRaytrace && candidate.is_ok();
                 if ui_kit::button(ui, app.tr("render.library_save_maps"), ui_kit::Button::Enabled(enabled)).clicked()
                     && let (Some(target), Ok(set)) = (view.target.clone(), candidate)
                 {
                     let name = app.render_workspace.view.name.clone();
-                    match app.run("render.library.surface.bind",json!({"name":name,"set":set,"surface":{"id":id,"body_index":target.ordinal,"body_name":target.name},"replace":view.acknowledge_projection})) {
+                    match app.run("render.library.surface.bind",json!({"name":name,"set":set,"surface":{"id":id,"body_index":target.ordinal,"body_name":target.name},"replace":view.replace_surface})) {
                         Ok(_)=>{setups::load(app);view.target_revision=None;app.set_status(app.tr("render.library_applied").to_string(),false);},
                         Err(e)=>app.set_status(e,true),
                     }
@@ -297,14 +303,17 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
             }
             ui.label(app.tr("render.library_extent"));
             ui_kit::number_field(ui, &mut view.extent, 0.001..=1e6, 1.0, " mm");
-            let cards = detail["projection"]["passive_cards_omitted"].as_u64().unwrap_or(0);
+            let cards = detail["projection"]["passive_cards"].as_u64().unwrap_or(0);
             if cards > 0 {
-                ui_kit::checkbox(ui, app.tr("render.library_emitters_only_ack"), &mut view.acknowledge_projection);
+                ui_kit::checkbox(ui, app.tr("render.include_rig_cards"), &mut view.include_cards);
+                if !view.include_cards {
+                    ui_kit::checkbox(ui, app.tr("render.library_emitters_only_ack"), &mut view.acknowledge_projection);
+                }
             }
             ui_kit::checkbox(ui, app.tr("render.library_replace_studio"), &mut view.replace_studio);
             let candidate = patch(app);
             let enabled = !blocked
-                && (cards == 0 || view.acknowledge_projection)
+                && (cards == 0 || view.include_cards || view.acknowledge_projection)
                 && view.replace_studio
                 && candidate.is_ok()
                 && app.render_workspace.view.method == ImageMethod::GpuRaytrace;
@@ -312,8 +321,11 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
                 && let Ok(set) = candidate
             {
                 let name = app.render_workspace.view.name.clone();
-                let rig = json!({"id":id,"variant":if cards==0 {"complete"} else {"emitters_only"},"center_mm":view.center,"subject_extent_mm":view.extent});
-                match app.run("render.library.studio.apply", json!({"rig":rig,"name":name,"set":set,"replace_lighting_and_environment":true})) {
+                let rig = json!({"id":id,"variant":if cards==0 || view.include_cards {"complete"} else {"emitters_only"},"center_mm":view.center,"subject_extent_mm":view.extent});
+                match app.run(
+                    "render.library.studio.apply",
+                    json!({"rig":rig,"name":name,"set":set,"replace_lighting_and_environment":true,"replace_stage":true}),
+                ) {
                     Ok(_) => {
                         setups::load(app);
                         app.set_status(app.tr("render.library_applied").to_string(), false);
@@ -345,10 +357,44 @@ fn saved_surface_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             crate::scenario::publish_handle(&format!("render:saved-surface-remove:{index}"), response.rect.center());
             if response.clicked() {
                 let name = app.render_workspace.view.name.clone();
-                match patch(app).and_then(|set| app.run("render.library.surface.unbind", json!({"name":name,"target":binding.target,"set":set}))) {
+                // Remove from the saved authority without attempting to save an
+                // incompatible draft (for example a deliberate CPU method change).
+                match app.run("render.library.surface.unbind", json!({"name":name,"target":binding.target})) {
                     Ok(_) => setups::load(app),
                     Err(e) => app.set_status(e, true),
                 }
+            }
+        }
+    });
+}
+
+fn stage_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let title = app.tr("render.passive_stage").to_string();
+    ui_kit::section(ui, "render_passive_stage", &title, false, |ui| {
+        ui.small(app.tr("render.passive_stage_help"));
+        let stage = &app.render_workspace.view.draft.stage;
+        ui.label(format!("{}: {}", app.tr("render.stage_panel_count"), stage.len()));
+        let empty = stage.is_empty();
+        let candidate = patch(app);
+        if ui_kit::button(
+            ui,
+            app.tr("render.add_ground"),
+            ui_kit::Button::Enabled(empty && candidate.is_ok() && app.render_workspace.view.method != ImageMethod::Raster),
+        )
+        .clicked()
+            && let Ok(set) = candidate
+        {
+            let name = app.render_workspace.view.name.clone();
+            match app.run("render.stage.ground", json!({"name":name,"set":set})) {
+                Ok(_) => setups::load(app),
+                Err(e) => app.set_status(e, true),
+            }
+        }
+        if ui_kit::button(ui, app.tr("render.clear_stage"), ui_kit::Button::Enabled(!empty)).clicked() {
+            let name = app.render_workspace.view.name.clone();
+            match app.run("render.stage.clear", json!({"name":name})) {
+                Ok(_) => setups::load(app),
+                Err(e) => app.set_status(e, true),
             }
         }
     });
