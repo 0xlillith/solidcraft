@@ -51,3 +51,39 @@ Original manifests/readiness flags remain unchanged. Scene/quality specification
 ## Index-matched optical correction
 
 The opaque Schlick approximation now preserves the exact IOR=1 dielectric limit at every angle. Its grazing coefficient is the metal fraction when dielectric IOR is exactly one, and one otherwise. Thus a pure matched dielectric has BRDF `reflectance / pi`, while a conductor retains its response. CPU direct, anisotropic and reflection helpers, the GPU path integrator and PBR viewport use the same rule. A matched-index coat leaves its substrate unchanged. Sampling proposal PDFs remain unchanged; no variance or speed claim accompanies this correction. Analytic and GPU parity checks are separate acceptance gates.
+
+
+## Physical-reference inspector
+
+The existing library's `physical_profiles` category exposes the 51 published
+profiles without assigning them. `render.library.describe` validates each partial
+native card through `ValidatedCard`, retains full extended properties, source
+locators, conditions, qualifiers and uncertainty, and returns exact dataset
+receipts. Surface/material descriptions include their authored candidate or
+constituent relations. Source hash mismatches refuse; unknown is never zero.
+
+`render.library.physical.prepare` takes a profile `id`, proposed material `name`
+and `acknowledge_reference: true`. It returns a **plan only**, containing a native
+`material.create` envelope plus the full extended profile and omitted fields.
+It needs one native point density; ranges and missing values refuse. The caller
+must review the grade/formulation/conditions and separately choose whether to
+execute creation and later assignment. The UI can copy that complete plan, not
+silently apply a constituent to the effective mass of an assembly. Forty-three
+published profiles have a point-density candidate; that is not a certification.
+
+## Focused native acceptance entry point
+
+After a coordinated source batch, build/run this original public-command workflow
+instead of repeatedly linking the full engine unit-test executable:
+
+```sh
+cargo run --locked --profile ci -p solidcraft-engine --features raytrace-cpu \
+  --example render_resource_workflow -- target/render-workflow-new
+```
+
+The output directory must not exist. The probe checks saved surface identity,
+reopen/removal/undo, incompatible method rejection, all physical-reference
+inspections and density-plan refusals, complete rig card scaling, CAD authority
+preservation, and actual CPU ground-stage completion. It writes a scoped receipt
+and the completed PNG. It does not substitute for full unit tests, GUI acceptance,
+GPU optical parity, or a whole-rover render. Record the source tree before/after.
