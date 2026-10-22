@@ -1,6 +1,6 @@
 # SELENE native rendering and reproducible studio showcase
 
-## Full-detail 4K path-traced studio image ? 2026-10-22
+## Full-detail 4K path-traced studio image (2026-10-22)
 
 ![SELENE native studio render](exports/SELENE-studio-4k.png)
 
