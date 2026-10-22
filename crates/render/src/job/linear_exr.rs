@@ -38,7 +38,7 @@ fn header(width: u32, height: u32) -> Result<Vec<u8>> {
     out.extend_from_slice(&2_u32.to_le_bytes());
     let mut channels = Vec::new();
     channels.try_reserve_exact(73).map_err(|_| JobError::new(ErrorCode::AllocationFailed, "EXR channel header allocation failed"))?;
-    for name in [b'A', b'B', b'G', b'R'] {
+    for name in *b"ABGR" {
         channels.extend_from_slice(&[name, 0]);
         channels.extend_from_slice(&2_i32.to_le_bytes());
         channels.extend_from_slice(&[0; 4]); // pLinear + three reserved bytes
