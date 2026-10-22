@@ -422,6 +422,24 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 Err(e) => app.set_status(e, true),
             }
         }
+        ui_kit::text(ui, app.tr("render.physical_background_help"), ui_kit::Text::Note("render.physical_background_help"));
+        for (kind, key) in [("floor_wall", "render.physical_floor_wall"), ("cyclorama", "render.physical_cyclorama")] {
+            let set = setups::snapshot(app);
+            let button =
+                ui_kit::button(ui, app.tr(key), ui_kit::Button::Enabled(set.is_ok() && app.render_workspace.view.method != ImageMethod::Raster));
+            crate::scenario::publish_target(&format!("render:stage-{kind}"), button.rect);
+            if button.clicked()
+                && let Ok(set) = set
+            {
+                let v = &app.render_workspace.view.inspector;
+                let p = json!({"name":app.render_workspace.view.name,"set":set,"kind":kind,"expected_revision":app.session.revision,
+                    "replace_stage":v.replace_ground,"reflectance_linear":v.ground_color});
+                match app.run("render.stage.backdrop", p) {
+                    Ok(_) => setups::load(app),
+                    Err(error) => app.set_status(error, true),
+                }
+            }
+        }
         library::stage_controls(app, ui);
     });
     shot_controls(app, ui);
@@ -491,6 +509,9 @@ fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.render_workspace.view.dirty = true;
     }
     ui_kit::text(ui, app.tr("render.background_not_light"), ui_kit::Text::Note("render.background_not_light"));
+    if app.render_workspace.view.method == ImageMethod::GpuRaytrace {
+        studio::backdrop_controls(app, ui);
+    }
     browse_button(app, ui, "hdr", "render.browse_environments");
     library::inspect_kinds(app, ui, &["hdr", "environments"]);
     match app.render_workspace.view.method {
@@ -560,6 +581,7 @@ fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    studio::export_controls(app, ui);
     super::method_selector(app, ui);
     gpu_status(app, ui);
     let side = match app.render_workspace.view.method {

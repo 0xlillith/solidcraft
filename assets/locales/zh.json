@@ -1099,7 +1099,7 @@
   "render.image_cancelling": "正在取消",
   "render.image_completed": "图像可导出",
   "render.image_encoding": "正在编码 PNG",
-  "render.image_export": "导出最终PNG",
+  "render.image_export": "导出完成图像",
   "render.image_exposure": "曝光",
   "render.image_failed": "渲染失败",
   "render.image_height": "高度",

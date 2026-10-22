@@ -994,7 +994,7 @@
   "render.image_cancelling": "Wird abgebrochen",
   "render.image_completed": "Bild bereit zum Export",
   "render.image_encoding": "PNG wird kodiert",
-  "render.image_export": "PNG exportieren",
+  "render.image_export": "Fertiges Bild exportieren",
   "render.image_failed": "Rendering fehlgeschlagen",
   "render.image_height": "Höhe",
   "render.image_help": "CPU-Vorschaubild · PNG · angenäherte Transparenz",

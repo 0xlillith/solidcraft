@@ -16,6 +16,11 @@ pub(super) enum Environment {
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    pub finishing: solidcraft_engine::render::job::finishing::Finishing,
+    pub backdrop_enabled: bool,
+    pub backdrop: solidcraft_engine::render::job::finishing::Backdrop,
+    pub linear_exr: bool,
+    pub export_exr: bool,
     pub tone_map: ToneMap,
     pub denoise: bool,
     pub lens_enabled: bool,
@@ -36,6 +41,11 @@ pub(super) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            finishing: Default::default(),
+            backdrop_enabled: false,
+            backdrop: Default::default(),
+            linear_exr: false,
+            export_exr: false,
             tone_map: ToneMap::Reinhard,
             denoise: false,
             lens_enabled: false,
@@ -59,6 +69,9 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     let view = &app.render_workspace.view.studio;
     params["tone_map"] = json!(view.tone_map);
     params["denoise"] = json!(view.denoise);
+    params["finishing"] = json!(view.finishing);
+    params["backdrop"] = json!(view.backdrop_enabled.then_some(view.backdrop));
+    params["linear_exr"] = json!(view.linear_exr);
     if view.lens_enabled {
         view.lens.validate().map_err(|error| error.to_string())?;
         if view.lens.aperture_radius_mm > 0.0 && app.cam.fov == 0.0 {
@@ -105,6 +118,7 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
 }
 
 pub(super) fn finishing_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    post_controls(app, ui);
     ui.label(app.tr("render.studio_tone_map"));
     let selected = app.render_workspace.view.studio.tone_map;
     let label = match selected {
@@ -269,4 +283,128 @@ pub(super) fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
     }
     ui.small(app.tr("render.studio_area_help"));
+}
+
+/// Presentation is opt-in; raw radiance and engineering appearance stay untouched.
+fn post_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let title = app.tr("render.post_title").to_string();
+    ui_kit::section(ui, "render_post_filters", &title, false, |ui| {
+        ui_kit::text(ui, app.tr("render.post_help"), ui_kit::Text::Note("render.post_help"));
+        let before = app.render_workspace.view.studio.finishing;
+        for (channel, key) in ["render.post_gain_r", "render.post_gain_g", "render.post_gain_b"].into_iter().enumerate() {
+            let label = app.tr(key).to_string();
+            let Some(value) = app.render_workspace.view.studio.finishing.rgb_gain.get_mut(channel) else {
+                continue;
+            };
+            let r = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, 0.1..=8.0, 0.01, ""));
+            crate::scenario::publish_target(key, r.rect);
+        }
+        for key in ["render.post_contrast", "render.post_saturation", "render.post_vignette"] {
+            let label = app.tr(key).to_string();
+            let finish = &mut app.render_workspace.view.studio.finishing;
+            let (value, range) = match key {
+                "render.post_contrast" => (&mut finish.contrast, 0.25..=4.0),
+                "render.post_saturation" => (&mut finish.saturation, 0.0..=2.0),
+                _ => (&mut finish.vignette, 0.0..=1.0),
+            };
+            let r = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, range, 0.01, ""));
+            crate::scenario::publish_target(key, r.rect);
+        }
+        let reset = ui_kit::button(ui, app.tr("render.post_reset"), ui_kit::Button::Normal);
+        crate::scenario::publish_target("render:post-reset", reset.rect);
+        if reset.clicked() {
+            app.render_workspace.view.studio.finishing = Default::default();
+        }
+        if before != app.render_workspace.view.studio.finishing {
+            app.render_workspace.view.dirty = true;
+        }
+    });
+    let label = app.tr("render.linear_retain").to_string();
+    let r = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.linear_exr);
+    crate::scenario::publish_target("render:retain-exr", r.rect);
+    app.render_workspace.view.dirty |= r.changed();
+    if app.render_workspace.view.studio.linear_exr {
+        ui_kit::text(ui, app.tr("render.linear_help"), ui_kit::Text::Note("render.linear_help"));
+    }
+}
+
+pub(super) fn backdrop_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    use solidcraft_engine::render::job::finishing::BackdropMode;
+    let label = app.tr("render.backdrop_enable").to_string();
+    let r = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.backdrop_enabled);
+    crate::scenario::publish_target("render:backdrop-enabled", r.rect);
+    app.render_workspace.view.dirty |= r.changed();
+    if !app.render_workspace.view.studio.backdrop_enabled {
+        return;
+    }
+    ui_kit::text(ui, app.tr("render.backdrop_help"), ui_kit::Text::Note("render.backdrop_help"));
+    let before = app.render_workspace.view.studio.backdrop;
+    let modes = [
+        (BackdropMode::Vertical, "render.backdrop_vertical"),
+        (BackdropMode::Horizontal, "render.backdrop_horizontal"),
+        (BackdropMode::Radial, "render.backdrop_radial"),
+    ];
+    let current = app.render_workspace.view.studio.backdrop.mode;
+    let key = modes.iter().find(|(m, _)| *m == current).map_or("render.backdrop_vertical", |(_, key)| *key);
+    let label = app.tr(key).to_string();
+    let r = ui_kit::dropdown_menu(ui, "render_backdrop_mode", &label, |ui| {
+        for (mode, key) in modes {
+            if ui_kit::list_picker(ui, key, app.tr(key), mode == current).clicked() {
+                app.render_workspace.view.studio.backdrop.mode = mode;
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_target("render:backdrop-mode", r.rect);
+    for (first, key) in [(true, "render.backdrop_first"), (false, "render.backdrop_second")] {
+        let label = app.tr(key).to_string();
+        ui.label(label);
+        let backdrop = &mut app.render_workspace.view.studio.backdrop;
+        let color = if first { &mut backdrop.first_srgb } else { &mut backdrop.second_srgb };
+        let r = ui_kit::color_field(ui, color);
+        crate::scenario::publish_target(key, r.rect);
+    }
+    if current == BackdropMode::Radial {
+        for (axis, key) in [(0, "render.backdrop_x"), (1, "render.backdrop_y")] {
+            let label = app.tr(key).to_string();
+            let Some(value) = app.render_workspace.view.studio.backdrop.center.get_mut(axis) else {
+                continue;
+            };
+            ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, 0.0..=1.0, 0.01, ""));
+        }
+        let label = app.tr("render.backdrop_radius").to_string();
+        ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.studio.backdrop.radius, 0.05..=4.0, 0.01, ""));
+    }
+    if app.render_workspace.view.transparent {
+        ui_kit::text(ui, app.tr("render.backdrop_alpha_conflict"), ui_kit::Text::Error("render.backdrop_alpha_conflict"));
+    }
+    if before != app.render_workspace.view.studio.backdrop {
+        app.render_workspace.view.dirty = true;
+    }
+}
+
+pub(super) fn export_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let exr = app.render_workspace.view.studio.export_exr;
+    let key = if exr { "render.export_linear" } else { "render.export_display" };
+    let label = app.tr(key).to_string();
+    let r = ui_kit::dropdown_menu(ui, "render_export_format", &label, |ui| {
+        for (value, key) in [(false, "render.export_display"), (true, "render.export_linear")] {
+            if ui_kit::list_picker(ui, key, app.tr(key), value == exr).clicked() {
+                app.render_workspace.view.studio.export_exr = value;
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_target("render:export-format", r.rect);
+    if app.render_workspace.view.studio.export_exr && !linear_export_available(app) {
+        ui_kit::text(ui, app.tr("render.linear_unavailable"), ui_kit::Text::Note("render.linear_unavailable"));
+    }
+}
+pub(super) fn linear_export_available(app: &SolveApp) -> bool {
+    app.render_workspace
+        .view
+        .completed
+        .and_then(|job| app.session.render_job_handle(job).ok())
+        .and_then(|handle| handle.frame().ok().flatten())
+        .is_some_and(|frame| frame.linear_exr().is_some())
 }

@@ -46,6 +46,9 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
+    finishing: solidcraft_render::job::finishing::Finishing,
+    backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
+    linear_exr: bool,
     integrator: Integrator,
     setup: Option<String>,
     settings: Option<RenderSetup>,
@@ -180,7 +183,8 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
             "transparent_background":transparent_background,
             "samples":options.samples,"max_depth":options.max_depth,"seed":options.seed,
             "lens":options.lens,"lighting":options.lighting,"tone_map":options.tone_map,
-            "denoise":options.denoise,"environment":options.environment
+            "denoise":options.denoise,"environment":options.environment,
+            "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr
             })
         }
     };
@@ -492,6 +496,9 @@ fn prepare_progressive(
     options.lighting = input.lighting;
     options.tone_map = input.tone_map.unwrap_or_default();
     options.denoise = input.denoise;
+    options.finishing = input.finishing;
+    options.backdrop = input.backdrop;
+    options.linear_exr = input.linear_exr;
     options.validate().map_err(job_error)?;
     if let Some(super::environment::Input::BuiltinHdr { id, .. }) = &input.environment
         && options.lighting.as_ref().is_some_and(|lighting| lighting.sun.is_some())
@@ -641,9 +648,26 @@ pub(super) fn cancel(s: &mut Session, params: &Value) -> Result<Value> {
     Ok(json!(s.render_jobs.handle(input.job).map_err(job_error)?.cancel().map_err(job_error)?))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExportFormat {
+    #[default]
+    Png,
+    Exr,
+}
+impl ExportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Exr => "exr",
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Export {
+    #[serde(default)]
+    format: ExportFormat,
     job: JobId,
     path: String,
     #[serde(default)]
@@ -653,20 +677,28 @@ struct Export {
 pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
     let input: Export = serde_json::from_value(params.clone()).map_err(|e| bad("render.export", e.to_string()))?;
     let path = std::path::Path::new(&input.path);
-    if input.path.len() > 4096 || input.path.chars().any(char::is_control) || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")) {
-        return Err(bad("render.export", "a bounded PNG destination path is required"));
+    if input.path.len() > 4096
+        || input.path.chars().any(char::is_control)
+        || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case(input.format.extension()))
+    {
+        return Err(bad("render.export", "a bounded destination with the explicitly selected png/exr extension is required"));
     }
     // Atomic native writers are also used for the app's own files and do not
     // apply a request's path scope. Check the caller's destination explicitly.
     solidcraft_io::vfs::check(&input.path).map_err(|e| bad("render.export", e.to_string()))?;
     let frame = s.render_jobs.frame(input.job).map_err(job_error)?;
+    let bytes = match input.format {
+        ExportFormat::Png => frame.png(),
+        ExportFormat::Exr => frame
+            .linear_exr()
+            .ok_or_else(|| bad("render.export", "this completed job has no raw linear master; enable retention before rendering"))?,
+    };
     // Replace atomically without reading an arbitrarily large previous target into memory.
     // Design saves retain their independent backup policy.
-    let result = if input.overwrite {
-        solidcraft_io::write_atomic(path, frame.png(), false)
-    } else {
-        solidcraft_io::safe_write::create_atomic(path, frame.png())
-    };
-    result.map_err(|e| bad("render.export", format!("could not export PNG: {e}")))?;
-    Ok(json!({"job":input.job,"path":input.path,"bytes":frame.png().len(),"frame":frame.info}))
+    let result =
+        if input.overwrite { solidcraft_io::write_atomic(path, bytes, false) } else { solidcraft_io::safe_write::create_atomic(path, bytes) };
+    result.map_err(|e| bad("render.export", format!("could not export completed {}: {e}", input.format.extension())))?;
+    Ok(
+        json!({"job":input.job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"frame":frame.info,"linear_master":frame.linear_master_info()}),
+    )
 }

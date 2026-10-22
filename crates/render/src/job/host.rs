@@ -203,12 +203,24 @@ fn admit_request_sum(work_bytes: u64, request_bytes: u64) -> Result<()> {
 }
 
 /// Borrow encoded bytes through the frame, so retaining the data also retains its admission lease.
+#[derive(Clone, Debug, Serialize)]
+pub struct LinearMasterInfo {
+    pub bytes: u64,
+    pub sha256: String,
+}
 pub struct RenderFrame {
     pub info: FrameInfo,
     png: Vec<u8>,
+    exr: Option<(Vec<u8>, LinearMasterInfo)>,
     _reservation: Reservation,
 }
 impl RenderFrame {
+    pub fn linear_exr(&self) -> Option<&[u8]> {
+        self.exr.as_ref().map(|(bytes, _)| bytes.as_slice())
+    }
+    pub fn linear_master_info(&self) -> Option<&LinearMasterInfo> {
+        self.exr.as_ref().map(|(_, info)| info)
+    }
     pub fn png(&self) -> &[u8] {
         &self.png
     }
@@ -245,6 +257,8 @@ pub enum JobEnvironmentInfo {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct JobStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linear_master: Option<LinearMasterInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<PreviewInfo>,
     pub textures: Option<super::textures::TextureSummary>,
@@ -298,6 +312,7 @@ impl JobHandle {
     pub fn status(&self) -> Result<JobStatus> {
         let data = self.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         Ok(JobStatus {
+            linear_master: data.frame.as_ref().and_then(|frame| frame.linear_master_info().cloned()),
             preview: data.preview.as_ref().map(|preview| preview.info.clone()),
             textures: self.0.textures.clone(),
             options: self.0.options,
@@ -379,10 +394,13 @@ struct PendingPng {
     digest: Sha256,
     hashed: usize,
     preview_samples: Option<u32>,
+    exr: Option<Vec<u8>>,
+    exr_digest: Sha256,
+    exr_hashed: usize,
 }
 // Keep the new fixed completion state within the existing metadata allowance
 // even if the hashing dependency's representation changes on another target.
-const _: [(); 1] = [(); (std::mem::size_of::<PendingPng>() <= 256) as usize];
+const _: [(); 1] = [(); (std::mem::size_of::<PendingPng>() <= 512) as usize];
 const _: [(); 1] = [(); (std::mem::size_of::<Running>()
     + std::mem::size_of::<RenderFrame>()
     + std::mem::size_of::<RenderPreview>()
@@ -393,7 +411,7 @@ const _: [(); 1] = [(); (std::mem::size_of::<Running>()
 
 impl PendingPng {
     fn new(png: Vec<u8>) -> Self {
-        Self { png, digest: Sha256::new(), hashed: 0, preview_samples: None }
+        Self { png, digest: Sha256::new(), hashed: 0, preview_samples: None, exr: None, exr_digest: Sha256::new(), exr_hashed: 0 }
     }
 
     #[cfg(feature = "raytrace-cpu")]
@@ -404,20 +422,26 @@ impl PendingPng {
     fn step(&mut self, units: usize, cancel: &CancelToken) -> Result<bool> {
         cancel.check()?;
         for _ in 0..units.min(PNG_HASH_CHUNKS_PER_ADVANCE) {
-            if self.hashed == self.png.len() {
+            let (bytes, hashed, digest) = if self.hashed < self.png.len() {
+                (&self.png, &mut self.hashed, &mut self.digest)
+            } else if let Some(exr) = self.exr.as_ref().filter(|exr| self.exr_hashed < exr.len()) {
+                (exr, &mut self.exr_hashed, &mut self.exr_digest)
+            } else {
                 break;
-            }
-            let end = self.hashed.saturating_add(PNG_HASH_CHUNK_BYTES).min(self.png.len());
-            let chunk = self.png.get(self.hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing PNG digest chunk"))?;
-            self.digest.update(chunk);
-            self.hashed = end;
+            };
+            let end = hashed.saturating_add(PNG_HASH_CHUNK_BYTES).min(bytes.len());
+            digest.update(bytes.get(*hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed image digest chunk"))?);
+            *hashed = end;
             cancel.check()?;
         }
-        Ok(self.hashed == self.png.len())
+        Ok(self.hashed == self.png.len() && self.exr.as_ref().is_none_or(|exr| self.exr_hashed == exr.len()))
     }
-
     fn progress(&self) -> Progress {
-        Progress { phase: Phase::Encoding, done: self.hashed as u64, total: self.png.len() as u64 }
+        Progress {
+            phase: Phase::Encoding,
+            done: self.hashed as u64 + self.exr_hashed as u64,
+            total: self.png.len() as u64 + self.exr.as_ref().map_or(0, |bytes| bytes.len() as u64),
+        }
     }
 }
 
@@ -466,6 +490,12 @@ enum WorkPoll {
 }
 
 impl WorkTask {
+    fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Self::Registered(task) => task.take_linear_exr(),
+            _ => None,
+        }
+    }
     fn new(
         scene: ProductScene,
         request: ImageRequest,
@@ -577,8 +607,19 @@ impl Running {
             WorkPoll::Existing(TaskPoll::Complete(png)) => {
                 // Drop every integrator-owned capture/scratch buffer first, but
                 // keep the original admission lease while hashing the sole PNG.
+                let exr = self.task.as_mut().and_then(WorkTask::take_linear_exr);
+                if exr.is_some() != self.handle.0.options.linear_exr {
+                    return Err(JobError::new(ErrorCode::Internal, "linear master availability differs from the admitted request"));
+                }
+                if let Some(bytes) = &exr {
+                    let limit = super::linear_exr::encoded_limit(self.handle.0.request.width, self.handle.0.request.height)?;
+                    if bytes.len() < 8 || bytes.capacity() as u64 > limit || bytes.get(..8) != Some(&[0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0]) {
+                        return Err(JobError::new(ErrorCode::LimitExceeded, "linear master exceeds its bound or has an invalid signature"));
+                    }
+                }
                 self.task = None;
-                let pending = PendingPng::new(png);
+                let mut pending = PendingPng::new(png);
+                pending.exr = exr;
                 data.progress = pending.progress();
                 self.pending_png = Some(pending);
                 Ok(true)
@@ -605,7 +646,7 @@ impl Running {
             data.progress = progress;
             return Ok(true);
         }
-        let PendingPng { png, digest, preview_samples, .. } =
+        let PendingPng { png, digest, preview_samples, exr, exr_digest, .. } =
             self.pending_png.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed PNG digest"))?;
         let info = FrameInfo {
             job: self.handle.0.id,
@@ -624,7 +665,12 @@ impl Running {
         // The PNG allocation itself is retained once and billed by capacity below.
         let frame_layout = if preview_samples.is_some() { std::mem::size_of::<RenderPreview>() } else { std::mem::size_of::<RenderFrame>() };
         let fixed_metadata = std::mem::size_of::<Running>() + frame_layout + 2 * crate::MAX_RENDER_ID_BYTES + 32;
-        if fixed_metadata.checked_add(info.png_sha256.capacity()).is_none_or(|bytes| bytes > FRAME_METADATA_BYTES as usize) {
+        let linear_digest_bytes = if exr.is_some() { 64 } else { 0 };
+        if fixed_metadata
+            .checked_add(info.png_sha256.capacity())
+            .and_then(|n| n.checked_add(linear_digest_bytes))
+            .is_none_or(|bytes| bytes > FRAME_METADATA_BYTES as usize)
+        {
             return Err(JobError::new(ErrorCode::LimitExceeded, "PNG digest metadata exceeds its existing admission allowance"));
         }
         let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
@@ -664,9 +710,14 @@ impl Running {
             self.handle.0.notify();
             return Ok(true);
         }
+        let exr = exr.map(|bytes| {
+            let info = LinearMasterInfo { bytes: bytes.len() as u64, sha256: format!("{:x}", exr_digest.finalize()) };
+            (bytes, info)
+        });
+        let retained = png.capacity() as u64 + exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64) + FRAME_METADATA_BYTES;
         let mut reservation = self.reservation.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render reservation"))?;
-        reservation.shrink(png.capacity() as u64 + FRAME_METADATA_BYTES)?;
-        data.frame = Some(Arc::new(RenderFrame { info, png, _reservation: reservation }));
+        reservation.shrink(retained)?;
+        data.frame = Some(Arc::new(RenderFrame { info, png, exr, _reservation: reservation }));
         data.preview = None;
         data.progress = Progress { phase: Phase::Completed, done: 1, total: 1 };
         self.handle.0.notify();
@@ -865,6 +916,12 @@ impl ImageHost {
         if let Some(executor) = &self.0.executor {
             if request.raytrace.is_some() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executors do not accept CPU raytrace options"));
+            }
+            if options.linear_exr && !executor.supports_linear_exr() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot retain a raw linear EXR"));
+            }
+            if (!options.finishing.is_identity() || options.backdrop.is_some()) && !executor.supports_finishing() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot apply the requested finishing/backdrop"));
             }
             let admission = executor.admit(scene, request, options)?;
             if admission.estimated_total_bytes > self.job_limit_bytes() {

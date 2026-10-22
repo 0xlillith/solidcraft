@@ -45,7 +45,10 @@ impl RenderJob {
             Self::Raster { .. } if exposure_ev != 0.0 => Err(DocError::Invalid("saved raster rendering requires exposure_ev: 0".into())),
             Self::Raster { .. } => Ok(()),
             Self::CpuRaytrace { options } => options.to_runtime(exposure_ev).map(|_| ()),
-            Self::GpuPath { options, .. } => {
+            Self::GpuPath { options, transparent_background } => {
+                if *transparent_background && options.backdrop.is_some() {
+                    return Err(DocError::Invalid("choose a camera backdrop or transparent PNG, not both".into()));
+                }
                 options.to_runtime(exposure_ev)?;
                 if camera.fov == 0.0 && options.lens.is_some_and(|lens| lens.aperture_radius_mm > 0.0) {
                     return Err(DocError::Invalid("saved thin-lens depth of field requires a perspective camera".into()));
@@ -146,6 +149,11 @@ impl CpuJob {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpuJob {
+    #[serde(skip_serializing_if = "solidcraft_render::job::finishing::Finishing::is_identity")]
+    pub finishing: solidcraft_render::job::finishing::Finishing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
+    pub linear_exr: bool,
     pub samples: u32,
     pub max_depth: u32,
     pub seed: u32,
@@ -165,6 +173,9 @@ impl Default for GpuJob {
     fn default() -> Self {
         let options = JobOptions::default();
         Self {
+            finishing: options.finishing,
+            backdrop: options.backdrop,
+            linear_exr: options.linear_exr,
             samples: options.samples,
             max_depth: options.max_depth,
             seed: options.seed,
@@ -191,6 +202,9 @@ impl GpuJob {
             environment.validate()?;
         }
         let options = JobOptions {
+            finishing: self.finishing,
+            backdrop: self.backdrop,
+            linear_exr: self.linear_exr,
             samples: self.samples,
             max_depth: self.max_depth,
             seed: self.seed,

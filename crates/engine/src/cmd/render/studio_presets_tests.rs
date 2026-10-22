@@ -12,7 +12,16 @@ fn subject() -> Session {
 }
 #[test]
 fn native_studios_resolve_without_mutation_and_apply_one_complete_undo() {
-    for id in ["NATIVE-STUDIO-001", "NATIVE-STUDIO-002", "NATIVE-STUDIO-003", "NATIVE-STUDIO-004"] {
+    for id in [
+        "NATIVE-STUDIO-001",
+        "NATIVE-STUDIO-002",
+        "NATIVE-STUDIO-003",
+        "NATIVE-STUDIO-004",
+        "NATIVE-STUDIO-005",
+        "NATIVE-STUDIO-006",
+        "NATIVE-STUDIO-007",
+        "NATIVE-STUDIO-008",
+    ] {
         let mut s = subject();
         let before = s.doc.to_json();
         let undo = s.undo.len();
@@ -125,7 +134,7 @@ fn quality_projection_never_claims_adaptive_or_unbounded_profiles() {
 fn resource_availability_and_original_previews_are_bounded_and_nonmutating() {
     let mut s = subject();
     let before = s.doc.to_json();
-    assert_eq!(s.execute("render.library.list", &json!({"kind":"native_scenes","availability":"usable"})).unwrap()["total"], 4);
+    assert_eq!(s.execute("render.library.list", &json!({"kind":"native_scenes","availability":"usable"})).unwrap()["total"], 8);
     assert_eq!(s.execute("render.library.list", &json!({"kind":"materials","availability":"usable"})).unwrap()["total"], 0);
     assert_eq!(s.execute("render.library.list", &json!({"kind":"materials","availability":"specification"})).unwrap()["total"], 600);
     assert_eq!(s.execute("render.library.list", &json!({"kind":"selene_shots"})).unwrap()["total"], 12);
@@ -141,5 +150,62 @@ fn resource_availability_and_original_previews_are_bounded_and_nonmutating() {
     let targets = s.execute("render.library.targets", &json!({"query":"Subject"})).unwrap();
     assert_eq!(targets["items"][0]["name"], "Subject");
     assert_eq!(targets["items"][0]["opacity"], 1.0);
+    assert_eq!(s.doc.to_json(), before);
+}
+
+#[test]
+fn physical_backgrounds_preserve_geometry_lights_camera_and_one_undo() {
+    for kind in ["floor_wall", "cyclorama"] {
+        let mut s = subject();
+        let before = s.doc.to_json();
+        let undo = s.undo.len();
+        let setup = s.doc.render.setups["Shot"].clone();
+        let p = json!({"name":"Shot","kind":kind,"expected_revision":s.revision,"reflectance_linear":[0.31,0.29,0.25]});
+        let result = s.execute("render.stage.backdrop", &p).unwrap();
+        assert_eq!(result["engineering_geometry_unchanged"], true);
+        let after = &s.doc.render.setups["Shot"];
+        assert_eq!(after.camera, setup.camera);
+        assert_eq!(after.job, setup.job);
+        assert_eq!(after.surfaces, setup.surfaces);
+        assert_eq!(after.stage.iter().count(), if kind == "cyclorama" { 26 } else { 2 });
+        assert_eq!(s.doc.features.len(), 1);
+        assert_eq!(s.undo.len(), undo + 1);
+        let mut scene = crate::product_scene::extract(&s).unwrap();
+        let first = scene.meshes[0].mesh.clone();
+        super::super::staging::apply(&mut scene, after, "test").unwrap();
+        assert!(Arc::ptr_eq(&first, &scene.meshes[0].mesh));
+        assert_eq!(scene.meshes.len(), 1 + after.stage.iter().count());
+        let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(&reopened.render.setups["Shot"], after);
+        let snapshot = s.doc.to_json();
+        assert!(s.execute("render.stage.backdrop", &json!({"name":"Shot","kind":kind,"expected_revision":s.revision,"set":{"stage":[]}})).is_err());
+        assert_eq!(s.doc.to_json(), snapshot);
+        s.execute("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.doc.to_json(), before);
+    }
+}
+
+#[test]
+fn finishing_and_linear_master_saved_intent_survive_reopen_without_host_and_reject_conflicts() {
+    let mut s = subject();
+    let before = s.doc.to_json();
+    let job = json!({"method":"gpu_path","options":{"samples":37,"linear_exr":true,
+        "finishing":{"rgb_gain":[1.2,0.9,0.7],"saturation":0.75,"contrast":1.2,"vignette":0.2},
+        "backdrop":{"mode":"radial","first_srgb":[230,220,200],"second_srgb":[25,35,45],"center":[0.4,0.3],"radius":0.8}}});
+    s.execute("render.settings.set", &json!({"name":"Shot","set":{"job":job}})).unwrap();
+    let after = s.doc.to_json();
+    let reopened = solidcraft_doc::Document::from_json(&after).unwrap();
+    assert_eq!(reopened.render, s.doc.render);
+    for patch in [
+        json!({"job":{"method":"gpu_path","transparent_background":true,"options":job["options"]}}),
+        json!({"job":{"method":"gpu_path","options":{"finishing":{"saturation":-1}}}}),
+        json!({"job":{"method":"gpu_path","options":{"backdrop":{"radius":0}}}}),
+        json!({"job":{"method":"cpu_raytrace","options":{"linear_exr":true}}}),
+        json!({"job":{"method":"gpu_path","options":{"adaptive_samples":true}}}),
+    ] {
+        assert!(s.execute("render.settings.set", &json!({"name":"Shot","set":patch})).is_err());
+        assert_eq!(s.doc.to_json(), after);
+    }
+    s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(s.doc.to_json(), before);
 }

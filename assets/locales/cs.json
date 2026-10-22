@@ -983,7 +983,7 @@
   "render.image_cancelling": "Rušení",
   "render.image_completed": "Obrázek připraven k exportu",
   "render.image_encoding": "Kódování PNG",
-  "render.image_export": "Exportovat PNG",
+  "render.image_export": "Exportovat hotový obrázek",
   "render.image_exposure": "Expozice",
   "render.image_failed": "Render selhal",
   "render.image_height": "Výška",

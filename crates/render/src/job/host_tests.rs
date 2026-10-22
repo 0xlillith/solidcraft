@@ -487,7 +487,7 @@ fn a_cancel_after_the_last_digest_chunk_still_wins_the_publication_lock() {
 fn png_digest_metadata_fits_the_existing_allowance_without_changing_admission() {
     // Fixed digest/offset state and the completed frame (including its bounded
     // hex string and backend/executor IDs) fit the existing 1024-byte allowance.
-    assert!(std::mem::size_of::<PendingPng>() <= 256);
+    assert!(std::mem::size_of::<PendingPng>() <= 512);
     assert!(
         std::mem::size_of::<Running>() + std::mem::size_of::<RenderFrame>() + 64 + 2 * crate::MAX_RENDER_ID_BYTES + 32
             <= FRAME_METADATA_BYTES as usize

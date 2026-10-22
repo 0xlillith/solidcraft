@@ -1128,7 +1128,7 @@
   "render.image_cancelling": "キャンセル中",
   "render.image_completed": "画像をエクスポートできます",
   "render.image_encoding": "PNGをエンコード中",
-  "render.image_export": "完成PNGをエクスポート",
+  "render.image_export": "完成画像をエクスポート",
   "render.image_exposure": "露出",
   "render.image_failed": "レンダリングに失敗しました",
   "render.image_height": "高さ",

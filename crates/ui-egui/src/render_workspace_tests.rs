@@ -1859,6 +1859,9 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
         job: Some(RenderJob::GpuPath {
             transparent_background: true,
             options: Box::new(GpuJob {
+                finishing: Default::default(),
+                backdrop: None,
+                linear_exr: false,
                 samples: 37,
                 max_depth: 11,
                 seed: 1977,
@@ -2567,4 +2570,62 @@ fn product_preview_error_uses_shared_wrapped_surface_and_explicit_retry_target()
     assert!(rect.contains_rect(note) && rect.contains_rect(retry));
     assert!(note.height() > Tokens::get().font_body, "the detailed failure wraps instead of escaping the viewport");
     assert!(crate::theme::contrast_ratio(Tokens::get().form_error, Tokens::get().form_error_fill) >= 3.0);
+}
+
+#[test]
+fn finishing_backdrop_and_raw_retention_save_reload_without_a_gpu_or_hidden_transport_edits() {
+    use solidcraft_engine::render::job::finishing::{Backdrop, BackdropMode, Finishing};
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":2200}));
+    enter(&mut h.app, true).unwrap();
+    h.app.session.set_render_job_host(None).unwrap();
+    select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    h.app.render_workspace.view.inspector.page = inspector::Page::Output;
+    h.app.render_workspace.view.name = "Linear studio".into();
+    h.app.render_workspace.view.studio.finishing = Finishing { rgb_gain: [1.3, 0.8, 0.9], saturation: 0.4, contrast: 1.2, vignette: 0.3 };
+    h.app.render_workspace.view.studio.backdrop_enabled = true;
+    h.app.render_workspace.view.studio.backdrop = Backdrop { mode: BackdropMode::Radial, center: [0.25, 0.7], ..Default::default() };
+    h.app.render_workspace.view.studio.linear_exr = true;
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio = studio::View::default();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    assert!(!h.app.render_workspace.view.dirty);
+    assert!(!studio::linear_export_available(&h.app));
+    let request = image_request(&h.app).unwrap();
+    assert_eq!(request["settings"]["job"]["options"]["linear_exr"], true);
+    assert_eq!(request["settings"]["job"]["options"]["finishing"]["rgb_gain"], json!([1.3, 0.8, 0.9]));
+    assert!(image_params(&h.app).is_err(), "offline editing is not a claim of executable GPU capabilities");
+    h.app.render_workspace.view.transparent = true;
+    assert!(setups::snapshot(&h.app).is_err(), "gradient cannot silently disappear behind alpha mode");
+    h.app.render_workspace.view.transparent = false;
+    let before = h.app.session.doc.to_json();
+    h.frames(3);
+    let title = h.app.tr("render.post_title").to_string();
+    h.step(&json!({"click":{"handle":format!("dialog:section:{title}")}})).unwrap();
+    h.step(&json!({"click":{"handle":"render:post-reset"}})).unwrap();
+    assert_eq!(h.app.render_workspace.view.studio.finishing, Finishing::default());
+    assert!(h.app.render_workspace.view.studio.linear_exr);
+    assert!(h.app.render_workspace.view.studio.backdrop_enabled);
+    assert!(h.app.render_workspace.view.dirty);
+    assert_eq!(h.app.session.doc.to_json(), before, "reset only edits the render draft");
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+}
+
+#[test]
+fn missing_linear_master_is_never_reconstructed_from_a_finished_png() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":1800}));
+    enter(&mut h.app, true).unwrap();
+    let id = completed_preview(&mut h, [21, 37, 55]);
+    let bytes = h.app.session.render_job_handle(id).unwrap().frame().unwrap().unwrap().png().to_vec();
+    h.app.render_workspace.view.completed = Some(id);
+    h.app.render_workspace.view.studio.export_exr = true;
+    assert!(!studio::linear_export_available(&h.app));
+    let temp = std::env::temp_dir().join(format!("solidcraft-missing-linear-{}.exr", std::process::id()));
+    assert!(h.app.session.execute("render.export", &json!({"job":id,"path":temp,"format":"exr"})).is_err());
+    assert!(!temp.exists());
+    assert_eq!(h.app.session.render_job_handle(id).unwrap().frame().unwrap().unwrap().png(), bytes);
 }

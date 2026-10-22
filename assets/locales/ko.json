@@ -994,7 +994,7 @@
   "render.image_cancelling": "취소 중",
   "render.image_completed": "이미지 내보내기 준비됨",
   "render.image_encoding": "PNG 인코딩 중",
-  "render.image_export": "PNG 내보내기",
+  "render.image_export": "완료된 이미지 내보내기",
   "render.image_failed": "렌더링 실패",
   "render.image_height": "높이",
   "render.image_help": "CPU 미리 보기 이미지 · PNG · 근사 투명도",

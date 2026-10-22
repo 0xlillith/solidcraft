@@ -847,13 +847,23 @@ fn job_controls(app: &mut SolveApp, ui: &mut egui::Ui, compact: bool) {
         {
             let _ = app.run("render.cancel", json!({"job":job}));
         }
-        let export =
-            crate::ui_kit::button(ui, app.tr("render.image_export"), crate::ui_kit::Button::Enabled(app.render_workspace.view.completed.is_some()));
+        let export = crate::ui_kit::button(
+            ui,
+            app.tr("render.image_export"),
+            crate::ui_kit::Button::Enabled(
+                app.render_workspace.view.completed.is_some()
+                    && (!app.render_workspace.view.studio.export_exr || studio::linear_export_available(app)),
+            ),
+        );
         crate::scenario::publish_target("render:export", export.rect);
         if export.clicked()
             && let Some(job) = app.render_workspace.view.completed
         {
-            export_image(app, job, app.render_workspace.view.overwrite);
+            if app.render_workspace.view.studio.export_exr {
+                export_linear_image(app, job, app.render_workspace.view.overwrite);
+            } else {
+                export_image(app, job, app.render_workspace.view.overwrite);
+            }
         }
     });
     if !compact {
@@ -1307,6 +1317,21 @@ fn export_image(app: &mut SolveApp, job: solidcraft_engine::render::job::JobId, 
             return;
         }
         let _ = app.run("render.export", json!({"job":job,"path":path,"overwrite":overwrite}));
+    });
+}
+
+/// Captures format and completed identity before the asynchronous picker opens.
+fn export_linear_image(app: &mut SolveApp, job: solidcraft_engine::render::job::JobId, overwrite: bool) {
+    let origin = app.session.doc.clone();
+    app.pick_save("render.exr", &["exr"], move |app, path| {
+        let Some(path) = path else {
+            return;
+        };
+        if !Arc::ptr_eq(&origin, &app.session.doc) {
+            app.set_status("The render export document changed while choosing its destination", true);
+            return;
+        }
+        let _ = app.run("render.export", json!({"job":job,"path":path,"overwrite":overwrite,"format":"exr"}));
     });
 }
 

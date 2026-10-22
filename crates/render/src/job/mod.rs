@@ -13,6 +13,7 @@ use crate::{BackendId, Camera, ExecutorId};
 
 mod cpu_budget;
 pub(crate) mod encoding;
+pub mod finishing;
 mod host;
 pub(crate) mod image;
 pub mod led_strip;
@@ -20,6 +21,7 @@ mod lens;
 #[cfg(test)]
 mod light_union_tests;
 mod lighting;
+pub mod linear_exr;
 mod png;
 mod punctual;
 #[cfg(test)]
@@ -30,7 +32,7 @@ pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGL
 #[cfg(feature = "raytrace-cpu")]
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
-pub use host::{CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, PreviewInfo, RenderFrame, RenderPreview};
+pub use host::{CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, LinearMasterInfo, PreviewInfo, RenderFrame, RenderPreview};
 pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geometry_with_limits};
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};
@@ -49,6 +51,12 @@ pub const MAX_GPU_DIELECTRICS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JobOptions {
+    #[serde(default, skip_serializing_if = "finishing::Finishing::is_identity")]
+    pub finishing: finishing::Finishing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backdrop: Option<finishing::Backdrop>,
+    #[serde(default)]
+    pub linear_exr: bool,
     pub samples: u32,
     pub max_depth: u32,
     pub seed: u32,
@@ -62,12 +70,28 @@ pub struct JobOptions {
 
 impl Default for JobOptions {
     fn default() -> Self {
-        Self { samples: 64, max_depth: 8, seed: 0, exposure_ev: 0.0, lens: None, lighting: None, tone_map: ToneMap::default(), denoise: false }
+        Self {
+            finishing: Default::default(),
+            backdrop: None,
+            linear_exr: false,
+            samples: 64,
+            max_depth: 8,
+            seed: 0,
+            exposure_ev: 0.0,
+            lens: None,
+            lighting: None,
+            tone_map: ToneMap::default(),
+            denoise: false,
+        }
     }
 }
 
 impl JobOptions {
     pub fn validate(&self) -> Result<()> {
+        self.finishing.validate()?;
+        if let Some(backdrop) = self.backdrop {
+            backdrop.validate()?;
+        }
         if let Some(lighting) = self.lighting {
             lighting.validate()?;
         }
@@ -87,6 +111,11 @@ impl JobOptions {
 
 /// One bounded quantum of image work. Implementations check cancellation between quanta.
 pub trait ImageWork: Send {
+    /// Optional raw linear companion, moved exactly once after PNG completion.
+    /// The host validates intent, bounds, hashes and retains its memory lease.
+    fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
+        None
+    }
     fn step(&mut self, units: usize) -> Result<TaskPoll>;
 }
 impl ImageWork for ImageTask {
@@ -98,6 +127,12 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_finishing(&self) -> bool {
+        false
+    }
+    fn supports_linear_exr(&self) -> bool {
+        false
+    }
     /// Host-owned logical allocation pool. This is a ceiling, not eager allocation.
     /// Registration snapshots and validates it; unknown executors retain 512 MiB.
     fn memory_limit_bytes(&self) -> u64 {

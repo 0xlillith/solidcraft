@@ -98,6 +98,9 @@ fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     samples: view.samples,
                     max_depth: view.max_depth,
                     seed: view.seed,
+                    finishing: studio.finishing,
+                    backdrop: studio.backdrop_enabled.then_some(studio.backdrop),
+                    linear_exr: studio.linear_exr,
                     tone_map: studio.tone_map,
                     denoise: studio.denoise,
                     lens: studio.lens_enabled.then_some(studio.lens),
@@ -181,6 +184,10 @@ pub(super) fn load(app: &mut SolveApp) {
             view.samples = options.samples;
             view.max_depth = options.max_depth;
             view.seed = options.seed;
+            view.studio.finishing = options.finishing;
+            view.studio.backdrop_enabled = options.backdrop.is_some();
+            view.studio.backdrop = options.backdrop.unwrap_or_default();
+            view.studio.linear_exr = options.linear_exr;
             view.studio.tone_map = options.tone_map;
             view.studio.denoise = options.denoise;
             if let Some(lens) = options.lens {

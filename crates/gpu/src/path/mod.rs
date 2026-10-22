@@ -238,6 +238,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
     options.validate()?;
+    if options.backdrop.is_some() && request.transparent_background {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "choose a camera backdrop or transparent PNG, not both"));
+    }
     if let Some(environment) = &request.environment {
         environment.validate()?;
     }
@@ -283,6 +286,12 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         textures.validate_scene(scene)?;
         admission.preparation_bytes += textures.working_bytes();
     }
+    if options.linear_exr {
+        admission.preparation_bytes = admission
+            .preparation_bytes
+            .checked_add(solidcraft_render::job::linear_exr::encoded_limit(request.width, request.height)?)
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "linear master admission overflow"))?;
+    }
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
     if admission.estimated_total_bytes > GPU_PATH_LIMITS.max_scratch_bytes {
         return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its bounded 8 GiB admission estimate"));
@@ -291,6 +300,12 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_finishing(&self) -> bool {
+        true
+    }
+    fn supports_linear_exr(&self) -> bool {
+        true
+    }
     fn memory_limit_bytes(&self) -> u64 {
         GPU_PATH_LIMITS.max_scratch_bytes
     }
@@ -340,6 +355,8 @@ struct Task {
     offset: u32,
     epsilon: f32,
     png: Option<PngTask>,
+    exr_work: Option<solidcraft_render::job::linear_exr::ExrTask>,
+    exr: Option<Vec<u8>>,
     started: Instant,
     // Uniform environment is used only by the numerical furnace test, never advertised as HDRI.
     environment: f32,
@@ -455,6 +472,8 @@ impl Task {
             offset: 0,
             epsilon: upload.epsilon,
             png: None,
+            exr_work: None,
+            exr: None,
             started: Instant::now(),
             environment: 0.0,
             environment_bottom_only: false,
@@ -601,24 +620,41 @@ impl Task {
 }
 #[derive(Clone, Copy)]
 struct Display {
+    finishing: solidcraft_render::job::finishing::Finishing,
+    backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
+    width: u32,
+    height: u32,
     exposure: f64,
     tone_map: ToneMap,
     background: [f64; 3],
     transparent: bool,
 }
 impl Display {
+    #[cfg(test)]
     fn encode(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken) -> Result<()> {
+        self.encode_at(input, output, cancel, 0)
+    }
+    fn encode_at(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken, offset: usize) -> Result<()> {
         for (index, (pixel, rgba)) in input.iter().zip(output.as_chunks_mut::<4>().0).enumerate() {
             if index % 4096 == 0 {
                 cancel.check()?;
             }
             let alpha = f64::from(pixel[3]).clamp(0.0, 1.0);
-            for ((radiance, background), out) in pixel.iter().take(3).zip(self.background).zip(rgba.iter_mut()) {
-                let c = if alpha > 0.0 { f64::from(*radiance) * self.exposure / alpha } else { 0.0 };
-                let mapped = self.tone_map.map(c);
-                let value = if self.transparent { mapped } else { mapped * alpha + background * (1.0 - alpha) };
-                let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
-                *out = (encoded.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let absolute = offset + index;
+            let position = [
+                ((absolute % self.width as usize) as f64 + 0.5) / f64::from(self.width),
+                ((absolute / self.width as usize) as f64 + 0.5) / f64::from(self.height),
+            ];
+            let background = self.backdrop.map_or(self.background, |backdrop| backdrop.color(position));
+            let mapped = std::array::from_fn(|channel| {
+                let c = if alpha > 0. { f64::from(pixel[channel]) * self.exposure / alpha * self.finishing.rgb_gain[channel] } else { 0. };
+                self.tone_map.map(c)
+            });
+            let mapped = self.finishing.display(mapped, position);
+            for ((c, b), out) in mapped.into_iter().zip(background).zip(rgba.iter_mut()) {
+                let value = if self.transparent { c } else { c * alpha + b * (1. - alpha) };
+                let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1. / 2.4) - 0.055 };
+                *out = (encoded.clamp(0., 1.) * 255.).round() as u8;
             }
             rgba[3] = if self.transparent { (alpha * 255.0).round() as u8 } else { 255 };
         }
@@ -626,6 +662,9 @@ impl Display {
     }
 }
 impl ImageWork for Task {
+    fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
+        self.exr.take()
+    }
     fn step(&mut self, units: usize) -> Result<TaskPoll> {
         self.cancel.check()?;
         if let Some(png) = &mut self.png {
@@ -635,8 +674,27 @@ impl ImageWork for Task {
             self.dispatch()?;
             return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.options.samples) }));
         }
-        log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
-        let mut linear = self.read_linear()?;
+        if self.exr_work.is_none() {
+            log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
+        }
+        let mut linear = if let Some(mut work) = self.exr_work.take() {
+            if !work.step(4)? {
+                let done = work.completed_rows();
+                self.exr_work = Some(work);
+                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done, total: u64::from(self.request.height) }));
+            }
+            let (bytes, pixels) = work.finish()?;
+            self.exr = Some(bytes);
+            pixels
+        } else {
+            let pixels = self.read_linear()?;
+            if self.options.linear_exr {
+                self.exr_work =
+                    Some(solidcraft_render::job::linear_exr::ExrTask::new(self.request.width, self.request.height, pixels, self.cancel.clone())?);
+                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }));
+            }
+            pixels
+        };
         if let Some(denoiser) = &self.denoiser {
             // Diagnose the raw path buffer before filtering: never hide invalid media
             // or nonfinite radiance by replacing a pixel with neighbouring values.
@@ -647,6 +705,10 @@ impl ImageWork for Task {
         let mut rgba = scene::reserved(linear.len() * 4)?;
         rgba.resize(linear.len() * 4, 0);
         let display = Display {
+            finishing: self.options.finishing,
+            backdrop: self.options.backdrop,
+            width: self.request.width,
+            height: self.request.height,
             exposure: 2.0f64.powf(self.options.exposure_ev),
             tone_map: self.options.tone_map,
             background: self.request.background.map(solidcraft_render::surface::srgb8_to_linear),
@@ -660,7 +722,8 @@ impl ImageWork for Task {
             let jobs: Vec<_> = linear
                 .chunks(chunk)
                 .zip(rgba.chunks_mut(chunk * 4))
-                .map(|(input, output)| scope.spawn(move || display.encode(input, output, cancel)))
+                .enumerate()
+                .map(|(i, (input, output))| scope.spawn(move || display.encode_at(input, output, cancel, i * chunk)))
                 .collect();
             jobs.into_iter()
                 .try_for_each(|job| job.join().unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "display encoding worker failed"))))
