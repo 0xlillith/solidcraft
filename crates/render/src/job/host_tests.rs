@@ -11,7 +11,7 @@ mod progressive_checkpoints {
     fn fixture(samples: u32) -> (CpuHost, JobHandle, Running) {
         let host = ImageHost(Arc::new(Owner {
             executor: None,
-            shared: CpuHost::shared(),
+            shared: CpuHost::shared(MEMORY_LIMIT),
             kind: HostKind::NativeWorker,
             running: Mutex::new(None),
             _worker: None,
@@ -643,7 +643,7 @@ fn environment_payload_is_owned_by_admitted_work_not_retained_status() {
     for cancelled in [false, true] {
         let host = ImageHost(Arc::new(Owner {
             executor: Some(Arc::new(ResourceExecutor)),
-            shared: ImageHost::shared(),
+            shared: ImageHost::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -689,7 +689,7 @@ fn texture_payload_is_owned_by_admitted_work_not_retained_status() {
     for cancelled in [false, true] {
         let host = ImageHost(Arc::new(Owner {
             executor: Some(Arc::new(ResourceExecutor)),
-            shared: ImageHost::shared(),
+            shared: ImageHost::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]

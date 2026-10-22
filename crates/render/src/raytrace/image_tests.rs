@@ -244,7 +244,7 @@ fn primary_intervals_follow_camera_clip_planes_for_both_projections_and_up_axes(
 fn resumable_cursor_matches_original_visibility_and_charges_each_unit() {
     let cancel = CancelToken::default();
     let triangle = Triangle::new([Vec3::ZERO, Vec3::X, Vec3::Y]).unwrap();
-    let mut builder = BvhBuilder::new(vec![triangle], limits(), &cancel).unwrap();
+    let mut builder = BvhBuilder::new(vec![triangle], limits(job::CpuBudget::Compact), &cancel).unwrap();
     while !builder.step(1, &cancel).unwrap().complete {}
     let bvh = builder.finish().unwrap();
     let ray = Ray::new(Vec3::new(0.2, 0.2, 1.0), -Vec3::Z, 0.0, 2.0).unwrap();

@@ -270,7 +270,7 @@ fn prepared_hit_preserves_original_winding_identity_and_never_certifies_glass() 
     let ray = Ray::new(Vec3::new(2.0, -50.0, 0.0), Vec3::Y, 0.0, 100.0).unwrap();
     let geometry = triangle.intersect(&ray).unwrap();
     let cancel = CancelToken::default();
-    let mut builder = BvhBuilder::new(vec![triangle], limits(), &cancel).unwrap();
+    let mut builder = BvhBuilder::new(vec![triangle], limits(job::CpuBudget::Compact), &cancel).unwrap();
     while !builder.step(1, &cancel).unwrap().complete {}
     let bvh = builder.finish().unwrap();
     let primitives =
@@ -309,7 +309,7 @@ fn shared_spawn_excludes_signed_zero_self_hit_without_skipping_thin_blockers() {
             bounds: Default::default(),
         };
         let cancel = CancelToken::default();
-        let mut builder = BvhBuilder::new(vec![triangle], limits(), &cancel).unwrap();
+        let mut builder = BvhBuilder::new(vec![triangle], limits(job::CpuBudget::Compact), &cancel).unwrap();
         while !builder.step(1, &cancel).unwrap().complete {}
         let bvh = builder.finish().unwrap();
         let primitives = [primitive];

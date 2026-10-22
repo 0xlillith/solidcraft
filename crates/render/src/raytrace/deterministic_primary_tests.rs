@@ -207,7 +207,7 @@ fn request_admission_and_task_slot_caps_are_not_expanded() {
     assert_eq!(fast.admission.estimated_total_bytes, legacy.admission.estimated_total_bytes);
     assert_eq!(fast.options.reflections.as_ref().unwrap().samples, 64);
     assert!(std::mem::size_of::<ImageTask>() <= 4096);
-    assert_eq!(MAX_WORK, 1_000_000_000);
+    assert_eq!(crate::raytrace::MAX_WORK, 1_000_000_000);
     assert_eq!(job::image::MAX_JOB_BYTES, 384 * 1024 * 1024);
 }
 
