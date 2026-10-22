@@ -79,6 +79,7 @@ impl RenderSetup {
     pub fn validate(&self) -> Result<()> {
         let limits = match &self.job {
             Some(RenderJob::CpuRaytrace { options }) => options.budget.image_limits(options.progressive.is_some()),
+            Some(RenderJob::GpuPath { .. }) => solidcraft_render::job::GPU_PATH_LIMITS,
             _ => RenderLimits::default(),
         };
         self.validate_with_limits(limits)
@@ -89,6 +90,11 @@ impl RenderSetup {
     pub fn validate_for_cpu(&self, budget: solidcraft_render::job::CpuBudget) -> Result<()> {
         budget.validate_image(self.width, self.height, None).map_err(|e| DocError::Invalid(e.to_string()))?;
         self.validate_with_limits(budget.image_limits(false))
+    }
+
+    /// Typed GPU options have already been lowered; retain their dimension envelope.
+    pub fn validate_for_gpu(&self) -> Result<()> {
+        self.validate_with_limits(solidcraft_render::job::GPU_PATH_LIMITS)
     }
 
     fn validate_with_limits(&self, limits: RenderLimits) -> Result<()> {

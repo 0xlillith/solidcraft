@@ -913,7 +913,11 @@ fn cache_completed_image(app: &mut SolveApp, ctx: &egui::Context) {
             let handle = app.session.render_job_handle(job).map_err(|e| e.to_string())?;
             let frame = handle.frame().map_err(|e| e.to_string())?.ok_or("render has no completed image")?;
             let captured = handle.status().map_err(|e| e.to_string())?;
-            let budget = captured_image_limits(&captured.request);
+            let budget = if frame.info.executor.as_str() == "gpu-path" {
+                solidcraft_engine::render::job::GPU_PATH_LIMITS
+            } else {
+                captured_image_limits(&captured.request)
+            };
             let image = decode_render_image(frame.png(), frame.info.width, frame.info.height, budget, ctx.input(|i| i.max_texture_side))?;
             app.session.execute("render.result.pin", &json!({"job":job})).map_err(|e| e.to_string())?;
             app.render_workspace.image_info = Some(frame.info.clone());

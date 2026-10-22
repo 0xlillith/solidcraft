@@ -2,11 +2,11 @@
 //! features. Every worker quantum submits at most 256K paths, then checks cancellation.
 use solidcraft_geom::Vec3;
 use solidcraft_render::{
-    Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderFeature, RenderFormat, RenderLimits, RenderMode, RenderOperation,
-    RenderProfile, ScratchLayout,
+    Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderFeature, RenderFormat, RenderMode, RenderOperation, RenderProfile,
+    ScratchLayout,
     job::{
-        Admission, CancelToken, ErrorCode, ImageExecutor, ImageHost, ImageRequest, ImageWork, JobError, JobOptions, Phase, PngTask, Progress, Result,
-        TaskPoll, ToneMap, admit_geometry,
+        Admission, CancelToken, ErrorCode, GPU_PATH_LIMITS, ImageExecutor, ImageHost, ImageRequest, ImageWork, JobError, JobOptions,
+        MAX_GPU_PATH_BODIES, MAX_GPU_PATH_TRIANGLES, Phase, PngTask, Progress, Result, TaskPoll, ToneMap, admit_geometry_with_limits,
     },
 };
 use std::{
@@ -21,7 +21,7 @@ mod scene;
 mod tests;
 mod textures;
 const SHADER: &str = concat!(include_str!("path.wgsl"), "\n", include_str!("shadows.wgsl"), "\n", include_str!("textures.wgsl"));
-const MAX_TRIANGLES: u64 = 1_048_576;
+const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
 const PARAMETER_BYTES: usize = 448;
 // Eight u32 words: count low, pixel, bounce, sample, code, count high, first-writer flag, spare.
 const FAILURE_BYTES: u64 = 32;
@@ -93,7 +93,13 @@ fn device_limits(supported: wgpu::Limits) -> Result<wgpu::Limits> {
     if supported.max_storage_buffers_per_shader_stage < PATH_STORAGE_BUFFERS {
         return Err(gpu("gpu-path requires six storage buffers per shader stage"));
     }
+    // Query first: never request unsupported storage or buffer sizes. The old
+    // downlevel defaults unnecessarily capped large CAD geometry at 128 MiB.
+    let storage = supported.max_storage_buffer_binding_size.min(1024 * 1024 * 1024);
+    let buffer = supported.max_buffer_size.min(1024 * 1024 * 1024);
     let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(supported);
+    limits.max_storage_buffer_binding_size = storage.min(buffer);
+    limits.max_buffer_size = buffer;
     limits.max_storage_buffers_per_shader_stage = PATH_STORAGE_BUFFERS;
     Ok(limits)
 }
@@ -222,7 +228,7 @@ fn descriptor() -> Result<ExecutorDescriptor> {
             formats: vec![RenderFormat::Png],
             features: vec![RenderFeature::Pbr, RenderFeature::Progressive, RenderFeature::Refraction, RenderFeature::Hdri],
         }],
-        limits: RenderLimits::default(),
+        limits: GPU_PATH_LIMITS,
         scratch: ScratchLayout { sample_scale: 1, sample_bytes_per_pixel: 16, output_bytes_per_pixel: 16, encoding_bytes_per_pixel: 16 },
     })
 }
@@ -252,7 +258,7 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     {
         return Err(JobError::new(ErrorCode::InvalidRequest, "gpu-path requires a bounded finite camera"));
     }
-    let mut admission = admit_geometry(scene, request, MAX_TRIANGLES)?;
+    let mut admission = admit_geometry_with_limits(scene, request, MAX_TRIANGLES, MAX_GPU_PATH_BODIES, 2 * 1024 * 1024 * 1024, GPU_PATH_LIMITS)?;
     if scene
         .meshes
         .iter()
@@ -278,13 +284,16 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         admission.preparation_bytes += textures.working_bytes();
     }
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
-    if admission.estimated_total_bytes > 512 * 1024 * 1024 {
-        return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its 512 MiB admission estimate"));
+    if admission.estimated_total_bytes > GPU_PATH_LIMITS.max_scratch_bytes {
+        return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its bounded 8 GiB admission estimate"));
     }
     Ok(admission)
 }
 
 impl ImageExecutor for Executor {
+    fn memory_limit_bytes(&self) -> u64 {
+        GPU_PATH_LIMITS.max_scratch_bytes
+    }
     fn descriptor(&self) -> Result<ExecutorDescriptor> {
         descriptor()
     }
@@ -295,10 +304,12 @@ impl ImageExecutor for Executor {
         let texture_bytes = request
             .textures
             .as_ref()
-            .map_or(16, |t| t.summary().linear_pixel_bytes + 4 * (5 + scene.meshes.len() as u64 + t.bindings().len() as u64 * 16));
+            .map_or(16, |t| t.summary().linear_pixel_bytes + 4 * (5 + scene.meshes.len() as u64 + t.bindings().len() as u64 * 24));
         let environment_bytes =
             request.environment.as_ref().map_or(48, |source| 16 + u64::from(source.info().width) * u64::from(source.info().height) * 32);
-        if texture_bytes > limit
+        let node_bytes = a.triangles.max(1) * 64;
+        if node_bytes > limit
+            || texture_bytes > limit
             || environment_bytes > limit
             || geometry_bytes > limit
             || u64::from(request.width) * u64::from(request.height) * 16 > limit

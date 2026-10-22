@@ -78,7 +78,7 @@ pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) 
     let vertex_count = scene.meshes.iter().map(|m| m.mesh.positions.len()).sum::<usize>();
     let mut vertices = reserved(vertex_count * 32)?;
     let mut vertex_offset = 0u32;
-    let mut media_bounds = reserved::<(Vec3, Vec3, bool)>(8)?;
+    let mut media_bounds = reserved::<(Vec3, Vec3, bool)>(solidcraft_render::job::MAX_GPU_DIELECTRICS)?;
     for (body_index, body) in scene.meshes.iter().enumerate() {
         cancel.check()?;
         let body_start = triangles.len();
@@ -151,8 +151,8 @@ pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) 
         validate_medium(&triangles[body_start..], cancel)?;
         let body_triangles = &triangles[body_start..];
         if body_triangles.iter().any(|t| t.transmission.is_some()) {
-            if media_bounds.len() >= 8 {
-                return Err(invalid("at most eight dielectric bodies are supported"));
+            if media_bounds.len() >= solidcraft_render::job::MAX_GPU_DIELECTRICS {
+                return Err(invalid("at most 32 disjoint dielectric bodies are supported"));
             }
             let closed = body_triangles.iter().any(|t| t.transmission.is_some_and(|v| v.thin_wall_thickness_mm().is_none()));
             let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);

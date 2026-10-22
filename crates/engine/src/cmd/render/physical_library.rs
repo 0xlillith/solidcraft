@@ -201,7 +201,7 @@ mod tests {
         let before = s.doc.clone();
         let history = (s.undo.len(), s.revision);
         let listing = list(&json!({"limit":128})).unwrap();
-        assert_eq!(listing["total"], 51);
+        assert_eq!(listing["total"], 59);
         for item in listing["items"].as_array().unwrap() {
             let id = item["id"].as_str().unwrap();
             let detail = describe(id).unwrap();
@@ -234,7 +234,7 @@ mod tests {
                 Err(_) => refused += 1,
             }
         }
-        assert_eq!((accepted, refused), (43, 8));
+        assert_eq!((accepted, refused), (46, 13));
         assert!(s.doc.user_materials.is_empty());
     }
 }

@@ -31,11 +31,19 @@ pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGL
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
 pub use host::{CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, PreviewInfo, RenderFrame, RenderPreview};
-pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry};
+pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geometry_with_limits};
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};
 pub use png::PngTask;
 pub use punctual::{PunctualLightOptions, SpotConeOptions};
+
+/// Native path-tracing ceilings, further restricted by the actual device.
+/// Kept in the device-independent layer so saved intent and UI agree with execution.
+pub const GPU_PATH_LIMITS: crate::RenderLimits =
+    crate::RenderLimits { max_dimension: 8192, max_pixels: 16_777_216, max_scratch_bytes: 8 * 1024 * 1024 * 1024 };
+pub const MAX_GPU_PATH_TRIANGLES: u64 = 8_000_000;
+pub const MAX_GPU_PATH_BODIES: usize = 65_536;
+pub const MAX_GPU_DIELECTRICS: usize = 32;
 
 /// Runtime sampling intent, separate from saved documents and device resources.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -90,6 +98,11 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    /// Host-owned logical allocation pool. This is a ceiling, not eager allocation.
+    /// Registration snapshots and validates it; unknown executors retain 512 MiB.
+    fn memory_limit_bytes(&self) -> u64 {
+        512 * 1024 * 1024
+    }
     fn descriptor(&self) -> Result<crate::ExecutorDescriptor>;
     fn admit(&self, scene: &crate::ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission>;
     fn begin(&self, scene: crate::ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>>;

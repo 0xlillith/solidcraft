@@ -16,6 +16,9 @@ pub(super) fn validate_progressive_image(app: &SolveApp) -> Result<(), String> {
 }
 
 pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderLimits {
+    if app.render_workspace.view.method == super::ImageMethod::GpuRaytrace {
+        return solidcraft_engine::render::job::GPU_PATH_LIMITS;
+    }
     if app.render_workspace.view.method != super::ImageMethod::CpuRaytrace {
         return Default::default();
     }

@@ -2697,3 +2697,45 @@ fn gpu_scalar_maps_match_linear_reference_without_touching_ior() {
         assert!((f64::from(*a) - b).abs() < 2e-6, "scalar map {actual:?}");
     }
 }
+
+#[test]
+fn production_envelope_is_device_bounded_and_never_silently_resized() {
+    let mut image = request(1);
+    image.width = 3840;
+    image.height = 2160;
+    let source = sphere(white());
+    let accepted = admission(&source, &image, JobOptions::default()).unwrap();
+    assert!(accepted.estimated_total_bytes < GPU_PATH_LIMITS.max_scratch_bytes);
+    assert_eq!(descriptor().unwrap().fit(3840, 2160), Some((3840, 2160)));
+    image.width = 8193;
+    assert!(admission(&source, &image, JobOptions::default()).is_err());
+    image.width = 8192;
+    image.height = 8192;
+    assert!(admission(&source, &image, JobOptions::default()).is_err());
+    let mut supported = wgpu::Limits::downlevel_defaults();
+    supported.max_storage_buffers_per_shader_stage = 8;
+    supported.max_storage_buffer_binding_size = 2 * 1024 * 1024 * 1024;
+    supported.max_buffer_size = 2 * 1024 * 1024 * 1024;
+    let limits = device_limits(supported.clone()).unwrap();
+    assert_eq!(limits.max_storage_buffer_binding_size, 1024 * 1024 * 1024);
+    assert!(limits.max_buffer_size <= supported.max_buffer_size);
+}
+
+#[test]
+fn disjoint_glass_count_does_not_relax_closed_topology_or_overlap_validation() {
+    let template = sphere_grid(white(), 8, 16);
+    let mut source = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    for i in 0..solidcraft_render::job::MAX_GPU_DIELECTRICS {
+        let mut body = template.meshes[0].clone();
+        body.name = format!("separate glass {i}");
+        for p in &mut Arc::make_mut(&mut body.mesh).positions {
+            p.x += i as f64 * 3.0;
+        }
+        body.transmission = Some(clear_glass());
+        source.bounds = source.bounds.union(&body.mesh.bounds());
+        source.meshes.push(body);
+    }
+    assert!(scene::flatten(&source, Vec3::ZERO, &CancelToken::default()).is_ok());
+    source.meshes.push(source.meshes[0].clone());
+    assert!(scene::flatten(&source, Vec3::ZERO, &CancelToken::default()).is_err());
+}

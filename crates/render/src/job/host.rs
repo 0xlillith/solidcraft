@@ -805,7 +805,12 @@ impl ImageHost {
         {
             return Err(JobError::new(ErrorCode::InvalidRequest, "image worker currently accepts one Preview/Image/PNG profile"));
         }
-        let shared = Self::shared(MEMORY_LIMIT);
+        let limit = executor.memory_limit_bytes();
+        let ceiling = if usize::BITS >= 64 { super::NATIVE_CPU_POOL_BYTES } else { MEMORY_LIMIT };
+        if limit == 0 || limit > ceiling {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "registered image pool exceeds supported address space"));
+        }
+        let shared = Self::shared(limit);
         let worker_shared = shared.clone();
         let worker = std::thread::Builder::new()
             .name("solidcraft-render".into())
@@ -847,7 +852,7 @@ impl ImageHost {
     }
 
     pub fn job_limit_bytes(&self) -> u64 {
-        if self.0.executor.is_some() { MEMORY_LIMIT } else { super::image::MAX_JOB_BYTES }
+        if self.0.executor.is_some() { self.0.shared.budget.limit } else { super::image::MAX_JOB_BYTES }
     }
 
     pub fn pool_limit_bytes(&self) -> u64 {
@@ -862,8 +867,8 @@ impl ImageHost {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executors do not accept CPU raytrace options"));
             }
             let admission = executor.admit(scene, request, options)?;
-            if admission.estimated_total_bytes > MEMORY_LIMIT {
-                return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds 512 MiB"));
+            if admission.estimated_total_bytes > self.job_limit_bytes() {
+                return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds its admitted host pool"));
             }
             Ok(admission)
         } else {
@@ -885,8 +890,8 @@ impl ImageHost {
             }
             return Ok(());
         }
-        if work.checked_add(request).is_none_or(|n| n > MEMORY_LIMIT) {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds 512 MiB"));
+        if work.checked_add(request).is_none_or(|n| n > self.job_limit_bytes()) {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds its admitted host pool"));
         }
         Ok(())
     }

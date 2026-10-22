@@ -1206,7 +1206,7 @@
   "render.material_glass_help": "Recetas originales e ilustrativas. Las muestras indican transmitancia, no un render. La absorción es −ln(transmitancia lineal) / distancia de referencia; no se cambia el alfa.",
   "render.material_gpu_required": "Estos materiales activos requieren trazado GPU. Selecciona GPU o desactiva los ajustes antes de Comprobar o Iniciar.",
   "render.material_ior": "Índice de refracción (IOR)",
-  "render.material_limits": "M?ximo de 128 modificaciones de cuerpos, 8 cuerpos de vidrio y 128 asociaciones de texturas. Los mapas id?nticos comparten memoria; se mantiene la admisi?n completa de memoria GPU.",
+  "render.material_limits": "Máximo de 128 modificaciones de cuerpos, 32 vidrios separados, 64 recubrimientos y 128 asociaciones de texturas. Los mapas idénticos comparten memoria; se mantienen los límites reales del dispositivo y de memoria total.",
   "render.material_map_invalid": "Las rutas de mapas deben ser locales y acotadas; la intensidad de normales debe ser finita y estar entre 0 y 1.",
   "render.material_map_required": "Elige una imagen de color o de normales antes de usar mapas.",
   "render.material_maps": "Mapas planos de color y normales",

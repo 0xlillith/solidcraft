@@ -1030,7 +1030,7 @@
   "render.material_glass_help": "Původní ilustrativní recepty. Vzorky ukazují propustnost, ne render. Absorpce je −ln(lineární propustnosti) / referenční vzdálenost; alfa se nemění.",
   "render.material_gpu_required": "Aktivní úpravy vyžadují GPU tracing. Před kontrolou nebo spuštěním vyberte GPU nebo úpravy vypněte.",
   "render.material_ior": "Index lomu (IOR)",
-  "render.material_limits": "Pouze celá tělesa. Limity: 8 skel, 64 povlaků a 16 mapovaných těles.",
+  "render.material_limits": "Nejvýše 128 nastavení těles, 32 oddělených skel, 64 povlaků a 128 vazeb textur. Shodné mapy sdílejí paměť; limity zařízení a celkové paměti zůstávají aktivní.",
   "render.material_map_invalid": "Cesty map musí být omezené místní cesty; síla normál musí být konečná mezi 0 a 1.",
   "render.material_map_required": "Před použitím map vyberte obraz barvy nebo normál.",
   "render.material_maps": "Rovinné mapy barvy a normál",

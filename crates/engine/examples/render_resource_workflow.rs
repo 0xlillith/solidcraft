@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Err(_) => refused += 1,
         }
     }
-    require((checked, planned, refused) == (51, 43, 8), "unexpected physical reference/point-density coverage")?;
+    require((checked, planned, refused) == (59, 46, 13), "unexpected physical reference/point-density coverage")?;
     require(restored.doc.to_json() == before, "physical planning altered the design")?;
     let complete = restored
         .execute("render.library.studio.prepare", &json!({"id":"RIG-001","variant":"complete","center_mm":[10,20,30],"subject_extent_mm":100}))?;

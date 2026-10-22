@@ -469,7 +469,7 @@ fn prepare_progressive(
         }
         settings
     };
-    settings.validate().map_err(|e| bad(command, e.to_string()))?;
+    settings.validate_for_gpu().map_err(|e| bad(command, e.to_string()))?;
     if settings.environment_rotation != 0.0 || settings.environment_intensity != 1.0 {
         return Err(bad(command, "environment controls are not supported by the installed image executors"));
     }

@@ -201,7 +201,7 @@ impl RuntimeTextures {
         let mut shared = std::collections::BTreeMap::<([u8; 32], u8), TextureMap>::new();
         for binding in &mut bindings {
             binding.frame.validate()?;
-            if binding.body_index >= 16384
+            if binding.body_index >= super::MAX_GPU_PATH_BODIES
                 || binding.body_name.is_empty()
                 || binding.body_name.len() > 1024
                 || binding.body_name.chars().any(char::is_control)

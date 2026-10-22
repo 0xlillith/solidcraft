@@ -1049,7 +1049,7 @@
   "render.library_title": "Render-Ressourcenbibliothek",
   "render.library_uniform_ack": "Einheitliche Näherung ohne räumliche oder erweiterte Effekte verwenden",
   "render.material_color_replace": "Basismap ersetzt Körperfarbe",
-  "render.material_limits": "H?chstens 128 K?rper?berschreibungen, 8 Glask?rper und 128 Texturbindungen. Identische Maps teilen Speicher; die vollst?ndige GPU-Speicherpr?fung bleibt aktiv.",
+  "render.material_limits": "Höchstens 128 Körperüberschreibungen, 32 getrennte Glaskörper, 64 Beschichtungen und 128 Texturbindungen. Identische Maps teilen Speicher; Geräte- und Gesamtspeichergrenzen bleiben aktiv.",
   "render.material_metallic_map": "Metallanteil-Map (linear)",
   "render.material_roughness_map": "Rauheitsmap (linear)",
   "render.material_v_up": "Textur-V zeigt im Bild nach oben",

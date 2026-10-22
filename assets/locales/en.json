@@ -1212,7 +1212,7 @@
   "render.material_glass_help": "Original illustrative recipes. Swatches show transmittance, not a rendered preview. Absorption is −ln(linear transmittance) / reference distance; alpha is unchanged.",
   "render.material_gpu_required": "These active material overrides require GPU path tracing. Select GPU or disable the overrides before Check or Start.",
   "render.material_ior": "Index of refraction (IOR)",
-  "render.material_limits": "At most 128 body overrides, 8 glass bodies and 128 texture bindings. Unique maps share storage; the complete GPU memory admission still applies.",
+  "render.material_limits": "At most 128 body overrides, 32 disjoint glass bodies, 64 coats and 128 texture bindings. Identical maps share storage; actual device and total memory limits still apply.",
   "render.material_map_invalid": "Map paths must be bounded local paths; normal strength must be finite and between 0 and 1.",
   "render.material_map_required": "Choose a color image or a normal image before using maps.",
   "render.material_maps": "Planar color and normal maps",

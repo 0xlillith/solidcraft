@@ -175,11 +175,16 @@ pub(super) struct View {
 fn read_targets(app: &mut SolveApp) -> Result<Vec<Target>, String> {
     let reply = app.run("render.scene", json!({}))?;
     let values = reply.get("bodies").and_then(Value::as_array).ok_or_else(|| "missing render scene bodies".to_string())?;
-    if values.len() > 16_384 {
+    if values.len() > solidcraft_engine::render::job::MAX_GPU_PATH_BODIES {
         return Err("render scene exceeds its body limit".into());
     }
     let targets: Vec<Target> = serde_json::from_value(Value::Array(values.clone())).map_err(|e| e.to_string())?;
-    if targets.iter().any(|t| t.ordinal >= 16_384 || t.name.is_empty() || t.name.len() > 1024 || t.name.chars().any(char::is_control)) {
+    if targets.iter().any(|t| {
+        t.ordinal >= solidcraft_engine::render::job::MAX_GPU_PATH_BODIES
+            || t.name.is_empty()
+            || t.name.len() > 1024
+            || t.name.chars().any(char::is_control)
+    }) {
         return Err("invalid render scene identity".into());
     }
     Ok(targets)
@@ -215,7 +220,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             return Err(app.tr("render.material_revalidate_needed").to_string());
         }
         let target = &binding.target;
-        if target.ordinal >= 16_384
+        if target.ordinal >= solidcraft_engine::render::job::MAX_GPU_PATH_BODIES
             || target.name.is_empty()
             || target.name.len() > 1024
             || target.name.chars().any(char::is_control)
@@ -281,7 +286,9 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             textures.push(wire);
         }
     }
-    if glass.len() > 8 || textures.len() > solidcraft_engine::render::job::textures::MAX_TEXTURE_BINDINGS {
+    if glass.len() > solidcraft_engine::render::job::MAX_GPU_DIELECTRICS
+        || textures.len() > solidcraft_engine::render::job::textures::MAX_TEXTURE_BINDINGS
+    {
         return Err(app.tr("render.material_limits").to_string());
     }
     params["raytrace"] = json!({"dielectrics":glass,"clear_coats":coats,"textures":textures});

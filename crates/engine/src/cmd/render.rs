@@ -90,7 +90,7 @@ fn scene(s: &mut Session, params: &Value) -> Result<Value> {
         .meshes
         .iter()
         .enumerate()
-        .map(|(ordinal,m)| json!({"ordinal":ordinal,"name":m.name,"triangles":m.mesh.triangles.len(),"color":m.color,"opacity":m.opacity,"face_appearances":m.faces.len()}))
+        .map(|(ordinal,m)| json!({"ordinal":ordinal,"name":m.name,"triangles":m.mesh.triangles.len(),"color":m.color,"opacity":m.opacity,"face_appearances":m.faces.len(),"bounds":{"min":m.mesh.bounds().min,"max":m.mesh.bounds().max}}))
         .collect();
     Ok(
         json!({"bodies":bodies,"bounds":if scene.bounds.is_empty() { Value::Null } else { json!({"min":scene.bounds.min,"max":scene.bounds.max}) },"overlays":false}),

@@ -1049,7 +1049,7 @@
   "render.library_title": "렌더 리소스 라이브러리",
   "render.library_uniform_ack": "공간 변화나 고급 효과 없는 균일 근사 사용",
   "render.material_color_replace": "기본 맵으로 바디 색상 교체",
-  "render.material_limits": "?? ??? ?? 128?, ?? ?? 8?, ??? ?? 128????. ??? ?? ?? ??? ???? ?? GPU ??? ??? ?????.",
+  "render.material_limits": "최대 128개 바디 설정, 분리된 유리 32개, 코팅 64개, 텍스처 연결 128개. 같은 맵은 메모리를 공유하며 실제 장치 및 전체 메모리 제한은 유지됩니다.",
   "render.material_metallic_map": "금속성 맵 (선형)",
   "render.material_roughness_map": "거칠기 맵 (선형)",
   "render.material_v_up": "텍스처 V축은 이미지 위쪽",

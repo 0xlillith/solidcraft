@@ -763,3 +763,42 @@ fn native_cpu_envelopes_do_not_expand_registered_or_cooperative_pools() {
     assert!(cpu.descriptor_for_request(&r).is_err());
     assert_eq!(cpu.admitted_bytes(), 0);
 }
+
+#[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn registered_large_pool_is_explicit_finite_and_accounted() {
+    struct Envelope(u64);
+    impl ImageExecutor for Envelope {
+        fn memory_limit_bytes(&self) -> u64 {
+            self.0
+        }
+        fn descriptor(&self) -> Result<ExecutorDescriptor> {
+            CpuExecutor.descriptor()
+        }
+        fn admit(&self, _: &ProductScene, _: &ImageRequest, _: JobOptions) -> Result<Admission> {
+            Ok(Admission {
+                triangles: 0,
+                face_appearances: 0,
+                geometry_bytes: 0,
+                pixel_scratch_bytes: 0,
+                preparation_bytes: 0,
+                estimated_total_bytes: 600 * 1024 * 1024,
+                encoded_limit: 4096,
+            })
+        }
+        fn begin(&self, _: ProductScene, _: ImageRequest, _: JobOptions, _: CancelToken) -> Result<Box<dyn ImageWork>> {
+            Err(JobError::new(ErrorCode::InvalidRequest, "admission-only fixture"))
+        }
+    }
+    for limit in [0, super::super::NATIVE_CPU_POOL_BYTES + 1] {
+        assert!(ImageHost::with_executor(Arc::new(Envelope(limit))).is_err());
+    }
+    let host = ImageHost::with_executor(Arc::new(Envelope(1024 * 1024 * 1024))).unwrap();
+    assert_eq!(host.pool_limit_bytes(), 1024 * 1024 * 1024);
+    assert!(host.admit(&empty(), &request(), JobOptions::default()).is_ok());
+    assert_eq!(host.admitted_bytes(), 0, "preflight does not allocate or reserve");
+    let lease = host.0.shared.budget.reserve(600 * 1024 * 1024).unwrap();
+    assert!(host.0.shared.budget.reserve(600 * 1024 * 1024).is_err());
+    drop(lease);
+    assert_eq!(host.admitted_bytes(), 0);
+}

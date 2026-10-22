@@ -1146,7 +1146,7 @@
   "render.material_glass_help": "原创示意配方。色样表示透射率，并非渲染预览。吸收系数为 −ln(线性透射率)/参考距离；不改变透明度。",
   "render.material_gpu_required": "启用的设置需要 GPU 路径追踪。检查或开始前请选择 GPU，或停用这些设置。",
   "render.material_ior": "折射率（IOR）",
-  "render.material_limits": "仅适用于完整实体。上限：8 个玻璃、64 个涂层、16 个贴图实体。",
+  "render.material_limits": "最多 128 个实体设置、32 个分离的玻璃实体、64 个涂层和 128 个纹理绑定。相同贴图共享内存；实际设备和总内存限制仍然有效。",
   "render.material_map_invalid": "贴图必须使用有长度限制的本地路径；法线强度必须是 0 到 1 之间的有限值。",
   "render.material_map_required": "使用贴图前请选择颜色图像或法线图像。",
   "render.material_maps": "平面颜色与法线贴图",
