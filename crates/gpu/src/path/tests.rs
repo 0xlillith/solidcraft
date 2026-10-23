@@ -2594,3 +2594,48 @@ fn medium_failures_are_tolerated_only_when_rare() {
     assert!(!medium_failures_tolerated(531, 1920 * 1080 * 256));
     assert!(!medium_failures_tolerated(1_u64 << 32, 1_u64 << 32));
 }
+
+/// Cancellation in fallible HDR preparation must not drop three wgpu scopes in
+/// forward order. Exercise the real preparation routine inside the guarded path,
+/// then prove that the same device still accepts a fresh nested scope stack.
+#[test]
+fn cancelled_environment_preparation_unwinds_gpu_error_scopes() {
+    use solidcraft_render::lighting::environment::EnvironmentSource;
+    let Ok((_, device, _queue)) = open_headless() else {
+        let vulkan = crate::select::native_backends().contains(wgpu::Backends::VULKAN);
+        assert!(!vulkan || std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required Vulkan device unavailable");
+        return;
+    };
+    let mut image = request(1);
+    image.environment = Some(Arc::new(EnvironmentSource::hdr(original_hdr(), 0.0, 1.0, false).unwrap()));
+    let token = CancelToken::default();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        checked_creation(&device, || {
+            token.cancel();
+            prepare_environment(&image, &token)
+        })
+    }));
+    let error = outcome.expect("ordinary cancellation must not panic").unwrap_err();
+    assert_eq!(error.code, ErrorCode::Cancelled);
+    checked(scopes(&device)).unwrap();
+    let bytes = prepare_environment(&image, &CancelToken::default()).unwrap();
+    let info = image.environment.as_ref().unwrap().info();
+    assert_eq!(bytes.len(), 16 + info.width as usize * info.height as usize * 32);
+}
+
+/// A denoiser allocation can fail after the outer resource scopes were opened.
+/// Preserve its Result while draining every scope, not only the last one.
+#[test]
+fn failed_resource_creation_unwinds_gpu_error_scopes() {
+    let Ok((_, device, _queue)) = open_headless() else {
+        let vulkan = crate::select::native_backends().contains(wgpu::Backends::VULKAN);
+        assert!(!vulkan || std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required Vulkan device unavailable");
+        return;
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        checked_creation(&device, || -> Result<()> { Err(JobError::new(ErrorCode::LimitExceeded, "synthetic bounded allocation refusal")) })
+    }));
+    let error = outcome.expect("ordinary allocation refusal must not panic").unwrap_err();
+    assert_eq!(error.code, ErrorCode::LimitExceeded);
+    checked(scopes(&device)).unwrap();
+}
