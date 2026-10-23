@@ -53,6 +53,15 @@ fn checked(scopes: [wgpu::ErrorScopeGuard; 3]) -> Result<()> {
     error.map_or(Ok(()), |e| Err(gpu(e)))
 }
 
+/// Drain every scope, in reverse order, even when resource creation returns an error.
+/// The ordinary cancellation/error path must not drop an array of guards forwards.
+fn checked_creation<T>(device: &wgpu::Device, create: impl FnOnce() -> Result<T>) -> Result<T> {
+    let error_scopes = scopes(device);
+    let result = create();
+    checked(error_scopes)?;
+    result
+}
+
 /// Open and validate a native device before advertising the executor. Failure leaves the
 /// caller's CPU host usable. Respects SOLIDCRAFT_GPU, including the software adapter policy.
 pub fn host() -> Result<ImageHost> {
@@ -313,6 +322,33 @@ impl ImageExecutor for Executor {
     }
 }
 
+/// Build all fallible CPU environment data before opening GPU error scopes.
+fn prepare_environment(request: &ImageRequest, cancel: &CancelToken) -> Result<Vec<u8>> {
+    cancel.check()?;
+    let mut environment_bytes = Vec::new();
+    if let Some(source) = &request.environment {
+        let prepared = source.prepare(cancel)?;
+        environment_bytes = scene::reserved(16 + prepared.texels().len() * 32)?;
+        let [width, height] = prepared.dimensions();
+        for x in [width, height, width * height, 0] {
+            environment_bytes.extend_from_slice(&x.to_le_bytes());
+        }
+        for (index, texel) in prepared.texels().iter().enumerate() {
+            if index % 1024 == 0 {
+                cancel.check()?;
+            }
+            for x in texel.rgb.into_iter().chain([texel.pdf, texel.threshold]) {
+                environment_bytes.extend_from_slice(&x.to_le_bytes());
+            }
+            environment_bytes.extend_from_slice(&texel.alias.to_le_bytes());
+            environment_bytes.extend_from_slice(&[0; 8]);
+        }
+    } else {
+        environment_bytes.resize(48, 0);
+    }
+    Ok(environment_bytes)
+}
+
 struct Task {
     context: Arc<Context>,
     request: ImageRequest,
@@ -348,81 +384,62 @@ impl Task {
         let upload = scene::flatten(&scene, request.camera.target, &cancel)?;
         let bvh_ms = start.elapsed().as_secs_f64() * 1000.0;
         let mut upload_bytes = (upload.geometry.len() + upload.nodes.len() + texture_upload.len()) as u64;
+        let environment_bytes = prepare_environment(&request, &cancel)?;
+        cancel.check()?;
         let uploading = Instant::now();
         drop(scene);
         let device = &context.device;
-        let scopes = [wgpu::ErrorFilter::Validation, wgpu::ErrorFilter::OutOfMemory, wgpu::ErrorFilter::Internal].map(|f| device.push_error_scope(f));
-        let make =
-            |label, bytes: &[u8], usage| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes, usage });
-        let mut environment_bytes = Vec::new();
-        if let Some(source) = &request.environment {
-            let prepared = source.prepare(&cancel)?;
-            environment_bytes = scene::reserved(16 + prepared.texels().len() * 32)?;
-            let [width, height] = prepared.dimensions();
-            for x in [width, height, width * height, 0] {
-                environment_bytes.extend_from_slice(&x.to_le_bytes());
-            }
-            for (index, texel) in prepared.texels().iter().enumerate() {
-                if index % 1024 == 0 {
-                    cancel.check()?;
-                }
-                for x in texel.rgb.into_iter().chain([texel.pdf, texel.threshold]) {
-                    environment_bytes.extend_from_slice(&x.to_le_bytes());
-                }
-                environment_bytes.extend_from_slice(&texel.alias.to_le_bytes());
-                environment_bytes.extend_from_slice(&[0; 8]);
-            }
-        } else {
-            environment_bytes.resize(48, 0);
-        }
-        upload_bytes += environment_bytes.len() as u64;
-        let environment = make("path environment", &environment_bytes, wgpu::BufferUsages::STORAGE);
-        drop(environment_bytes);
-        let triangles = make("path triangles", &upload.geometry, wgpu::BufferUsages::STORAGE);
-        let nodes = make("path BVH", &upload.nodes, wgpu::BufferUsages::STORAGE);
-        let texture_buffer = make("path opaque textures", &texture_upload, wgpu::BufferUsages::STORAGE);
-        let uniform = make("path parameters", &[0; PARAMETER_BYTES], wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
-        let size = u64::from(request.width) * u64::from(request.height) * 16;
-        let accumulation = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("path accumulation"),
-            size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        // Inconsistent-medium path count and the first such path's location (see read_linear).
-        let failures = make(
-            "path medium failures",
-            &[0; FAILURE_BYTES as usize],
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
-        );
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("path readback"),
-            size: size + FAILURE_BYTES,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let mut entries: Vec<_> = [&uniform, &triangles, &nodes, &accumulation, &environment]
-            .iter()
-            .enumerate()
-            .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: binding as u32, resource: buffer.as_entire_binding() })
-            .collect();
-        entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
-        entries.push(wgpu::BindGroupEntry { binding: 6, resource: failures.as_entire_binding() });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-path"), layout: &context.layout, entries: &entries });
-        let denoiser = if options.denoise {
-            Some(denoise::Resources::new(&context, &uniform, [&triangles, &nodes, &environment, &texture_buffer, &failures], &accumulation, size)?)
-        } else {
-            None
-        };
-        let mut error = None;
-        for scope in scopes.into_iter().rev() {
-            if let Some(e) = pollster::block_on(scope.pop()) {
-                error = Some(e);
-            }
-        }
-        if let Some(e) = error {
-            return Err(gpu(e));
-        }
+        let (uniform, accumulation, failures, readback, bind, denoiser) = checked_creation(device, || {
+            let make = |label, bytes: &[u8], usage| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes, usage })
+            };
+            upload_bytes += environment_bytes.len() as u64;
+            let environment = make("path environment", &environment_bytes, wgpu::BufferUsages::STORAGE);
+            drop(environment_bytes);
+            let triangles = make("path triangles", &upload.geometry, wgpu::BufferUsages::STORAGE);
+            let nodes = make("path BVH", &upload.nodes, wgpu::BufferUsages::STORAGE);
+            let texture_buffer = make("path opaque textures", &texture_upload, wgpu::BufferUsages::STORAGE);
+            let uniform = make("path parameters", &[0; PARAMETER_BYTES], wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
+            let size = u64::from(request.width) * u64::from(request.height) * 16;
+            let accumulation = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("path accumulation"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            // Inconsistent-medium path count and the first such path's location (see read_linear).
+            let failures = make(
+                "path medium failures",
+                &[0; FAILURE_BYTES as usize],
+                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            );
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("path readback"),
+                size: size + FAILURE_BYTES,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut entries: Vec<_> = [&uniform, &triangles, &nodes, &accumulation, &environment]
+                .iter()
+                .enumerate()
+                .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: binding as u32, resource: buffer.as_entire_binding() })
+                .collect();
+            entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
+            entries.push(wgpu::BindGroupEntry { binding: 6, resource: failures.as_entire_binding() });
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-path"), layout: &context.layout, entries: &entries });
+            let denoiser = if options.denoise {
+                Some(denoise::Resources::new(
+                    &context,
+                    &uniform,
+                    [&triangles, &nodes, &environment, &texture_buffer, &failures],
+                    &accumulation,
+                    size,
+                )?)
+            } else {
+                None
+            };
+            Ok((uniform, accumulation, failures, readback, bind, denoiser))
+        })?;
         let submission = context.queue.submit([]);
         device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
         let upload_ms = uploading.elapsed().as_secs_f64() * 1000.0;
