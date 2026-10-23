@@ -49,6 +49,8 @@ pub(super) struct Override {
     thickness_mm: f64,
     #[serde(default)]
     shadow_transmission: Option<bool>,
+    #[serde(default)]
+    subsurface: Option<solidcraft_render::transmission::subsurface::Subsurface>,
 }
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
@@ -92,6 +94,9 @@ pub(super) fn apply(scene: &mut ProductScene, overrides: &[Override], command: &
         let mut transmission = Transmission::new(Vec3::new(r, g, b), thickness).map_err(|e| bad(command, e.to_string()))?;
         if let Some(enabled) = input.shadow_transmission {
             transmission = transmission.with_shadow_transmission(enabled);
+        }
+        if let Some(subsurface) = input.subsurface {
+            transmission = transmission.with_subsurface(subsurface).map_err(|e| bad(command, e.to_string()))?;
         }
         OpaqueSurface::new(Vec3::ZERO, 0.0, 0.5, input.ior).map_err(|e| bad(command, e.to_string()))?;
         let body = scene

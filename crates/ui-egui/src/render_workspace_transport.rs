@@ -4,6 +4,14 @@ use crate::{SolveApp, ui_kit};
 
 /// Pilot allocation and conditional transmission sampling share portable intent.
 pub(super) fn sampling_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let changed = ui_kit::checkbox(ui, app.tr("render.nested_enable"), &mut app.render_workspace.view.studio.nested_media);
+    crate::scenario::publish_target("render:nested-enable", changed.rect);
+    if changed.changed() {
+        app.render_workspace.view.dirty = true;
+    }
+    if app.render_workspace.view.studio.nested_media {
+        ui_kit::text(ui, app.tr("render.nested_help"), ui_kit::Text::Note("render.nested_help"));
+    }
     let title = app.tr("render.sampling_title").to_string();
     ui_kit::section(ui, "render_independent_sampling", &title, false, |ui| {
         let before = (app.render_workspace.view.studio.adaptive, app.render_workspace.view.studio.transmission_samples);

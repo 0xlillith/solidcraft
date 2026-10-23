@@ -1,5 +1,8 @@
 //! Bounded optical data and original f64 dielectric transport oracles. Units are mm.
 use solidcraft_geom::Vec3;
+#[path = "subsurface.rs"]
+pub mod subsurface;
+use subsurface::Subsurface;
 
 use crate::surface::{SurfaceError, unit_direction};
 
@@ -8,11 +11,13 @@ pub struct Transmission {
     absorption_per_mm: Vec3,
     thin_wall_thickness_mm: Option<f64>,
     shadow_transmission: bool,
+    subsurface: Option<Subsurface>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransmissionError {
     Absorption,
+    Scattering,
     Distance,
     Thickness,
     Angle,
@@ -22,6 +27,7 @@ pub enum TransmissionError {
 impl std::fmt::Display for TransmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            Self::Scattering => "subsurface scattering requires a closed medium, finite scattering 0..100/mm, HG anisotropy -0.95..0.95 and disabled straight shadow transmission",
             Self::Absorption => "absorption_per_mm must be finite RGB coefficients in [0, 100] per mm",
             Self::Distance => "geometric absorption distance must be finite and nonnegative",
             Self::Thickness => "thin-sheet thickness must be finite and in [0, 10000] mm",
@@ -43,12 +49,23 @@ impl Transmission {
         if thin_wall_thickness_mm.is_some_and(|v| !v.is_finite() || !(0.0..=10000.0).contains(&v)) {
             return Err(TransmissionError::Thickness);
         }
-        Ok(Self { absorption_per_mm, thin_wall_thickness_mm, shadow_transmission: thin_wall_thickness_mm.is_some() })
+        Ok(Self { absorption_per_mm, thin_wall_thickness_mm, shadow_transmission: thin_wall_thickness_mm.is_some(), subsurface: None })
     }
     /// Thin sheets enable straight shadow transmission by default; solids opt in.
     pub fn with_shadow_transmission(mut self, enabled: bool) -> Self {
         self.shadow_transmission = enabled;
         self
+    }
+    pub fn with_subsurface(mut self, subsurface: Subsurface) -> Result<Self, TransmissionError> {
+        subsurface.validate()?;
+        if self.thin_wall_thickness_mm.is_some() || (subsurface.active() && self.shadow_transmission) {
+            return Err(TransmissionError::Scattering);
+        }
+        self.subsurface = Some(subsurface);
+        Ok(self)
+    }
+    pub fn subsurface(self) -> Option<Subsurface> {
+        self.subsurface
     }
     pub fn shadow_transmission(self) -> bool {
         self.shadow_transmission

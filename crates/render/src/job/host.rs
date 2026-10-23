@@ -1038,11 +1038,21 @@ impl ImageHost {
     }
 
     pub fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        let scatter = |t: Option<crate::transmission::Transmission>| t.and_then(|v| v.subsurface()).is_some_and(|s| s.active());
+        if scene.meshes.iter().any(|b| scatter(b.transmission) || b.faces.iter().any(|f| scatter(f.transmission)))
+            && !self.0.executor.as_ref().is_some_and(|executor| executor.supports_subsurface())
+        {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "installed image producer does not implement interior subsurface random walks"));
+        }
+
         self.validate_integrator(request.integrator)?;
         options.validate()?;
         if let Some(executor) = &self.0.executor {
             if request.raytrace.is_some() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executors do not accept CPU raytrace options"));
+            }
+            if options.nested_media && !executor.supports_nested_media() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement certified nested media"));
             }
             if options.volume.is_some() && !executor.supports_volume() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement bounded homogeneous volume transport"));

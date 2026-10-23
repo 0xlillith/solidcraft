@@ -19,6 +19,7 @@ use wgpu::util::DeviceExt;
 
 mod adaptive;
 mod denoise;
+mod media_hierarchy;
 mod scene;
 #[cfg(test)]
 mod tests;
@@ -271,6 +272,15 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     if let Some(environment) = &request.environment {
         environment.validate()?;
     }
+    let scattering = |t: Option<solidcraft_render::transmission::Transmission>| t.and_then(|v| v.subsurface()).is_some_and(|s| s.active());
+    if scene.meshes.iter().any(|b| scattering(b.transmission) || b.faces.iter().any(|f| scattering(f.transmission)))
+        && (options.denoise || options.transmission_samples != 1 || options.volume.is_some_and(|v| v.active()))
+    {
+        return Err(JobError::new(
+            ErrorCode::InvalidRequest,
+            "subsurface random walks require disabled surface denoising, one Fresnel stratum and no external volume",
+        ));
+    }
     let camera = request.camera;
     if options.lens.is_some_and(|lens| lens.aperture_radius_mm > 0.0)
         && (camera.distance < 1e-6 || !(1e-6..=1e6).contains(&(camera.half_height() / camera.distance)) || camera.fov == 0.0)
@@ -305,8 +315,8 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     let triangle_preparation =
         (admission.triangles * 400_u64.max(scene::planar_preparation_bytes_per_triangle() as u64)).max(scene::medium_preparation_bytes(scene));
     admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8)
-        .max(admission.triangles * 232 + vertex_bytes * 2 + pixels * 32 + denoise_bytes)
-        .max(admission.triangles * 116 + vertex_bytes + admission.pixel_scratch_bytes)
+        .max(admission.triangles * 264 + vertex_bytes * 2 + pixels * 32 + denoise_bytes)
+        .max(admission.triangles * 132 + vertex_bytes + admission.pixel_scratch_bytes)
         + 1_048_576;
     admission.preparation_bytes += request.environment.as_ref().map_or(0, |source| source.admitted_bytes());
     if let Some(textures) = &request.textures {
@@ -339,6 +349,12 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_subsurface(&self) -> bool {
+        true
+    }
+    fn supports_nested_media(&self) -> bool {
+        true
+    }
     fn supports_volume(&self) -> bool {
         true
     }
@@ -366,7 +382,7 @@ impl ImageExecutor for Executor {
     fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
         let a = admission(scene, request, options)?;
         let limit = self.context.device.limits().max_storage_buffer_binding_size;
-        let geometry_bytes = 16 + a.triangles.max(1) * 84 + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
+        let geometry_bytes = 16 + a.triangles.max(1) * 100 + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
         let texture_bytes = request
             .textures
             .as_ref()
@@ -439,7 +455,7 @@ impl Task {
         }
         let texture_upload = textures::flatten(request.textures.as_deref(), scene.meshes.len(), request.camera.target, &cancel)?;
         request.textures = None; // GPU upload owns decoded pixels; release captured source bytes.
-        let upload = scene::flatten(&scene, request.camera.target, &cancel)?;
+        let upload = scene::flatten_with_media(&scene, request.camera.target, &cancel, options.nested_media)?;
         let bvh_ms = start.elapsed().as_secs_f64() * 1000.0;
         let mut upload_bytes = (upload.geometry.len() + upload.nodes.len() + texture_upload.len()) as u64;
         let uploading = Instant::now();
@@ -577,7 +593,11 @@ impl Task {
         );
         scene::vector(&mut bytes, up * camera.half_height(), self.options.lens.map_or(0.0, |l| l.focus_distance_mm as f32));
         scene::vector(&mut bytes, back, camera.distance as f32);
-        scene::vector(&mut bytes, Vec3::new(f64::from(self.epsilon), f64::from(self.environment), f64::from(self.studio)), 0.0);
+        scene::vector(
+            &mut bytes,
+            Vec3::new(f64::from(self.epsilon), f64::from(self.environment), f64::from(self.studio)),
+            f32::from(u8::from(self.options.nested_media)),
+        );
         let lighting = self.options.lighting.unwrap_or_default();
         scene::vector(
             &mut bytes,

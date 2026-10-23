@@ -152,6 +152,7 @@ impl CpuJob {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpuJob {
+    pub nested_media: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,6 +184,7 @@ impl Default for GpuJob {
     fn default() -> Self {
         let options = JobOptions::default();
         Self {
+            nested_media: options.nested_media,
             volume: options.volume,
             adaptive: options.adaptive,
             transmission_samples: options.transmission_samples,
@@ -215,6 +217,7 @@ impl GpuJob {
             environment.validate()?;
         }
         let options = JobOptions {
+            nested_media: self.nested_media,
             volume: self.volume,
             adaptive: self.adaptive,
             transmission_samples: self.transmission_samples,

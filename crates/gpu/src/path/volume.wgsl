@@ -26,8 +26,7 @@ fn volume_phase(cosine: f32) -> f32 {
     let denominator=1.0+g*g-2.0*g*clamp(cosine,-1.0,1.0);
     return (1.0-g*g)/(4.0*PI*denominator*sqrt(denominator));
 }
-fn volume_cosine(uniform: f32) -> f32 {
-    let g=u.volume_max.w;
+fn hg_cosine(uniform: f32,g: f32) -> f32 {
     if abs(g)<0.1 {
         // Algebraic inverse-CDF form continuous at g=0, not an isotropic
         // approximation paired with a different HG evaluation density.
@@ -39,11 +38,15 @@ fn volume_cosine(uniform: f32) -> f32 {
     let ratio=(1.0-g*g)/(1.0-g+2.0*g*uniform);
     return clamp((1.0+g*g-ratio*ratio)/(2.0*g),-1.0,1.0);
 }
-fn volume_sample(direction: vec3<f32>, rng: ptr<function,u32>) -> vec3<f32> {
-    let cosine=volume_cosine(random(rng));
+fn volume_cosine(uniform: f32) -> f32 {return hg_cosine(uniform,u.volume_max.w);}
+fn sample_hg(direction: vec3<f32>,g:f32,rng: ptr<function,u32>) -> vec3<f32> {
+    let cosine=hg_cosine(random(rng),g);
     let angle=2.0*PI*random(rng);
     let radius=sqrt(max(0.0,1.0-cosine*cosine));
     return from_local(vec3<f32>(radius*cos(angle),radius*sin(angle),cosine),direction);
+}
+fn volume_sample(direction: vec3<f32>,rng:ptr<function,u32>) -> vec3<f32> {
+    return sample_hg(direction,u.volume_max.w,rng);
 }
 fn volume_visible(o: vec3<f32>, d: vec3<f32>, distance: f32) -> ShadowResult {
     // Volume launches are interior points, not offsets from a surface. Glass is

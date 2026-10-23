@@ -45,7 +45,7 @@ fn source(id: &str, command: &str) -> Result<BuiltinSurfaceSource> {
 }
 
 /// Build an exact identity index once, not an O(bindings * visible bodies) scan.
-fn targets(s: &Session, command: &str) -> Result<BTreeMap<RenderBodyTarget, String>> {
+pub(super) fn targets(s: &Session, command: &str) -> Result<BTreeMap<RenderBodyTarget, String>> {
     if s.model.is_stale() {
         return Err(bad(command, "surface bindings require settled model geometry"));
     }

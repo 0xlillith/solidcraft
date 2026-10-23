@@ -1859,6 +1859,7 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
         job: Some(RenderJob::GpuPath {
             transparent_background: true,
             options: Box::new(GpuJob {
+                nested_media: true,
                 volume: Some(solidcraft_engine::render::job::volume::HomogeneousVolume { extinction_per_mm: 0.0, ..Default::default() }),
                 adaptive: Some(solidcraft_engine::render::job::adaptive::AdaptiveSampling {
                     pilot_samples: 16,

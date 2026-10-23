@@ -40,7 +40,7 @@ pub(super) fn medium_preparation_bytes(scene: &ProductScene) -> u64 {
 
 pub(super) fn planar_preparation_bytes_per_triangle() -> usize {
     let common = std::mem::size_of::<Triangle>() + 2 * std::mem::size_of::<Node>();
-    (common + planar_patches::temporary_bytes_per_triangle()).max(common + 84 + 64 + 4)
+    (common + planar_patches::temporary_bytes_per_triangle()).max(common + 100 + 80 + 4)
 }
 
 impl Triangle {
@@ -72,13 +72,17 @@ pub(super) fn reserved<T>(count: usize) -> Result<Vec<T>> {
     Ok(v)
 }
 
+#[cfg(test)]
 pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) -> Result<Upload> {
+    flatten_with_media(scene, origin, cancel, false)
+}
+pub(super) fn flatten_with_media(scene: &ProductScene, origin: Vec3, cancel: &CancelToken, nested: bool) -> Result<Upload> {
     let count = scene.meshes.iter().map(|m| m.mesh.triangles.len()).sum::<usize>();
     let mut triangles = reserved(count)?;
     let vertex_count = scene.meshes.iter().map(|m| m.mesh.positions.len()).sum::<usize>();
     let mut vertices = reserved(vertex_count * 32)?;
     let mut vertex_offset = 0u32;
-    let mut media_bounds = reserved::<(Vec3, Vec3, bool)>(solidcraft_render::job::MAX_GPU_DIELECTRICS)?;
+    let mut media_bounds = reserved::<super::media_hierarchy::Region>(solidcraft_render::job::MAX_GPU_DIELECTRICS)?;
     for (body_index, body) in scene.meshes.iter().enumerate() {
         cancel.check()?;
         let body_start = triangles.len();
@@ -140,6 +144,11 @@ pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) 
             if (p[1] - p[0]).cross(p[2] - p[0]).len() <= 1e-12 {
                 continue;
             }
+            if let Some(t) = transmission
+                && let Some(scatter) = t.subsurface()
+            {
+                t.with_subsurface(scatter).map_err(|e| invalid(&e.to_string()))?;
+            }
             if transmission.is_some() && surface.clear_coat().is_some() {
                 return Err(invalid("clear coat and transmission cannot share a surface"));
             }
@@ -163,27 +172,33 @@ pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) 
                     hi = hi.max(p);
                 }
             }
-            for (other_lo, other_hi, other_closed) in &media_bounds {
-                if (closed || *other_closed)
-                    && !(hi.x < other_lo.x || lo.x > other_hi.x || hi.y < other_lo.y || lo.y > other_hi.y || hi.z < other_lo.z || lo.z > other_hi.z)
-                {
-                    return Err(invalid("nested or overlapping dielectric bounds are unsupported; separate the bodies' bounds"));
-                }
-            }
-            media_bounds.push((lo, hi, closed));
+            media_bounds.push(super::media_hierarchy::Region {
+                lo,
+                hi,
+                closed,
+                triangles: body_start..triangles.len(),
+                medium: body_index as u32 + 1,
+            });
         }
         vertex_offset = vertex_offset.checked_add(mesh.positions.len() as u32).ok_or_else(|| invalid("vertex offset overflow"))?;
     }
+    let parents = super::media_hierarchy::parents(&media_bounds, &triangles, nested, cancel)?;
     let mut nodes = reserved(triangles.len().saturating_mul(2).max(1))?;
     nodes.push(Node::default());
     build(&mut triangles, 0, &mut nodes, 0, 0, cancel)?;
+    let mut representatives = std::collections::BTreeMap::new();
+    for (index, t) in triangles.iter().enumerate() {
+        if t.transmission.is_some_and(|m| m.thin_wall_thickness_mm().is_none()) {
+            representatives.entry(t.medium).or_insert(index as u32 + 1);
+        }
+    }
     let patches = planar_patches::ids(&triangles, cancel)?;
     let extent = nodes.first().map_or(1.0, |n| n.lo.iter().zip(n.hi).map(|(a, b)| b - a).fold(0.0f32, f32::max));
-    let mut geometry = reserved(16 + triangles.len().max(1) * 84 + vertices.len())?;
-    let mut materials = reserved(triangles.len().max(1) * 64)?;
+    let mut geometry = reserved(16 + triangles.len().max(1) * 100 + vertices.len())?;
+    let mut materials = reserved(triangles.len().max(1) * 80)?;
     let vertex_word = 4 + triangles.len().max(1) * 4;
     let material_word = vertex_word + vertices.len() / 4;
-    let patch_word = material_word + triangles.len().max(1) * 16;
+    let patch_word = material_word + triangles.len().max(1) * 20;
     for word in [triangles.len() as u32, vertex_word as u32, material_word as u32, patch_word as u32] {
         geometry.extend_from_slice(&word.to_le_bytes());
     }
@@ -204,10 +219,25 @@ pub(super) fn flatten(scene: &ProductScene, origin: Vec3, cancel: &CancelToken) 
         vector(&mut materials, t.transmission.map_or(Vec3::ZERO, |t| t.extinction()), t.medium as f32);
         let coat = t.surface.clear_coat().map_or(Vec3::new(0.0, 0.5, 1.5), |c| Vec3::new(c.weight(), c.roughness(), c.ior()));
         vector(&mut materials, coat, if t.transmission.is_some_and(|t| t.shadow_transmission()) { 1.0 } else { 0.0 });
+        let scatter = t.transmission.and_then(|m| m.subsurface());
+        let parent = parents.iter().find(|(id, _)| *id == t.medium).map_or(0, |(_, id)| *id);
+        let parent_triangle =
+            if parent == 0 { 0 } else { *representatives.get(&parent).ok_or_else(|| invalid("missing certified parent material"))? };
+        if scatter.is_some_and(|m| m.active()) {
+            let scale = t.p.iter().map(|p| p.x.abs().max(p.y.abs()).max(p.z.abs())).fold(1.0, f64::max);
+            if scatter.is_some_and(|m| m.scattering_per_mm.recip() < scale / 1_048_576.0) {
+                return Err(invalid("subsurface mean free path falls below camera-relative GPU position precision"));
+            }
+        }
+        vector(
+            &mut materials,
+            Vec3::new(scatter.map_or(0.0, |s| s.scattering_per_mm), scatter.map_or(0.0, |s| s.anisotropy), 0.0),
+            parent_triangle as f32,
+        );
     }
     if geometry.len() == 16 {
         geometry.resize(32, 0);
-        materials.resize(64, 0);
+        materials.resize(80, 0);
     }
     geometry.extend_from_slice(&vertices);
     drop(vertices);

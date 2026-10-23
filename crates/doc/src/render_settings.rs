@@ -33,6 +33,8 @@ pub struct RenderSetup {
     pub job: Option<RenderJob>,
     #[serde(skip_serializing_if = "crate::render_surface::SurfaceBindings::is_empty")]
     pub surfaces: crate::render_surface::SurfaceBindings,
+    #[serde(skip_serializing_if = "crate::render_optics::OpticalBindings::is_empty")]
+    pub optics: crate::render_optics::OpticalBindings,
     #[serde(skip_serializing_if = "solidcraft_render::stage::Stage::is_empty")]
     pub stage: solidcraft_render::stage::Stage,
 }
@@ -69,6 +71,7 @@ impl Default for RenderSetup {
             environment_intensity: 1.0,
             background: [236, 240, 245],
             job: None,
+            optics: Default::default(),
             surfaces: Default::default(),
             stage: Default::default(),
         }
@@ -99,6 +102,13 @@ impl RenderSetup {
 
     fn validate_with_limits(&self, limits: RenderLimits) -> Result<()> {
         self.surfaces.validate()?;
+        self.optics.validate()?;
+        if !self.optics.is_empty() && !matches!(self.job, Some(RenderJob::GpuPath { .. })) {
+            return Err(DocError::Invalid("saved optics require an explicit GPU job".into()));
+        }
+        if self.optics.iter().any(|o| self.surfaces.iter().any(|s| s.target == o.target)) {
+            return Err(DocError::Invalid("saved opaque surface maps and optical boundaries cannot share a target".into()));
+        }
         self.stage.validate().map_err(|e| DocError::Invalid(e.to_string()))?;
         if !self.stage.is_empty() && matches!(self.job, Some(RenderJob::Raster { .. })) {
             return Err(DocError::Invalid("passive stage geometry requires raytracing; raster cannot silently discard it".into()));

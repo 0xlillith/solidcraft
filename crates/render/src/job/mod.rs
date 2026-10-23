@@ -60,6 +60,7 @@ pub const MAX_GPU_DIELECTRICS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JobOptions {
+    pub nested_media: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<volume::HomogeneousVolume>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,6 +88,7 @@ pub struct JobOptions {
 impl Default for JobOptions {
     fn default() -> Self {
         Self {
+            nested_media: false,
             volume: None,
             adaptive: None,
             transmission_samples: 1,
@@ -170,6 +172,12 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_subsurface(&self) -> bool {
+        false
+    }
+    fn supports_nested_media(&self) -> bool {
+        false
+    }
     fn supports_volume(&self) -> bool {
         false
     }

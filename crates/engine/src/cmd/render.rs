@@ -17,6 +17,7 @@ mod library;
 mod library_data;
 #[cfg(test)]
 mod light_union_tests;
+mod optical_bindings;
 mod physical_library;
 mod resources;
 mod shots;
@@ -27,6 +28,10 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("render.optics.bind","Save Optical Binding",optical_bindings::bind).icon("appearance")
+        .params("name: GPU setup; set?: complete numerical setup patch; body_index and body_name: exact captured target; expected_revision; optics:{ior,absorption_per_mm:[r,g,b],boundary:closed_mesh|closed_box|thin_sheet,thickness_mm,shadow_transmission,subsurface?:{scattering_per_mm,anisotropy}}; replace?:false. Stores stable definition/feature/occurrence identity in one undo without modifying engineering geometry/materials. Nested media require separate job.options.nested_media and producer certification. Unresolved or incompatible targets refuse atomically."),
+    CommandSpec::new("render.optics.unbind","Remove Optical Binding",optical_bindings::unbind).icon("appearance").doc_only()
+        .params("name: saved setup; target: exact saved definition/feature/component/occurrence_path; expected_revision. Removes only that optical assignment in one undo without a device or file access."),
     CommandSpec::new("render.result.regrade", "Regrade Linear Master", jobs::regrade).icon("render_image").noundo().doc_only()
         .params("job: exact completed JobId; presentation: {exposure_ev?,tone_map?,finishing?,backdrop?,background?,transparent_background?}. Queues cancellable nondestructive PNG presentation from that retained native FLOAT32 master, not from PNG. Captured geometry/camera/lighting and source EXR remain unchanged; no path tracing, denoising, external EXR import or automatic file writes. Returns a distinct job with source identity and original-master digest. Existing frame retention and export rules still apply."),
     CommandSpec::new("render.camera.get", "Inspect Render Camera", get_camera).icon("camera").noundo()

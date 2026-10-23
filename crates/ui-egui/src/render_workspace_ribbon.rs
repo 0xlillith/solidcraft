@@ -21,6 +21,8 @@ fn handled(id: &str) -> bool {
                 | "render.shot.rename"
                 | "render.shot.remove"
                 | "render.library.appearance.apply"
+                | "render.optics.bind"
+                | "render.optics.unbind"
                 | "render.library.surface.bind"
                 | "render.library.surface.unbind"
                 | "render.library.surface.prepare"
@@ -205,7 +207,7 @@ fn navigate(app: &mut SolveApp, id: &str) -> Result<(), String> {
             inspector::reveal(app, "render_shot_manager");
         }
         "render.settings.set" => setups::save(app)?,
-        "render.library.appearance.apply" => focus(app, Page::Appearance, Some("surfaces")),
+        "render.library.appearance.apply" | "render.optics.bind" | "render.optics.unbind" => focus(app, Page::Appearance, Some("surfaces")),
         "render.library.surface.bind" | "render.library.surface.prepare" | "render.library.surface.unbind" => {
             focus(app, Page::Appearance, Some("surfaces"));
         }

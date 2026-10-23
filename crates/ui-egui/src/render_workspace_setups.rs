@@ -98,6 +98,7 @@ fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     samples: view.samples,
                     max_depth: view.max_depth,
                     seed: view.seed,
+                    nested_media: studio.nested_media,
                     volume: studio.volume,
                     adaptive: studio.adaptive,
                     transmission_samples: studio.transmission_samples,
@@ -187,6 +188,7 @@ pub(super) fn load(app: &mut SolveApp) {
             view.samples = options.samples;
             view.max_depth = options.max_depth;
             view.seed = options.seed;
+            view.studio.nested_media = options.nested_media;
             view.studio.volume = options.volume;
             view.studio.adaptive = options.adaptive;
             view.studio.transmission_samples = options.transmission_samples;

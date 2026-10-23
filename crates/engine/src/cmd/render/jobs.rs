@@ -46,6 +46,8 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
+    #[serde(default)]
+    nested_media: bool,
     volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
     adaptive: Option<solidcraft_render::job::adaptive::AdaptiveSampling>,
     transmission_samples: Option<u32>,
@@ -131,6 +133,7 @@ struct Normalized {
     params: Value,
     hdr: Option<SavedHdr>,
     surfaces: solidcraft_doc::render_surface::SurfaceBindings,
+    optics: solidcraft_doc::render_optics::OpticalBindings,
 }
 
 fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Option<Normalized>> {
@@ -168,6 +171,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     let Some(job) = settings.job.take() else {
         return Ok(None);
     };
+    let optics = std::mem::take(&mut settings.optics);
     let surfaces = std::mem::take(&mut settings.surfaces);
     let mut hdr = None;
     let mut lowered = match job {
@@ -188,7 +192,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
             "lens":options.lens,"lighting":options.lighting,"tone_map":options.tone_map,
             "denoise":options.denoise,"environment":options.environment,
             "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr,
-            "adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume
+            "adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume,"nested_media":options.nested_media
             })
         }
     };
@@ -196,7 +200,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     if let Some(replace) = object.get("replace") {
         lowered["replace"] = replace.clone();
     }
-    Ok(Some(Normalized { params: lowered, hdr, surfaces }))
+    Ok(Some(Normalized { params: lowered, hdr, surfaces, optics }))
 }
 
 fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
@@ -209,7 +213,15 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
             Some(SavedHdr::Cpu(_)) => return Err(bad(command, "saved CPU HDR cannot enter a GPU request")),
             None => None,
         };
-        return prepare_progressive(s, params, command, normalized.is_some(), hdr, normalized.as_ref().map(|n| &n.surfaces));
+        return prepare_progressive(
+            s,
+            params,
+            command,
+            normalized.is_some(),
+            hdr,
+            normalized.as_ref().map(|n| &n.surfaces),
+            normalized.as_ref().map(|n| &n.optics),
+        );
     }
     let gpu_raytrace =
         params.get("raytrace").and_then(Value::as_object).is_some_and(|o| ["clear_coats", "textures"].iter().any(|key| o.contains_key(*key)));
@@ -225,7 +237,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     }
     let mut input: Start = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.progressive {
-        return prepare_progressive(s, params, command, false, None, None);
+        return prepare_progressive(s, params, command, false, None, None, None);
     }
     if input.denoise {
         return Err(bad(command, "denoise requires GPU progressive rendering"));
@@ -420,6 +432,7 @@ fn prepare_progressive(
     require_gpu_path: bool,
     saved_hdr: Option<GpuHdrEnvironment>,
     saved_surfaces: Option<&solidcraft_doc::render_surface::SurfaceBindings>,
+    saved_optics: Option<&solidcraft_doc::render_optics::OpticalBindings>,
 ) -> Result<Prepared> {
     let cpu_raytrace = params
         .get("raytrace")
@@ -462,6 +475,12 @@ fn prepare_progressive(
         }
         input.raytrace.textures = super::surface_bindings::resolve(s, &scene, bindings, command)?;
     }
+    if let Some(bindings) = saved_optics.filter(|b| !b.is_empty()) {
+        if !input.raytrace.dielectrics.is_empty() || !input.raytrace.clear_coats.is_empty() {
+            return Err(bad(command, "saved optical bindings cannot be mixed with transient optical overrides"));
+        }
+        input.raytrace.dielectrics = super::optical_bindings::resolve(s, &scene, bindings, command)?;
+    }
     super::transmission::apply(&mut scene, &input.raytrace.dielectrics, command)?;
     super::clear_coat::apply(&mut scene, &input.raytrace.clear_coats, command)?;
     let settings = if let Some(name) = &input.setup {
@@ -503,6 +522,7 @@ fn prepare_progressive(
     options.finishing = input.finishing;
     options.backdrop = input.backdrop;
     options.linear_exr = input.linear_exr;
+    options.nested_media = input.nested_media;
     options.volume = input.volume;
     options.adaptive = input.adaptive;
     options.transmission_samples = input.transmission_samples.unwrap_or(1);

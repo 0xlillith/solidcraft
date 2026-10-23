@@ -3028,3 +3028,6 @@ mod volume_tests;
 
 #[path = "resource_pack_tests.rs"]
 mod resource_pack_tests;
+
+#[path = "optical_media_tests.rs"]
+mod optical_media_tests;
