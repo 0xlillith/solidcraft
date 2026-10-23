@@ -1060,8 +1060,11 @@ fn dielectric_preflight_and_start_resolve_refraction_without_broadening_boundari
         assert!(reply["resolved"]["profile"]["features"].as_array().unwrap().contains(&json!("refraction")));
         if command == "render.start" {
             let id: JobId = serde_json::from_value(reply["job"].clone()).unwrap();
+            // Cancellation can remove the job from the session's lookup immediately.
+            // Retain its handle before cancelling; do not rely on a scheduling race.
+            let handle = s.render_job_handle(id).unwrap();
             s.execute("render.cancel", &json!({"job":id})).unwrap();
-            let status = s.render_job_handle(id).unwrap().wait_timeout(std::time::Duration::from_secs(10)).unwrap();
+            let status = handle.wait_timeout(std::time::Duration::from_secs(10)).unwrap();
             assert!(matches!(status.progress.phase, solidcraft_render::job::Phase::Cancelled | solidcraft_render::job::Phase::Completed));
         }
     }
@@ -1106,7 +1109,7 @@ fn registered_product_camera_fit_changes_only_view_and_keeps_orientation() {
     let mut s = Session::default();
     s.execute("solid.box", &json!({"length":20,"width":15,"height":10})).unwrap();
     let camera = solidcraft_render::Camera { yaw: 0.2, pitch: 0.3, roll: 0.1, ..Default::default() };
-    s.execute("view.apply", &json!({"camera":camera})).unwrap();
+    s.execute("render.camera.set", &json!({"camera":camera})).unwrap();
     let doc = s.doc.to_json();
     let undo = s.undo.len();
     let inspected = s.execute("render.camera.get", &json!({})).unwrap();
@@ -1120,4 +1123,51 @@ fn registered_product_camera_fit_changes_only_view_and_keeps_orientation() {
     assert_eq!(s.doc.to_json(), doc);
     assert_eq!(s.undo.len(), undo);
     assert!(s.execute("render.camera.fit", &json!({"scale":0})).is_err());
+}
+
+#[test]
+fn explicit_render_camera_preserves_orientation_and_refuses_invalid_state_atomically() {
+    let mut s = Session::default();
+    let document = s.doc.clone();
+    let before = (s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len(), s.model.is_stale());
+    for up in [solidcraft_render::UpAxis::Z, solidcraft_render::UpAxis::Y] {
+        let camera = solidcraft_render::Camera { roll: 0.41, yaw: -0.3, pitch: 0.5, up, ..Default::default() };
+        let reply = s.execute("render.camera.set", &json!({"camera":camera})).unwrap();
+        assert_eq!(s.camera, Some(camera));
+        assert_eq!(reply["camera"], json!(camera));
+        assert_eq!(reply["document_changed"], false);
+        for (key, value) in [
+            ("roll", json!(null)),
+            ("roll", json!("invalid")),
+            ("roll", json!(1e7)),
+            ("up", json!("invalid")),
+            ("up", json!(null)),
+            ("distance", json!(0)),
+            ("distance", json!(1e10)),
+            ("fov", json!(-1)),
+            ("fov", json!(4)),
+            ("target", json!([1e10, 0, 0])),
+            ("unknown", json!(true)),
+        ] {
+            let mut invalid = json!({"camera":camera});
+            invalid["camera"][key] = value;
+            assert!(s.execute("render.camera.set", &invalid).is_err(), "{invalid}");
+            assert_eq!(s.camera, Some(camera));
+        }
+        for invalid in [json!({}), json!([]), json!({"camera":camera,"width":1}), json!({"camera":null})] {
+            assert!(s.execute("render.camera.set", &invalid).is_err(), "{invalid}");
+            assert_eq!(s.camera, Some(camera));
+        }
+        assert!(Arc::ptr_eq(&document, &s.doc));
+        assert_eq!(before, (s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len(), s.model.is_stale()));
+    }
+    s.execute("render.camera.set", &json!({"camera":{"target":[0,0,0],"yaw":0.2,"pitch":0.3,"distance":100,"fov":0}})).unwrap();
+    assert_eq!(s.camera.unwrap().roll, 0.0);
+    assert_eq!(s.camera.unwrap().up, solidcraft_render::UpAxis::Z);
+    // The Design API still rejects explicit up, as specified by upstream #5094.
+    let before_camera = s.camera;
+    assert!(s.execute("view.apply", &json!({"camera":before_camera.unwrap()})).is_err());
+    assert_eq!(s.camera, before_camera);
+    assert!(Arc::ptr_eq(&document, &s.doc));
+    assert_eq!(before, (s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len(), s.model.is_stale()));
 }

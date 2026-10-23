@@ -40,6 +40,7 @@ fn handled(id: &str) -> bool {
                 | "render.settings.apply"
                 | "render.camera.fit"
                 | "render.camera.get"
+                | "render.camera.set"
                 | "render.quality.prepare"
                 | "render.status"
                 | "render.backends"
@@ -227,7 +228,7 @@ fn navigate(app: &mut SolveApp, id: &str) -> Result<(), String> {
         }
         "render.settings.apply" => inspector::restore_camera(app)?,
         "render.camera.fit" => inspector::fit_subject(app)?,
-        "render.camera.get" => focus(app, Page::Camera, None),
+        "render.camera.get" | "render.camera.set" => focus(app, Page::Camera, None),
         "render.quality.prepare" => focus(app, Page::Output, Some("quality")),
         "render.status" | "render.backends" => focus(app, Page::Diagnostics, None),
         _ => return Err("unbound interactive Render command".into()),

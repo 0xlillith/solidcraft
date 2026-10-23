@@ -286,7 +286,7 @@ fn optional_text(ui: &mut egui::Ui, label: &str, id: &str, value: &mut Option<St
 
 fn axes(ui: &mut egui::Ui, id: &str, axes: &mut MaterialAxes) {
     let mut index = usize::from(*axes == MaterialAxes::WoodLrt);
-    ui_kit::choice_row(ui, tr("material.editor.axes"), id, &mut index, &["1 / 2 / 3", "L / R / T"]);
+    ui_kit::choice_row(ui, tr("material.editor.axes"), id, &mut index, &[tr("material.editor.axes_numeric"), tr("material.editor.axes_wood")]);
     *axes = if index == 1 { MaterialAxes::WoodLrt } else { MaterialAxes::Material123 };
 }
 

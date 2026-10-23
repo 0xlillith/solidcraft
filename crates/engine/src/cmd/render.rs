@@ -39,6 +39,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("name: saved setup; target: exact saved definition/feature/component/occurrence_path; expected_revision. Removes only that optical assignment in one undo without a device or file access."),
     CommandSpec::new("render.result.regrade", "Regrade Linear Master", jobs::regrade).icon("render_image").noundo().doc_only()
         .params("job: exact completed JobId; presentation: {exposure_ev?,tone_map?,finishing?,backdrop?,background?,transparent_background?}. Queues cancellable nondestructive PNG presentation from that retained native FLOAT32 master, not from PNG. Captured geometry/camera/lighting and source EXR remain unchanged; no path tracing, denoising, external EXR import or automatic file writes. Returns a distinct job with source identity and original-master digest. Existing frame retention and export rules still apply."),
+    CommandSpec::new("render.camera.set", "Set Render Camera", set_camera).icon("camera").noundo().doc_only()
+        .params("camera: complete Render Camera snapshot (target, yaw, pitch, distance, fov; roll defaults to 0 and up to z). Validates the same finite mm/radian bounds as saved render intent, preserves explicit roll/up and changes only transient view state. No model evaluation, setup save, renderer, dirty flag or undo step. Design view.apply retains its separate up-axis policy."),
     CommandSpec::new("render.camera.get", "Inspect Render Camera", get_camera).icon("camera").noundo()
         .params("No parameters. Returns the explicitly defined current view camera, or null if the session has no camera override. No camera is fitted, no job is started and no saved setup or engineering document is changed."),
 CommandSpec::new("render.camera.fit", "Frame Render Subject", fit_camera).icon("camera").noundo()
@@ -114,6 +116,18 @@ CommandSpec::new("render.scene", "Inspect Render Scene", scene).noundo().at("REN
 CommandSpec::new("render.settings.apply", "Apply Render Camera", apply_settings).icon("camera").noundo().doc_only()
     .params("name: saved setup. Applies its existing Camera snapshot including roll/up as view state, without modifying the document or starting a render."),
 ];
+
+fn set_camera(s: &mut Session, params: &Value) -> Result<Value> {
+    let cmd = "render.camera.set";
+    if !params.as_object().is_some_and(|p| p.len() == 1 && p.contains_key("camera")) {
+        return Err(bad(cmd, "expected exactly one camera snapshot"));
+    }
+    // Reuse strict saved-camera decoding and its numeric limits, without saving a setup.
+    let setup: RenderSetup = serde_json::from_value(params.clone()).map_err(|e| bad(cmd, e.to_string()))?;
+    setup.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    s.camera = Some(setup.camera);
+    Ok(json!({"camera":setup.camera,"document_changed":false}))
+}
 
 fn get_camera(s: &mut Session, params: &Value) -> Result<Value> {
     if !params.as_object().is_some_and(|p| p.is_empty()) {

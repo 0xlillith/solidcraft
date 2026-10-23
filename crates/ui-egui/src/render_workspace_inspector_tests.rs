@@ -286,6 +286,7 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
         ("render.quality.prepare", Page::Output),
         ("render.status", Page::Diagnostics),
         ("render.camera.get", Page::Camera),
+        ("render.camera.set", Page::Camera),
     ] {
         h.app.start(id);
         h.frames(3);
@@ -610,4 +611,44 @@ fn clearing_physical_stage_preserves_unsaved_camera_background_and_output_intent
     assert_eq!(h.app.session.doc.materials, materials);
     let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
     assert_eq!(reopened.render.setups[&name], expected);
+}
+
+#[test]
+fn render_camera_labels_do_not_shadow_mechanical_pitch_and_axes_remain_explicit() {
+    let en = crate::i18n::Locale::for_language("en");
+    let de = crate::i18n::Locale::for_language("de");
+    assert_eq!(de.label("Pitch"), "Steigung");
+    assert_eq!(de.text("coupling.pitch"), "Steigung");
+    assert_eq!(en.text("render.camera_pitch"), "Camera pitch");
+    assert_ne!(en.text("render.camera_pitch"), en.text("coupling.pitch"));
+    assert_eq!(de.text("render.camera_pitch"), "Kameraneigung");
+    for locale in ["en", "de", "es", "ja", "zh"] {
+        let locale = crate::i18n::Locale::for_language(locale);
+        assert_eq!(locale.text("material.editor.axes_numeric"), "1 / 2 / 3");
+        assert_eq!(locale.text("material.editor.axes_wood"), "L / R / T");
+    }
+}
+
+#[test]
+fn camera_draft_uses_render_command_and_keeps_saved_design_unchanged() {
+    let mut h = fixture();
+    let document = h.app.session.doc.to_json();
+    let undo = h.app.session.undo.len();
+    for up in [solidcraft_engine::render::UpAxis::Z, solidcraft_engine::render::UpAxis::Y] {
+        let mut camera = h.app.cam;
+        camera.up = up;
+        camera.roll = 0.41;
+        camera.pitch = 0.27;
+        apply_camera_draft(&mut h.app, camera).unwrap();
+        assert_eq!(h.app.cam, camera);
+        assert!(h.app.render_workspace.view.dirty);
+        let mut invalid = camera;
+        invalid.distance = 0.0;
+        assert!(apply_camera_draft(&mut h.app, invalid).is_err());
+        assert_eq!(h.app.cam, camera);
+        fit_subject(&mut h.app).unwrap();
+        assert_eq!((h.app.cam.up, h.app.cam.roll, h.app.cam.pitch), (up, camera.roll, camera.pitch));
+        assert_eq!(h.app.session.doc.to_json(), document);
+        assert_eq!(h.app.session.undo.len(), undo);
+    }
 }

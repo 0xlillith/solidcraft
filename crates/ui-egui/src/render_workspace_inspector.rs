@@ -611,6 +611,13 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
         }
     });
 }
+fn apply_camera_draft(app: &mut SolveApp, camera: solidcraft_engine::render::Camera) -> Result<(), String> {
+    app.run("render.camera.set", json!({"camera":camera}))?;
+    app.follow_view_request(false);
+    app.render_workspace.view.dirty = true;
+    Ok(())
+}
+
 fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui_kit::text(ui, app.tr("render.camera_exact_help"), ui_kit::Text::Note("render.camera_exact_help"));
     let before = app.cam;
@@ -639,14 +646,11 @@ fn camera_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             *value = degrees.to_radians();
         }
     }
-    if camera != before && camera.is_valid() {
-        match app.run("view.apply", json!({"camera":camera})) {
-            Ok(_) => {
-                app.follow_view_request(false);
-                app.render_workspace.view.dirty = true;
-            }
-            Err(error) => app.set_status(error, true),
-        }
+    if camera != before
+        && camera.is_valid()
+        && let Err(error) = apply_camera_draft(app, camera)
+    {
+        app.set_status(error, true);
     }
     camera_actions(app, ui);
     if app.render_workspace.view.method == ImageMethod::GpuRaytrace {
@@ -1053,7 +1057,7 @@ mod tests;
 
 pub(super) fn fit_subject(app: &mut SolveApp) -> Result<(), String> {
     // Capture the current navigation orientation before the engine's view command.
-    app.run("view.apply", json!({"camera":app.cam}))?;
+    app.run("render.camera.set", json!({"camera":app.cam}))?;
     app.run("render.camera.fit", json!({}))?;
     app.follow_view_request(false);
     Ok(())

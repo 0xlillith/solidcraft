@@ -274,3 +274,30 @@ open its saved design in the app. Select Render, adjust its background or camera
 save a setup. The fixture uses original boxes/cylinders and simple colour/opacity
 assignments; no commercial CAD files, artwork or materials are used. Actual Windows
 Vulkan/MSAA evidence is attached to [#673](https://github.com/bherbruck/solidcraft/issues/673).
+
+## Explicit Render camera and the Design view contract
+
+`render.camera.set {camera}` applies a complete camera snapshot as transient view
+state. It uses the saved-render camera's strict decoder and finite mm/radian
+limits, preserves its explicit roll and up axis, and does not evaluate geometry,
+change a saved shot, modify the design or add an undo step. Omitted roll/up use
+zero/Z defaults; all other camera fields are required. Unknown fields, invalid
+axes, nonfinite values and out-of-bounds numbers refuse atomically.
+
+The Render inspector uses this command for numerical edits and before Frame
+Subject. Design's `view.apply` retains upstream's independent policy: it accepts
+finite roll (clamped to +/-pi) and refuses an explicit up axis. Render does not
+reintroduce the former fork-specific extension to that Design command. Saving
+or restoring a shot still uses the existing render-settings commands.
+
+The camera pitch label is explicitly **Camera pitch**, so the legacy English
+label adapter does not replace mechanical screw pitch translations. Material
+axis conventions have stable catalog IDs; the numerical/wood conventions and
+engineering data remain unchanged.
+
+The legacy English-label adapter gives explicit catalog IDs precedence and, for
+an ambiguous source label, retains a translation already present in the chosen
+locale before falling back to English. Adding an untranslated Render alias no
+longer hides existing Library, Appearance or Checkpoint translations. Contextual
+Render labels still use their own stable IDs rather than borrowing a different
+feature's meaning.

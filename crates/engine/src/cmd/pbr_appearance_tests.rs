@@ -572,7 +572,11 @@ fn starter_visual_defaults_and_overrides_keep_saved_physical_cards_independent()
     )
     .unwrap();
     s.execute("material.assign", &json!({"bodies":["Swatch"],"material":"Pack substrate"})).unwrap();
+    // Input omission and canonical saved defaults are equivalent. Compare the full
+    // validated representation, not the sparse input object, throughout the edits.
+    let expected_card = serde_json::to_value(serde_json::from_value::<crate::doc::physical_material::ValidatedCard>(card.clone()).unwrap()).unwrap();
     let physical = s.execute("material.inspect", &json!({"material":"Pack substrate"})).unwrap();
+    assert_eq!(physical["physical_card"], expected_card);
     let mass = s.execute("component.properties", &json!({})).unwrap();
     let geometry = product_scene::extract(&s).unwrap().meshes[0].mesh.clone();
     s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":"starter.metal.gold-warm"})).unwrap();
@@ -589,10 +593,11 @@ fn starter_visual_defaults_and_overrides_keep_saved_physical_cards_independent()
         assert_eq!((s.undo.len(), s.redo.len(), s.revision), history);
     }
     s.execute("material.edit", &json!({"material":"Pack substrate","appearance":"starter.wood.walnut-dark"})).unwrap();
-    assert_eq!(s.execute("material.inspect", &json!({"material":"Pack substrate"})).unwrap()["physical_card"], card);
+    assert_eq!(s.execute("material.inspect", &json!({"material":"Pack substrate"})).unwrap()["physical_card"], expected_card);
     assert_eq!(s.execute("component.properties", &json!({})).unwrap(), mass);
     let saved = s.doc.to_json();
     let mut reopened = Session::new(crate::doc::Document::from_json(&saved).unwrap());
     assert_eq!(reopened.doc.user_materials, s.doc.user_materials);
+    assert_eq!(reopened.execute("material.inspect", &json!({"material":"Pack substrate"})).unwrap()["physical_card"], expected_card);
     assert_eq!(reopened.execute("component.properties", &json!({})).unwrap(), mass);
 }
