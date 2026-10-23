@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod analysis;
+pub mod anisotropic_surface;
 mod backend;
 mod camera;
 pub mod clear_coat;
