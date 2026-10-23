@@ -1,0 +1,50 @@
+name: Render and materials lab
+
+on:
+  push:
+    branches: [lab/render-materials]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-materials-lab-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    if: github.repository == '0xlillith/solidcraft'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SOLIDCRAFT_TEST_JOBS: "1"
+      RUST_TEST_THREADS: "1"
+      ACTION_MATRIX_JOBS: "1"
+      CARGO_INCREMENTAL: "0"
+      SOLIDCRAFT_GPU: software
+      SOLIDCRAFT_REQUIRE_GPU: "1"
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - name: Install native and software Vulkan dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev \
+            libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            libudev-dev libdbus-1-dev mesa-vulkan-drivers libvulkan1
+      - name: Verify frozen source and toolchain
+        run: |
+          git rev-parse HEAD
+          rustc --version --verbose
+          cargo --version
+      - name: Complete repository gates with bounded workers
+        run: cargo xtask ci
+      - name: Verify that validation did not change tracked files
+        run: git diff --exit-code
