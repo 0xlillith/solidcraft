@@ -169,6 +169,35 @@ impl Jobs {
         Ok(status)
     }
 
+    pub(crate) fn regrade(
+        &mut self,
+        source_id: JobId,
+        presentation: solidcraft_render::job::presentation::Presentation,
+    ) -> Result<JobStatus, JobError> {
+        self.collect()?;
+        let source = self.handle(source_id)?;
+        let frame = source.frame()?.ok_or_else(|| JobError::new(ErrorCode::NotCompleted, "regrade requires a completed frame"))?;
+        let master = frame.master_source()?;
+        // Prefer the source pool so its retained source and derivative work share
+        // one admission authority. Regrading itself never invokes its executor.
+        let host = self
+            .host_for(&master.info.executor)
+            .or(self.host.as_ref())
+            .ok_or_else(|| JobError::new(ErrorCode::HostUnavailable, "no image host is installed for master presentation"))?
+            .clone();
+        if self.live.len() >= 2 {
+            return Err(JobError::new(ErrorCode::QueueFull, "this document already has an active and pending render"));
+        }
+        let serial = self.serial.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "render job identity exhausted"))?;
+        let generation = self.generation.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "render generation exhausted"))?;
+        let handle = host.submit_regrade(JobId { session: self.owner, serial, generation }, &source, presentation)?;
+        let status = handle.status()?;
+        self.serial = serial;
+        self.generation = generation;
+        self.live.push(handle);
+        Ok(status)
+    }
+
     fn check_owner(&self, id: JobId) -> Result<(), JobError> {
         if id.session != self.owner {
             return Err(JobError::new(ErrorCode::WrongOwner, "render job belongs to another document session"));

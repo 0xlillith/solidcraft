@@ -12,16 +12,12 @@ fn subject() -> Session {
 }
 #[test]
 fn native_studios_resolve_without_mutation_and_apply_one_complete_undo() {
-    for id in [
-        "NATIVE-STUDIO-001",
-        "NATIVE-STUDIO-002",
-        "NATIVE-STUDIO-003",
-        "NATIVE-STUDIO-004",
-        "NATIVE-STUDIO-005",
-        "NATIVE-STUDIO-006",
-        "NATIVE-STUDIO-007",
-        "NATIVE-STUDIO-008",
-    ] {
+    let entries = super::entries();
+    assert_eq!(entries.as_array().unwrap().len(), 25);
+    let hdrs: std::collections::BTreeSet<_> = entries.as_array().unwrap().iter().map(|item| item["hdr"].as_str().unwrap()).collect();
+    assert_eq!(hdrs.len(), 24, "every authored HDR has a complete curated composition");
+    for index in 1..=25 {
+        let id = format!("NATIVE-STUDIO-{index:03}");
         let mut s = subject();
         let before = s.doc.to_json();
         let undo = s.undo.len();
@@ -134,7 +130,7 @@ fn quality_projection_never_claims_adaptive_or_unbounded_profiles() {
 fn resource_availability_and_original_previews_are_bounded_and_nonmutating() {
     let mut s = subject();
     let before = s.doc.to_json();
-    assert_eq!(s.execute("render.library.list", &json!({"kind":"native_scenes","availability":"usable"})).unwrap()["total"], 8);
+    assert_eq!(s.execute("render.library.list", &json!({"kind":"native_scenes","availability":"usable"})).unwrap()["total"], 25);
     assert_eq!(s.execute("render.library.list", &json!({"kind":"materials","availability":"usable"})).unwrap()["total"], 0);
     assert_eq!(s.execute("render.library.list", &json!({"kind":"materials","availability":"specification"})).unwrap()["total"], 600);
     assert_eq!(s.execute("render.library.list", &json!({"kind":"selene_shots"})).unwrap()["total"], 12);

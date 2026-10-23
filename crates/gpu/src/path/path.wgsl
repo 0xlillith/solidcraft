@@ -24,6 +24,11 @@ struct Params {
     environment_map: vec4<f32>, // cosine rotation, sine rotation, intensity, enabled
     sun_direction: vec4<f32>, // normalized toward sun, cosine angular radius
     sun_radiance: vec4<f32>, // linear RGB, cone density (zero when disabled)
+    adaptive_budget: vec4<u32>, // pilot count, minimum production, Fresnel strata, maximum production
+    adaptive_error: vec4<f32>, // relative RGB, absolute RGB, absolute coverage, current production stratum
+    volume_min: vec4<f32>, // camera-relative bounds minimum, extinction/mm
+    volume_max: vec4<f32>, // camera-relative bounds maximum, HG mean cosine
+    volume_albedo: vec4<f32>, // RGB single-scattering albedo, reserved
 
 };
 @group(0) @binding(0) var<uniform> u: Params;
@@ -631,7 +636,13 @@ fn area_pdf(light: AreaLight, delta: vec3<f32>) -> f32 {
 }
 fn visible(o: vec3<f32>, d: vec3<f32>, distance: f32) -> ShadowResult {
     if emitter_hit(o,d).distance<distance-u.lighting.x*2.0 { return blocked_shadow(); }
-    return shadow_transmittance(o,d,distance);
+    var visibility=shadow_transmittance(o,d,distance);
+    if u.volume_min.w>0.0 {
+        let attenuation=volume_transmittance(o,d,distance);
+        visibility.transmittance*=attenuation;
+        visibility.branch_pdf*=attenuation;
+    }
+    return visibility;
 }
 struct EnvironmentSample { direction: vec3<f32>, radiance: vec3<f32>, pdf: f32 };
 fn environment_to_world(d: vec3<f32>) -> vec3<f32> {
@@ -745,8 +756,15 @@ fn primary_ray(uv: vec2<f32>, lens_sample: vec2<f32>) -> CameraRay {
     }
     return CameraRay(o,d);
 }
-fn sample_path(pixel: u32) -> vec4<f32> {
-    var rng = pixel ^ (u.image.z * 0x9e3779b9u) ^ u.sampling.x;
+fn sample_path_lane(pixel: u32, lane: u32) -> vec4<f32> {
+    var ordinal = u.image.z;
+    var salt = 0u;
+    if u.adaptive_budget.x > 0u {
+        if ordinal < u.adaptive_budget.x { salt = 0xa511e9b3u; }
+        else { ordinal -= u.adaptive_budget.x; }
+    }
+    var rng = pixel ^ (ordinal * 0x9e3779b9u) ^ u.sampling.x ^ salt;
+    var stratified = false;
     let xy = vec2<f32>(f32(pixel % u.image.x)+random(&rng), f32(pixel / u.image.x)+random(&rng));
     let uv = vec2<f32>(xy.x/f32(u.image.x)*2.0-1.0, 1.0-xy.y/f32(u.image.y)*2.0);
     var lens_sample = vec2<f32>(0.0);
@@ -778,6 +796,40 @@ fn sample_path(pixel: u32) -> vec4<f32> {
         // other launch (camera, opaque or thin-sheet surface) does not.
         let continued = ray_excluded != 0xffffffffu;
         let hit = trace_precise(o,o_low,d,false,ray_excluded,ray_minimum,medium_count>0u);
+        if u.volume_min.w>0.0 {
+            let emitter_distance=emitter_hit_precise(o,o_low,d,ray_minimum).distance;
+            let segment=volume_segment(o+o_low,d,min(hit.distance,emitter_distance));
+            let length=segment.y-segment.x;
+            if length>0.0 {
+                let travel=-log(1.0-random(&rng))/u.volume_min.w;
+                if travel<length {
+                    let position=o+o_low+d*(segment.x+travel);
+                    coverage=1.0;
+                    throughput*=u.volume_albedo.xyz;
+                    if !any(throughput>vec3<f32>(0.0)) { break; }
+                    let remaining=u.sampling.y-bounce-1u;
+                    radiance+=throughput*volume_direct(position,d,remaining,&rng);
+                    if remaining==0u { break; }
+                    let next=volume_sample(d,&rng);
+                    previous_pdf=volume_phase(dot(d,next));
+                    previous_delta=false;
+                    previous_scatter_position=position;
+                    previous_scatter_position_low=vec3<f32>(0.0);
+                    previous_position=position;
+                    previous_position_low=vec3<f32>(0.0);
+                    suppress_direct=false;
+                    o=position;
+                    o_low=vec3<f32>(0.0);
+                    d=next;
+                    ray_excluded=0xffffffffu;
+                    ray_minimum=0.0;
+                    continue;
+                }
+                // Analog survival already supplies attenuation in expectation.
+                // Only the competing path density acquires the no-event factor.
+                previous_pdf*=exp(-u.volume_min.w*length);
+            }
+        }
         if u.environment.w > 0.0 {
             let emitter = emitter_hit_precise(o,o_low,d,ray_minimum);
             if emitter.distance < hit.distance {
@@ -884,13 +936,22 @@ fn sample_path(pixel: u32) -> vec4<f32> {
                 f = dielectric(clamp(dot(n,v),0.0,1.0),ni,nt);
                 transmitted = refract(d,n,ni/nt);
             }
+            // The first Fresnel choice is stratified conditionally on the same
+            // primary/prefix path. Each stratum is weighted equally; later random
+            // dimensions use decorrelated streams, never clamped radiance.
+            var branch = random(&rng);
+            if !stratified && u.adaptive_budget.z > 1u && u.image.z >= u.adaptive_budget.x {
+                branch = (f32(lane) + branch) / f32(u.adaptive_budget.z);
+                rng ^= (lane + 1u) * 0x85ebca6bu;
+                stratified = true;
+            }
             if t.parameters.w >= 0.0 {
                 let weights = sheet(t,f);
                 let mean_r = dot(weights.reflection,vec3<f32>(1.0/3.0));
                 let mean_t = dot(weights.transmission,vec3<f32>(1.0/3.0));
                 if mean_r+mean_t <= 0.0 { break; }
                 let probability = mean_r/(mean_r+mean_t);
-                if random(&rng) < probability {
+                if branch < probability {
                     previous_delta=true; previous_scatter_position=position; previous_scatter_position_low=position_low; suppress_direct=false;
                     throughput *= weights.reflection/probability;
                     d = reflect(d,n);
@@ -903,7 +964,7 @@ fn sample_path(pixel: u32) -> vec4<f32> {
                     o = position+d*(u.lighting.x*2.0);
                     // Parallel thin sheet: unchanged direction, no optical displacement.
                 }
-            } else if random(&rng) < (f.x+f.y)*0.5 {
+            } else if branch < (f.x+f.y)*0.5 {
                 previous_delta=true; previous_scatter_position=position; previous_scatter_position_low=position_low; suppress_direct=false;
                 d = reflect(d,n);
             } else {
@@ -953,13 +1014,67 @@ fn sample_path(pixel: u32) -> vec4<f32> {
     return vec4<f32>(radiance,coverage);
 }
 
+fn checked_sample(pixel: u32, lane: u32) -> vec4<f32> {
+    let value = sample_path_lane(pixel, lane);
+    if !all(value >= vec4<f32>(0.0)) || !all(value <= vec4<f32>(3.4e38)) {
+        atomicStore(&failures[7], 1u);
+    }
+    return value;
+}
+fn sample_path(pixel: u32) -> vec4<f32> {
+    // One bounded path per invocation. Strata advance on the host, avoiding a
+    // nested path loop and its severe native-driver compilation cost.
+    return checked_sample(pixel, u32(u.adaptive_error.w));
+}
+
+fn adaptive_target(mean: vec4<f32>, m2: vec4<f32>) -> u32 {
+    let maximum = u.adaptive_budget.w;
+    // Nonfinite/overflowing pilot estimates never report convergence.
+    if !all(mean >= vec4<f32>(0.0)) || !all(mean <= vec4<f32>(3.4e38)) ||
+       !all(m2 >= vec4<f32>(0.0)) || !all(m2 <= vec4<f32>(3.4e38)) { return maximum; }
+    let tolerance = vec4<f32>(vec3<f32>(u.adaptive_error.y) + mean.xyz*u.adaptive_error.x, u.adaptive_error.z);
+    let deviation = sqrt(m2/f32(u.adaptive_budget.x-1u));
+    let ratio = min(deviation/tolerance, vec4<f32>(sqrt(f32(maximum))));
+    let need = ceil(ratio*ratio);
+    return clamp(u32(max(max(need.x,need.y),max(need.z,need.w))),u.adaptive_budget.y,maximum);
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel = u.image.w + gid.x;
-    if gid.x >= u.sampling.z || pixel >= u.image.x*u.image.y { return; }
-    let sample = sample_path(pixel);
-    if u.image.z == 0u { accumulation[pixel] = sample; }
-    else { accumulation[pixel] += sample; }
+    let pixels = u.image.x*u.image.y;
+    if gid.x >= u.sampling.z || pixel >= pixels { return; }
+    let pilots = u.adaptive_budget.x;
+    let strata = max(1u,u.adaptive_budget.z);
+    let lane = u32(u.adaptive_error.w);
+    if pilots == 0u {
+        let sample = sample_path(pixel)/f32(strata);
+        if u.image.z == 0u && lane == 0u { accumulation[pixel] = sample; }
+        else { accumulation[pixel] += sample; }
+        return;
+    }
+    if u.image.z < pilots {
+        let value = sample_path(pixel);
+        var mean = accumulation[pixels+pixel];
+        var m2 = accumulation[2u*pixels+pixel];
+        if u.image.z == 0u { mean=vec4<f32>(0.0); m2=vec4<f32>(0.0); }
+        let delta=value-mean;
+        mean += delta/f32(u.image.z+1u);
+        m2 += delta*(value-mean);
+        accumulation[pixels+pixel]=mean;
+        accumulation[2u*pixels+pixel]=m2;
+        if u.image.z+1u == pilots {
+            accumulation[2u*pixels+pixel]=vec4<f32>(f32(adaptive_target(mean,m2)),0.0,0.0,0.0);
+            accumulation[pixel]=vec4<f32>(0.0);
+        }
+        return;
+    }
+    let budget_count=u32(accumulation[2u*pixels+pixel].x);
+    let ordinal=u.image.z-pilots;
+    if ordinal>=budget_count { return; }
+    accumulation[pixel] += sample_path(pixel)/f32(strata);
+    // Per-pixel production means enter both raw EXR and denoising. Pilots do not.
+    if ordinal+1u == budget_count && lane+1u == strata { accumulation[pixel] /= f32(budget_count); }
 }
 
 // Validation entry point: exact same BRDF used by production paths, read back in tests.

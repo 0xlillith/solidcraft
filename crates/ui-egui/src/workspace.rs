@@ -307,7 +307,16 @@ pub const SECTIONS: &[Section] = &[
         tab: "RENDER",
         panel: "IMAGE",
         promoted: 2,
-        ids: &["render.start", "render.preflight", "render.cancel", "render.export", "render.quality.prepare", "render.status", "render.backends"],
+        ids: &[
+            "render.start",
+            "render.preflight",
+            "render.cancel",
+            "render.export",
+            "render.result.regrade",
+            "render.quality.prepare",
+            "render.status",
+            "render.backends",
+        ],
     },
 ];
 

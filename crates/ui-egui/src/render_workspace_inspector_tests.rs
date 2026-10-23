@@ -389,3 +389,71 @@ fn ribbon_frame_preserves_explicit_roll_world_up_and_saved_view_authority() {
     assert!(h.app.session.camera.is_none(), "the explicit view request was consumed by the viewport");
     assert_eq!(h.app.ui.up_axis, h.app.cam.up);
 }
+
+#[test]
+fn independent_sampling_and_volume_intent_roundtrip_offline_without_silent_conflict_repairs() {
+    use solidcraft_engine::render::job::{adaptive::AdaptiveSampling, volume::HomogeneousVolume};
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    h.app.render_workspace.view.samples = 64;
+    h.app.render_workspace.view.studio.adaptive =
+        Some(AdaptiveSampling { pilot_samples: 16, min_samples: 32, relative_error: 0.03, absolute_error: 0.004, coverage_error: 0.02 });
+    h.app.render_workspace.view.studio.volume = Some(HomogeneousVolume {
+        min_mm: [-30.0, -20.0, -1.0],
+        max_mm: [30.0, 20.0, 40.0],
+        extinction_per_mm: 0.002,
+        scattering_albedo: [0.7, 0.8, 0.9],
+        anisotropy: 0.35,
+    });
+    h.app.render_workspace.view.studio.linear_exr = true;
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio.adaptive = None;
+    h.app.render_workspace.view.studio.volume = None;
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups[&h.app.render_workspace.view.name], expected);
+    let original = h.app.session.doc.to_json();
+    h.app.render_workspace.view.studio.denoise = true;
+    assert!(setups::snapshot(&h.app).is_err());
+    assert_eq!(h.app.session.doc.to_json(), original);
+    h.app.render_workspace.view.studio.denoise = false;
+    h.app.render_workspace.view.studio.transmission_samples = 4;
+    assert!(setups::snapshot(&h.app).is_err(), "active volume does not silently replace transmission strata");
+    h.app.render_workspace.view.studio.volume = None;
+    assert!(setups::snapshot(&h.app).is_ok());
+    h.app.render_workspace.view.samples = 16;
+    assert!(setups::snapshot(&h.app).is_err(), "minimum production count may not be silently clamped to the ceiling");
+    h.app.render_workspace.view.samples = 64;
+    setups::save(&mut h.app).unwrap();
+    let stored = setups::snapshot(&h.app).unwrap();
+    h.app.render_workspace.view.studio.transmission_samples = 1;
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), stored);
+}
+
+#[test]
+fn master_regrade_requires_a_retained_master_instead_of_reconstructing_a_png() {
+    let mut h = fixture();
+    let spec = solidcraft_engine::find_command("render.result.regrade").unwrap();
+    assert!(spec.info(&h.app.session).enabled, "direct API is validated by exact explicit source identity");
+    assert!(!super::super::interactive_command_info(&h.app, spec).enabled);
+    let document = h.app.session.doc.to_json();
+    h.app.start("render.result.regrade");
+    assert!(h.app.render_workspace.view.job.is_none());
+    assert_eq!(h.app.session.doc.to_json(), document);
+    assert!(!crate::icon_svg::resolve(spec.icon).placeholder);
+    h.app.render_workspace.view.draft.width = 8;
+    h.app.render_workspace.view.draft.height = 8;
+    h.app.start("render.start");
+    let job = h.app.render_workspace.view.job.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.app.render_workspace.view.completed != Some(job) {
+        assert!(std::time::Instant::now() < deadline);
+        h.frames(1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(!super::super::interactive_command_info(&h.app, spec).enabled);
+    assert_eq!(h.app.session.doc.to_json(), document);
+}

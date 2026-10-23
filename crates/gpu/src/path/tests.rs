@@ -3017,3 +3017,14 @@ fn gpu_bloom_changes_display_only_with_explicit_scratch_and_opaque_contract() {
     let decoded = image::load_from_memory(&glowing).unwrap().to_rgba8();
     assert!(decoded.pixels().all(|p| p.0[3] == 255));
 }
+
+#[path = "adaptive_tests.rs"]
+mod adaptive_tests;
+
+#[path = "regrade_tests.rs"]
+mod regrade_tests;
+#[path = "volume_tests.rs"]
+mod volume_tests;
+
+#[path = "resource_pack_tests.rs"]
+mod resource_pack_tests;

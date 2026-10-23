@@ -98,6 +98,9 @@ fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     samples: view.samples,
                     max_depth: view.max_depth,
                     seed: view.seed,
+                    volume: studio.volume,
+                    adaptive: studio.adaptive,
+                    transmission_samples: studio.transmission_samples,
                     finishing: studio.finishing,
                     backdrop: studio.backdrop_enabled.then_some(studio.backdrop),
                     linear_exr: studio.linear_exr,
@@ -184,6 +187,9 @@ pub(super) fn load(app: &mut SolveApp) {
             view.samples = options.samples;
             view.max_depth = options.max_depth;
             view.seed = options.seed;
+            view.studio.volume = options.volume;
+            view.studio.adaptive = options.adaptive;
+            view.studio.transmission_samples = options.transmission_samples;
             view.studio.finishing = options.finishing;
             view.studio.backdrop_enabled = options.backdrop.is_some();
             view.studio.backdrop = options.backdrop.unwrap_or_default();

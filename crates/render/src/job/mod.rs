@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BackendId, Camera, ExecutorId};
 
+pub mod adaptive;
 pub mod bloom;
 mod cpu_budget;
 pub(crate) mod encoding;
@@ -23,11 +24,15 @@ mod lens;
 mod light_union_tests;
 mod lighting;
 pub mod linear_exr;
+mod linear_exr_decode;
 mod png;
+pub mod presentation;
 mod punctual;
+mod regrade;
 #[cfg(test)]
 mod rt2_tests;
 pub mod textures;
+pub mod volume;
 
 pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGLES, MAX_CPU_WORK, NATIVE_CPU_POOL_BYTES};
 #[cfg(feature = "raytrace-cpu")]
@@ -55,6 +60,13 @@ pub const MAX_GPU_DIELECTRICS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JobOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<volume::HomogeneousVolume>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<adaptive::AdaptiveSampling>,
+    /// Conditional Fresnel strata per primary sample; one keeps the old stream.
+    pub transmission_samples: u32,
+
     #[serde(default, skip_serializing_if = "finishing::Finishing::is_identity")]
     pub finishing: finishing::Finishing,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,6 +87,9 @@ pub struct JobOptions {
 impl Default for JobOptions {
     fn default() -> Self {
         Self {
+            volume: None,
+            adaptive: None,
+            transmission_samples: 1,
             finishing: Default::default(),
             backdrop: None,
             linear_exr: false,
@@ -92,6 +107,27 @@ impl Default for JobOptions {
 
 impl JobOptions {
     pub fn validate(&self) -> Result<()> {
+        if let Some(volume) = self.volume {
+            volume.validate()?;
+            if volume.active() && self.transmission_samples != 1 {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "volume transport requires one transmission stratum; glass combinations are not supported",
+                ));
+            }
+            if volume.active() && self.denoise {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "volume scattering has no surface-denoiser guides; disable denoising explicitly",
+                ));
+            }
+        }
+        if let Some(adaptive) = self.adaptive {
+            adaptive.validate(self.samples)?;
+        }
+        if !matches!(self.transmission_samples, 1 | 2 | 4) {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "transmission_samples must be 1, 2 or 4"));
+        }
         self.finishing.validate()?;
         if let Some(backdrop) = self.backdrop {
             backdrop.validate()?;
@@ -115,6 +151,9 @@ impl JobOptions {
 
 /// One bounded quantum of image work. Implementations check cancellation between quanta.
 pub trait ImageWork: Send {
+    fn sampling_report(&self) -> Option<adaptive::SamplingReport> {
+        None
+    }
     /// Optional raw linear companion, moved exactly once after PNG completion.
     /// The host validates intent, bounds, hashes and retains its memory lease.
     fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
@@ -131,6 +170,15 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_volume(&self) -> bool {
+        false
+    }
+    fn supports_adaptive_sampling(&self) -> bool {
+        false
+    }
+    fn supports_transmission_sampling(&self) -> bool {
+        false
+    }
     fn supports_bloom(&self) -> bool {
         false
     }

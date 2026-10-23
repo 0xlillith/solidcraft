@@ -7,7 +7,7 @@ use solidcraft_engine::render::job::Phase;
 use solidcraft_engine::{CommandInfo, CommandSpec};
 
 fn is_job_action(id: &str) -> bool {
-    matches!(id, "render.preflight" | "render.start" | "render.cancel" | "render.export")
+    matches!(id, "render.preflight" | "render.start" | "render.cancel" | "render.export" | "render.result.regrade")
 }
 fn handled(id: &str) -> bool {
     is_job_action(id)
@@ -64,6 +64,15 @@ pub(super) fn action_ready(app: &SolveApp, id: &str) -> Result<(), String> {
             }
             super::image_params(app).map(|_| ())
         }
+        "render.result.regrade" => {
+            if busy(app) {
+                return Err(app.tr("render.ribbon_job_active").into());
+            }
+            if !studio::linear_export_available(app) {
+                return Err(app.tr("render.linear_unavailable").into());
+            }
+            presentation(app).validate().map_err(|error| error.to_string())
+        }
         "render.cancel" if !busy(app) => Err(app.tr("render.ribbon_no_active_job").into()),
         "render.export" => {
             let completed = app
@@ -119,6 +128,12 @@ pub(super) fn perform_job(app: &mut SolveApp, id: &str) -> Result<(), String> {
             let job = serde_json::from_value(reply["job"].clone()).map_err(|e| format!("invalid render job identity: {e}"))?;
             app.render_workspace.view.job = Some(job);
         }
+        "render.result.regrade" => {
+            let source = app.render_workspace.view.completed.ok_or_else(|| app.tr("render.ribbon_no_result").to_string())?;
+            let reply = app.run(id, json!({"job":source,"presentation":presentation(app)}))?;
+            let job = serde_json::from_value(reply["job"].clone()).map_err(|error| format!("invalid regrade identity: {error}"))?;
+            app.render_workspace.view.job = Some(job);
+        }
         "render.cancel" => {
             let job = app.render_workspace.view.job.ok_or_else(|| app.tr("render.ribbon_no_active_job").to_string())?;
             app.run(id, json!({"job":job}))?;
@@ -135,6 +150,18 @@ pub(super) fn perform_job(app: &mut SolveApp, id: &str) -> Result<(), String> {
         _ => return Err("not an interactive image-job action".into()),
     }
     Ok(())
+}
+
+pub(super) fn presentation(app: &SolveApp) -> solidcraft_engine::render::job::presentation::Presentation {
+    let view = &app.render_workspace.view;
+    solidcraft_engine::render::job::presentation::Presentation {
+        exposure_ev: view.draft.exposure_ev,
+        tone_map: view.studio.tone_map,
+        finishing: view.studio.finishing,
+        backdrop: view.studio.backdrop_enabled.then_some(view.studio.backdrop),
+        background: view.draft.background,
+        transparent_background: view.transparent,
+    }
 }
 
 fn focus(app: &mut SolveApp, page: inspector::Page, category: Option<&str>) {

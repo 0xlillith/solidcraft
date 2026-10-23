@@ -43,6 +43,8 @@ mod setups;
 
 #[path = "render_workspace_studio.rs"]
 mod studio;
+#[path = "render_workspace_transport.rs"]
+mod transport;
 
 #[cfg(test)]
 #[path = "render_workspace_tests.rs"]

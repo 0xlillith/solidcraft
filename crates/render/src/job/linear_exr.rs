@@ -31,7 +31,7 @@ fn attribute(out: &mut Vec<u8>, name: &[u8], kind: &[u8], value: &[u8]) -> Resul
     Ok(())
 }
 
-fn header(width: u32, height: u32) -> Result<Vec<u8>> {
+pub(super) fn header(width: u32, height: u32) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.try_reserve_exact(4096).map_err(|_| JobError::new(ErrorCode::AllocationFailed, "EXR header allocation failed"))?;
     out.extend_from_slice(&20_000_630_u32.to_le_bytes());

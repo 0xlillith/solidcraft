@@ -16,6 +16,9 @@ pub(super) enum Environment {
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    pub volume: Option<solidcraft_engine::render::job::volume::HomogeneousVolume>,
+    pub adaptive: Option<solidcraft_engine::render::job::adaptive::AdaptiveSampling>,
+    pub transmission_samples: u32,
     pub finishing: solidcraft_engine::render::job::finishing::Finishing,
     pub backdrop_enabled: bool,
     pub backdrop: solidcraft_engine::render::job::finishing::Backdrop,
@@ -41,6 +44,9 @@ pub(super) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            volume: None,
+            adaptive: None,
+            transmission_samples: 1,
             finishing: Default::default(),
             backdrop_enabled: false,
             backdrop: Default::default(),
@@ -72,6 +78,9 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     params["finishing"] = json!(view.finishing);
     params["backdrop"] = json!(view.backdrop_enabled.then_some(view.backdrop));
     params["linear_exr"] = json!(view.linear_exr);
+    params["volume"] = json!(view.volume);
+    params["adaptive"] = json!(view.adaptive);
+    params["transmission_samples"] = json!(view.transmission_samples);
     if view.lens_enabled {
         view.lens.validate().map_err(|error| error.to_string())?;
         if view.lens.aperture_radius_mm > 0.0 && app.cam.fov == 0.0 {
@@ -108,7 +117,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops::RangeInclusive<f64>, speed: f64) {
+pub(super) fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops::RangeInclusive<f64>, speed: f64) {
     ui.label(label);
     ui.horizontal(|ui| {
         for component in value {
@@ -118,6 +127,7 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
 }
 
 pub(super) fn finishing_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    super::transport::sampling_controls(app, ui);
     post_controls(app, ui);
     ui.label(app.tr("render.studio_tone_map"));
     let selected = app.render_workspace.view.studio.tone_map;
@@ -162,6 +172,7 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    super::transport::volume_controls(app, ui);
     let variants =
         [(Environment::None, "render.studio_environment_none"), (Environment::Sky, "render.studio_sky"), (Environment::Hdr, "render.studio_hdr")];
     let selected = app.render_workspace.view.studio.environment;
@@ -344,6 +355,19 @@ fn post_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             app.render_workspace.view.dirty = true;
         }
     });
+    let regrade = ui_kit::button(
+        ui,
+        app.tr("render.regrade_action"),
+        ui_kit::Button::Enabled(super::ribbon::action_ready(app, "render.result.regrade").is_ok()),
+    );
+    crate::scenario::publish_target("render:regrade", regrade.rect);
+    if regrade.clicked() {
+        if let Err(error) = super::ribbon::perform_job(app, "render.result.regrade") {
+            app.set_status(error, true);
+        }
+        ui.ctx().request_repaint();
+    }
+    ui_kit::text(ui, app.tr("render.regrade_help"), ui_kit::Text::Note("render.regrade_help"));
     let label = app.tr("render.linear_retain").to_string();
     let r = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.linear_exr);
     crate::scenario::publish_target("render:retain-exr", r.rect);

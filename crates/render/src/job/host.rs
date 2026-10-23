@@ -69,6 +69,9 @@ impl ImageHost {
 }
 
 #[cfg(test)]
+#[path = "host_regrade_tests.rs"]
+mod regrade_tests;
+#[cfg(test)]
 #[path = "host_tests.rs"]
 mod tests;
 
@@ -265,18 +268,38 @@ pub struct LinearMasterInfo {
     pub bytes: u64,
     pub sha256: String,
 }
+struct RetainedPresentation {
+    info: super::presentation::MasterPresentation,
+    _reservation: Reservation,
+}
+
 pub struct RenderFrame {
+    // Derivatives point directly at the original, never form a retention chain.
+    source_master: Option<Arc<RenderFrame>>,
+    presentation: Option<Arc<RetainedPresentation>>,
     pub info: FrameInfo,
     png: Vec<u8>,
     exr: Option<(Vec<u8>, LinearMasterInfo)>,
     _reservation: Reservation,
 }
 impl RenderFrame {
+    pub fn master_source(self: &Arc<Self>) -> Result<Arc<Self>> {
+        if let Some(source) = &self.source_master {
+            return Ok(source.clone());
+        }
+        if self.exr.is_some() {
+            return Ok(self.clone());
+        }
+        Err(JobError::new(ErrorCode::InvalidRequest, "completed image has no retained raw linear master"))
+    }
+    pub fn presentation(&self) -> Option<&super::presentation::MasterPresentation> {
+        self.presentation.as_deref().map(|retained| &retained.info)
+    }
     pub fn linear_exr(&self) -> Option<&[u8]> {
-        self.exr.as_ref().map(|(bytes, _)| bytes.as_slice())
+        self.exr.as_ref().map(|(bytes, _)| bytes.as_slice()).or_else(|| self.source_master.as_ref().and_then(|source| source.linear_exr()))
     }
     pub fn linear_master_info(&self) -> Option<&LinearMasterInfo> {
-        self.exr.as_ref().map(|(_, info)| info)
+        self.exr.as_ref().map(|(_, info)| info).or_else(|| self.source_master.as_ref().and_then(|source| source.linear_master_info()))
     }
     pub fn png(&self) -> &[u8] {
         &self.png
@@ -315,6 +338,10 @@ pub enum JobEnvironmentInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct JobStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<super::presentation::MasterPresentation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<super::adaptive::SamplingReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub linear_master: Option<LinearMasterInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<PreviewInfo>,
@@ -332,12 +359,14 @@ pub struct JobStatus {
 }
 
 struct Data {
+    sampling: Option<super::adaptive::SamplingReport>,
     progress: Progress,
     error: Option<JobError>,
     frame: Option<Arc<RenderFrame>>,
     preview: Option<Arc<RenderPreview>>,
 }
 struct Record {
+    presentation: Option<Arc<RetainedPresentation>>,
     textures: Option<super::textures::TextureSummary>,
     options: JobOptions,
     environment: Option<JobEnvironmentInfo>,
@@ -369,6 +398,8 @@ impl JobHandle {
     pub fn status(&self) -> Result<JobStatus> {
         let data = self.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         Ok(JobStatus {
+            presentation: self.0.presentation.as_deref().map(|retained| retained.info.clone()),
+            sampling: data.sampling.clone(),
             linear_master: data.frame.as_ref().and_then(|frame| frame.linear_master_info().cloned()),
             preview: data.preview.as_ref().map(|preview| preview.info.clone()),
             textures: self.0.textures.clone(),
@@ -432,6 +463,7 @@ impl JobHandle {
 }
 
 struct Work {
+    regrade: Option<(Arc<RenderFrame>, super::presentation::Presentation)>,
     request: Option<ImageRequest>,
     executor: Option<Arc<dyn ImageExecutor>>,
     environment: Option<crate::lighting::environment_input::EnvironmentInput>,
@@ -503,6 +535,7 @@ impl PendingPng {
 }
 
 struct Running {
+    source_master: Option<Arc<RenderFrame>>,
     task: Option<WorkTask>,
     pending_png: Option<PendingPng>,
     handle: JobHandle,
@@ -531,6 +564,7 @@ impl<T> TaskSlot<T> {
     }
 }
 enum WorkTask {
+    Regrade(TaskSlot<super::regrade::RegradeTask>),
     Registered(Box<dyn ImageWork>),
     Raster(TaskSlot<ImageTask>),
     #[cfg(feature = "raytrace-cpu")]
@@ -547,6 +581,20 @@ enum WorkPoll {
 }
 
 impl WorkTask {
+    fn source_master(&self) -> Result<Option<Arc<RenderFrame>>> {
+        match self {
+            Self::Regrade(slot) => {
+                slot.0.first().map(|task| Some(task.source())).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing master task slot"))
+            }
+            _ => Ok(None),
+        }
+    }
+    fn sampling_report(&self) -> Option<super::adaptive::SamplingReport> {
+        match self {
+            Self::Registered(task) => task.sampling_report(),
+            _ => None,
+        }
+    }
     fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
         match self {
             Self::Registered(task) => task.take_linear_exr(),
@@ -580,6 +628,7 @@ impl WorkTask {
 
     fn step(&mut self, units: usize) -> Result<WorkPoll> {
         match self {
+            Self::Regrade(task) => task.get_mut()?.step(units).map(WorkPoll::Existing),
             Self::Registered(task) => task.step(units).map(WorkPoll::Existing),
             Self::Raster(task) => task.get_mut()?.step(units).map(WorkPoll::Existing),
             #[cfg(feature = "raytrace-cpu")]
@@ -622,7 +671,9 @@ impl Running {
             data.progress.phase = Phase::Preparing;
         }
         let task = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(executor) = work.executor {
+            if let Some((source, presentation)) = work.regrade {
+                super::regrade::RegradeTask::new(source, presentation, work.handle.0.cancel.clone()).and_then(TaskSlot::new).map(WorkTask::Regrade)
+            } else if let Some(executor) = work.executor {
                 let request = work.request.ok_or_else(|| JobError::new(ErrorCode::Internal, "missing registered executor request"))?;
                 executor.begin(work.scene, request, work.handle.0.options, work.handle.0.cancel.clone()).map(WorkTask::Registered)
             } else {
@@ -631,9 +682,14 @@ impl Running {
         }))
         .unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "image executor failed while preparing the job")));
         match task {
-            Ok(task) => {
-                Some(Self { task: Some(task), pending_png: None, handle: work.handle, reservation: Some(work.reservation), next_preview_sequence: 1 })
-            }
+            Ok(task) => Some(Self {
+                source_master: None,
+                task: Some(task),
+                pending_png: None,
+                handle: work.handle,
+                reservation: Some(work.reservation),
+                next_preview_sequence: 1,
+            }),
             Err(e) => {
                 terminal(&work.handle, e);
                 None
@@ -664,6 +720,8 @@ impl Running {
             WorkPoll::Existing(TaskPoll::Complete(png)) => {
                 // Drop every integrator-owned capture/scratch buffer first, but
                 // keep the original admission lease while hashing the sole PNG.
+                self.source_master = self.task.as_ref().map(WorkTask::source_master).transpose()?.flatten();
+                data.sampling = self.task.as_ref().and_then(WorkTask::sampling_report);
                 let exr = self.task.as_mut().and_then(WorkTask::take_linear_exr);
                 if exr.is_some() != self.handle.0.options.linear_exr {
                     return Err(JobError::new(ErrorCode::Internal, "linear master availability differs from the admitted request"));
@@ -779,7 +837,14 @@ impl Running {
         let retained = png.capacity() as u64 + exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64) + FRAME_METADATA_BYTES;
         let mut reservation = self.reservation.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render reservation"))?;
         reservation.shrink(retained)?;
-        data.frame = Some(Arc::new(RenderFrame { info, png, exr, _reservation: reservation }));
+        data.frame = Some(Arc::new(RenderFrame {
+            info,
+            png,
+            exr,
+            source_master: self.source_master.take(),
+            presentation: self.handle.0.presentation.clone(),
+            _reservation: reservation,
+        }));
         data.preview = None;
         data.progress = Progress { phase: Phase::Completed, done: 1, total: 1 };
         self.handle.0.notify();
@@ -978,6 +1043,15 @@ impl ImageHost {
         if let Some(executor) = &self.0.executor {
             if request.raytrace.is_some() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executors do not accept CPU raytrace options"));
+            }
+            if options.volume.is_some() && !executor.supports_volume() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement bounded homogeneous volume transport"));
+            }
+            if options.adaptive.is_some() && !executor.supports_adaptive_sampling() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement independent-pilot adaptive sampling"));
+            }
+            if options.transmission_samples != 1 && !executor.supports_transmission_sampling() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement transmission strata"));
             }
             if options.linear_exr && !executor.supports_linear_exr() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot retain a raw linear EXR"));
@@ -1214,6 +1288,7 @@ impl ImageHost {
             (request, None)
         };
         let handle = JobHandle(Arc::new(Record {
+            presentation: None,
             textures,
             options,
             environment: environment_info,
@@ -1223,11 +1298,140 @@ impl ImageHost {
             request: public_request,
             resolved,
             cancel: CancelToken::default(),
-            data: Mutex::new(Data { progress: Progress { phase: Phase::Queued, done: 0, total: 1 }, error: None, frame: None, preview: None }),
+            data: Mutex::new(Data {
+                sampling: None,
+                progress: Progress { phase: Phase::Queued, done: 0, total: 1 },
+                error: None,
+                frame: None,
+                preview: None,
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             done: Condvar::new(),
         }));
-        queue.push_back(Work { request: work_request, executor: self.0.executor.clone(), scene, handle: handle.clone(), reservation, environment });
+        queue.push_back(Work {
+            regrade: None,
+            request: work_request,
+            executor: self.0.executor.clone(),
+            scene,
+            handle: handle.clone(),
+            reservation,
+            environment,
+        });
+        drop(queue);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.0.shared.wake.notify_one();
+        Ok(handle)
+    }
+
+    /// Regrade the exact retained native master. No geometry, material, light or
+    /// device work is submitted. The original frame and its lease remain shared.
+    pub fn submit_regrade(&self, id: JobId, source: &JobHandle, presentation: super::presentation::Presentation) -> Result<JobHandle> {
+        if id.session == 0 || id.serial == 0 || id.generation == 0 || id.session != source.id().session || id == source.id() {
+            return Err(JobError::new(ErrorCode::WrongOwner, "regrade requires a new identity in the source document session"));
+        }
+        let frame = source.frame()?.ok_or_else(|| JobError::new(ErrorCode::NotCompleted, "regrade requires a completed frame"))?;
+        let master = frame.master_source()?;
+        let bytes = super::regrade::required_bytes(&master, presentation)?;
+        let raw = master.linear_master_info().ok_or_else(|| JobError::new(ErrorCode::InvalidRequest, "raw master metadata is missing"))?;
+        let origin = super::presentation::MasterPresentation {
+            source_job: source.id(),
+            master_job: master.info.job,
+            master_sha256: raw.sha256.clone(),
+            presentation,
+            denoise_applied: false,
+        };
+        let metadata_bytes = (std::mem::size_of::<RetainedPresentation>() + origin.master_sha256.capacity() + 32) as u64;
+        if bytes.checked_add(metadata_bytes).is_none_or(|n| n > self.job_limit_bytes()) {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "master presentation exceeds the installed host's resource budget"));
+        }
+        let limits = RenderLimits { max_scratch_bytes: self.job_limit_bytes(), ..super::GPU_PATH_LIMITS };
+        let descriptor = ExecutorDescriptor {
+            id: ExecutorId::new("linear-master").map_err(|e| JobError::new(ErrorCode::Internal, e.to_string()))?,
+            availability: Availability::Available,
+            profiles: vec![RenderProfile {
+                mode: RenderMode::Preview,
+                operation: RenderOperation::Image,
+                formats: vec![RenderFormat::Png],
+                features: Vec::new(),
+            }],
+            limits,
+            scratch: ScratchLayout { sample_scale: 1, sample_bytes_per_pixel: 32, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
+        };
+        let mut backend = crate::builtin_backend();
+        backend.executors = vec![descriptor];
+        let resolved = crate::resolve_request(
+            &[backend],
+            &crate::RenderRequest {
+                backend: None,
+                mode: RenderMode::Preview,
+                operation: RenderOperation::Image,
+                width: u64::from(frame.info.width),
+                height: u64::from(frame.info.height),
+                format: Some(RenderFormat::Png),
+                features: Vec::new(),
+                policy: Default::default(),
+            },
+        )
+        .map_err(|e| JobError::new(ErrorCode::InvalidRequest, e.to_string()))?;
+        let request = ImageRequest {
+            width: frame.info.width,
+            height: frame.info.height,
+            camera: source.0.request.camera,
+            background: presentation.background,
+            transparent_background: presentation.transparent_background,
+            environment: None,
+            textures: None,
+            integrator: Integrator::Raster,
+            raytrace: None,
+        };
+        let options = JobOptions {
+            finishing: presentation.finishing,
+            backdrop: presentation.backdrop,
+            exposure_ev: presentation.exposure_ev,
+            tone_map: presentation.tone_map,
+            ..Default::default()
+        };
+        let mut queue = self.0.shared.queue.lock().map_err(|_| JobError::new(ErrorCode::HostUnavailable, "render queue lock poisoned"))?;
+        if self.0.shared.stop.load(Ordering::Acquire) {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "image host has stopped"));
+        }
+        queue.retain(|work| !work.handle.0.cancel.is_cancelled());
+        if queue.len() >= QUEUE_LIMIT {
+            return Err(JobError::new(ErrorCode::QueueFull, "image queue is full"));
+        }
+        let reservation = self.0.shared.budget.reserve(bytes)?;
+        let metadata = self.0.shared.budget.reserve(metadata_bytes)?;
+        let origin = Arc::new(RetainedPresentation { info: origin, _reservation: metadata });
+        let handle = JobHandle(Arc::new(Record {
+            presentation: Some(origin),
+            textures: None,
+            options,
+            environment: None,
+            _request_reservation: None,
+            id,
+            scene_generation: frame.info.scene_generation,
+            request,
+            resolved,
+            cancel: CancelToken::default(),
+            data: Mutex::new(Data {
+                sampling: None,
+                progress: Progress { phase: Phase::Queued, done: 0, total: 1 },
+                error: None,
+                frame: None,
+                preview: None,
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            done: Condvar::new(),
+        }));
+        queue.push_back(Work {
+            regrade: Some((master, presentation)),
+            request: None,
+            executor: None,
+            environment: None,
+            scene: ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY },
+            handle: handle.clone(),
+            reservation,
+        });
         drop(queue);
         #[cfg(not(target_arch = "wasm32"))]
         self.0.shared.wake.notify_one();

@@ -46,6 +46,9 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
+    volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
+    adaptive: Option<solidcraft_render::job::adaptive::AdaptiveSampling>,
+    transmission_samples: Option<u32>,
     finishing: solidcraft_render::job::finishing::Finishing,
     backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
     linear_exr: bool,
@@ -184,7 +187,8 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
             "samples":options.samples,"max_depth":options.max_depth,"seed":options.seed,
             "lens":options.lens,"lighting":options.lighting,"tone_map":options.tone_map,
             "denoise":options.denoise,"environment":options.environment,
-            "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr
+            "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr,
+            "adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume
             })
         }
     };
@@ -499,6 +503,9 @@ fn prepare_progressive(
     options.finishing = input.finishing;
     options.backdrop = input.backdrop;
     options.linear_exr = input.linear_exr;
+    options.volume = input.volume;
+    options.adaptive = input.adaptive;
+    options.transmission_samples = input.transmission_samples.unwrap_or(1);
     options.validate().map_err(job_error)?;
     if let Some(super::environment::Input::BuiltinHdr { id, .. }) = &input.environment
         && options.lighting.as_ref().is_some_and(|lighting| lighting.sun.is_some())
@@ -617,6 +624,18 @@ pub(super) fn start(s: &mut Session, params: &Value) -> Result<Value> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Regrade {
+    job: JobId,
+    presentation: solidcraft_render::job::presentation::Presentation,
+}
+pub(super) fn regrade(s: &mut Session, params: &Value) -> Result<Value> {
+    let input: Regrade = serde_json::from_value(params.clone()).map_err(|e| bad("render.result.regrade", e.to_string()))?;
+    input.presentation.validate().map_err(job_error)?;
+    Ok(json!(s.render_jobs.regrade(input.job, input.presentation).map_err(job_error)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Job {
     job: JobId,
 }
@@ -699,6 +718,6 @@ pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
         if input.overwrite { solidcraft_io::write_atomic(path, bytes, false) } else { solidcraft_io::safe_write::create_atomic(path, bytes) };
     result.map_err(|e| bad("render.export", format!("could not export completed {}: {e}", input.format.extension())))?;
     Ok(
-        json!({"job":input.job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"encoding":if input.format==ExportFormat::Exr {"scene_linear_srgb_d65"} else {"srgb"},"alpha":if input.format==ExportFormat::Exr {"coverage_premultiplied"} else {"straight"},"frame":frame.info,"linear_master":frame.linear_master_info()}),
+        json!({"job":input.job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"encoding":if input.format==ExportFormat::Exr {"scene_linear_srgb_d65"} else {"srgb"},"alpha":if input.format==ExportFormat::Exr {"coverage_premultiplied"} else {"straight"},"frame":frame.info,"linear_master":frame.linear_master_info(),"presentation":frame.presentation()}),
     )
 }

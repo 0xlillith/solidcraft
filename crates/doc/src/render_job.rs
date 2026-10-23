@@ -152,6 +152,13 @@ impl CpuJob {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpuJob {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<solidcraft_render::job::adaptive::AdaptiveSampling>,
+    /// Conditional Fresnel strata per primary sample; one keeps the old stream.
+    pub transmission_samples: u32,
+
     #[serde(skip_serializing_if = "solidcraft_render::job::finishing::Finishing::is_identity")]
     pub finishing: solidcraft_render::job::finishing::Finishing,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -176,6 +183,9 @@ impl Default for GpuJob {
     fn default() -> Self {
         let options = JobOptions::default();
         Self {
+            volume: options.volume,
+            adaptive: options.adaptive,
+            transmission_samples: options.transmission_samples,
             finishing: options.finishing,
             backdrop: options.backdrop,
             linear_exr: options.linear_exr,
@@ -205,6 +215,9 @@ impl GpuJob {
             environment.validate()?;
         }
         let options = JobOptions {
+            volume: self.volume,
+            adaptive: self.adaptive,
+            transmission_samples: self.transmission_samples,
             finishing: self.finishing,
             backdrop: self.backdrop,
             linear_exr: self.linear_exr,

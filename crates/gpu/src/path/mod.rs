@@ -1,12 +1,14 @@
 //! Native progressive product rendering. Software BVH traversal needs no ray-query
 //! features. Every worker quantum submits at most 256K paths, then checks cancellation.
 use solidcraft_geom::Vec3;
+#[cfg(test)]
+use solidcraft_render::job::ToneMap;
 use solidcraft_render::{
     Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderFeature, RenderFormat, RenderMode, RenderOperation, RenderProfile,
     ScratchLayout,
     job::{
         Admission, CancelToken, ErrorCode, GPU_PATH_LIMITS, ImageExecutor, ImageHost, ImageRequest, ImageWork, JobError, JobOptions,
-        MAX_GPU_PATH_BODIES, MAX_GPU_PATH_TRIANGLES, Phase, PngTask, Progress, Result, TaskPoll, ToneMap, admit_geometry_with_limits,
+        MAX_GPU_PATH_BODIES, MAX_GPU_PATH_TRIANGLES, Phase, PngTask, Progress, Result, TaskPoll, admit_geometry_with_limits,
     },
 };
 use std::{
@@ -15,14 +17,24 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+mod adaptive;
 mod denoise;
 mod scene;
 #[cfg(test)]
 mod tests;
 mod textures;
-const SHADER: &str = concat!(include_str!("path.wgsl"), "\n", include_str!("shadows.wgsl"), "\n", include_str!("textures.wgsl"));
+const SHADER: &str = concat!(
+    include_str!("path.wgsl"),
+    "\n",
+    include_str!("shadows.wgsl"),
+    "\n",
+    include_str!("textures.wgsl"),
+    "
+",
+    include_str!("volume.wgsl")
+);
 const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
-const PARAMETER_BYTES: usize = 448;
+const PARAMETER_BYTES: usize = 528;
 // Eight u32 words: count low, pixel, bounce, sample, code, count high, first-writer flag, spare.
 const FAILURE_BYTES: u64 = 32;
 // A path that cannot classify its glass medium ends there. Isolated paths at the
@@ -238,6 +250,18 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
     options.validate()?;
+    if let Some(volume) = options.volume.filter(|v| v.active()) {
+        volume.relative_bounds([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
+        if options.lighting.is_none() && request.environment.is_none() {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "volume transport requires explicit studio lighting or an HDR/sky environment"));
+        }
+        if scene.meshes.iter().any(|body| body.transmission.is_some() || body.faces.iter().any(|face| face.transmission.is_some())) {
+            return Err(JobError::new(
+                ErrorCode::InvalidScene,
+                "this homogeneous volume cannot combine with glass boundaries; disable either explicitly",
+            ));
+        }
+    }
     if request.transparent_background && options.finishing.bloom.is_some_and(|b| b.active()) {
         return Err(JobError::new(ErrorCode::InvalidRequest, "display bloom requires opaque output; no implicit alpha expansion is supported"));
     }
@@ -304,6 +328,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         .preparation_bytes
         .checked_add(bloom_bytes)
         .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "bloom preparation estimate overflow"))?;
+    let adaptive_bytes = pixels * if options.adaptive.is_some() { 32 } else { 0 };
+    admission.pixel_scratch_bytes += adaptive_bytes;
+    admission.preparation_bytes += adaptive_bytes;
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
     if admission.estimated_total_bytes > GPU_PATH_LIMITS.max_scratch_bytes {
         return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its bounded 8 GiB admission estimate"));
@@ -312,6 +339,15 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_volume(&self) -> bool {
+        true
+    }
+    fn supports_adaptive_sampling(&self) -> bool {
+        true
+    }
+    fn supports_transmission_sampling(&self) -> bool {
+        true
+    }
     fn supports_bloom(&self) -> bool {
         true
     }
@@ -342,7 +378,7 @@ impl ImageExecutor for Executor {
             || texture_bytes > limit
             || environment_bytes > limit
             || geometry_bytes > limit
-            || u64::from(request.width) * u64::from(request.height) * 16 > limit
+            || u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 } > limit
             || (options.denoise && u64::from(request.width) * u64::from(request.height) * 48 > limit)
         {
             return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path storage buffer exceeds this device's limit"));
@@ -367,6 +403,9 @@ struct Task {
     bind: wgpu::BindGroup,
     denoiser: Option<denoise::Resources>,
     sample: u32,
+    lane: u32,
+    sampling_report: Option<solidcraft_render::job::adaptive::SamplingReport>,
+    volume: [[f32; 4]; 3],
     offset: u32,
     epsilon: f32,
     png: Option<PngTask>,
@@ -385,6 +424,16 @@ impl Task {
     fn new(context: Arc<Context>, scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
         cancel.check()?;
         let start = Instant::now();
+        let volume = if let Some(v) = options.volume.filter(|v| v.active()) {
+            let bounds = v.relative_bounds([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
+            [
+                [bounds[0][0], bounds[0][1], bounds[0][2], v.extinction_per_mm as f32],
+                [bounds[1][0], bounds[1][1], bounds[1][2], v.anisotropy as f32],
+                [v.scattering_albedo[0] as f32, v.scattering_albedo[1] as f32, v.scattering_albedo[2] as f32, 0.0],
+            ]
+        } else {
+            [[0.0; 4]; 3]
+        };
         if let Some(resources) = &request.textures {
             resources.validate_scene(&scene)?;
         }
@@ -430,7 +479,7 @@ impl Task {
         let size = u64::from(request.width) * u64::from(request.height) * 16;
         let accumulation = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("path accumulation"),
-            size,
+            size: size * if options.adaptive.is_some() { 3 } else { 1 },
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
@@ -485,6 +534,9 @@ impl Task {
             bind,
             denoiser,
             sample: 0,
+            lane: 0,
+            sampling_report: None,
+            volume,
             offset: 0,
             epsilon: upload.epsilon,
             png: None,
@@ -552,10 +604,35 @@ impl Task {
             let [r, g, b] = sun.radiance;
             scene::vector(&mut bytes, Vec3::new(r, g, b), (1.0 / sun.solid_angle()) as f32);
         } else {
-            bytes.resize(PARAMETER_BYTES, 0);
+            bytes.resize(448, 0);
         }
 
+        let adaptive = self.options.adaptive;
+        for value in
+            [adaptive.map_or(0, |a| a.pilot_samples), adaptive.map_or(0, |a| a.min_samples), self.options.transmission_samples, self.options.samples]
+        {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for value in [
+            adaptive.map_or(0.0, |a| a.relative_error as f32),
+            adaptive.map_or(0.0, |a| a.absolute_error as f32),
+            adaptive.map_or(0.0, |a| a.coverage_error as f32),
+            self.lane as f32,
+        ] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        for vector in self.volume {
+            for value in vector {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
         bytes
+    }
+    fn normalization_samples(&self) -> u32 {
+        if self.options.adaptive.is_some() { 1 } else { self.sample }
+    }
+    fn target_samples(&self) -> u32 {
+        self.options.samples + self.options.adaptive.map_or(0, |a| a.pilot_samples)
     }
     fn dispatch(&mut self) -> Result<()> {
         self.cancel.check()?;
@@ -577,8 +654,13 @@ impl Task {
         self.cancel.check()?;
         self.offset += count;
         if self.offset == pixels {
-            self.sample += 1;
             self.offset = 0;
+            let strata = if self.options.adaptive.is_some_and(|a| self.sample < a.pilot_samples) { 1 } else { self.options.transmission_samples };
+            self.lane += 1;
+            if self.lane == strata {
+                self.sample += 1;
+                self.lane = 0;
+            }
         }
         Ok(())
     }
@@ -590,8 +672,9 @@ impl Task {
         let context = &self.context;
         let scopes = scopes(&context.device);
         let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path readback") });
-        encoder.copy_buffer_to_buffer(source, 0, &self.readback, 0, self.accumulation.size());
-        encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, self.accumulation.size(), FAILURE_BYTES);
+        let pixel_bytes = u64::from(self.request.width) * u64::from(self.request.height) * 16;
+        encoder.copy_buffer_to_buffer(source, 0, &self.readback, 0, pixel_bytes);
+        encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, pixel_bytes, FAILURE_BYTES);
         let submission = context.queue.submit([encoder.finish()]);
         checked(scopes)?;
         let slice = self.readback.slice(..);
@@ -602,94 +685,58 @@ impl Task {
         context.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
         rx.try_recv().map_err(gpu)?.map_err(gpu)?;
         let data = slice.get_mapped_range().map_err(gpu)?;
-        let (pixels, failures) = data.split_at(data.len().saturating_sub(FAILURE_BYTES as usize));
-        let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
-        let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
-        if failed > 0 {
-            let paths = u64::from(self.request.width) * u64::from(self.request.height) * u64::from(self.sample.max(1));
-            let detail = format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
-            if !medium_failures_tolerated(failed, paths) {
-                return Err(JobError::new(
-                    ErrorCode::InvalidScene,
-                    format!(
-                        "inconsistent glass medium paths ({detail}): camera must start outside volumes; overlapping solids or more than 16 nested media are unsupported"
-                    ),
-                ));
+        let result = (|| {
+            let (pixels, failures) = data.split_at(data.len().saturating_sub(FAILURE_BYTES as usize));
+            let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
+            if word(7) != 0 {
+                return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative pilot/production path radiance"));
             }
-            log::warn!("gpu-path ended {detail} at an unclassifiable glass medium");
-        }
-        let mut values = scene::reserved((self.request.width * self.request.height) as usize)?;
-        for pixel in pixels.as_chunks::<16>().0 {
-            let mut value = [0.0; 4];
-            for (v, bytes) in value.iter_mut().zip(pixel.as_chunks::<4>().0) {
-                *v = f32::from_le_bytes(*bytes) / self.sample as f32;
-                if !v.is_finite() || *v < 0.0 {
-                    return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative path radiance"));
+            let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
+            if failed > 0 {
+                let pixels = u64::from(self.request.width) * u64::from(self.request.height);
+                let paths = self
+                    .sampling_report
+                    .as_ref()
+                    .map_or(pixels * u64::from(self.sample.max(1)) * u64::from(self.options.transmission_samples), |report| {
+                        report.production_samples * u64::from(report.transmission_strata) + pixels * u64::from(report.pilot_samples_per_pixel)
+                    });
+                let detail =
+                    format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
+                if !medium_failures_tolerated(failed, paths) {
+                    return Err(JobError::new(
+                        ErrorCode::InvalidScene,
+                        format!(
+                            "inconsistent glass medium paths ({detail}): camera must start outside volumes; overlapping solids or more than 16 nested media are unsupported"
+                        ),
+                    ));
                 }
+                log::warn!("gpu-path ended {detail} at an unclassifiable glass medium");
             }
-            values.push(value);
-        }
+            let mut values = scene::reserved((self.request.width * self.request.height) as usize)?;
+            for pixel in pixels.as_chunks::<16>().0 {
+                let mut value = [0.0; 4];
+                for (v, bytes) in value.iter_mut().zip(pixel.as_chunks::<4>().0) {
+                    *v = f32::from_le_bytes(*bytes) / self.normalization_samples() as f32;
+                    if !v.is_finite() || *v < 0.0 {
+                        return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative path radiance"));
+                    }
+                }
+                values.push(value);
+            }
+            Ok(values)
+        })();
         drop(data);
         self.readback.unmap();
         self.cancel.check()?;
-        Ok(values)
+        result
     }
 }
-#[derive(Clone, Copy)]
-struct Display {
-    finishing: solidcraft_render::job::finishing::Finishing,
-    backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
-    width: u32,
-    height: u32,
-    exposure: f64,
-    tone_map: ToneMap,
-    background: [f64; 3],
-    transparent: bool,
-}
-impl Display {
-    #[cfg(test)]
-    fn encode(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken) -> Result<()> {
-        self.encode_at(input, output, cancel, 0)
-    }
-    #[cfg(test)]
-    fn encode_at(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken, offset: usize) -> Result<()> {
-        self.encode_bloom_at(input, output, cancel, offset, None)
-    }
-    fn encode_bloom_at(self, input: &[[f32; 4]], output: &mut [u8], cancel: &CancelToken, offset: usize, bloom: Option<&[[f32; 3]]>) -> Result<()> {
-        if bloom.is_some_and(|pixels| pixels.len() != input.len()) {
-            return Err(JobError::new(ErrorCode::InvalidRequest, "bloom/display length mismatch"));
-        }
-        for (index, (pixel, rgba)) in input.iter().zip(output.as_chunks_mut::<4>().0).enumerate() {
-            if index % 4096 == 0 {
-                cancel.check()?;
-            }
-            let alpha = f64::from(pixel[3]).clamp(0.0, 1.0);
-            let absolute = offset + index;
-            let position = [
-                ((absolute % self.width as usize) as f64 + 0.5) / f64::from(self.width),
-                ((absolute / self.width as usize) as f64 + 0.5) / f64::from(self.height),
-            ];
-            let background = self.backdrop.map_or(self.background, |backdrop| backdrop.color(position));
-            let mapped = std::array::from_fn(|channel| {
-                let c = if alpha > 0. { f64::from(pixel[channel]) * self.exposure / alpha * self.finishing.rgb_gain[channel] } else { 0. };
-                self.tone_map.map(c)
-            });
-            let mapped = self.finishing.display(mapped, position);
-            for (channel, ((c, b), out)) in mapped.into_iter().zip(background).zip(rgba.iter_mut()).enumerate() {
-                let mut value = if self.transparent { c } else { c * alpha + b * (1. - alpha) };
-                if let Some(glow) = bloom.and_then(|pixels| pixels.get(index)) {
-                    let strength = self.finishing.bloom.map_or(0.0, |b| b.strength);
-                    value += strength * self.tone_map.map(f64::from(glow[channel]) * self.exposure * self.finishing.rgb_gain[channel]);
-                }
-                let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1. / 2.4) - 0.055 };
-                *out = (encoded.clamp(0., 1.) * 255.).round() as u8;
-            }
-            rgba[3] = if self.transparent { (alpha * 255.0).round() as u8 } else { 255 };
-        }
-        Ok(())
-    }
-}
+use solidcraft_render::job::presentation::Display;
+
 impl ImageWork for Task {
+    fn sampling_report(&self) -> Option<solidcraft_render::job::adaptive::SamplingReport> {
+        self.sampling_report.clone()
+    }
     fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
         self.exr.take()
     }
@@ -698,9 +745,12 @@ impl ImageWork for Task {
         if let Some(png) = &mut self.png {
             return png.step(units);
         }
-        if self.sample < self.options.samples {
+        if self.sample < self.target_samples() {
             self.dispatch()?;
-            return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.options.samples) }));
+            return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.target_samples()) }));
+        }
+        if self.sampling_report.is_none() && (self.options.adaptive.is_some() || self.options.transmission_samples != 1) {
+            self.sampling_report = Some(adaptive::report(self)?);
         }
         if let Some(mut bloom) = self.bloom_work.take() {
             if !bloom.step(8)? {
