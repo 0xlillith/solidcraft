@@ -1,5 +1,7 @@
 # CPU progressive camera sampling
 
+The limits below describe the compatibility **Compact** profile. Explicit Studio and Workstation envelopes are documented in [CPU resource profiles](render-cpu-resource-profiles.md); their implementation batch still requires consolidated validation.
+
 CPU progressive rendering repeatedly traces fresh camera samples into a bounded
 linear-light film. Checkpoints are complete image passes, at 1, 2, 4, 8, 16 and
 32 samples per pixel when below the requested final sample count. The exact

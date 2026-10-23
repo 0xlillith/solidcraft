@@ -24,6 +24,54 @@ const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
 const QUEUE_LIMIT: usize = 2;
 
 #[cfg(test)]
+struct CpuExecutor;
+#[cfg(test)]
+impl ImageExecutor for CpuExecutor {
+    fn descriptor(&self) -> Result<ExecutorDescriptor> {
+        Ok(ExecutorDescriptor {
+            id: ExecutorId::new("cpu-product").map_err(|e| JobError::new(ErrorCode::Internal, e.to_string()))?,
+            availability: Availability::Available,
+            profiles: vec![RenderProfile {
+                mode: RenderMode::Preview,
+                operation: RenderOperation::Image,
+                formats: vec![RenderFormat::Png],
+                features: vec![crate::RenderFeature::Pbr],
+            }],
+            limits: RenderLimits::default(),
+            scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
+        })
+    }
+
+    fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        if options != JobOptions::default() {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "CPU product does not support sampling or exposure controls"));
+        }
+        admit(scene, request)
+    }
+    fn begin(&self, scene: ProductScene, request: ImageRequest, _options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+        Ok(Box::new(ImageTask::new(scene, request, cancel)?))
+    }
+}
+
+// Completion notification precedes destruction of the worker's temporary handle.
+// Lease tests join their owned, idle worker before checking exact retained bytes.
+#[cfg(all(test, feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+impl ImageHost {
+    pub(super) fn join_worker_for_test(&mut self) -> Result<()> {
+        self.0.shared.stop.store(true, Ordering::Release);
+        self.0.shared.wake.notify_all();
+        let inner = Arc::get_mut(&mut self.0).ok_or_else(|| JobError::new(ErrorCode::Internal, "test must own its host"))?;
+        if let Some(worker) = inner._worker.take() {
+            worker.join().map_err(|_| JobError::new(ErrorCode::Internal, "test worker panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "host_regrade_tests.rs"]
+mod regrade_tests;
+#[cfg(test)]
 #[path = "host_tests.rs"]
 mod tests;
 
@@ -36,6 +84,7 @@ pub enum HostKind {
 
 struct Budget {
     used: AtomicU64,
+    limit: u64,
 }
 pub(crate) struct Reservation {
     budget: Arc<Budget>,
@@ -46,10 +95,9 @@ impl Budget {
     fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         let mut used = self.used.load(Ordering::Acquire);
         loop {
-            let next = used
-                .checked_add(bytes)
-                .filter(|n| *n <= MEMORY_LIMIT)
-                .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "image host's 512 MiB admission pool is full"))?;
+            let next = used.checked_add(bytes).filter(|n| *n <= self.limit).ok_or_else(|| {
+                JobError::new(ErrorCode::LimitExceeded, format!("image host admission pool is full ({} MiB)", self.limit / (1024 * 1024)))
+            })?;
             match self.used.compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => break,
                 Err(current) => used = current,
@@ -184,7 +232,7 @@ mod light_union_lease_tests {
         let host = CpuHost::for_platform().unwrap();
         let request = request().unwrap();
         let work = admit(&scene(), &request).unwrap().estimated_total_bytes;
-        let fill = host.0.shared.budget.reserve(MEMORY_LIMIT - work).unwrap();
+        let fill = host.0.shared.budget.reserve(host.pool_limit_bytes() - work).unwrap();
         let before = host.admitted_bytes();
         let result = host.submit(JobId { session: 1724, serial: 2, generation: 1 }, 1, scene(), request);
         assert_eq!(result.err().unwrap().code, ErrorCode::LimitExceeded);
@@ -203,12 +251,56 @@ fn admit_request_sum(work_bytes: u64, request_bytes: u64) -> Result<()> {
 }
 
 /// Borrow encoded bytes through the frame, so retaining the data also retains its admission lease.
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinearColourEncoding {
+    SceneLinearSrgbD65,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinearAlphaConvention {
+    CoveragePremultiplied,
+}
+#[derive(Clone, Debug, Serialize)]
+pub struct LinearMasterInfo {
+    pub encoding: LinearColourEncoding,
+    pub alpha: LinearAlphaConvention,
+    pub bytes: u64,
+    pub sha256: String,
+}
+struct RetainedPresentation {
+    info: super::presentation::MasterPresentation,
+    _reservation: Reservation,
+}
+
 pub struct RenderFrame {
+    // Derivatives point directly at the original, never form a retention chain.
+    source_master: Option<Arc<RenderFrame>>,
+    presentation: Option<Arc<RetainedPresentation>>,
     pub info: FrameInfo,
     png: Vec<u8>,
+    exr: Option<(Vec<u8>, LinearMasterInfo)>,
     _reservation: Reservation,
 }
 impl RenderFrame {
+    pub fn master_source(self: &Arc<Self>) -> Result<Arc<Self>> {
+        if let Some(source) = &self.source_master {
+            return Ok(source.clone());
+        }
+        if self.exr.is_some() {
+            return Ok(self.clone());
+        }
+        Err(JobError::new(ErrorCode::InvalidRequest, "completed image has no retained raw linear master"))
+    }
+    pub fn presentation(&self) -> Option<&super::presentation::MasterPresentation> {
+        self.presentation.as_deref().map(|retained| &retained.info)
+    }
+    pub fn linear_exr(&self) -> Option<&[u8]> {
+        self.exr.as_ref().map(|(bytes, _)| bytes.as_slice()).or_else(|| self.source_master.as_ref().and_then(|source| source.linear_exr()))
+    }
+    pub fn linear_master_info(&self) -> Option<&LinearMasterInfo> {
+        self.exr.as_ref().map(|(_, info)| info).or_else(|| self.source_master.as_ref().and_then(|source| source.linear_master_info()))
+    }
     pub fn png(&self) -> &[u8] {
         &self.png
     }
@@ -246,6 +338,12 @@ pub enum JobEnvironmentInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct JobStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<super::presentation::MasterPresentation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<super::adaptive::SamplingReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linear_master: Option<LinearMasterInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub preview: Option<PreviewInfo>,
     pub textures: Option<super::textures::TextureSummary>,
     pub options: JobOptions,
@@ -261,12 +359,14 @@ pub struct JobStatus {
 }
 
 struct Data {
+    sampling: Option<super::adaptive::SamplingReport>,
     progress: Progress,
     error: Option<JobError>,
     frame: Option<Arc<RenderFrame>>,
     preview: Option<Arc<RenderPreview>>,
 }
 struct Record {
+    presentation: Option<Arc<RetainedPresentation>>,
     textures: Option<super::textures::TextureSummary>,
     options: JobOptions,
     environment: Option<JobEnvironmentInfo>,
@@ -298,6 +398,9 @@ impl JobHandle {
     pub fn status(&self) -> Result<JobStatus> {
         let data = self.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         Ok(JobStatus {
+            presentation: self.0.presentation.as_deref().map(|retained| retained.info.clone()),
+            sampling: data.sampling.clone(),
+            linear_master: data.frame.as_ref().and_then(|frame| frame.linear_master_info().cloned()),
             preview: data.preview.as_ref().map(|preview| preview.info.clone()),
             textures: self.0.textures.clone(),
             options: self.0.options,
@@ -360,6 +463,7 @@ impl JobHandle {
 }
 
 struct Work {
+    regrade: Option<(Arc<RenderFrame>, super::presentation::Presentation)>,
     request: Option<ImageRequest>,
     executor: Option<Arc<dyn ImageExecutor>>,
     environment: Option<crate::lighting::environment_input::EnvironmentInput>,
@@ -379,10 +483,13 @@ struct PendingPng {
     digest: Sha256,
     hashed: usize,
     preview_samples: Option<u32>,
+    exr: Option<Vec<u8>>,
+    exr_digest: Sha256,
+    exr_hashed: usize,
 }
 // Keep the new fixed completion state within the existing metadata allowance
 // even if the hashing dependency's representation changes on another target.
-const _: [(); 1] = [(); (std::mem::size_of::<PendingPng>() <= 256) as usize];
+const _: [(); 1] = [(); (std::mem::size_of::<PendingPng>() <= 512) as usize];
 const _: [(); 1] = [(); (std::mem::size_of::<Running>()
     + std::mem::size_of::<RenderFrame>()
     + std::mem::size_of::<RenderPreview>()
@@ -393,7 +500,7 @@ const _: [(); 1] = [(); (std::mem::size_of::<Running>()
 
 impl PendingPng {
     fn new(png: Vec<u8>) -> Self {
-        Self { png, digest: Sha256::new(), hashed: 0, preview_samples: None }
+        Self { png, digest: Sha256::new(), hashed: 0, preview_samples: None, exr: None, exr_digest: Sha256::new(), exr_hashed: 0 }
     }
 
     #[cfg(feature = "raytrace-cpu")]
@@ -404,24 +511,31 @@ impl PendingPng {
     fn step(&mut self, units: usize, cancel: &CancelToken) -> Result<bool> {
         cancel.check()?;
         for _ in 0..units.min(PNG_HASH_CHUNKS_PER_ADVANCE) {
-            if self.hashed == self.png.len() {
+            let (bytes, hashed, digest) = if self.hashed < self.png.len() {
+                (&self.png, &mut self.hashed, &mut self.digest)
+            } else if let Some(exr) = self.exr.as_ref().filter(|exr| self.exr_hashed < exr.len()) {
+                (exr, &mut self.exr_hashed, &mut self.exr_digest)
+            } else {
                 break;
-            }
-            let end = self.hashed.saturating_add(PNG_HASH_CHUNK_BYTES).min(self.png.len());
-            let chunk = self.png.get(self.hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing PNG digest chunk"))?;
-            self.digest.update(chunk);
-            self.hashed = end;
+            };
+            let end = hashed.saturating_add(PNG_HASH_CHUNK_BYTES).min(bytes.len());
+            digest.update(bytes.get(*hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed image digest chunk"))?);
+            *hashed = end;
             cancel.check()?;
         }
-        Ok(self.hashed == self.png.len())
+        Ok(self.hashed == self.png.len() && self.exr.as_ref().is_none_or(|exr| self.exr_hashed == exr.len()))
     }
-
     fn progress(&self) -> Progress {
-        Progress { phase: Phase::Encoding, done: self.hashed as u64, total: self.png.len() as u64 }
+        Progress {
+            phase: Phase::Encoding,
+            done: self.hashed as u64 + self.exr_hashed as u64,
+            total: self.png.len() as u64 + self.exr.as_ref().map_or(0, |bytes| bytes.len() as u64),
+        }
     }
 }
 
 struct Running {
+    source_master: Option<Arc<RenderFrame>>,
     task: Option<WorkTask>,
     pending_png: Option<PendingPng>,
     handle: JobHandle,
@@ -450,6 +564,7 @@ impl<T> TaskSlot<T> {
     }
 }
 enum WorkTask {
+    Regrade(TaskSlot<super::regrade::RegradeTask>),
     Registered(Box<dyn ImageWork>),
     Raster(TaskSlot<ImageTask>),
     #[cfg(feature = "raytrace-cpu")]
@@ -466,6 +581,26 @@ enum WorkPoll {
 }
 
 impl WorkTask {
+    fn source_master(&self) -> Result<Option<Arc<RenderFrame>>> {
+        match self {
+            Self::Regrade(slot) => {
+                slot.0.first().map(|task| Some(task.source())).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing master task slot"))
+            }
+            _ => Ok(None),
+        }
+    }
+    fn sampling_report(&self) -> Option<super::adaptive::SamplingReport> {
+        match self {
+            Self::Registered(task) => task.sampling_report(),
+            _ => None,
+        }
+    }
+    fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Self::Registered(task) => task.take_linear_exr(),
+            _ => None,
+        }
+    }
     fn new(
         scene: ProductScene,
         request: ImageRequest,
@@ -493,6 +628,7 @@ impl WorkTask {
 
     fn step(&mut self, units: usize) -> Result<WorkPoll> {
         match self {
+            Self::Regrade(task) => task.get_mut()?.step(units).map(WorkPoll::Existing),
             Self::Registered(task) => task.step(units).map(WorkPoll::Existing),
             Self::Raster(task) => task.get_mut()?.step(units).map(WorkPoll::Existing),
             #[cfg(feature = "raytrace-cpu")]
@@ -535,7 +671,9 @@ impl Running {
             data.progress.phase = Phase::Preparing;
         }
         let task = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if let Some(executor) = work.executor {
+            if let Some((source, presentation)) = work.regrade {
+                super::regrade::RegradeTask::new(source, presentation, work.handle.0.cancel.clone()).and_then(TaskSlot::new).map(WorkTask::Regrade)
+            } else if let Some(executor) = work.executor {
                 let request = work.request.ok_or_else(|| JobError::new(ErrorCode::Internal, "missing registered executor request"))?;
                 executor.begin(work.scene, request, work.handle.0.options, work.handle.0.cancel.clone()).map(WorkTask::Registered)
             } else {
@@ -544,9 +682,14 @@ impl Running {
         }))
         .unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "image executor failed while preparing the job")));
         match task {
-            Ok(task) => {
-                Some(Self { task: Some(task), pending_png: None, handle: work.handle, reservation: Some(work.reservation), next_preview_sequence: 1 })
-            }
+            Ok(task) => Some(Self {
+                source_master: None,
+                task: Some(task),
+                pending_png: None,
+                handle: work.handle,
+                reservation: Some(work.reservation),
+                next_preview_sequence: 1,
+            }),
             Err(e) => {
                 terminal(&work.handle, e);
                 None
@@ -577,8 +720,21 @@ impl Running {
             WorkPoll::Existing(TaskPoll::Complete(png)) => {
                 // Drop every integrator-owned capture/scratch buffer first, but
                 // keep the original admission lease while hashing the sole PNG.
+                self.source_master = self.task.as_ref().map(WorkTask::source_master).transpose()?.flatten();
+                data.sampling = self.task.as_ref().and_then(WorkTask::sampling_report);
+                let exr = self.task.as_mut().and_then(WorkTask::take_linear_exr);
+                if exr.is_some() != self.handle.0.options.linear_exr {
+                    return Err(JobError::new(ErrorCode::Internal, "linear master availability differs from the admitted request"));
+                }
+                if let Some(bytes) = &exr {
+                    let limit = super::linear_exr::encoded_limit(self.handle.0.request.width, self.handle.0.request.height)?;
+                    if bytes.len() < 8 || bytes.capacity() as u64 > limit || bytes.get(..8) != Some(&[0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0]) {
+                        return Err(JobError::new(ErrorCode::LimitExceeded, "linear master exceeds its bound or has an invalid signature"));
+                    }
+                }
                 self.task = None;
-                let pending = PendingPng::new(png);
+                let mut pending = PendingPng::new(png);
+                pending.exr = exr;
                 data.progress = pending.progress();
                 self.pending_png = Some(pending);
                 Ok(true)
@@ -605,7 +761,7 @@ impl Running {
             data.progress = progress;
             return Ok(true);
         }
-        let PendingPng { png, digest, preview_samples, .. } =
+        let PendingPng { png, digest, preview_samples, exr, exr_digest, .. } =
             self.pending_png.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed PNG digest"))?;
         let info = FrameInfo {
             job: self.handle.0.id,
@@ -624,7 +780,12 @@ impl Running {
         // The PNG allocation itself is retained once and billed by capacity below.
         let frame_layout = if preview_samples.is_some() { std::mem::size_of::<RenderPreview>() } else { std::mem::size_of::<RenderFrame>() };
         let fixed_metadata = std::mem::size_of::<Running>() + frame_layout + 2 * crate::MAX_RENDER_ID_BYTES + 32;
-        if fixed_metadata.checked_add(info.png_sha256.capacity()).is_none_or(|bytes| bytes > FRAME_METADATA_BYTES as usize) {
+        let linear_digest_bytes = if exr.is_some() { 64 } else { 0 };
+        if fixed_metadata
+            .checked_add(info.png_sha256.capacity())
+            .and_then(|n| n.checked_add(linear_digest_bytes))
+            .is_none_or(|bytes| bytes > FRAME_METADATA_BYTES as usize)
+        {
             return Err(JobError::new(ErrorCode::LimitExceeded, "PNG digest metadata exceeds its existing admission allowance"));
         }
         let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
@@ -664,9 +825,26 @@ impl Running {
             self.handle.0.notify();
             return Ok(true);
         }
+        let exr = exr.map(|bytes| {
+            let info = LinearMasterInfo {
+                bytes: bytes.len() as u64,
+                sha256: format!("{:x}", exr_digest.finalize()),
+                encoding: LinearColourEncoding::SceneLinearSrgbD65,
+                alpha: LinearAlphaConvention::CoveragePremultiplied,
+            };
+            (bytes, info)
+        });
+        let retained = png.capacity() as u64 + exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64) + FRAME_METADATA_BYTES;
         let mut reservation = self.reservation.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render reservation"))?;
-        reservation.shrink(png.capacity() as u64 + FRAME_METADATA_BYTES)?;
-        data.frame = Some(Arc::new(RenderFrame { info, png, _reservation: reservation }));
+        reservation.shrink(retained)?;
+        data.frame = Some(Arc::new(RenderFrame {
+            info,
+            png,
+            exr,
+            source_master: self.source_master.take(),
+            presentation: self.handle.0.presentation.clone(),
+            _reservation: reservation,
+        }));
         data.preview = None;
         data.progress = Progress { phase: Phase::Completed, done: 1, total: 1 };
         self.handle.0.notify();
@@ -740,12 +918,12 @@ pub struct ImageHost(Arc<Owner>);
 pub type CpuHost = ImageHost;
 
 impl ImageHost {
-    fn shared() -> Arc<Shared> {
+    fn shared(limit: u64) -> Arc<Shared> {
         Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
             active: Mutex::new(None),
             stop: AtomicBool::new(false),
-            budget: Arc::new(Budget { used: AtomicU64::new(0) }),
+            budget: Arc::new(Budget { used: AtomicU64::new(0), limit }),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Condvar::new(),
         })
@@ -754,7 +932,7 @@ impl ImageHost {
     pub fn cooperative() -> Self {
         Self(Arc::new(Owner {
             executor: None,
-            shared: Self::shared(),
+            shared: Self::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -767,7 +945,7 @@ impl ImageHost {
     fn cooperative_with(executor: Arc<dyn ImageExecutor>) -> Self {
         Self(Arc::new(Owner {
             executor: Some(executor),
-            shared: Self::shared(),
+            shared: Self::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -782,7 +960,8 @@ impl ImageHost {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let shared = Self::shared();
+            let pool = if usize::BITS >= 64 { super::NATIVE_CPU_POOL_BYTES } else { MEMORY_LIMIT };
+            let shared = Self::shared(pool);
             let worker_shared = shared.clone();
             let worker = std::thread::Builder::new()
                 .name("solidcraft-render".into())
@@ -804,7 +983,12 @@ impl ImageHost {
         {
             return Err(JobError::new(ErrorCode::InvalidRequest, "image worker currently accepts one Preview/Image/PNG profile"));
         }
-        let shared = Self::shared();
+        let limit = executor.memory_limit_bytes();
+        let ceiling = if usize::BITS >= 64 { super::NATIVE_CPU_POOL_BYTES } else { MEMORY_LIMIT };
+        if limit == 0 || limit > ceiling {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "registered image pool exceeds supported address space"));
+        }
+        let shared = Self::shared(limit);
         let worker_shared = shared.clone();
         let worker = std::thread::Builder::new()
             .name("solidcraft-render".into())
@@ -846,26 +1030,55 @@ impl ImageHost {
     }
 
     pub fn job_limit_bytes(&self) -> u64 {
-        if self.0.executor.is_some() { MEMORY_LIMIT } else { super::image::MAX_JOB_BYTES }
+        if self.0.executor.is_some() { self.0.shared.budget.limit } else { super::image::MAX_JOB_BYTES }
     }
 
     pub fn pool_limit_bytes(&self) -> u64 {
-        MEMORY_LIMIT
+        self.0.shared.budget.limit
     }
 
     pub fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        let scatter = |t: Option<crate::transmission::Transmission>| t.and_then(|v| v.subsurface()).is_some_and(|s| s.active());
+        if scene.meshes.iter().any(|b| scatter(b.transmission) || b.faces.iter().any(|f| scatter(f.transmission)))
+            && !self.0.executor.as_ref().is_some_and(|executor| executor.supports_subsurface())
+        {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "installed image producer does not implement interior subsurface random walks"));
+        }
+
         self.validate_integrator(request.integrator)?;
         options.validate()?;
         if let Some(executor) = &self.0.executor {
             if request.raytrace.is_some() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executors do not accept CPU raytrace options"));
             }
+            if options.nested_media && !executor.supports_nested_media() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement certified nested media"));
+            }
+            if options.volume.is_some() && !executor.supports_volume() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement bounded homogeneous volume transport"));
+            }
+            if options.adaptive.is_some() && !executor.supports_adaptive_sampling() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement independent-pilot adaptive sampling"));
+            }
+            if options.transmission_samples != 1 && !executor.supports_transmission_sampling() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement transmission strata"));
+            }
+            if options.linear_exr && !executor.supports_linear_exr() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot retain a raw linear EXR"));
+            }
+            if options.finishing.bloom.is_some_and(|b| b.active()) && !executor.supports_bloom() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement display bloom"));
+            }
+            if (!options.finishing.is_identity() || options.backdrop.is_some()) && !executor.supports_finishing() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot apply the requested finishing/backdrop"));
+            }
             let admission = executor.admit(scene, request, options)?;
-            if admission.estimated_total_bytes > MEMORY_LIMIT {
-                return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds 512 MiB"));
+            if admission.estimated_total_bytes > self.job_limit_bytes() {
+                return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds its admitted host pool"));
             }
             Ok(admission)
         } else {
+            request.cpu_budget().validate_execution()?;
             if options != JobOptions::default() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "CPU images use raytrace options, not progressive sampling controls"));
             }
@@ -873,12 +1086,18 @@ impl ImageHost {
         }
     }
 
-    fn check_request_sum(&self, work: u64, request: u64) -> Result<()> {
+    fn check_request_sum(&self, work: u64, request: u64, budget: super::CpuBudget) -> Result<()> {
         if self.0.executor.is_none() {
-            return admit_request_sum(work, request);
+            if budget == super::CpuBudget::Compact {
+                return admit_request_sum(work, request);
+            }
+            if work.checked_add(request).is_none_or(|n| n > budget.limits().max_job_bytes) {
+                return Err(JobError::new(ErrorCode::LimitExceeded, "CPU work and retained request exceed the selected profile"));
+            }
+            return Ok(());
         }
-        if work.checked_add(request).is_none_or(|n| n > MEMORY_LIMIT) {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds 512 MiB"));
+        if work.checked_add(request).is_none_or(|n| n > self.job_limit_bytes()) {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds its admitted host pool"));
         }
         Ok(())
     }
@@ -941,9 +1160,25 @@ impl ImageHost {
                     vec![crate::RenderFeature::Pbr]
                 },
             }],
-            limits: RenderLimits::default(),
+            limits: if integrator == Integrator::Raytrace && self.kind() == HostKind::NativeWorker && usize::BITS >= 64 {
+                super::CpuBudget::Workstation.image_limits(false)
+            } else {
+                RenderLimits::default()
+            },
             scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
         })
+    }
+
+    /// Resolve a CPU request against its explicit envelope, never the largest advertised one.
+    pub fn descriptor_for_request(&self, request: &ImageRequest) -> Result<ExecutorDescriptor> {
+        let mut descriptor = self.descriptor_for(request.integrator)?;
+        if self.0.executor.is_none() && request.integrator == Integrator::Raytrace {
+            let budget = request.cpu_budget();
+            budget.validate_execution()?;
+            budget.validate_image(request.width, request.height, request.raytrace.as_ref().and_then(|o| o.progressive))?;
+            descriptor.limits = budget.image_limits(request.raytrace.as_ref().is_some_and(|o| o.progressive.is_some()));
+        }
+        Ok(descriptor)
     }
 
     pub fn submit(&self, id: JobId, scene_generation: u64, scene: ProductScene, request: ImageRequest) -> Result<JobHandle> {
@@ -1022,9 +1257,9 @@ impl ImageHost {
         let estimated_total_bytes = estimated_total_bytes
             .checked_add(environment_bytes)
             .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "environment admission overflow"))?;
-        self.check_request_sum(estimated_total_bytes, request_bytes)?;
+        self.check_request_sum(estimated_total_bytes, request_bytes, request.cpu_budget())?;
         let mut backend = crate::builtin_backend();
-        let descriptor = self.descriptor_for(request.integrator)?;
+        let descriptor = self.descriptor_for_request(&request)?;
         let expected_executor = descriptor.id.clone();
         backend.executors = vec![descriptor];
         let resolved = crate::resolve_request(
@@ -1052,7 +1287,7 @@ impl ImageHost {
         if queue.len() >= QUEUE_LIMIT {
             return Err(JobError::new(ErrorCode::QueueFull, "image queue is full"));
         }
-        self.check_request_sum(estimated_total_bytes, request_bytes)?;
+        self.check_request_sum(estimated_total_bytes, request_bytes, request.cpu_budget())?;
         let reservation = self.0.shared.budget.reserve(estimated_total_bytes)?;
         let request_reservation = if request_bytes == 0 { None } else { Some(self.0.shared.budget.reserve(request_bytes)?) };
         // Preserve the original CPU option capacities in the retained request and its lease.
@@ -1063,6 +1298,7 @@ impl ImageHost {
             (request, None)
         };
         let handle = JobHandle(Arc::new(Record {
+            presentation: None,
             textures,
             options,
             environment: environment_info,
@@ -1072,11 +1308,140 @@ impl ImageHost {
             request: public_request,
             resolved,
             cancel: CancelToken::default(),
-            data: Mutex::new(Data { progress: Progress { phase: Phase::Queued, done: 0, total: 1 }, error: None, frame: None, preview: None }),
+            data: Mutex::new(Data {
+                sampling: None,
+                progress: Progress { phase: Phase::Queued, done: 0, total: 1 },
+                error: None,
+                frame: None,
+                preview: None,
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             done: Condvar::new(),
         }));
-        queue.push_back(Work { request: work_request, executor: self.0.executor.clone(), scene, handle: handle.clone(), reservation, environment });
+        queue.push_back(Work {
+            regrade: None,
+            request: work_request,
+            executor: self.0.executor.clone(),
+            scene,
+            handle: handle.clone(),
+            reservation,
+            environment,
+        });
+        drop(queue);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.0.shared.wake.notify_one();
+        Ok(handle)
+    }
+
+    /// Regrade the exact retained native master. No geometry, material, light or
+    /// device work is submitted. The original frame and its lease remain shared.
+    pub fn submit_regrade(&self, id: JobId, source: &JobHandle, presentation: super::presentation::Presentation) -> Result<JobHandle> {
+        if id.session == 0 || id.serial == 0 || id.generation == 0 || id.session != source.id().session || id == source.id() {
+            return Err(JobError::new(ErrorCode::WrongOwner, "regrade requires a new identity in the source document session"));
+        }
+        let frame = source.frame()?.ok_or_else(|| JobError::new(ErrorCode::NotCompleted, "regrade requires a completed frame"))?;
+        let master = frame.master_source()?;
+        let bytes = super::regrade::required_bytes(&master, presentation)?;
+        let raw = master.linear_master_info().ok_or_else(|| JobError::new(ErrorCode::InvalidRequest, "raw master metadata is missing"))?;
+        let origin = super::presentation::MasterPresentation {
+            source_job: source.id(),
+            master_job: master.info.job,
+            master_sha256: raw.sha256.clone(),
+            presentation,
+            denoise_applied: false,
+        };
+        let metadata_bytes = (std::mem::size_of::<RetainedPresentation>() + origin.master_sha256.capacity() + 32) as u64;
+        if bytes.checked_add(metadata_bytes).is_none_or(|n| n > self.job_limit_bytes()) {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "master presentation exceeds the installed host's resource budget"));
+        }
+        let limits = RenderLimits { max_scratch_bytes: self.job_limit_bytes(), ..super::GPU_PATH_LIMITS };
+        let descriptor = ExecutorDescriptor {
+            id: ExecutorId::new("linear-master").map_err(|e| JobError::new(ErrorCode::Internal, e.to_string()))?,
+            availability: Availability::Available,
+            profiles: vec![RenderProfile {
+                mode: RenderMode::Preview,
+                operation: RenderOperation::Image,
+                formats: vec![RenderFormat::Png],
+                features: Vec::new(),
+            }],
+            limits,
+            scratch: ScratchLayout { sample_scale: 1, sample_bytes_per_pixel: 32, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
+        };
+        let mut backend = crate::builtin_backend();
+        backend.executors = vec![descriptor];
+        let resolved = crate::resolve_request(
+            &[backend],
+            &crate::RenderRequest {
+                backend: None,
+                mode: RenderMode::Preview,
+                operation: RenderOperation::Image,
+                width: u64::from(frame.info.width),
+                height: u64::from(frame.info.height),
+                format: Some(RenderFormat::Png),
+                features: Vec::new(),
+                policy: Default::default(),
+            },
+        )
+        .map_err(|e| JobError::new(ErrorCode::InvalidRequest, e.to_string()))?;
+        let request = ImageRequest {
+            width: frame.info.width,
+            height: frame.info.height,
+            camera: source.0.request.camera,
+            background: presentation.background,
+            transparent_background: presentation.transparent_background,
+            environment: None,
+            textures: None,
+            integrator: Integrator::Raster,
+            raytrace: None,
+        };
+        let options = JobOptions {
+            finishing: presentation.finishing,
+            backdrop: presentation.backdrop,
+            exposure_ev: presentation.exposure_ev,
+            tone_map: presentation.tone_map,
+            ..Default::default()
+        };
+        let mut queue = self.0.shared.queue.lock().map_err(|_| JobError::new(ErrorCode::HostUnavailable, "render queue lock poisoned"))?;
+        if self.0.shared.stop.load(Ordering::Acquire) {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "image host has stopped"));
+        }
+        queue.retain(|work| !work.handle.0.cancel.is_cancelled());
+        if queue.len() >= QUEUE_LIMIT {
+            return Err(JobError::new(ErrorCode::QueueFull, "image queue is full"));
+        }
+        let reservation = self.0.shared.budget.reserve(bytes)?;
+        let metadata = self.0.shared.budget.reserve(metadata_bytes)?;
+        let origin = Arc::new(RetainedPresentation { info: origin, _reservation: metadata });
+        let handle = JobHandle(Arc::new(Record {
+            presentation: Some(origin),
+            textures: None,
+            options,
+            environment: None,
+            _request_reservation: None,
+            id,
+            scene_generation: frame.info.scene_generation,
+            request,
+            resolved,
+            cancel: CancelToken::default(),
+            data: Mutex::new(Data {
+                sampling: None,
+                progress: Progress { phase: Phase::Queued, done: 0, total: 1 },
+                error: None,
+                frame: None,
+                preview: None,
+            }),
+            #[cfg(not(target_arch = "wasm32"))]
+            done: Condvar::new(),
+        }));
+        queue.push_back(Work {
+            regrade: Some((master, presentation)),
+            request: None,
+            executor: None,
+            environment: None,
+            scene: ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY },
+            handle: handle.clone(),
+            reservation,
+        });
         drop(queue);
         #[cfg(not(target_arch = "wasm32"))]
         self.0.shared.wake.notify_one();
@@ -1175,7 +1540,7 @@ mod retained_request_tests {
             + 32 * std::mem::size_of::<super::super::SurfaceEmission>() as u64
             + 256;
         assert_eq!(retained_request_bytes(&request).unwrap(), expected);
-        let budget = Arc::new(Budget { used: AtomicU64::new(0) });
+        let budget = Arc::new(Budget { used: AtomicU64::new(0), limit: MEMORY_LIMIT });
         let lease = budget.reserve(expected).unwrap();
         assert_eq!(budget.used.load(Ordering::Acquire), expected);
         assert!(admit_request_sum(super::super::image::MAX_JOB_BYTES - expected, expected).is_ok());
@@ -1307,7 +1672,7 @@ mod environment_metadata_lease_tests {
         let input = EnvironmentInput::new(HdrSource::new(bytes).unwrap(), 0.5, 2.0, 16).unwrap();
         let metadata = input.metadata();
         let expected = std::mem::size_of::<EnvironmentInfo>() as u64;
-        let host = CpuHost::for_platform().unwrap();
+        let mut host = CpuHost::for_platform().unwrap();
         let budget = host.0.shared.budget.clone();
         let request = ImageRequest {
             environment: None,
@@ -1332,6 +1697,7 @@ mod environment_metadata_lease_tests {
         let status = job.wait_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert_eq!(status.progress.phase, Phase::Completed);
         assert!(matches!(status.environment, Some(JobEnvironmentInfo::Cpu(info)) if info.source_sha256 == metadata.source_sha256));
+        host.join_worker_for_test().unwrap();
         let frame = job.frame().unwrap().unwrap();
         job.0.data.lock().unwrap().frame = None;
         assert_eq!(host.admitted_bytes(), frame._reservation.bytes + expected);
@@ -1340,36 +1706,6 @@ mod environment_metadata_lease_tests {
         drop(host);
         drop(job);
         assert_eq!(budget.used.load(Ordering::Acquire), 0);
-    }
-}
-
-#[cfg(test)]
-struct CpuExecutor;
-#[cfg(test)]
-impl ImageExecutor for CpuExecutor {
-    fn descriptor(&self) -> Result<ExecutorDescriptor> {
-        Ok(ExecutorDescriptor {
-            id: ExecutorId::new("cpu-product").map_err(|e| JobError::new(ErrorCode::Internal, e.to_string()))?,
-            availability: Availability::Available,
-            profiles: vec![RenderProfile {
-                mode: RenderMode::Preview,
-                operation: RenderOperation::Image,
-                formats: vec![RenderFormat::Png],
-                features: vec![crate::RenderFeature::Pbr],
-            }],
-            limits: RenderLimits::default(),
-            scratch: ScratchLayout { sample_scale: 2, sample_bytes_per_pixel: 8, output_bytes_per_pixel: 8, encoding_bytes_per_pixel: 8 },
-        })
-    }
-
-    fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
-        if options != JobOptions::default() {
-            return Err(JobError::new(ErrorCode::InvalidRequest, "CPU product does not support sampling or exposure controls"));
-        }
-        admit(scene, request)
-    }
-    fn begin(&self, scene: ProductScene, request: ImageRequest, _options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
-        Ok(Box::new(ImageTask::new(scene, request, cancel)?))
     }
 }
 

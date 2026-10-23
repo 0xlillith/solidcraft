@@ -10,12 +10,17 @@ use solidcraft_engine::{
         appearance_pack::{self, GlassBoundary, Recipe},
     },
     geom::Vec3,
-    render::{clear_coat::ClearCoat, job::textures::PlanarFrame, surface::OpaqueSurface, transmission::Transmission},
+    render::{
+        clear_coat::ClearCoat,
+        job::textures::{BaseColorMode, PlanarFrame},
+        surface::OpaqueSurface,
+        transmission::Transmission,
+    },
 };
 
 use crate::{SolveApp, theme::Tokens, ui_kit};
 
-const MAX_BINDINGS: usize = 64;
+const MAX_BINDINGS: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub(super) struct Target {
@@ -55,10 +60,11 @@ pub(super) struct Glass {
     pub boundary: Boundary,
     pub thickness: f64,
     pub shadows: bool,
+    pub subsurface: Option<solidcraft_engine::render::transmission::subsurface::Subsurface>,
 }
 impl Default for Glass {
     fn default() -> Self {
-        Self { recipe: None, ior: 1.5, absorption: [0.0; 3], boundary: Boundary::Closed, thickness: 1.0, shadows: false }
+        Self { recipe: None, ior: 1.5, absorption: [0.0; 3], boundary: Boundary::Closed, thickness: 1.0, shadows: false, subsurface: None }
     }
 }
 impl Glass {
@@ -71,6 +77,7 @@ impl Glass {
             GlassBoundary::Closed => (Boundary::Closed, 1.0),
         };
         Ok(Self {
+            subsurface: None,
             recipe: Some(preset.id),
             ior: recipe.dielectric_ior,
             absorption: recipe.transmission_linear_rgb.map(|t| -t.ln() / recipe.reference_path_mm),
@@ -97,6 +104,10 @@ impl Default for Coat {
 pub(super) struct Maps {
     pub color: String,
     pub normal: String,
+    pub roughness: String,
+    pub metallic: String,
+    pub base_color_mode: BaseColorMode,
+    pub flip_v: bool,
     pub strength: f64,
     pub frame: PlanarFrame,
 }
@@ -105,6 +116,10 @@ impl Default for Maps {
         Self {
             color: String::new(),
             normal: String::new(),
+            roughness: String::new(),
+            metallic: String::new(),
+            base_color_mode: BaseColorMode::Modulate,
+            flip_v: false,
             strength: 1.0,
             frame: PlanarFrame { origin: [0.0; 3], u: [10.0, 0.0, 0.0], v: [0.0, 10.0, 0.0] },
         }
@@ -123,6 +138,7 @@ pub(super) struct Binding {
     pub coat: Coat,
     pub maps_enabled: bool,
     pub maps: Maps,
+    replace_saved_optics: bool,
 }
 impl Binding {
     pub(super) fn new(target: Target, app: &SolveApp) -> Self {
@@ -137,6 +153,7 @@ impl Binding {
             coat: Coat::default(),
             maps_enabled: false,
             maps: Maps::default(),
+            replace_saved_optics: false,
         }
     }
     fn current(&self, app: &SolveApp) -> bool {
@@ -162,11 +179,16 @@ pub(super) struct View {
 fn read_targets(app: &mut SolveApp) -> Result<Vec<Target>, String> {
     let reply = app.run("render.scene", json!({}))?;
     let values = reply.get("bodies").and_then(Value::as_array).ok_or_else(|| "missing render scene bodies".to_string())?;
-    if values.len() > 16_384 {
+    if values.len() > solidcraft_engine::render::job::MAX_GPU_PATH_BODIES {
         return Err("render scene exceeds its body limit".into());
     }
     let targets: Vec<Target> = serde_json::from_value(Value::Array(values.clone())).map_err(|e| e.to_string())?;
-    if targets.iter().any(|t| t.ordinal >= 16_384 || t.name.is_empty() || t.name.len() > 1024 || t.name.chars().any(char::is_control)) {
+    if targets.iter().any(|t| {
+        t.ordinal >= solidcraft_engine::render::job::MAX_GPU_PATH_BODIES
+            || t.name.is_empty()
+            || t.name.len() > 1024
+            || t.name.chars().any(char::is_control)
+    }) {
         return Err("invalid render scene identity".into());
     }
     Ok(targets)
@@ -202,7 +224,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             return Err(app.tr("render.material_revalidate_needed").to_string());
         }
         let target = &binding.target;
-        if target.ordinal >= 16_384
+        if target.ordinal >= solidcraft_engine::render::job::MAX_GPU_PATH_BODIES
             || target.name.is_empty()
             || target.name.len() > 1024
             || target.name.chars().any(char::is_control)
@@ -225,6 +247,14 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             wire["boundary"] = json!(value.boundary.wire());
             wire["thickness_mm"] = json!(if value.boundary == Boundary::Thin { value.thickness } else { 0.0 });
             wire["shadow_transmission"] = json!(value.shadows);
+            if let Some(subsurface) = value.subsurface {
+                Transmission::new(Vec3::new(r, g, b), (value.boundary == Boundary::Thin).then_some(value.thickness))
+                    .map_err(|e| e.to_string())?
+                    .with_shadow_transmission(value.shadows)
+                    .with_subsurface(subsurface)
+                    .map_err(|e| e.to_string())?;
+                wire["subsurface"] = json!(subsurface);
+            }
             glass.push(wire);
         }
         if binding.coat_enabled {
@@ -239,28 +269,38 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
         if binding.maps_enabled {
             let value = &binding.maps;
             value.frame.validate().map_err(|e| e.to_string())?;
-            if value.color.is_empty() && value.normal.is_empty() {
+            if value.color.is_empty() && value.normal.is_empty() && value.roughness.is_empty() && value.metallic.is_empty() {
                 return Err(app.tr("render.material_map_required").to_string());
             }
             if !value.strength.is_finite()
                 || !(0.0..=1.0).contains(&value.strength)
-                || [&value.color, &value.normal].iter().any(|p| p.len() > 4096 || p.chars().any(char::is_control))
+                || [&value.color, &value.normal, &value.roughness, &value.metallic].iter().any(|p| p.len() > 4096 || p.chars().any(char::is_control))
             {
                 return Err(app.tr("render.material_map_invalid").to_string());
             }
             let mut wire = identity();
             wire["frame"] = json!(value.frame);
             wire["normal_strength"] = json!(value.strength);
+            wire["base_color_mode"] = json!(value.base_color_mode);
+            wire["flip_v"] = json!(value.flip_v);
             if !value.color.is_empty() {
                 wire["base_color_srgb"] = json!(value.color);
             }
             if !value.normal.is_empty() {
                 wire["normal_opengl"] = json!(value.normal);
             }
+            if !value.roughness.is_empty() {
+                wire["roughness_linear"] = json!(value.roughness);
+            }
+            if !value.metallic.is_empty() {
+                wire["metallic_linear"] = json!(value.metallic);
+            }
             textures.push(wire);
         }
     }
-    if glass.len() > 8 || textures.len() > 16 {
+    if glass.len() > solidcraft_engine::render::job::MAX_GPU_DIELECTRICS
+        || textures.len() > solidcraft_engine::render::job::textures::MAX_TEXTURE_BINDINGS
+    {
         return Err(app.tr("render.material_limits").to_string());
     }
     params["raytrace"] = json!({"dielectrics":glass,"clear_coats":coats,"textures":textures});
@@ -279,6 +319,7 @@ fn vector(app: &SolveApp, ui: &mut egui::Ui, key: &str, values: &mut [f64; 3], r
 }
 
 pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    saved_optics_controls(app, ui);
     let title = app.tr("render.material_title").to_string();
     ui_kit::section(ui, "render_materials", &title, false, |ui| {
         let mut view = std::mem::take(&mut app.render_workspace.view.materials);
@@ -372,7 +413,23 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             glass_controls(app, ui, binding);
             coat_controls(app, ui, binding);
             map_controls(app, ui, binding);
-            remove = ui_kit::button(ui, app.tr("render.material_remove"), ui_kit::Button::Normal).clicked();
+            ui_kit::checkbox(ui, app.tr("render.optics_replace"), &mut binding.replace_saved_optics);
+            let save = ui_kit::button(
+                ui,
+                app.tr("render.optics_save"),
+                ui_kit::Button::Enabled(binding.glass_enabled && binding.current(app) && !binding.maps_enabled && !binding.coat_enabled),
+            );
+            crate::scenario::publish_target("render:optics-save", save.rect);
+            if save.clicked() {
+                // The transient editor is taken out of app above. snapshot saves
+                // only the numerical draft; other local bindings remain visible
+                // and stale for explicit revalidation after this one mutation.
+                match save_optics(app, binding) {
+                    Ok(()) => remove = true,
+                    Err(error) => app.set_status(error, true),
+                }
+            }
+            remove |= ui_kit::button(ui, app.tr("render.material_remove"), ui_kit::Button::Normal).clicked();
         }
         if remove && let Some(index) = view.selected.filter(|i| *i < view.bindings.len()) {
             view.bindings.remove(index);
@@ -442,6 +499,23 @@ fn glass_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) 
             changed |= ui_kit::number_field(ui, &mut glass.thickness, 0.0..=10000.0, 0.1, " mm").changed();
         }
         changed |= ui_kit::checkbox(ui, app.tr("render.material_shadow"), &mut glass.shadows).changed();
+        let mut scatter = glass.subsurface.is_some();
+        if ui_kit::checkbox(ui, app.tr("render.subsurface_enable"), &mut scatter).changed() {
+            glass.subsurface =
+                scatter.then_some(solidcraft_engine::render::transmission::subsurface::Subsurface { scattering_per_mm: 0.1, anisotropy: 0.0 });
+            changed = true;
+        }
+        if let Some(subsurface) = &mut glass.subsurface {
+            changed |= ui_kit::row(ui, app.tr("render.subsurface_rate"), |ui| {
+                ui_kit::number_field(ui, &mut subsurface.scattering_per_mm, 0.0..=100.0, 0.001, " /mm")
+            })
+            .changed();
+            changed |= ui_kit::row(ui, app.tr("render.volume_anisotropy"), |ui| {
+                ui_kit::number_field(ui, &mut subsurface.anisotropy, -0.95..=0.95, 0.01, "")
+            })
+            .changed();
+            ui_kit::text(ui, app.tr("render.subsurface_help"), ui_kit::Text::Note("render.subsurface_help"));
+        }
         if changed {
             glass.recipe = None;
         }
@@ -469,7 +543,32 @@ fn coat_controls(app: &SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
     });
 }
 
-fn choose_map(app: &mut SolveApp, binding: &Binding, normal: bool) {
+#[derive(Clone, Copy)]
+enum MapSlot {
+    Color,
+    Normal,
+    Roughness,
+    Metallic,
+}
+impl MapSlot {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Color => "render.material_color_map",
+            Self::Normal => "render.material_normal_map",
+            Self::Roughness => "render.material_roughness_map",
+            Self::Metallic => "render.material_metallic_map",
+        }
+    }
+    fn field(self, maps: &mut Maps) -> &mut String {
+        match self {
+            Self::Color => &mut maps.color,
+            Self::Normal => &mut maps.normal,
+            Self::Roughness => &mut maps.roughness,
+            Self::Metallic => &mut maps.metallic,
+        }
+    }
+}
+fn choose_map(app: &mut SolveApp, binding: &Binding, slot: MapSlot) {
     let target = binding.target.clone();
     let origin = binding.document.clone();
     let revision = binding.revision;
@@ -486,13 +585,64 @@ fn choose_map(app: &mut SolveApp, binding: &Binding, normal: bool) {
                 .iter_mut()
                 .find(|b| b.target == target && b.revision == revision && Weak::ptr_eq(&b.document, &origin))
         {
-            if normal {
-                binding.maps.normal = path;
-            } else {
-                binding.maps.color = path;
-            }
+            *slot.field(&mut binding.maps) = path;
         }
     });
+}
+
+/// Prepare through the engine, then install only a request-local binding. No
+/// authored material may silently remove a glass override or switch executor.
+pub(super) fn install_library_surface(app: &mut SolveApp, id: &str, target: Target, plane: &str, scale: f64) -> Result<(), String> {
+    if app.render_workspace.view.method != super::ImageMethod::GpuRaytrace {
+        return Err(app.tr("render.material_gpu_required").into());
+    }
+    let existing = app.render_workspace.view.materials.bindings.iter().position(|b| b.target == target);
+    if let Some(index) = existing {
+        let binding = app.render_workspace.view.materials.bindings.get(index).ok_or_else(|| "missing material binding".to_string())?;
+        if !binding.current(app) {
+            return Err(app.tr("render.material_revalidate_needed").into());
+        }
+        if binding.glass_enabled {
+            return Err(app.tr("render.material_glass_exclusive").into());
+        }
+    } else if app.render_workspace.view.materials.bindings.len() >= MAX_BINDINGS {
+        return Err(app.tr("render.material_limits").into());
+    }
+    let reply =
+        app.run("render.library.surface.prepare", json!({"id":id,"body_index":target.ordinal,"body_name":target.name,"plane":plane,"scale":scale}))?;
+    let texture = &reply["texture"];
+    let frame: PlanarFrame = serde_json::from_value(texture["frame"].clone()).map_err(|e| e.to_string())?;
+    let path = |key: &str| texture[key].as_str().map(str::to_string).ok_or_else(|| "invalid authored surface reply".to_string());
+    let maps = Maps {
+        color: path("base_color_srgb")?,
+        normal: path("normal_opengl")?,
+        roughness: path("roughness_linear")?,
+        metallic: path("metallic_linear")?,
+        strength: 1.0,
+        frame,
+        base_color_mode: BaseColorMode::Replace,
+        flip_v: true,
+    };
+    let mut binding = if let Some(index) = existing {
+        app.render_workspace.view.materials.bindings.get(index).cloned().ok_or_else(|| "missing material binding".to_string())?
+    } else {
+        Binding::new(target, app)
+    };
+    binding.maps = maps;
+    binding.maps_enabled = true;
+    binding.enabled = true;
+    let view = &mut app.render_workspace.view.materials;
+    if let Some(index) = existing {
+        *view.bindings.get_mut(index).ok_or_else(|| "missing material binding".to_string())? = binding;
+        view.selected = Some(index);
+    } else {
+        view.bindings.try_reserve(1).map_err(|_| "could not reserve material binding".to_string())?;
+        view.bindings.push(binding);
+        view.selected = Some(view.bindings.len() - 1);
+    }
+    view.enabled = true;
+    app.render_workspace.view.dirty = true;
+    Ok(())
 }
 
 fn map_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
@@ -503,16 +653,21 @@ fn map_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
             if !binding.maps_enabled {
                 return;
             }
-            for normal in [false, true] {
-                let key = if normal { "render.material_normal_map" } else { "render.material_color_map" };
+            for slot in [MapSlot::Color, MapSlot::Normal, MapSlot::Roughness, MapSlot::Metallic] {
+                let key = slot.key();
                 ui.label(app.tr(key));
-                let path = if normal { &mut binding.maps.normal } else { &mut binding.maps.color };
+                let path = slot.field(&mut binding.maps);
                 ui_kit::bounded_cell_editor(ui, ui.id().with(key), path, "", false, 4096);
                 let label = app.tr("render.material_browse").to_string();
                 if ui_kit::button(ui, label, ui_kit::Button::Enabled(binding.current(app))).clicked() {
-                    choose_map(app, binding, normal);
+                    choose_map(app, binding, slot);
                 }
             }
+            let mut absolute = binding.maps.base_color_mode == BaseColorMode::Replace;
+            if ui_kit::checkbox(ui, app.tr("render.material_color_replace"), &mut absolute).changed() {
+                binding.maps.base_color_mode = if absolute { BaseColorMode::Replace } else { BaseColorMode::Modulate };
+            }
+            ui_kit::checkbox(ui, app.tr("render.material_v_up"), &mut binding.maps.flip_v);
             ui.label(app.tr("render.material_normal_strength"));
             ui_kit::number_field(ui, &mut binding.maps.strength, 0.0..=1.0, 0.01, "");
             vector(app, ui, "render.material_origin", &mut binding.maps.frame.origin, -1e6..=1e6, " mm");
@@ -522,6 +677,48 @@ fn map_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
         ui.small(app.tr("render.material_maps_help"));
         if binding.glass_enabled {
             ui.small(app.tr("render.material_glass_exclusive"));
+        }
+    });
+}
+
+fn save_optics(app: &mut SolveApp, binding: &Binding) -> Result<(), String> {
+    if !binding.current(app) {
+        return Err(app.tr("render.material_revalidate_needed").into());
+    }
+    let setup = super::setups::snapshot(app)?;
+    let value = &binding.glass;
+    let name = app.render_workspace.view.name.clone();
+    let optics = json!({"ior":value.ior,"absorption_per_mm":value.absorption,"boundary":value.boundary.wire(),
+        "thickness_mm":if value.boundary==Boundary::Thin {value.thickness} else {0.0},"shadow_transmission":value.shadows,"subsurface":value.subsurface});
+    app.run(
+        "render.optics.bind",
+        json!({"name":name,"set":setup,"body_index":binding.target.ordinal,"body_name":binding.target.name,
+        "optics":optics,"replace":binding.replace_saved_optics,"expected_revision":app.session.revision}),
+    )?;
+    super::setups::load(app);
+    Ok(())
+}
+fn saved_optics_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let bindings = app.render_workspace.view.draft.optics.clone();
+    if bindings.is_empty() {
+        return;
+    }
+    let title = app.tr("render.optics_saved").to_string();
+    ui_kit::section(ui, "render_saved_optics", &title, false, |ui| {
+        ui_kit::text(ui, app.tr("render.optics_saved_help"), ui_kit::Text::Note("render.optics_saved_help"));
+        for (index, binding) in bindings.iter().enumerate() {
+            ui.label(format!("{} #{} · n={:.4}", binding.target.definition, binding.target.feature, binding.optics.ior));
+            let remove = ui_kit::button(ui, app.tr("render.optics_remove"), ui_kit::Button::Enabled(!app.render_workspace.view.dirty));
+            crate::scenario::publish_target(&format!("render:optics-remove:{index}"), remove.rect);
+            if remove.clicked() {
+                match app.run(
+                    "render.optics.unbind",
+                    json!({"name":app.render_workspace.view.name,"target":binding.target,"expected_revision":app.session.revision}),
+                ) {
+                    Ok(_) => super::setups::load(app),
+                    Err(error) => app.set_status(error, true),
+                }
+            }
         }
     });
 }

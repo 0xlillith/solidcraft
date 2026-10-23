@@ -368,7 +368,7 @@ fn legacy_single_primary_ignores_aa_state_and_preserves_default_bytes_work_and_o
         }
     }
     assert!(std::mem::size_of::<ImageTask>() <= 4096);
-    assert_eq!(MAX_WORK, 1_000_000_000);
+    assert_eq!(crate::raytrace::MAX_WORK, 1_000_000_000);
     assert_eq!(job::image::MAX_JOB_BYTES, 384 * 1024 * 1024);
     let legacy = fixture(1, 4, Some(false));
     let aa = fixture(16, 4, Some(false));

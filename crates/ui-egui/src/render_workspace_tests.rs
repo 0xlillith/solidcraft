@@ -30,6 +30,7 @@ mod async_path_host {
         let mut h = Harness::new();
         h.call("ui.resize", json!({"width":1600,"height":1600}));
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         h.frames(3);
         h
     }
@@ -69,6 +70,7 @@ mod async_path_host {
         crate::documents::adopt(&mut h.app, Session::default());
         assert!(matches!(h.app.render_workspace.path_host, PathHost::Preparing(..)));
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         h.frames(3);
         assert!(h.widget("GPU path tracer: compiling shaders…").is_some());
         enter(&mut h.app, false).unwrap();
@@ -76,6 +78,7 @@ mod async_path_host {
         finish_setup(&mut h);
         assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         h.frames(3);
         assert!(h.widget("GPU path tracer: compiling shaders…").is_none());
         assert!(image_host(&h.app, ImageMethod::GpuRaytrace).is_ok());
@@ -149,6 +152,7 @@ mod async_path_host {
         completed_preview(&mut h, [200, 210, 220]);
         crate::documents::adopt(&mut h.app, Session::default());
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         h.frames(3);
         assert!(h.widget(message).is_some());
         h.app.render_workspace.path_host.start(|| panic!("failed setup retried on viewport install"));
@@ -323,6 +327,7 @@ fn adopting_into_blank_document_resets_render_draft_and_preserves_hosts() {
     sync_backend(&mut h.app);
     h.app.render_workspace.view.name = "Old draft".into();
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     let mut incoming = Session::default();
     incoming.execute("solid.box", &json!({"length":10,"width":10,"height":10})).unwrap();
     crate::documents::adopt(&mut h.app, incoming);
@@ -345,6 +350,7 @@ fn clicked_image_controls_complete_cancel_and_export_without_dirtying_the_design
         let cancel = h.app.tr("cmd.render_cancel").to_string();
         h.call("ui.resize", json!({"width":1600,"height":1400}));
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         h.app.render_workspace.view.draft.width = 16;
         h.app.render_workspace.view.draft.height = 16;
         h.app.render_workspace.view.dirty = true;
@@ -388,6 +394,7 @@ fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
     h.frames(3);
     let design = h.app.cam;
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.frames(3);
     h.step(&json!({"widget":"Restore Saved Camera"})).unwrap();
     h.frames(3);
@@ -427,6 +434,7 @@ fn progressive_image_controls_route_to_the_registered_host() {
     h.app.session.mark_saved();
     h.call("ui.resize", json!({"width":1600,"height":1600}));
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.render_workspace.view.draft.width = 16;
     h.app.render_workspace.view.draft.height = 16;
     h.app.render_workspace.view.samples = 4;
@@ -518,11 +526,12 @@ fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
         h.step(&json!({"click":[at.x,at.y]})).unwrap();
         h.step(&json!({"click":{"handle":"menu:ui.workspace.render"}})).unwrap();
         assert!(active(&h.app));
-        let heading = h.app.tr("cmd.render_settings_get").to_string();
+        let heading = h.app.tr("render.studio_title").to_string();
         let perspective = h.app.tr("render.perspective").to_string();
         let save = h.app.tr("render.save_setup").to_string();
         let back = h.app.tr("render.return_design").to_string();
         assert!(h.widget(&heading).is_some(), "{language}");
+        h.step(&json!({"click":{"handle":"render:page:camera"}})).unwrap();
         h.step(&json!({"widget":perspective})).unwrap();
         assert!(!h.app.session.is_dirty(), "preview edits are staged");
         h.step(&json!({"widget":save})).unwrap();
@@ -547,6 +556,7 @@ fn render_drafts_and_capabilities_are_isolated_across_document_switches() {
     h.app.render_workspace.view.draft.background = [20, 40, 60];
     h.app.render_workspace.view.dirty = true;
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     crate::documents::open_tab(&mut h.app, Session::default()).unwrap();
     assert!(!active(&h.app));
     assert_eq!(h.app.render_workspace.view.name, "Studio");
@@ -870,6 +880,7 @@ fn result_canvas_paints_large_capture_reports_staleness_and_preserves_export() {
     h.app.render_workspace.view.completed = Some(job);
     h.app.render_workspace.view.result = true;
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     let preview = h.app.cam;
     let doc = h.app.session.doc.clone();
     let undo = h.app.session.undo.len();
@@ -921,6 +932,7 @@ fn result_navigation_uses_shared_pan_zoom_and_leaves_product_camera_unchanged() 
     h.app.render_workspace.view.completed = Some(job);
     h.app.render_workspace.view.result = true;
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.ui.perspective = true;
     h.app.preferences.smooth_wheel_zoom = false;
     h.app.preferences.zoom_reverse = false;
@@ -997,6 +1009,7 @@ fn clicked_result_controls_switch_canvas_and_frame_without_changing_the_setup() 
     let job = completed_preview(&mut h, [20, 40, 60]);
     h.app.render_workspace.view.job = Some(job);
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.frames(3);
     let camera = h.app.cam;
     let doc = h.app.session.doc.clone();
@@ -1022,6 +1035,7 @@ fn clicked_result_controls_switch_canvas_and_frame_without_changing_the_setup() 
 fn image_method_requests_never_fall_back_or_mix_cpu_and_gpu_options() {
     let mut h = Harness::new();
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.render_workspace.view.result = true;
     h.app.render_workspace.view.result_camera.distance = h.app.cam.distance * 3.0;
     h.app.render_workspace.view.raytrace.exposure_ev = f64::NAN;
@@ -1063,6 +1077,7 @@ fn native_cpu_controls_check_and_start_the_same_capture_and_keep_it_exportable()
     h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
     h.call("ui.resize", json!({"width":1600,"height":1800}));
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.render_workspace.view.draft.width = 16;
     h.app.render_workspace.view.draft.height = 16;
     h.app.render_workspace.view.dirty = true;
@@ -1406,6 +1421,7 @@ fn render_workspace_view_keys_double_middle_click_and_navigators_work() {
         h.app.preferences.look_at_anim = false;
         h.app.run("solid.box", json!({"length":40,"width":30,"height":20,"body_name":"Product"})).unwrap();
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         h.frames(3);
         let bounds = solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds;
         let mut home = h.app.cam;
@@ -1587,6 +1603,7 @@ fn clicked_gpu_glass_recipe_stays_temporary_and_blocks_cpu_rendering() {
     h.app.run("solid.box", json!({"length":10,"width":10,"height":3,"body_name":"Optics"})).unwrap();
     h.app.session.mark_saved();
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.frames(3);
     let doc = h.app.session.doc.clone();
     let title = h.app.tr("render.material_title").to_string();
@@ -1615,13 +1632,14 @@ fn clicked_gpu_material_at_assignment_limit_edits_existing_but_cannot_add_anothe
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1600,"height":2200}));
     h.app.run("solid.box", json!({"length":1,"width":1,"height":1,"body_name":"Optics"})).unwrap();
-    h.app.run("solid.pattern.rectangular", json!({"bodies":["Optics"],"dir1":[1,0,0],"count1":65,"spacing1":3})).unwrap();
+    h.app.run("solid.pattern.rectangular", json!({"bodies":["Optics"],"dir1":[1,0,0],"count1":129,"spacing1":3})).unwrap();
     let targets: Vec<materials::Target> = serde_json::from_value(h.app.run("render.scene", json!({})).unwrap()["bodies"].clone()).unwrap();
-    assert_eq!(targets.len(), 65);
+    assert_eq!(targets.len(), 129);
     h.app.session.mark_saved();
     let doc = h.app.session.doc.clone();
     let undo = h.app.session.undo.len();
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.render_workspace.view.materials.bindings = targets.iter().skip(1).cloned().map(|target| materials::Binding::new(target, &h.app)).collect();
     h.frames(3);
     let title = h.app.tr("render.material_title").to_string();
@@ -1637,14 +1655,14 @@ fn clicked_gpu_material_at_assignment_limit_edits_existing_but_cannot_add_anothe
     h.step(&json!({"widget":include})).unwrap();
     assert!(!h.app.render_workspace.view.materials.bindings[0].enabled, "the existing assignment remains editable at the limit");
     assert!(h.app.render_workspace.view.materials.bindings.iter().skip(1).all(|binding| binding.enabled));
-    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 64);
+    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 128);
 
-    // The first scene body has no assignment: selecting it cannot create a 65th entry.
+    // The first scene body has no assignment: selecting it cannot create a 129th entry.
     h.step(&json!({"widget":refresh})).unwrap();
     h.step(&json!({"widget":choose})).unwrap();
     h.step(&json!({"click":{"handle":format!("dialog:list:render:material-body-{}", targets[0].ordinal)}})).unwrap();
     h.step(&json!({"widget":add})).unwrap();
-    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 64);
+    assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 128);
     assert!(h.app.render_workspace.view.materials.bindings.iter().all(|binding| binding.target != targets[0]));
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
     assert_eq!(h.app.session.undo.len(), undo);
@@ -1808,7 +1826,7 @@ fn delayed_cpu_hdr_picker_cannot_write_into_another_document_or_revision() {
         if other_document {
             h.app.session = Session::default();
         } else {
-            h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
+            h.app.session.execute("solid.box", &json!({"length":10,"width":20,"height":5})).unwrap();
         }
         *slot.borrow_mut() = Some(Some("late.hdr".into()));
         crate::file_picker::tick(&mut h.app, &ctx);
@@ -1824,6 +1842,7 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1600,"height":2200}));
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.frames(3);
     h.app.session.set_render_job_host(None).unwrap();
     assert!(image_host(&h.app, ImageMethod::GpuRaytrace).is_err());
@@ -1840,6 +1859,19 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
         job: Some(RenderJob::GpuPath {
             transparent_background: true,
             options: Box::new(GpuJob {
+                nested_media: true,
+                volume: Some(solidcraft_engine::render::job::volume::HomogeneousVolume { extinction_per_mm: 0.0, ..Default::default() }),
+                adaptive: Some(solidcraft_engine::render::job::adaptive::AdaptiveSampling {
+                    pilot_samples: 16,
+                    min_samples: 16,
+                    relative_error: 0.1,
+                    absolute_error: 0.003,
+                    coverage_error: 0.02,
+                }),
+                transmission_samples: 4,
+                finishing: Default::default(),
+                backdrop: None,
+                linear_exr: false,
                 samples: 37,
                 max_depth: 11,
                 seed: 1977,
@@ -1898,6 +1930,9 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
     setups::refresh_dirty(&mut h.app);
     assert!(h.app.render_workspace.view.dirty);
     h.step(&json!({"widget":h.app.tr("render.reload_settings")})).unwrap();
+    if h.app.render_workspace.view.dirty {
+        h.step(&json!({"widget":h.app.tr("render.discard_continue")})).unwrap();
+    }
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
     assert!(!h.app.render_workspace.view.dirty);
     select_image_method(&mut h.app, ImageMethod::Raster);
@@ -1917,6 +1952,7 @@ fn cpu_setup_reload_preserves_unedited_numeric_options_and_explicit_empty_values
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1600,"height":2400}));
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     let options: CpuJob = serde_json::from_value(json!({
         "primary_samples":4,"shadows":false,
         "lights":[{"direction":[2.0,-4.0,8.0],"color":[0.2,0.4,0.6],"intensity":3.0}],
@@ -1963,6 +1999,7 @@ fn cpu_progressive_controls_resize_only_on_request_and_save_reload_without_a_hos
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1600,"height":2600}));
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.session.set_render_job_host(None).unwrap();
     select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
     h.app.render_workspace.view.raytrace.primary_samples = 16;
@@ -1999,6 +2036,9 @@ fn cpu_progressive_controls_resize_only_on_request_and_save_reload_without_a_hos
     assert!(h.app.render_workspace.view.raytrace.progressive.is_none());
     assert!(h.app.render_workspace.view.dirty);
     h.step(&json!({"widget":h.app.tr("render.reload_settings")})).unwrap();
+    if h.app.render_workspace.view.dirty {
+        h.step(&json!({"widget":h.app.tr("render.discard_continue")})).unwrap();
+    }
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
     assert!(!h.app.render_workspace.view.dirty);
     h.app.render_workspace.view.name = "Progressive CPU copy".into();
@@ -2054,6 +2094,7 @@ fn setup_save_refuses_nonportable_state_atomically_and_tracks_invalid_legacy_edi
     let mut h = Harness::new();
     h.app.run("solid.box", json!({"length":10,"width":20,"height":5,"body_name":"Target"})).unwrap();
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     setups::load(&mut h.app);
     select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
     setups::save(&mut h.app).unwrap();
@@ -2125,6 +2166,7 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
     h.app.run("solid.box", json!({"body_name":"HDR target","length":10,"width":20,"height":5})).unwrap();
     h.call("ui.resize", json!({"width":1600,"height":2200}));
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.session.set_render_job_host(None).unwrap();
     let path = h.dir.join("original-embedded.hdr");
     let bytes = original_hdr_bytes(128, true);
@@ -2206,6 +2248,7 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
 fn changed_hdr_bytes_reject_save_atomically_and_check_start_keep_the_expected_digest() {
     let mut h = Harness::new();
     enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
     select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
     h.app.render_workspace.view.name = "Pinned HDR".into();
     h.app.render_workspace.view.cpu.environment = cpu::Environment::Hdr;
@@ -2276,6 +2319,7 @@ fn embedded_hdr_runtime_requests_preserve_temporary_bindings_without_serializing
         let mut h = Harness::new();
         h.app.run("solid.box", json!({"body_name":"Target","length":10,"width":20,"height":5})).unwrap();
         enter(&mut h.app, true).unwrap();
+        h.app.render_workspace.view.inspector.page = inspector::Page::All;
         select_image_method(&mut h.app, if target == hdr::Target::Cpu { ImageMethod::CpuRaytrace } else { ImageMethod::GpuRaytrace });
         h.app.render_workspace.view.cpu.environment = cpu::Environment::Hdr;
         h.app.render_workspace.view.studio.environment = studio::Environment::Hdr;
@@ -2312,4 +2356,287 @@ fn embedded_hdr_runtime_requests_preserve_temporary_bindings_without_serializing
         assert_eq!(h.app.session.undo.len(), undo);
         assert_eq!(image_request(&h.app).unwrap(), params);
     }
+}
+
+#[test]
+fn cpu_resource_profile_edits_preserve_resolution_samples_and_saved_intent() {
+    use solidcraft_engine::render::job::{CpuBudget, CpuProgressiveOptions};
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":2600}));
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
+    h.app.session.set_render_job_host(None).unwrap();
+    select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    h.app.render_workspace.view.name = "Studio output".into();
+    h.app.render_workspace.view.draft.width = 3840;
+    h.app.render_workspace.view.draft.height = 2160;
+    h.app.render_workspace.view.raytrace.budget = CpuBudget::Studio;
+    h.app.render_workspace.view.raytrace.progressive = Some(CpuProgressiveOptions { samples_per_pixel: 128, seed: 82 });
+    h.frames(3);
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    h.step(&json!({"click":{"handle":"render:cpu-budget"}})).unwrap();
+    h.step(&json!({"click":{"handle":"render.cpu_budget_compact"}})).unwrap();
+    h.frames(3);
+    assert_eq!((h.app.render_workspace.view.draft.width, h.app.render_workspace.view.draft.height), (3840, 2160));
+    assert_eq!(h.app.render_workspace.view.raytrace.progressive.unwrap().samples_per_pixel, 128);
+    assert!(setups::snapshot(&h.app).is_err());
+    assert!(h.app.render_workspace.view.dirty);
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+}
+
+#[test]
+fn large_image_display_uses_captured_profile_and_keeps_export_pixels_unchanged() {
+    use solidcraft_engine::render::job::{CpuBudget, ImageRequest, RaytraceOptions};
+    let request = ImageRequest {
+        integrator: Integrator::Raytrace,
+        raytrace: Some(RaytraceOptions { budget: CpuBudget::Studio, ..Default::default() }),
+        camera: Camera::default(),
+        width: 8,
+        height: 8,
+        background: [0; 3],
+        transparent_background: false,
+        environment: None,
+        textures: None,
+    };
+    let limits = captured_image_limits(&request);
+    assert_eq!(limits, CpuBudget::Studio.image_limits(false));
+    assert_eq!(display_dimensions(7680, 4320, 4096).unwrap(), (4096, 2304));
+    assert_eq!(display_dimensions(1920, 1080, 4096).unwrap(), (1920, 1080));
+    assert!(display_dimensions(u32::MAX, 1, 0).is_err());
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(8200, 2, image::Rgba([42, 88, 123, 255])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let encoded = png.into_inner();
+    let before = encoded.clone();
+    assert!(decode_image(&encoded, 8200, 2).is_err(), "legacy default remains compact");
+    let display = decode_render_image(&encoded, 8200, 2, CpuBudget::Workstation.image_limits(false), 1024).unwrap();
+    assert!(display.size[0] <= 1024 && display.size[1] >= 1);
+    assert_eq!(encoded, before, "the retained image is not rewritten for its display cache");
+    assert!(decode_render_image(&encoded, 8199, 2, CpuBudget::Workstation.image_limits(false), 1024).is_err());
+}
+
+#[test]
+fn setup_actions_and_return_design_stay_visible_with_long_render_controls() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1280,"height":900}));
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
+    select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    h.frames(3);
+    for key in ["render.save_setup", "render.reload_settings", "render.return_design"] {
+        let label = h.app.tr(key).to_string();
+        assert!(h.widget(&label).is_some(), "sticky action {key}");
+    }
+    h.step(&json!({"widget":h.app.tr("render.return_design")})).unwrap();
+    assert!(!active(&h.app));
+}
+
+#[test]
+fn dirty_indication_preserves_reload_and_resource_picker_hit_targets() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":2600}));
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.inspector.page = inspector::Page::All;
+    select_image_method(&mut h.app, ImageMethod::CpuRaytrace);
+    setups::save(&mut h.app).unwrap();
+    setups::load(&mut h.app);
+    h.frames(3);
+    let reload = h.app.tr("render.reload_settings").to_string();
+    let clean_reload = h.widget(&reload).unwrap();
+    let clean_picker = crate::scenario::rect_of("render:cpu-budget").unwrap();
+    h.app.render_workspace.view.draft.exposure_ev = 1.0;
+    setups::refresh_dirty(&mut h.app);
+    assert!(h.app.render_workspace.view.dirty);
+    h.frames(3);
+    assert_eq!(h.widget(&reload).unwrap(), clean_reload, "dirty text must not move Reload");
+    assert_eq!(crate::scenario::rect_of("render:cpu-budget").unwrap(), clean_picker, "dirty text must not move the CPU resource picker");
+    h.step(&json!({"widget":reload})).unwrap();
+    if h.app.render_workspace.view.dirty {
+        h.step(&json!({"widget":h.app.tr("render.discard_continue")})).unwrap();
+    }
+    assert!(!h.app.render_workspace.view.dirty);
+    assert_eq!(h.app.render_workspace.view.draft.exposure_ev, 0.0);
+}
+
+#[test]
+fn product_preview_exact_payload_preserves_mixed_surfaces_and_refuses_overflow() {
+    let mut session = Session::default();
+    for (name, x) in [("Paint", 0), ("Legacy", 20), ("Glass", 40)] {
+        session.execute("solid.box", &json!({"base":[x,0,0],"length":10,"width":10,"height":10,"body_name":name})).unwrap();
+    }
+    session
+        .execute("appearance.assign", &json!({"bodies":["Paint"],"color":"#c07030","pbr":{"metallic":0,"roughness":0.4,"dielectric_ior":1.5}}))
+        .unwrap();
+    session.execute("appearance.assign", &json!({"bodies":["Glass"],"color":"#336699","opacity":0.4})).unwrap();
+    let original = session.doc.to_json();
+    let scene = solidcraft_engine::product_scene::extract(&session).unwrap();
+    let plan = preview_upload_plan(&scene, MAX_GEOMETRY_BYTES).unwrap();
+    let (_, gpu) = gpu_scene(&scene).unwrap();
+    assert_eq!((plan.pbr, plan.tris, plan.glass), (gpu.pbr.len(), gpu.tris.len(), gpu.glass.len()));
+    assert!(plan.pbr > 0 && plan.tris > 0 && plan.glass > 0);
+    assert_eq!(plan.source_triangles, scene.meshes.iter().map(|b| b.mesh.triangles.len()).sum::<usize>());
+    assert!(preview_upload_plan(&scene, plan.bytes().unwrap() - 1).is_err());
+    assert!(PreviewUploadPlan::default().add(true, false, usize::MAX, MAX_GEOMETRY_BYTES).is_err());
+    assert_eq!(session.doc.to_json(), original);
+    let mut invalid = scene.clone();
+    let source = invalid.meshes[0].mesh.clone();
+    Arc::make_mut(&mut invalid.meshes[0].mesh).triangles[0][0] = u32::MAX;
+    assert!(gpu_scene(&invalid).is_err());
+    assert!(gpu_scene(&scene).is_ok());
+    assert!(Arc::ptr_eq(&scene.meshes[0].mesh, &source));
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn full_detail_preview_source_can_exceed_legacy_128_mib_without_mesh_reduction() {
+    use solidcraft_engine::geom::{Mesh, Vec3};
+    use solidcraft_engine::render::{ProductMesh, surface::OpaqueSurface};
+    // One immutable original triangle repeated in the index list; this tests
+    // payload admission only. Actual SELENE upload is separate native evidence.
+    let count = (128 * 1024 * 1024) / (3 * crate::gpu::PBR_SIZE) + 1;
+    let mesh = Arc::new(Mesh {
+        positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y],
+        normals: vec![Vec3::Z; 3],
+        triangles: vec![[0, 1, 2]; count],
+        ..Default::default()
+    });
+    let body = ProductMesh {
+        name: "Original admission fixture".into(),
+        mesh: mesh.clone(),
+        color: [200, 100, 50],
+        opacity: 1.0,
+        surface: Some(OpaqueSurface::new(Vec3::new(0.4, 0.2, 0.1), 0.0, 0.4, 1.5).unwrap()),
+        transmission: None,
+        faces: Vec::new(),
+    };
+    let scene = ProductScene { meshes: vec![body], bounds: mesh.bounds() };
+    assert!(preview_upload_plan(&scene, 128 * 1024 * 1024).is_err());
+    let plan = preview_upload_plan(&scene, MAX_GEOMETRY_BYTES).unwrap();
+    assert_eq!(plan.source_triangles, count);
+    assert_eq!(plan.bytes().unwrap(), count * 3 * crate::gpu::PBR_SIZE);
+    assert!(Arc::ptr_eq(&scene.meshes[0].mesh, &mesh));
+    let mut maximum = PreviewUploadPlan::default();
+    assert!(maximum.add(true, false, MAX_GEOMETRY_BYTES / (3 * crate::gpu::PBR_SIZE) + 1, MAX_GEOMETRY_BYTES).is_err());
+}
+
+#[test]
+fn refused_product_capture_is_cached_until_identity_changes_or_explicit_retry() {
+    let mut h = Harness::new();
+    let calls = std::cell::Cell::new(0);
+    let signature = (7, 123, 99);
+    for _ in 0..8 {
+        assert_eq!(
+            h.app
+                .render_workspace
+                .prepare_preview(signature, || {
+                    calls.set(calls.get() + 1);
+                    Err("original bounded refusal".into())
+                })
+                .unwrap_err(),
+            "original bounded refusal"
+        );
+    }
+    assert_eq!(calls.get(), 1, "same refused source is not rebuilt every frame");
+    assert!(h.app.render_workspace.scene.is_none() && h.app.render_workspace.key.is_none());
+    assert!(h.app.render_workspace.slot.lock().unwrap().is_none());
+    assert!(
+        h.app
+            .render_workspace
+            .prepare_preview((8, 123, 99), || {
+                calls.set(calls.get() + 1);
+                Err("new revision".into())
+            })
+            .is_err()
+    );
+    assert_eq!(calls.get(), 2);
+    invalidate_scene(&mut h.app);
+    assert!(h.app.render_workspace.scene_signature.is_none() && h.app.render_workspace.scene_error.is_none());
+    let mut session = Session::default();
+    session.execute("solid.box", &json!({"length":1,"width":1,"height":1})).unwrap();
+    h.app.render_workspace.prepare_preview(signature, || solidcraft_engine::product_scene::extract(&session).map_err(|e| e.to_string())).unwrap();
+    assert!(h.app.render_workspace.scene_error.is_none());
+    assert!(h.app.render_workspace.preview_upload_bytes.unwrap() > 0);
+    assert!(h.app.render_workspace.key.is_some() && h.app.render_workspace.scene.is_some());
+}
+
+#[test]
+fn product_preview_error_uses_shared_wrapped_surface_and_explicit_retry_target() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1280,"height":800}));
+    enter(&mut h.app, true).unwrap();
+    h.frames(3);
+    let rect = egui::Rect::from_min_size(egui::pos2(260.0, 200.0), egui::vec2(550.0, 360.0));
+    let message = "The original captured product geometry exceeds its bounded preview admission. The renderer must preserve all exact body identities and cannot silently simplify or drop geometry to paint this view.";
+    let output = h.ctx.run_ui(
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), ..Default::default() },
+        |ui| preview_error(&mut h.app, ui, rect, message),
+    );
+    let _ = output;
+    let note = crate::scenario::rect_of("dialog:report:render.preview_failure").unwrap();
+    let retry = crate::scenario::rect_of("render:preview-retry").unwrap();
+    assert!(rect.contains_rect(note) && rect.contains_rect(retry));
+    assert!(note.height() > Tokens::get().font_body, "the detailed failure wraps instead of escaping the viewport");
+    assert!(crate::theme::contrast_ratio(Tokens::get().form_error, Tokens::get().form_error_fill) >= 3.0);
+}
+
+#[test]
+fn finishing_backdrop_and_raw_retention_save_reload_without_a_gpu_or_hidden_transport_edits() {
+    use solidcraft_engine::render::job::finishing::{Backdrop, BackdropMode, Finishing};
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":2200}));
+    enter(&mut h.app, true).unwrap();
+    h.app.session.set_render_job_host(None).unwrap();
+    select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    h.app.render_workspace.view.inspector.page = inspector::Page::Output;
+    h.app.render_workspace.view.name = "Linear studio".into();
+    h.app.render_workspace.view.studio.finishing =
+        Finishing { rgb_gain: [1.3, 0.8, 0.9], saturation: 0.4, contrast: 1.2, vignette: 0.3, ..Default::default() };
+    h.app.render_workspace.view.studio.backdrop_enabled = true;
+    h.app.render_workspace.view.studio.backdrop = Backdrop { mode: BackdropMode::Radial, center: [0.25, 0.7], ..Default::default() };
+    h.app.render_workspace.view.studio.linear_exr = true;
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio = studio::View::default();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    assert!(!h.app.render_workspace.view.dirty);
+    assert!(!studio::linear_export_available(&h.app));
+    let request = image_request(&h.app).unwrap();
+    assert_eq!(request["settings"]["job"]["options"]["linear_exr"], true);
+    assert_eq!(request["settings"]["job"]["options"]["finishing"]["rgb_gain"], json!([1.3, 0.8, 0.9]));
+    assert!(image_params(&h.app).is_err(), "offline editing is not a claim of executable GPU capabilities");
+    h.app.render_workspace.view.transparent = true;
+    assert!(setups::snapshot(&h.app).is_err(), "gradient cannot silently disappear behind alpha mode");
+    h.app.render_workspace.view.transparent = false;
+    let before = h.app.session.doc.to_json();
+    h.frames(3);
+    let title = h.app.tr("render.post_title").to_string();
+    h.step(&json!({"click":{"handle":format!("dialog:section:{title}")}})).unwrap();
+    h.step(&json!({"click":{"handle":"render:post-reset"}})).unwrap();
+    assert_eq!(h.app.render_workspace.view.studio.finishing, Finishing::default());
+    assert!(h.app.render_workspace.view.studio.linear_exr);
+    assert!(h.app.render_workspace.view.studio.backdrop_enabled);
+    assert!(h.app.render_workspace.view.dirty);
+    assert_eq!(h.app.session.doc.to_json(), before, "reset only edits the render draft");
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+}
+
+#[test]
+fn missing_linear_master_is_never_reconstructed_from_a_finished_png() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":1800}));
+    enter(&mut h.app, true).unwrap();
+    let id = completed_preview(&mut h, [21, 37, 55]);
+    let bytes = h.app.session.render_job_handle(id).unwrap().frame().unwrap().unwrap().png().to_vec();
+    h.app.render_workspace.view.completed = Some(id);
+    h.app.render_workspace.view.studio.export_exr = true;
+    assert!(!studio::linear_export_available(&h.app));
+    let temp = std::env::temp_dir().join(format!("solidcraft-missing-linear-{}.exr", std::process::id()));
+    assert!(h.app.session.execute("render.export", &json!({"job":id,"path":temp,"format":"exr"})).is_err());
+    assert!(!temp.exists());
+    assert_eq!(h.app.session.render_job_handle(id).unwrap().frame().unwrap().unwrap().png(), bytes);
 }

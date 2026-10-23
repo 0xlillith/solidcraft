@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use solidcraft_render::{
     Camera,
     job::{
-        CpuProgressiveOptions, DirectionalLightOptions, JobOptions, LightingPreset, PunctualLightOptions, RaytraceEnvironmentOptions,
+        CpuBudget, CpuProgressiveOptions, DirectionalLightOptions, JobOptions, LightingPreset, PunctualLightOptions, RaytraceEnvironmentOptions,
         RaytraceOptions, RectangleLightOptions, StudioLighting, ThinLens, ToneMap,
     },
     lighting::environment::SkyGradient,
@@ -45,8 +45,14 @@ impl RenderJob {
             Self::Raster { .. } if exposure_ev != 0.0 => Err(DocError::Invalid("saved raster rendering requires exposure_ev: 0".into())),
             Self::Raster { .. } => Ok(()),
             Self::CpuRaytrace { options } => options.to_runtime(exposure_ev).map(|_| ()),
-            Self::GpuPath { options, .. } => {
+            Self::GpuPath { options, transparent_background } => {
+                if *transparent_background && options.backdrop.is_some() {
+                    return Err(DocError::Invalid("choose a camera backdrop or transparent PNG, not both".into()));
+                }
                 options.to_runtime(exposure_ev)?;
+                if *transparent_background && options.finishing.bloom.is_some_and(|b| b.active()) {
+                    return Err(DocError::Invalid("display bloom requires opaque output".into()));
+                }
                 if camera.fov == 0.0 && options.lens.is_some_and(|lens| lens.aperture_radius_mm > 0.0) {
                     return Err(DocError::Invalid("saved thin-lens depth of field requires a perspective camera".into()));
                 }
@@ -61,6 +67,8 @@ impl RenderJob {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CpuJob {
+    #[serde(skip_serializing_if = "CpuBudget::is_compact")]
+    pub budget: CpuBudget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progressive: Option<CpuProgressiveOptions>,
     pub primary_samples: u8,
@@ -86,6 +94,7 @@ pub struct CpuJob {
 impl Default for CpuJob {
     fn default() -> Self {
         Self {
+            budget: CpuBudget::Compact,
             progressive: None,
             primary_samples: 1,
             preset: None,
@@ -113,15 +122,22 @@ impl CpuJob {
         bounded(&self.lights, 8, "directional lights")?;
         bounded(&self.punctual_lights, 8, "point/spot lights")?;
         bounded(&self.area_lights, 4, "rectangular lights")?;
+        if self.area_samples.is_some_and(|n| !matches!(n, 1 | 4 | 16 | 64)) {
+            return Err(DocError::Invalid("saved area_samples must be 1, 4, 16 or 64".into()));
+        }
+        // Preserve hidden editable intent in CpuJob, but do not submit tuning for
+        // a light family that is explicitly absent. This does not rewrite the file.
+        let active_area = self.area_lights.as_ref().is_some_and(|lights| !lights.is_empty());
         let options = RaytraceOptions {
+            budget: self.budget,
             progressive: self.progressive,
             primary_samples: self.primary_samples,
             preset: self.preset,
             lights: self.lights.clone(),
             punctual_lights: self.punctual_lights.clone(),
             area_lights: self.area_lights.clone(),
-            area_samples: self.area_samples,
-            seed: self.seed,
+            area_samples: if active_area { self.area_samples } else { None },
+            seed: if active_area { self.seed } else { None },
             shadows: self.shadows,
             environment: self.environment,
             exposure_ev,
@@ -136,6 +152,19 @@ impl CpuJob {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpuJob {
+    pub nested_media: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<solidcraft_render::job::adaptive::AdaptiveSampling>,
+    /// Conditional Fresnel strata per primary sample; one keeps the old stream.
+    pub transmission_samples: u32,
+
+    #[serde(skip_serializing_if = "solidcraft_render::job::finishing::Finishing::is_identity")]
+    pub finishing: solidcraft_render::job::finishing::Finishing,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
+    pub linear_exr: bool,
     pub samples: u32,
     pub max_depth: u32,
     pub seed: u32,
@@ -155,6 +184,13 @@ impl Default for GpuJob {
     fn default() -> Self {
         let options = JobOptions::default();
         Self {
+            nested_media: options.nested_media,
+            volume: options.volume,
+            adaptive: options.adaptive,
+            transmission_samples: options.transmission_samples,
+            finishing: options.finishing,
+            backdrop: options.backdrop,
+            linear_exr: options.linear_exr,
             samples: options.samples,
             max_depth: options.max_depth,
             seed: options.seed,
@@ -181,6 +217,13 @@ impl GpuJob {
             environment.validate()?;
         }
         let options = JobOptions {
+            nested_media: self.nested_media,
+            volume: self.volume,
+            adaptive: self.adaptive,
+            transmission_samples: self.transmission_samples,
+            finishing: self.finishing,
+            backdrop: self.backdrop,
+            linear_exr: self.linear_exr,
             samples: self.samples,
             max_depth: self.max_depth,
             seed: self.seed,

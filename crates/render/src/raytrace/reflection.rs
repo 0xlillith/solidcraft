@@ -12,8 +12,7 @@ pub struct ReflectionSample {
     pub pdf: f64,
 }
 fn fresnel(surface: OpaqueSurface, cosine: f64) -> Vec3 {
-    let f0 = surface.normal_reflectance();
-    f0 + (Vec3::new(1.0, 1.0, 1.0) - f0) * (1.0 - cosine.clamp(0.0, 1.0)).powi(5)
+    surface.specular_fresnel(cosine)
 }
 pub fn mirror(surface: OpaqueSurface, normal: Vec3, view: Vec3) -> Result<Option<ReflectionSample>> {
     let n = unit_direction(normal).map_err(|_| TraceError::InvalidInput("mirror normal"))?;

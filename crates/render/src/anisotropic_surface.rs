@@ -152,8 +152,7 @@ impl AnisotropicSurface {
     }
 
     fn fresnel(self, cosine: f64) -> Vec3 {
-        let f0 = self.base.normal_reflectance();
-        f0 + (Vec3::new(1.0, 1.0, 1.0) - f0) * (1.0 - cosine.clamp(0.0, 1.0)).powi(5)
+        self.base.specular_fresnel(cosine)
     }
 
     fn distribution_local(self, h: Vec3) -> f64 {

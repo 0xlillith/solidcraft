@@ -14,6 +14,8 @@
   "cmd.sketch_slot_center_point": "Centre Point Slot",
   "cmd.sketch_slot_center_to_center": "Centre to Centre Slot",
   "pattern.alignment_hint": "Counts include the original. Centre balances copies; Flip chooses the extra side for even totals.",
+  "render.backdrop_x": "Centre X",
+  "render.backdrop_y": "Centre Y",
   "render.opaque_preview_help": "Opaque PBR and simple colours; blended transparency. Refraction, HDRI and final rendering are not available yet.",
   "sketch_text.align_center": "Centre",
   "ui.center": "Centre",

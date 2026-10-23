@@ -50,8 +50,10 @@ pub mod plastic;
 pub mod project;
 mod project3d;
 pub mod render_job;
+pub mod render_optics;
 pub mod render_resources;
 pub mod render_settings;
+pub mod render_surface;
 pub use project3d::iso_grid;
 pub mod sheet;
 

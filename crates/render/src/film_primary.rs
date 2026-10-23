@@ -4,7 +4,7 @@
 //! single-pixel operations. The owning image job supplies its existing work lease.
 
 use super::{invalid, limit};
-use crate::job::{CancelToken, CpuProgressiveOptions, ErrorCode, JobError, Result};
+use crate::job::{CancelToken, CpuBudget, CpuProgressiveOptions, ErrorCode, JobError, Result};
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 struct Pixel {
@@ -21,17 +21,24 @@ pub(crate) struct PrimaryFilm {
 }
 
 impl PrimaryFilm {
-    pub(crate) fn required_bytes(width: u32, height: u32, options: CpuProgressiveOptions) -> Result<u64> {
-        options.validate_image(width, height)?;
+    pub(crate) fn required_bytes(width: u32, height: u32, options: CpuProgressiveOptions, budget: CpuBudget) -> Result<u64> {
+        options.validate_image_with_budget(width, height, budget)?;
         (u64::from(width) * u64::from(height))
             .checked_mul(std::mem::size_of::<Pixel>() as u64)
             .and_then(|n| n.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(|| limit("primary film storage overflow"))
     }
 
-    pub(crate) fn new(width: u32, height: u32, options: CpuProgressiveOptions, admitted_bytes: u64, cancel: &CancelToken) -> Result<Self> {
+    pub(crate) fn new(
+        width: u32,
+        height: u32,
+        options: CpuProgressiveOptions,
+        admitted_bytes: u64,
+        cancel: &CancelToken,
+        budget: CpuBudget,
+    ) -> Result<Self> {
         cancel.check()?;
-        let required = Self::required_bytes(width, height, options)?;
+        let required = Self::required_bytes(width, height, options, budget)?;
         if admitted_bytes < required {
             return Err(limit("primary film is not covered by image admission"));
         }
@@ -88,7 +95,7 @@ impl PrimaryFilm {
         }
         let pixel = self.pixels.get(index).copied().ok_or_else(|| invalid("primary film pixel out of range"))?;
         let sum = std::array::from_fn(|i| pixel.sum[i] + radiance[i]);
-        if sum.iter().any(|v| !v.is_finite() || *v < 0.0 || *v > 64e12) {
+        if sum.iter().any(|v| !v.is_finite() || *v < 0.0 || *v > f64::from(self.sample_limit) * 1e12) {
             return Err(invalid("primary film radiance sum exceeds finite range"));
         }
         let hits = pixel.covered.checked_add(u32::from(covered)).filter(|n| *n <= ordinal + 1).ok_or_else(|| invalid("primary coverage overflow"))?;

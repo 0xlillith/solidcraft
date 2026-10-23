@@ -553,7 +553,8 @@ fn progressive_limits_and_incompatibilities_fail_before_hdr_or_scene_capture() {
             "environment":{"path":"deliberately-absent-film-admission.hdr"}});
         for command in ["render.preflight", "render.start"] {
             let message = s.execute(command, &params).unwrap_err().to_string();
-            assert!(message.contains("CPU progressive"), "{message}");
+            let expected = if primary != 1 { "CPU progressive" } else { "CPU Compact" };
+            assert!(message.contains(expected), "{message}");
             assert!(!message.contains("deliberately-absent"), "HDR was read before numerical admission");
             assert_eq!(host.admitted_bytes(), 0);
         }
@@ -1098,4 +1099,25 @@ fn dielectric_preflight_refuses_wrong_captured_identity_without_changing_design(
         assert_eq!(before, (s.revision, s.evaluations, s.is_dirty(), s.undo.len(), s.redo.len()));
         assert_eq!(host.admitted_bytes(), 0);
     }
+}
+
+#[test]
+fn registered_product_camera_fit_changes_only_view_and_keeps_orientation() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":20,"width":15,"height":10})).unwrap();
+    let camera = solidcraft_render::Camera { yaw: 0.2, pitch: 0.3, roll: 0.1, ..Default::default() };
+    s.execute("view.apply", &json!({"camera":camera})).unwrap();
+    let doc = s.doc.to_json();
+    let undo = s.undo.len();
+    let inspected = s.execute("render.camera.get", &json!({})).unwrap();
+    assert_eq!(inspected["camera"], json!(camera));
+    assert_eq!(inspected["document_changed"], false);
+    assert!(s.execute("render.camera.get", &json!({"fit":true})).is_err());
+    let fitted = s.execute("render.camera.fit", &json!({})).unwrap();
+    assert_eq!(fitted["document_changed"], false);
+    let after = s.camera.unwrap();
+    assert_eq!((after.yaw, after.pitch, after.roll), (camera.yaw, camera.pitch, camera.roll));
+    assert_eq!(s.doc.to_json(), doc);
+    assert_eq!(s.undo.len(), undo);
+    assert!(s.execute("render.camera.fit", &json!({"scale":0})).is_err());
 }

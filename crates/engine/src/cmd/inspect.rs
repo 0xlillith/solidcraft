@@ -386,7 +386,7 @@ pub(super) fn color_param(v: &Value) -> Option<[u8; 3]> {
     Some([c(0)?, c(1)?, c(2)?])
 }
 
-fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
+pub(super) fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
     use solidcraft_doc::appearance::{FaceLook, Look, library};
     let cmd = "appearance.assign";
     // A saved label is data, not a request to resolve a recipe. Keep the explicit

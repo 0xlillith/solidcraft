@@ -62,6 +62,7 @@ fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
             let options = &view.raytrace;
             RenderJob::CpuRaytrace {
                 options: CpuJob {
+                    budget: options.budget,
                     primary_samples: options.primary_samples,
                     progressive: options.progressive,
                     preset: options.preset,
@@ -97,6 +98,13 @@ fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     samples: view.samples,
                     max_depth: view.max_depth,
                     seed: view.seed,
+                    nested_media: studio.nested_media,
+                    volume: studio.volume,
+                    adaptive: studio.adaptive,
+                    transmission_samples: studio.transmission_samples,
+                    finishing: studio.finishing,
+                    backdrop: studio.backdrop_enabled.then_some(studio.backdrop),
+                    linear_exr: studio.linear_exr,
                     tone_map: studio.tone_map,
                     denoise: studio.denoise,
                     lens: studio.lens_enabled.then_some(studio.lens),
@@ -149,6 +157,7 @@ pub(super) fn load(app: &mut SolveApp) {
         Some(RenderJob::CpuRaytrace { options }) => {
             view.method = ImageMethod::CpuRaytrace;
             view.raytrace = RaytraceOptions {
+                budget: options.budget,
                 primary_samples: options.primary_samples,
                 progressive: options.progressive,
                 preset: options.preset,
@@ -179,6 +188,14 @@ pub(super) fn load(app: &mut SolveApp) {
             view.samples = options.samples;
             view.max_depth = options.max_depth;
             view.seed = options.seed;
+            view.studio.nested_media = options.nested_media;
+            view.studio.volume = options.volume;
+            view.studio.adaptive = options.adaptive;
+            view.studio.transmission_samples = options.transmission_samples;
+            view.studio.finishing = options.finishing;
+            view.studio.backdrop_enabled = options.backdrop.is_some();
+            view.studio.backdrop = options.backdrop.unwrap_or_default();
+            view.studio.linear_exr = options.linear_exr;
             view.studio.tone_map = options.tone_map;
             view.studio.denoise = options.denoise;
             if let Some(lens) = options.lens {

@@ -31,6 +31,12 @@ pub struct RenderSetup {
     /// Selected method's numerical intent and HDR reference; absent means the legacy request protocol.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job: Option<RenderJob>,
+    #[serde(skip_serializing_if = "crate::render_surface::SurfaceBindings::is_empty")]
+    pub surfaces: crate::render_surface::SurfaceBindings,
+    #[serde(skip_serializing_if = "crate::render_optics::OpticalBindings::is_empty")]
+    pub optics: crate::render_optics::OpticalBindings,
+    #[serde(skip_serializing_if = "solidcraft_render::stage::Stage::is_empty")]
+    pub stage: solidcraft_render::stage::Stage,
 }
 
 // Reuse Camera's representation and defaults, but reject misspelled saved fields. A remote
@@ -65,13 +71,51 @@ impl Default for RenderSetup {
             environment_intensity: 1.0,
             background: [236, 240, 245],
             job: None,
+            optics: Default::default(),
+            surfaces: Default::default(),
+            stage: Default::default(),
         }
     }
 }
 
 impl RenderSetup {
     pub fn validate(&self) -> Result<()> {
-        let limits = RenderLimits::default();
+        let limits = match &self.job {
+            Some(RenderJob::CpuRaytrace { options }) => options.budget.image_limits(options.progressive.is_some()),
+            Some(RenderJob::GpuPath { .. }) => solidcraft_render::job::GPU_PATH_LIMITS,
+            _ => RenderLimits::default(),
+        };
+        self.validate_with_limits(limits)
+    }
+
+    /// Runtime CPU lowering has already moved typed options out of this setup.
+    /// Saving still uses validate(), so a legacy setup cannot smuggle a large profile.
+    pub fn validate_for_cpu(&self, budget: solidcraft_render::job::CpuBudget) -> Result<()> {
+        budget.validate_image(self.width, self.height, None).map_err(|e| DocError::Invalid(e.to_string()))?;
+        self.validate_with_limits(budget.image_limits(false))
+    }
+
+    /// Typed GPU options have already been lowered; retain their dimension envelope.
+    pub fn validate_for_gpu(&self) -> Result<()> {
+        self.validate_with_limits(solidcraft_render::job::GPU_PATH_LIMITS)
+    }
+
+    fn validate_with_limits(&self, limits: RenderLimits) -> Result<()> {
+        self.surfaces.validate()?;
+        self.optics.validate()?;
+        if !self.optics.is_empty() && !matches!(self.job, Some(RenderJob::GpuPath { .. })) {
+            return Err(DocError::Invalid("saved optics require an explicit GPU job".into()));
+        }
+        if self.optics.iter().any(|o| self.surfaces.iter().any(|s| s.target == o.target)) {
+            return Err(DocError::Invalid("saved opaque surface maps and optical boundaries cannot share a target".into()));
+        }
+        self.stage.validate().map_err(|e| DocError::Invalid(e.to_string()))?;
+        if !self.stage.is_empty() && matches!(self.job, Some(RenderJob::Raster { .. })) {
+            return Err(DocError::Invalid("passive stage geometry requires raytracing; raster cannot silently discard it".into()));
+        }
+        if !self.surfaces.is_empty() && !matches!(self.job, Some(RenderJob::GpuPath { .. })) {
+            return Err(DocError::Invalid("saved surfaces require an explicit GPU job; unsupported methods cannot discard bindings".into()));
+        }
         let (width, height) = (u64::from(self.width), u64::from(self.height));
         if width == 0 || height == 0 {
             return Err(DocError::Invalid("render output must be at least 1 × 1 pixels".into()));
@@ -114,7 +158,7 @@ impl RenderSetup {
             if let RenderJob::CpuRaytrace { options } = job
                 && let Some(progressive) = options.progressive
             {
-                progressive.validate_image(self.width, self.height).map_err(|e| DocError::Invalid(e.to_string()))?;
+                progressive.validate_image_with_budget(self.width, self.height, options.budget).map_err(|e| DocError::Invalid(e.to_string()))?;
             }
         }
         // Desired mode/format/backend may be unavailable on this host. Saving intent is not preflight.
@@ -564,7 +608,7 @@ mod tests {
             json!({"exposure_ev":1,"job":{"method":"raster"}}),
             json!({"environment_rotation":0.5,"job":{"method":"gpu_path"}}),
             json!({"environment_intensity":0,"job":{"method":"cpu_raytrace"}}),
-            json!({"job":{"method":"cpu_raytrace","options":{"seed":1}}}),
+            json!({"job":{"method":"cpu_raytrace","options":{"seed":-1}}}),
             json!({"job":{"method":"cpu_raytrace","options":{"preset":"neutral","lights":[]}}}),
             json!({"job":{"method":"cpu_raytrace","options":{"environment":{"path":"not-portable.hdr"}}}}),
             json!({"job":{"method":"gpu_path","options":{"environment":{"kind":"hdr","path":"not-portable.hdr"}}}}),
@@ -651,5 +695,54 @@ mod tests {
         setup.camera = Camera::default();
         setup.environment_intensity = f64::INFINITY;
         assert!(setup.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod cpu_budget_tests {
+    use super::*;
+    use solidcraft_render::job::{CpuBudget, CpuProgressiveOptions};
+
+    #[test]
+    fn inactive_area_tuning_roundtrips_without_leaking_into_runtime_options() {
+        let saved: CpuJob = serde_json::from_str(r#"{"seed":1,"area_samples":16,"area_lights":[]}"#).unwrap();
+        let runtime = saved.to_runtime(0.0).unwrap();
+        assert_eq!((saved.seed, saved.area_samples), (Some(1), Some(16)));
+        assert_eq!((runtime.seed, runtime.area_samples), (None, None));
+        let roundtrip: CpuJob = serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!(roundtrip, saved);
+        let raw = solidcraft_render::job::RaytraceOptions { seed: Some(1), ..Default::default() };
+        assert!(raw.validate().is_err(), "runtime requests still reject tuning without active emitters");
+    }
+
+    #[test]
+    fn resource_profiles_survive_native_intent_roundtrips_without_a_host() {
+        let mut setup = RenderSetup {
+            width: 3840,
+            height: 2160,
+            job: Some(RenderJob::CpuRaytrace {
+                options: CpuJob {
+                    budget: CpuBudget::Studio,
+                    progressive: Some(CpuProgressiveOptions { samples_per_pixel: 128, seed: 82 }),
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
+        };
+        setup.validate().unwrap();
+        let text = serde_json::to_string(&setup).unwrap();
+        let reopened: RenderSetup = serde_json::from_str(&text).unwrap();
+        assert_eq!(setup, reopened);
+        let Some(RenderJob::CpuRaytrace { options }) = &mut setup.job else {
+            panic!("CPU fixture");
+        };
+        options.budget = CpuBudget::Compact;
+        assert!(setup.validate().is_err());
+        let legacy: CpuJob = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.budget, CpuBudget::Compact);
+        assert!(serde_json::to_value(legacy).unwrap().get("budget").is_none());
+        assert!(serde_json::from_str::<CpuJob>(r#"{"budget":"unlimited"}"#).is_err());
+        let legacy_large = RenderSetup { width: 3840, height: 2160, ..Default::default() };
+        assert!(legacy_large.validate().is_err(), "large intent must name an explicit CPU job profile");
     }
 }

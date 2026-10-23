@@ -11,7 +11,7 @@ mod progressive_checkpoints {
     fn fixture(samples: u32) -> (CpuHost, JobHandle, Running) {
         let host = ImageHost(Arc::new(Owner {
             executor: None,
-            shared: CpuHost::shared(),
+            shared: CpuHost::shared(MEMORY_LIMIT),
             kind: HostKind::NativeWorker,
             running: Mutex::new(None),
             _worker: None,
@@ -487,7 +487,7 @@ fn a_cancel_after_the_last_digest_chunk_still_wins_the_publication_lock() {
 fn png_digest_metadata_fits_the_existing_allowance_without_changing_admission() {
     // Fixed digest/offset state and the completed frame (including its bounded
     // hex string and backend/executor IDs) fit the existing 1024-byte allowance.
-    assert!(std::mem::size_of::<PendingPng>() <= 256);
+    assert!(std::mem::size_of::<PendingPng>() <= 512);
     assert!(
         std::mem::size_of::<Running>() + std::mem::size_of::<RenderFrame>() + 64 + 2 * crate::MAX_RENDER_ID_BYTES + 32
             <= FRAME_METADATA_BYTES as usize
@@ -643,7 +643,7 @@ fn environment_payload_is_owned_by_admitted_work_not_retained_status() {
     for cancelled in [false, true] {
         let host = ImageHost(Arc::new(Owner {
             executor: Some(Arc::new(ResourceExecutor)),
-            shared: ImageHost::shared(),
+            shared: ImageHost::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -689,7 +689,7 @@ fn texture_payload_is_owned_by_admitted_work_not_retained_status() {
     for cancelled in [false, true] {
         let host = ImageHost(Arc::new(Owner {
             executor: Some(Arc::new(ResourceExecutor)),
-            shared: ImageHost::shared(),
+            shared: ImageHost::shared(MEMORY_LIMIT),
             kind: HostKind::Cooperative,
             running: Mutex::new(None),
             #[cfg(not(target_arch = "wasm32"))]
@@ -707,6 +707,10 @@ fn texture_payload_is_owned_by_admitted_work_not_retained_status() {
                 normal_strength: 1.,
                 base_color: Some(TextureMap::new(bytes, crate::texture_input::MapRole::BaseColor).unwrap()),
                 normal: None,
+                roughness: None,
+                metallic: None,
+                base_color_mode: Default::default(),
+                flip_v: false,
             }])
             .unwrap(),
         );
@@ -733,5 +737,68 @@ fn cpu_film_snapshots_refuse_registered_executors_without_acquiring_a_lease() {
     let failure = host.reserve_film_snapshot(1024).err().unwrap();
     assert_eq!(failure.code, ErrorCode::InvalidRequest);
     assert!(failure.message.contains("builtin CPU host"));
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn native_cpu_envelopes_do_not_expand_registered_or_cooperative_pools() {
+    use super::super::{CpuBudget, NATIVE_CPU_POOL_BYTES, RaytraceOptions};
+    let cpu = CpuHost::for_platform().unwrap();
+    let cooperative = CpuHost::cooperative();
+    let (registered, _) = probe_host(1024);
+    assert_eq!(cpu.pool_limit_bytes(), NATIVE_CPU_POOL_BYTES);
+    assert_eq!(cooperative.pool_limit_bytes(), 512 * 1024 * 1024);
+    assert_eq!(registered.pool_limit_bytes(), 512 * 1024 * 1024);
+    assert!(cpu.check_request_sum(400 * 1024 * 1024, 0, CpuBudget::Compact).is_err());
+    assert!(cpu.check_request_sum(400 * 1024 * 1024, 0, CpuBudget::Studio).is_ok());
+    assert!(cpu.check_request_sum(u64::MAX, 1, CpuBudget::Workstation).is_err());
+    let mut r = request();
+    r.integrator = Integrator::Raytrace;
+    r.width = 3840;
+    r.height = 2160;
+    r.raytrace = Some(RaytraceOptions { budget: CpuBudget::Studio, ..Default::default() });
+    assert_eq!(cpu.descriptor_for_request(&r).unwrap().limits, CpuBudget::Studio.image_limits(false));
+    r.raytrace.as_mut().unwrap().budget = CpuBudget::Compact;
+    assert!(cpu.descriptor_for_request(&r).is_err());
+    assert_eq!(cpu.admitted_bytes(), 0);
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn registered_large_pool_is_explicit_finite_and_accounted() {
+    struct Envelope(u64);
+    impl ImageExecutor for Envelope {
+        fn memory_limit_bytes(&self) -> u64 {
+            self.0
+        }
+        fn descriptor(&self) -> Result<ExecutorDescriptor> {
+            CpuExecutor.descriptor()
+        }
+        fn admit(&self, _: &ProductScene, _: &ImageRequest, _: JobOptions) -> Result<Admission> {
+            Ok(Admission {
+                triangles: 0,
+                face_appearances: 0,
+                geometry_bytes: 0,
+                pixel_scratch_bytes: 0,
+                preparation_bytes: 0,
+                estimated_total_bytes: 600 * 1024 * 1024,
+                encoded_limit: 4096,
+            })
+        }
+        fn begin(&self, _: ProductScene, _: ImageRequest, _: JobOptions, _: CancelToken) -> Result<Box<dyn ImageWork>> {
+            Err(JobError::new(ErrorCode::InvalidRequest, "admission-only fixture"))
+        }
+    }
+    for limit in [0, super::super::NATIVE_CPU_POOL_BYTES + 1] {
+        assert!(ImageHost::with_executor(Arc::new(Envelope(limit))).is_err());
+    }
+    let host = ImageHost::with_executor(Arc::new(Envelope(1024 * 1024 * 1024))).unwrap();
+    assert_eq!(host.pool_limit_bytes(), 1024 * 1024 * 1024);
+    assert!(host.admit(&empty(), &request(), JobOptions::default()).is_ok());
+    assert_eq!(host.admitted_bytes(), 0, "preflight does not allocate or reserve");
+    let lease = host.0.shared.budget.reserve(600 * 1024 * 1024).unwrap();
+    assert!(host.0.shared.budget.reserve(600 * 1024 * 1024).is_err());
+    drop(lease);
     assert_eq!(host.admitted_bytes(), 0);
 }

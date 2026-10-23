@@ -36,11 +36,11 @@ fn limit(message: &str) -> JobError {
 fn invalid(message: &str) -> JobError {
     JobError::new(ErrorCode::InvalidScene, message)
 }
-fn add_bytes(sum: &mut u64, count: usize, size: usize) -> Result<()> {
+fn add_bytes(sum: &mut u64, count: usize, size: usize, maximum: u64) -> Result<()> {
     let bytes = (count as u64).checked_mul(size as u64).ok_or_else(|| limit("geometry size overflow"))?;
     *sum = sum.checked_add(bytes).ok_or_else(|| limit("geometry size overflow"))?;
-    if *sum > MAX_GEOMETRY_BYTES {
-        return Err(limit("retained product geometry exceeds 128 MiB"));
+    if *sum > maximum {
+        return Err(limit(&format!("retained product geometry exceeds its {} MiB profile limit", maximum / (1024 * 1024))));
     }
     Ok(())
 }
@@ -100,14 +100,80 @@ struct Source {
 }
 
 fn admit_source(scene: &ProductScene, request: &ImageRequest, max_triangles: u64) -> Result<Source> {
+    admit_source_with_budget(scene, request, max_triangles, super::CpuBudget::Compact)
+}
+
+/// Ray tracing has no raster projected-triangle lists. Keep a conservative
+/// pixel/codec allowance, then let the ray tracer charge its actual BVH and film.
+#[cfg(feature = "raytrace-cpu")]
+pub(crate) fn admit_raytrace_source(scene: &ProductScene, request: &ImageRequest, budget: super::CpuBudget) -> Result<Admission> {
+    budget.validate_execution()?;
+    budget.validate_image(request.width, request.height, request.raytrace.as_ref().and_then(|o| o.progressive))?;
+    let source = admit_source_with_budget(scene, request, budget.limits().max_triangles, budget)?;
+    let mut a = source.admission;
+    a.pixel_scratch_bytes = source.raster_scratch_bytes;
+    a.preparation_bytes = 262_144;
+    a.estimated_total_bytes = a
+        .geometry_bytes
+        .checked_add(a.pixel_scratch_bytes)
+        .and_then(|n| n.checked_add(a.preparation_bytes))
+        .ok_or_else(|| limit("CPU source memory overflow"))?;
+    if a.estimated_total_bytes > budget.limits().max_job_bytes {
+        return Err(limit("CPU source exceeds the selected resource profile"));
+    }
+    Ok(a)
+}
+
+fn admit_source_with_budget(scene: &ProductScene, request: &ImageRequest, max_triangles: u64, budget: super::CpuBudget) -> Result<Source> {
+    let limits = budget.limits();
+    admit_source_with_limits(scene, request, max_triangles, limits.max_bodies, limits.max_geometry_bytes, budget.image_limits(false))
+}
+
+/// A registered executor may request a larger finite source envelope without
+/// changing raster/legacy admission. Actual device allocations remain its job.
+pub fn admit_geometry_with_limits(
+    scene: &ProductScene,
+    request: &ImageRequest,
+    max_triangles: u64,
+    max_bodies: usize,
+    max_geometry_bytes: u64,
+    image_limits: crate::RenderLimits,
+) -> Result<Admission> {
+    if max_triangles == 0
+        || max_triangles > super::MAX_CPU_TRIANGLES as u64
+        || max_bodies == 0
+        || max_bodies > super::MAX_CPU_BODIES
+        || max_geometry_bytes == 0
+        || max_geometry_bytes > 4 * 1024 * 1024 * 1024
+        || image_limits.max_dimension > 16_384
+        || image_limits.max_pixels > 67_108_864
+        || image_limits.max_scratch_bytes > super::NATIVE_CPU_POOL_BYTES
+    {
+        return Err(limit("registered source envelope exceeds implementation bounds"));
+    }
+    Ok(admit_source_with_limits(scene, request, max_triangles, max_bodies, max_geometry_bytes, image_limits)?.admission)
+}
+
+fn admit_source_with_limits(
+    scene: &ProductScene,
+    request: &ImageRequest,
+    max_triangles: u64,
+    max_bodies: usize,
+    max_geometry_bytes: u64,
+    image_limits: crate::RenderLimits,
+) -> Result<Source> {
     if !request.camera.is_valid() {
         return Err(JobError::new(ErrorCode::InvalidRequest, "invalid image camera"));
     }
-    if scene.meshes.len() > 16_384 {
+    if scene.meshes.len() > max_bodies {
         return Err(limit("too many product bodies"));
     }
+    let mut backend = crate::builtin_backend();
+    for executor in &mut backend.executors {
+        executor.limits = image_limits;
+    }
     let resolved = crate::resolve_request(
-        &[crate::builtin_backend()],
+        &[backend],
         &RenderRequest {
             backend: None,
             mode: RenderMode::Preview,
@@ -121,7 +187,7 @@ fn admit_source(scene: &ProductScene, request: &ImageRequest, max_triangles: u64
     )
     .map_err(|e| JobError::new(ErrorCode::InvalidRequest, e.to_string()))?;
     let (mut triangles, mut faces, mut geometry, mut polylines) = (0u64, 0u64, 0u64, 0u64);
-    add_bytes(&mut geometry, scene.meshes.capacity(), std::mem::size_of::<crate::ProductMesh>())?;
+    add_bytes(&mut geometry, scene.meshes.capacity(), std::mem::size_of::<crate::ProductMesh>(), max_geometry_bytes)?;
     for body in &scene.meshes {
         let m = &body.mesh;
         triangles = triangles.checked_add(m.triangles.len() as u64).ok_or_else(|| limit("triangle count overflow"))?;
@@ -130,22 +196,22 @@ fn admit_source(scene: &ProductScene, request: &ImageRequest, max_triangles: u64
         if triangles > max_triangles || faces > max_triangles || polylines > max_triangles {
             return Err(limit("product image exceeds its triangle/appearance/polyline admission cap"));
         }
-        add_bytes(&mut geometry, m.positions.capacity(), std::mem::size_of::<Vec3>())?;
-        add_bytes(&mut geometry, m.normals.capacity(), std::mem::size_of::<Vec3>())?;
-        add_bytes(&mut geometry, m.triangles.capacity(), std::mem::size_of::<[u32; 3]>())?;
-        add_bytes(&mut geometry, m.tri_face.capacity(), std::mem::size_of::<u32>())?;
-        add_bytes(&mut geometry, body.faces.capacity(), std::mem::size_of::<FaceAppearance>())?;
-        add_bytes(&mut geometry, body.name.capacity(), 1)?;
-        add_bytes(&mut geometry, m.edges.capacity(), std::mem::size_of::<Vec<Vec3>>())?;
-        add_bytes(&mut geometry, m.edge_faces.capacity(), std::mem::size_of::<Vec<u32>>())?;
+        add_bytes(&mut geometry, m.positions.capacity(), std::mem::size_of::<Vec3>(), max_geometry_bytes)?;
+        add_bytes(&mut geometry, m.normals.capacity(), std::mem::size_of::<Vec3>(), max_geometry_bytes)?;
+        add_bytes(&mut geometry, m.triangles.capacity(), std::mem::size_of::<[u32; 3]>(), max_geometry_bytes)?;
+        add_bytes(&mut geometry, m.tri_face.capacity(), std::mem::size_of::<u32>(), max_geometry_bytes)?;
+        add_bytes(&mut geometry, body.faces.capacity(), std::mem::size_of::<FaceAppearance>(), max_geometry_bytes)?;
+        add_bytes(&mut geometry, body.name.capacity(), 1, max_geometry_bytes)?;
+        add_bytes(&mut geometry, m.edges.capacity(), std::mem::size_of::<Vec<Vec3>>(), max_geometry_bytes)?;
+        add_bytes(&mut geometry, m.edge_faces.capacity(), std::mem::size_of::<Vec<u32>>(), max_geometry_bytes)?;
         for edge in &m.edges {
-            add_bytes(&mut geometry, edge.capacity(), std::mem::size_of::<Vec3>())?;
+            add_bytes(&mut geometry, edge.capacity(), std::mem::size_of::<Vec3>(), max_geometry_bytes)?;
         }
         for edge in &m.edge_faces {
-            add_bytes(&mut geometry, edge.capacity(), std::mem::size_of::<u32>())?;
+            add_bytes(&mut geometry, edge.capacity(), std::mem::size_of::<u32>(), max_geometry_bytes)?;
         }
         for count in [m.seams.capacity(), m.smooth_edges.capacity(), m.sharp_edges.capacity()] {
-            add_bytes(&mut geometry, count, 1)?;
+            add_bytes(&mut geometry, count, 1, max_geometry_bytes)?;
         }
         if body.surface.is_some() && body.transmission.is_none() && body.opacity != 1.0 {
             return Err(invalid("opaque PBR requires opacity 1"));

@@ -12,6 +12,7 @@ use solidcraft_render::{
 #[serde(default, deny_unknown_fields)]
 struct Start {
     progressive: bool,
+    denoise: bool,
     samples: Option<u32>,
     max_depth: Option<u32>,
     seed: Option<u32>,
@@ -45,6 +46,14 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
+    #[serde(default)]
+    nested_media: bool,
+    volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
+    adaptive: Option<solidcraft_render::job::adaptive::AdaptiveSampling>,
+    transmission_samples: Option<u32>,
+    finishing: solidcraft_render::job::finishing::Finishing,
+    backdrop: Option<solidcraft_render::job::finishing::Backdrop>,
+    linear_exr: bool,
     integrator: Integrator,
     setup: Option<String>,
     settings: Option<RenderSetup>,
@@ -123,6 +132,8 @@ enum SavedHdr {
 struct Normalized {
     params: Value,
     hdr: Option<SavedHdr>,
+    surfaces: solidcraft_doc::render_surface::SurfaceBindings,
+    optics: solidcraft_doc::render_optics::OpticalBindings,
 }
 
 fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Option<Normalized>> {
@@ -160,6 +171,8 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     let Some(job) = settings.job.take() else {
         return Ok(None);
     };
+    let optics = std::mem::take(&mut settings.optics);
+    let surfaces = std::mem::take(&mut settings.surfaces);
     let mut hdr = None;
     let mut lowered = match job {
         RenderJob::Raster { transparent_background } => json!({"transparent_background":transparent_background}),
@@ -177,7 +190,9 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
             "transparent_background":transparent_background,
             "samples":options.samples,"max_depth":options.max_depth,"seed":options.seed,
             "lens":options.lens,"lighting":options.lighting,"tone_map":options.tone_map,
-            "denoise":options.denoise,"environment":options.environment
+            "denoise":options.denoise,"environment":options.environment,
+            "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr,
+            "adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume,"nested_media":options.nested_media
             })
         }
     };
@@ -185,7 +200,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     if let Some(replace) = object.get("replace") {
         lowered["replace"] = replace.clone();
     }
-    Ok(Some(Normalized { params: lowered, hdr }))
+    Ok(Some(Normalized { params: lowered, hdr, surfaces, optics }))
 }
 
 fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
@@ -198,13 +213,22 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
             Some(SavedHdr::Cpu(_)) => return Err(bad(command, "saved CPU HDR cannot enter a GPU request")),
             None => None,
         };
-        return prepare_progressive(s, params, command, normalized.is_some(), hdr);
+        return prepare_progressive(
+            s,
+            params,
+            command,
+            normalized.is_some(),
+            hdr,
+            normalized.as_ref().map(|n| &n.surfaces),
+            normalized.as_ref().map(|n| &n.optics),
+        );
     }
     let gpu_raytrace =
         params.get("raytrace").and_then(Value::as_object).is_some_and(|o| ["clear_coats", "textures"].iter().any(|key| o.contains_key(*key)));
     if gpu_raytrace
         || params.get("environment").is_some_and(|e| e.get("kind").is_some())
-        || ["lens", "lighting", "tone_map", "denoise"].iter().any(|key| params.get(*key).is_some())
+        || ["lens", "lighting", "tone_map"].iter().any(|key| params.get(*key).is_some())
+        || params.get("denoise").is_some_and(|value| value != &json!(false))
     {
         return Err(bad(
             command,
@@ -213,7 +237,10 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     }
     let mut input: Start = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.progressive {
-        return prepare_progressive(s, params, command, false, None);
+        return prepare_progressive(s, params, command, false, None, None, None);
+    }
+    if input.denoise {
+        return Err(bad(command, "denoise requires GPU progressive rendering"));
     }
     if input.samples.is_some() || input.max_depth.is_some() || input.seed.is_some() {
         return Err(bad(command, "sampling controls require progressive rendering"));
@@ -237,20 +264,18 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     }
     if let Some(options) = &input.raytrace {
         options.retained_bytes().map_err(job_error)?;
-        if let Some(progressive) = options.progressive {
-            // Dimensions and the total camera-sample cap are known without
-            // touching geometry or reading a possibly large external HDR file.
-            let dimensions = if let Some(name) = &input.setup {
-                let settings = s.doc.render.setups.get(name).ok_or_else(|| bad(command, "no saved render setup with that name"))?;
-                (settings.width, settings.height)
-            } else if let Some(settings) = &input.settings {
-                (settings.width, settings.height)
-            } else {
-                let defaults = RenderSetup::default();
-                (defaults.width, defaults.height)
-            };
-            progressive.validate_image(dimensions.0, dimensions.1).map_err(job_error)?;
-        }
+        options.budget.validate_execution().map_err(job_error)?;
+        // Check the complete image envelope before any source file is read.
+        let dimensions = if let Some(name) = &input.setup {
+            let settings = s.doc.render.setups.get(name).ok_or_else(|| bad(command, "no saved render setup with that name"))?;
+            (settings.width, settings.height)
+        } else if let Some(settings) = &input.settings {
+            (settings.width, settings.height)
+        } else {
+            let defaults = RenderSetup::default();
+            (defaults.width, defaults.height)
+        };
+        options.budget.validate_image(dimensions.0, dimensions.1, options.progressive).map_err(job_error)?;
     }
     let environment = if let Some(saved_hdr) = saved_hdr {
         let SavedHdr::Cpu(hdr) = saved_hdr else {
@@ -300,7 +325,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     } else {
         None
     };
-    let scene = crate::product_scene::extract(s)?;
+    let mut scene = crate::product_scene::extract(s)?;
     if environment.is_some() {
         input.raytrace.as_ref().unwrap_or(&RaytraceOptions::default()).validate_environment_reflections(&scene).map_err(job_error)?;
     }
@@ -317,11 +342,25 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         }
         settings
     };
-    settings.validate().map_err(|e| bad(command, e.to_string()))?;
+    if input.integrator == Integrator::Raster && !settings.stage.is_empty() {
+        return Err(bad(command, "passive stages require a raytrace executor"));
+    }
+    super::staging::apply(&mut scene, &settings, command)?;
+    let budget = input.raytrace.as_ref().map_or(solidcraft_render::job::CpuBudget::Compact, |o| o.budget);
+    if input.integrator == Integrator::Raytrace {
+        settings.validate_for_cpu(budget).map_err(|e| bad(command, e.to_string()))?;
+        budget.validate_execution().map_err(job_error)?;
+        budget.validate_image(settings.width, settings.height, input.raytrace.as_ref().and_then(|o| o.progressive)).map_err(job_error)?;
+    } else {
+        settings.validate().map_err(|e| bad(command, e.to_string()))?;
+    }
     if settings.exposure_ev != 0.0 || settings.environment_rotation != 0.0 || settings.environment_intensity != 1.0 {
         return Err(bad(command, "exposure and environment controls are not supported by the R4a CPU image executor"));
     }
-    let descriptor = host.descriptor_for(input.integrator).map_err(job_error)?;
+    let mut descriptor = host.descriptor_for(input.integrator).map_err(job_error)?;
+    if input.integrator == Integrator::Raytrace {
+        descriptor.limits = budget.image_limits(input.raytrace.as_ref().is_some_and(|o| o.progressive.is_some()));
+    }
     let expected_executor = descriptor.id.clone();
     let mut backend = s.render_backend();
     backend.executors = vec![descriptor];
@@ -373,7 +412,7 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         .estimated_total_bytes
         .checked_add(environment_bytes)
         .and_then(|v| v.checked_add(retained_request_bytes))
-        .filter(|v| *v <= 384 * 1024 * 1024)
+        .filter(|v| *v <= budget.limits().max_job_bytes)
         .ok_or_else(|| bad(command, "environment job exceeds per-job memory limit"))?;
     admission.preparation_bytes =
         admission.preparation_bytes.checked_add(environment_bytes).ok_or_else(|| bad(command, "environment admission overflow"))?;
@@ -382,11 +421,19 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         Integrator::Raytrace if refraction => "physical_transmission",
         Integrator::Raytrace => "opaque_only",
     };
-    let reply = json!({"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
+    let reply = json!({"stage_panels":settings.stage.len(),"stage_transport":"CPU direct/specular only; no diffuse interreflection", "cpu_budget":budget,"cpu_limits":budget.limits(),"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
     Ok(Prepared { replace: input.replace, scene, request, reply, environment, executor: resolved.executor, options: Default::default() })
 }
 
-fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_path: bool, saved_hdr: Option<GpuHdrEnvironment>) -> Result<Prepared> {
+fn prepare_progressive(
+    s: &Session,
+    params: &Value,
+    command: &str,
+    require_gpu_path: bool,
+    saved_hdr: Option<GpuHdrEnvironment>,
+    saved_surfaces: Option<&solidcraft_doc::render_surface::SurfaceBindings>,
+    saved_optics: Option<&solidcraft_doc::render_optics::OpticalBindings>,
+) -> Result<Prepared> {
     let cpu_raytrace = params
         .get("raytrace")
         .and_then(Value::as_object)
@@ -399,7 +446,7 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
     {
         return Err(bad(command, "progressive rendering does not accept CPU raytrace, environment or LED options"));
     }
-    let input: ProgressiveStart = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
+    let mut input: ProgressiveStart = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     if input.integrator != Integrator::Raster || !input.progressive {
         return Err(bad(command, "progressive rendering requires the registered GPU request method"));
     }
@@ -422,6 +469,18 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
             "runtime transmission, clear-coat, texture, lens, environment, lighting, tone-map and denoise controls require progressive rendering",
         ));
     }
+    if let Some(bindings) = saved_surfaces.filter(|bindings| !bindings.is_empty()) {
+        if !input.raytrace.textures.is_empty() {
+            return Err(bad(command, "saved surfaces cannot be combined with runtime texture overrides"));
+        }
+        input.raytrace.textures = super::surface_bindings::resolve(s, &scene, bindings, command)?;
+    }
+    if let Some(bindings) = saved_optics.filter(|b| !b.is_empty()) {
+        if !input.raytrace.dielectrics.is_empty() || !input.raytrace.clear_coats.is_empty() {
+            return Err(bad(command, "saved optical bindings cannot be mixed with transient optical overrides"));
+        }
+        input.raytrace.dielectrics = super::optical_bindings::resolve(s, &scene, bindings, command)?;
+    }
     super::transmission::apply(&mut scene, &input.raytrace.dielectrics, command)?;
     super::clear_coat::apply(&mut scene, &input.raytrace.clear_coats, command)?;
     let settings = if let Some(name) = &input.setup {
@@ -437,13 +496,14 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
         }
         settings
     };
-    settings.validate().map_err(|e| bad(command, e.to_string()))?;
+    settings.validate_for_gpu().map_err(|e| bad(command, e.to_string()))?;
     if settings.environment_rotation != 0.0 || settings.environment_intensity != 1.0 {
         return Err(bad(command, "environment controls are not supported by the installed image executors"));
     }
     if !input.progressive && (input.samples.is_some() || input.max_depth.is_some() || input.seed.is_some() || settings.exposure_ev != 0.0) {
         return Err(bad(command, "sampling and exposure controls require progressive rendering"));
     }
+    super::staging::apply(&mut scene, &settings, command)?;
     let mut options = solidcraft_render::job::JobOptions::default();
     if let Some(samples) = input.samples {
         options.samples = samples;
@@ -459,7 +519,20 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
     options.lighting = input.lighting;
     options.tone_map = input.tone_map.unwrap_or_default();
     options.denoise = input.denoise;
+    options.finishing = input.finishing;
+    options.backdrop = input.backdrop;
+    options.linear_exr = input.linear_exr;
+    options.nested_media = input.nested_media;
+    options.volume = input.volume;
+    options.adaptive = input.adaptive;
+    options.transmission_samples = input.transmission_samples.unwrap_or(1);
     options.validate().map_err(job_error)?;
+    if let Some(super::environment::Input::BuiltinHdr { id, .. }) = &input.environment
+        && options.lighting.as_ref().is_some_and(|lighting| lighting.sun.is_some())
+        && super::library::owns_sun(id, command)?
+    {
+        return Err(bad(command, "built-in HDR and analytic lighting cannot both own the sun"));
+    }
     let environment = if let Some(hdr) = saved_hdr {
         if input.environment.is_some() {
             return Err(bad(command, "saved GPU HDR cannot have a runtime environment override"));
@@ -536,7 +609,7 @@ fn prepare_progressive(s: &Session, params: &Value, command: &str, require_gpu_p
         .filter(|bytes| *bytes <= host.job_limit_bytes())
         .ok_or_else(|| bad(command, "GPU work and retained metadata exceed the per-job limit"))?;
     let refraction = input.progressive && scene.has_transmission();
-    let reply = json!({"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
+    let reply = json!({"stage_panels":settings.stage.len(),"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
     let mut reply = reply;
     if options.denoise {
         reply["denoising"] = json!({
@@ -571,6 +644,18 @@ pub(super) fn start(s: &mut Session, params: &Value) -> Result<Value> {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Regrade {
+    job: JobId,
+    presentation: solidcraft_render::job::presentation::Presentation,
+}
+pub(super) fn regrade(s: &mut Session, params: &Value) -> Result<Value> {
+    let input: Regrade = serde_json::from_value(params.clone()).map_err(|e| bad("render.result.regrade", e.to_string()))?;
+    input.presentation.validate().map_err(job_error)?;
+    Ok(json!(s.render_jobs.regrade(input.job, input.presentation).map_err(job_error)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Job {
     job: JobId,
 }
@@ -578,6 +663,19 @@ struct Job {
 pub(super) fn status(s: &mut Session, params: &Value) -> Result<Value> {
     let input: Job = serde_json::from_value(params.clone()).map_err(|e| bad("render.status", e.to_string()))?;
     Ok(json!(s.render_jobs.status(input.job).map_err(job_error)?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pin {
+    job: Option<JobId>,
+}
+pub(super) fn pin(s: &mut Session, params: &Value) -> Result<Value> {
+    if params.get("job").is_none() {
+        return Err(bad("render.result.pin", "job or explicit null is required"));
+    }
+    let input: Pin = serde_json::from_value(params.clone()).map_err(|e| bad("render.result.pin", e.to_string()))?;
+    Ok(json!({"frame":s.render_jobs.pin(input.job).map_err(job_error)?}))
 }
 
 pub(super) fn cancel(s: &mut Session, params: &Value) -> Result<Value> {
@@ -589,9 +687,26 @@ pub(super) fn cancel(s: &mut Session, params: &Value) -> Result<Value> {
     Ok(json!(s.render_jobs.handle(input.job).map_err(job_error)?.cancel().map_err(job_error)?))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ExportFormat {
+    #[default]
+    Png,
+    Exr,
+}
+impl ExportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Exr => "exr",
+        }
+    }
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Export {
+    #[serde(default)]
+    format: ExportFormat,
     job: JobId,
     path: String,
     #[serde(default)]
@@ -601,20 +716,28 @@ struct Export {
 pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
     let input: Export = serde_json::from_value(params.clone()).map_err(|e| bad("render.export", e.to_string()))?;
     let path = std::path::Path::new(&input.path);
-    if input.path.len() > 4096 || input.path.chars().any(char::is_control) || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")) {
-        return Err(bad("render.export", "a bounded PNG destination path is required"));
+    if input.path.len() > 4096
+        || input.path.chars().any(char::is_control)
+        || !path.extension().is_some_and(|x| x.eq_ignore_ascii_case(input.format.extension()))
+    {
+        return Err(bad("render.export", "a bounded destination with the explicitly selected png/exr extension is required"));
     }
     // Atomic native writers are also used for the app's own files and do not
     // apply a request's path scope. Check the caller's destination explicitly.
     solidcraft_io::vfs::check(&input.path).map_err(|e| bad("render.export", e.to_string()))?;
     let frame = s.render_jobs.frame(input.job).map_err(job_error)?;
+    let bytes = match input.format {
+        ExportFormat::Png => frame.png(),
+        ExportFormat::Exr => frame
+            .linear_exr()
+            .ok_or_else(|| bad("render.export", "this completed job has no raw linear master; enable retention before rendering"))?,
+    };
     // Replace atomically without reading an arbitrarily large previous target into memory.
     // Design saves retain their independent backup policy.
-    let result = if input.overwrite {
-        solidcraft_io::write_atomic(path, frame.png(), false)
-    } else {
-        solidcraft_io::safe_write::create_atomic(path, frame.png())
-    };
-    result.map_err(|e| bad("render.export", format!("could not export PNG: {e}")))?;
-    Ok(json!({"job":input.job,"path":input.path,"bytes":frame.png().len(),"frame":frame.info}))
+    let result =
+        if input.overwrite { solidcraft_io::write_atomic(path, bytes, false) } else { solidcraft_io::safe_write::create_atomic(path, bytes) };
+    result.map_err(|e| bad("render.export", format!("could not export completed {}: {e}", input.format.extension())))?;
+    Ok(
+        json!({"job":input.job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"encoding":if input.format==ExportFormat::Exr {"scene_linear_srgb_d65"} else {"srgb"},"alpha":if input.format==ExportFormat::Exr {"coverage_premultiplied"} else {"straight"},"frame":frame.info,"linear_master":frame.linear_master_info(),"presentation":frame.presentation()}),
+    )
 }

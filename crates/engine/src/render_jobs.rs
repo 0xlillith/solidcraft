@@ -48,6 +48,9 @@ pub(crate) struct Jobs {
     live: Vec<JobHandle>,
     history: VecDeque<JobStatus>,
     last_good: Option<JobHandle>,
+    /// One explicitly displayed completed result, independent of a newer completion.
+    /// The existing frame Arc keeps its original host reservation accounted for.
+    pinned: Option<JobHandle>,
 }
 
 impl Default for Jobs {
@@ -62,6 +65,7 @@ impl Default for Jobs {
             live: Vec::new(),
             history: VecDeque::new(),
             last_good: None,
+            pinned: None,
         }
     }
 }
@@ -165,6 +169,35 @@ impl Jobs {
         Ok(status)
     }
 
+    pub(crate) fn regrade(
+        &mut self,
+        source_id: JobId,
+        presentation: solidcraft_render::job::presentation::Presentation,
+    ) -> Result<JobStatus, JobError> {
+        self.collect()?;
+        let source = self.handle(source_id)?;
+        let frame = source.frame()?.ok_or_else(|| JobError::new(ErrorCode::NotCompleted, "regrade requires a completed frame"))?;
+        let master = frame.master_source()?;
+        // Prefer the source pool so its retained source and derivative work share
+        // one admission authority. Regrading itself never invokes its executor.
+        let host = self
+            .host_for(&master.info.executor)
+            .or(self.host.as_ref())
+            .ok_or_else(|| JobError::new(ErrorCode::HostUnavailable, "no image host is installed for master presentation"))?
+            .clone();
+        if self.live.len() >= 2 {
+            return Err(JobError::new(ErrorCode::QueueFull, "this document already has an active and pending render"));
+        }
+        let serial = self.serial.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "render job identity exhausted"))?;
+        let generation = self.generation.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "render generation exhausted"))?;
+        let handle = host.submit_regrade(JobId { session: self.owner, serial, generation }, &source, presentation)?;
+        let status = handle.status()?;
+        self.serial = serial;
+        self.generation = generation;
+        self.live.push(handle);
+        Ok(status)
+    }
+
     fn check_owner(&self, id: JobId) -> Result<(), JobError> {
         if id.session != self.owner {
             return Err(JobError::new(ErrorCode::WrongOwner, "render job belongs to another document session"));
@@ -177,6 +210,7 @@ impl Jobs {
         self.live
             .iter()
             .chain(self.last_good.iter())
+            .chain(self.pinned.iter())
             .find(|j| j.id() == id)
             .cloned()
             .ok_or_else(|| JobError::new(ErrorCode::UnknownJob, "render job is no longer retained"))
@@ -189,6 +223,18 @@ impl Jobs {
             return handle.status();
         }
         self.history.iter().find(|s| s.job == id).cloned().ok_or_else(|| JobError::new(ErrorCode::UnknownJob, "render job is no longer retained"))
+    }
+
+    pub(crate) fn pin(&mut self, id: Option<JobId>) -> Result<Option<solidcraft_render::job::FrameInfo>, JobError> {
+        let Some(id) = id else {
+            self.pinned = None;
+            return Ok(None);
+        };
+        let handle = self.handle(id)?;
+        let frame = handle.frame()?.ok_or_else(|| JobError::new(ErrorCode::NotCompleted, "only a completed result can be pinned"))?;
+        let info = frame.info.clone();
+        self.pinned = Some(handle);
+        Ok(Some(info))
     }
 
     pub(crate) fn frame(&mut self, id: JobId) -> Result<Arc<RenderFrame>, JobError> {
@@ -285,4 +331,50 @@ impl crate::Session {
 
 pub(crate) fn job_error(error: JobError) -> crate::EngineError {
     crate::EngineError::Other(error.to_string())
+}
+
+#[cfg(test)]
+mod displayed_result_tests {
+    use super::*;
+    use serde_json::json;
+    fn complete(s: &mut crate::Session, color: [u8; 3]) -> JobId {
+        let reply = s.execute("render.start", &json!({"settings":{"width":8,"height":8,"background":color}})).unwrap();
+        let id: JobId = serde_json::from_value(reply["job"].clone()).unwrap();
+        let host = s.render_job_host().unwrap().clone();
+        for _ in 0..10000 {
+            host.pump(16384).unwrap();
+            if s.render_job_handle(id).unwrap().status().unwrap().progress.phase.terminal() {
+                return id;
+            }
+        }
+        panic!("bounded result fixture did not finish")
+    }
+    #[test]
+    fn explicit_display_pin_preserves_the_old_exact_frame_without_unbounded_history() {
+        let mut s = crate::Session::default();
+        let host = CpuHost::cooperative();
+        s.set_render_job_host(Some(host.clone())).unwrap();
+        let before = s.doc.to_json();
+        let undo = s.undo.len();
+        let old = complete(&mut s, [10, 20, 30]);
+        let bytes = s.render_job_handle(old).unwrap().frame().unwrap().unwrap().png().to_vec();
+        s.execute("render.result.pin", &json!({"job":old})).unwrap();
+        for color in [[40, 50, 60], [70, 80, 90], [100, 110, 120], [130, 140, 150], [160, 170, 180]] {
+            let new = complete(&mut s, color);
+            s.execute("render.status", &json!({"job":new})).unwrap();
+            assert_eq!(s.render_job_handle(old).unwrap().frame().unwrap().unwrap().png(), bytes);
+        }
+        let retained = host.admitted_bytes();
+        let foreign = JobId { session: old.session + 1, ..old };
+        assert!(s.execute("render.result.pin", &json!({"job":foreign})).is_err());
+        assert_eq!(host.admitted_bytes(), retained);
+        assert!(s.execute("render.result.pin", &json!({})).is_err());
+        s.execute("render.result.pin", &json!({"job":null})).unwrap();
+        assert!(s.render_job_handle(old).is_err());
+        assert!(host.admitted_bytes() < retained);
+        assert_eq!(s.doc.to_json(), before);
+        assert_eq!(s.undo.len(), undo);
+        let reply = s.execute("render.start", &json!({"settings":{"width":8,"height":8}})).unwrap();
+        assert!(s.execute("render.result.pin", &json!({"job":reply["job"]})).is_err(), "a pending result is never exportable");
+    }
 }

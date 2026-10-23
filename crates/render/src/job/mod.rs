@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BackendId, Camera, ExecutorId};
 
+pub mod adaptive;
+pub mod bloom;
+mod cpu_budget;
 pub(crate) mod encoding;
+pub mod finishing;
 mod host;
 pub(crate) mod image;
 pub mod led_strip;
@@ -19,26 +23,57 @@ mod lens;
 #[cfg(test)]
 mod light_union_tests;
 mod lighting;
+pub mod linear_exr;
+mod linear_exr_decode;
 mod png;
+pub mod presentation;
 mod punctual;
+mod regrade;
 #[cfg(test)]
 mod rt2_tests;
 pub mod textures;
+pub mod volume;
 
+pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGLES, MAX_CPU_WORK, NATIVE_CPU_POOL_BYTES};
 #[cfg(feature = "raytrace-cpu")]
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
-pub use host::{CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, PreviewInfo, RenderFrame, RenderPreview};
-pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry};
+pub use host::{
+    CpuHost, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, LinearAlphaConvention, LinearColourEncoding, LinearMasterInfo,
+    PreviewInfo, RenderFrame, RenderPreview,
+};
+pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geometry_with_limits};
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};
 pub use png::PngTask;
 pub use punctual::{PunctualLightOptions, SpotConeOptions};
 
+/// Native path-tracing ceilings, further restricted by the actual device.
+/// Kept in the device-independent layer so saved intent and UI agree with execution.
+pub const GPU_PATH_LIMITS: crate::RenderLimits =
+    crate::RenderLimits { max_dimension: 8192, max_pixels: 16_777_216, max_scratch_bytes: 8 * 1024 * 1024 * 1024 };
+pub const MAX_GPU_PATH_TRIANGLES: u64 = 8_000_000;
+pub const MAX_GPU_PATH_BODIES: usize = 65_536;
+pub const MAX_GPU_DIELECTRICS: usize = 32;
+
 /// Runtime sampling intent, separate from saved documents and device resources.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JobOptions {
+    pub nested_media: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<volume::HomogeneousVolume>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<adaptive::AdaptiveSampling>,
+    /// Conditional Fresnel strata per primary sample; one keeps the old stream.
+    pub transmission_samples: u32,
+
+    #[serde(default, skip_serializing_if = "finishing::Finishing::is_identity")]
+    pub finishing: finishing::Finishing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backdrop: Option<finishing::Backdrop>,
+    #[serde(default)]
+    pub linear_exr: bool,
     pub samples: u32,
     pub max_depth: u32,
     pub seed: u32,
@@ -52,12 +87,53 @@ pub struct JobOptions {
 
 impl Default for JobOptions {
     fn default() -> Self {
-        Self { samples: 64, max_depth: 8, seed: 0, exposure_ev: 0.0, lens: None, lighting: None, tone_map: ToneMap::default(), denoise: false }
+        Self {
+            nested_media: false,
+            volume: None,
+            adaptive: None,
+            transmission_samples: 1,
+            finishing: Default::default(),
+            backdrop: None,
+            linear_exr: false,
+            samples: 64,
+            max_depth: 8,
+            seed: 0,
+            exposure_ev: 0.0,
+            lens: None,
+            lighting: None,
+            tone_map: ToneMap::default(),
+            denoise: false,
+        }
     }
 }
 
 impl JobOptions {
     pub fn validate(&self) -> Result<()> {
+        if let Some(volume) = self.volume {
+            volume.validate()?;
+            if volume.active() && self.transmission_samples != 1 {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "volume transport requires one transmission stratum; glass combinations are not supported",
+                ));
+            }
+            if volume.active() && self.denoise {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "volume scattering has no surface-denoiser guides; disable denoising explicitly",
+                ));
+            }
+        }
+        if let Some(adaptive) = self.adaptive {
+            adaptive.validate(self.samples)?;
+        }
+        if !matches!(self.transmission_samples, 1 | 2 | 4) {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "transmission_samples must be 1, 2 or 4"));
+        }
+        self.finishing.validate()?;
+        if let Some(backdrop) = self.backdrop {
+            backdrop.validate()?;
+        }
         if let Some(lighting) = self.lighting {
             lighting.validate()?;
         }
@@ -77,6 +153,14 @@ impl JobOptions {
 
 /// One bounded quantum of image work. Implementations check cancellation between quanta.
 pub trait ImageWork: Send {
+    fn sampling_report(&self) -> Option<adaptive::SamplingReport> {
+        None
+    }
+    /// Optional raw linear companion, moved exactly once after PNG completion.
+    /// The host validates intent, bounds, hashes and retains its memory lease.
+    fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
+        None
+    }
     fn step(&mut self, units: usize) -> Result<TaskPoll>;
 }
 impl ImageWork for ImageTask {
@@ -88,6 +172,35 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_subsurface(&self) -> bool {
+        false
+    }
+    fn supports_nested_media(&self) -> bool {
+        false
+    }
+    fn supports_volume(&self) -> bool {
+        false
+    }
+    fn supports_adaptive_sampling(&self) -> bool {
+        false
+    }
+    fn supports_transmission_sampling(&self) -> bool {
+        false
+    }
+    fn supports_bloom(&self) -> bool {
+        false
+    }
+    fn supports_finishing(&self) -> bool {
+        false
+    }
+    fn supports_linear_exr(&self) -> bool {
+        false
+    }
+    /// Host-owned logical allocation pool. This is a ceiling, not eager allocation.
+    /// Registration snapshots and validates it; unknown executors retain 512 MiB.
+    fn memory_limit_bytes(&self) -> u64 {
+        512 * 1024 * 1024
+    }
     fn descriptor(&self) -> Result<crate::ExecutorDescriptor>;
     fn admit(&self, scene: &crate::ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission>;
     fn begin(&self, scene: crate::ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>>;
@@ -504,18 +617,13 @@ impl CpuProgressiveOptions {
         Ok(())
     }
 
-    /// Pure cardinality/work admission, available before scene or HDR capture.
-    /// Traversal and all resolve/encode work also share one runtime 1e9-unit budget.
+    /// Compatibility entry point: a caller that supplies no profile retains Compact.
     pub fn validate_image(&self, width: u32, height: u32) -> Result<()> {
-        self.validate()?;
-        let pixels = u64::from(width) * u64::from(height);
-        if width == 0 || height == 0 || width > 4096 || height > 4096 || pixels > Self::MAX_PIXELS {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "CPU progressive supports at most 1048576 pixels and dimensions 1..4096"));
-        }
-        if pixels.checked_mul(u64::from(self.samples_per_pixel)).is_none_or(|n| n > Self::MAX_CAMERA_SAMPLES) {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "CPU progressive exceeds its 16777216 camera-sample work admission"));
-        }
-        Ok(())
+        self.validate_image_with_budget(width, height, CpuBudget::Compact)
+    }
+
+    pub fn validate_image_with_budget(&self, width: u32, height: u32, budget: CpuBudget) -> Result<()> {
+        budget.validate_image(width, height, Some(*self))
     }
 
     /// Nonfinal checkpoints whose PNG allocations may remain externally retained.
@@ -528,6 +636,8 @@ impl CpuProgressiveOptions {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RaytraceOptions {
+    #[serde(skip_serializing_if = "CpuBudget::is_compact")]
+    pub budget: CpuBudget,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progressive: Option<CpuProgressiveOptions>,
     #[serde(deserialize_with = "bounded_dielectrics", skip_serializing_if = "Vec::is_empty")]
@@ -561,6 +671,7 @@ pub struct RaytraceOptions {
 impl Default for RaytraceOptions {
     fn default() -> Self {
         Self {
+            budget: CpuBudget::Compact,
             progressive: None,
             punctual_lights: None,
             area_lights: None,
@@ -744,7 +855,7 @@ impl RaytraceOptions {
     }
     pub fn validate(&self) -> Result<()> {
         if let Some(progressive) = self.progressive {
-            progressive.validate()?;
+            self.budget.validate_samples(progressive.samples_per_pixel)?;
             if self.primary_samples != 1 || self.reflections.as_ref().is_some_and(|r| !r.bodies.is_empty() && r.samples != 1) {
                 return Err(JobError::new(
                     ErrorCode::InvalidRequest,
@@ -942,6 +1053,14 @@ pub enum AlphaConvention {
 }
 
 impl ImageRequest {
+    pub fn cpu_budget(&self) -> CpuBudget {
+        if self.integrator == Integrator::Raytrace {
+            self.raytrace.as_ref().map_or(CpuBudget::Compact, |options| options.budget)
+        } else {
+            CpuBudget::Compact
+        }
+    }
+
     /// Small GPU resource summaries survive work completion and keep their own host lease.
     pub fn retained_resource_metadata_bytes(&self) -> u64 {
         let environment = self

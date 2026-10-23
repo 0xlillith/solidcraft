@@ -16,6 +16,15 @@ pub(super) enum Environment {
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    pub nested_media: bool,
+    pub volume: Option<solidcraft_engine::render::job::volume::HomogeneousVolume>,
+    pub adaptive: Option<solidcraft_engine::render::job::adaptive::AdaptiveSampling>,
+    pub transmission_samples: u32,
+    pub finishing: solidcraft_engine::render::job::finishing::Finishing,
+    pub backdrop_enabled: bool,
+    pub backdrop: solidcraft_engine::render::job::finishing::Backdrop,
+    pub linear_exr: bool,
+    pub export_exr: bool,
     pub tone_map: ToneMap,
     pub denoise: bool,
     pub lens_enabled: bool,
@@ -36,6 +45,15 @@ pub(super) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            nested_media: false,
+            volume: None,
+            adaptive: None,
+            transmission_samples: 1,
+            finishing: Default::default(),
+            backdrop_enabled: false,
+            backdrop: Default::default(),
+            linear_exr: false,
+            export_exr: false,
             tone_map: ToneMap::Reinhard,
             denoise: false,
             lens_enabled: false,
@@ -59,6 +77,13 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     let view = &app.render_workspace.view.studio;
     params["tone_map"] = json!(view.tone_map);
     params["denoise"] = json!(view.denoise);
+    params["finishing"] = json!(view.finishing);
+    params["backdrop"] = json!(view.backdrop_enabled.then_some(view.backdrop));
+    params["linear_exr"] = json!(view.linear_exr);
+    params["nested_media"] = json!(view.nested_media);
+    params["volume"] = json!(view.volume);
+    params["adaptive"] = json!(view.adaptive);
+    params["transmission_samples"] = json!(view.transmission_samples);
     if view.lens_enabled {
         view.lens.validate().map_err(|error| error.to_string())?;
         if view.lens.aperture_radius_mm > 0.0 && app.cam.fov == 0.0 {
@@ -95,7 +120,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops::RangeInclusive<f64>, speed: f64) {
+pub(super) fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops::RangeInclusive<f64>, speed: f64) {
     ui.label(label);
     ui.horizontal(|ui| {
         for component in value {
@@ -104,7 +129,9 @@ fn vector(ui: &mut egui::Ui, label: &str, value: &mut [f64; 3], range: std::ops:
     });
 }
 
-pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn finishing_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    super::transport::sampling_controls(app, ui);
+    post_controls(app, ui);
     ui.label(app.tr("render.studio_tone_map"));
     let selected = app.render_workspace.view.studio.tone_map;
     let label = match selected {
@@ -124,6 +151,9 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.render_workspace.view.studio.denoise {
         ui.small(app.tr("render.studio_denoise_help"));
     }
+}
+
+pub(super) fn lens_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let lens = app.tr("render.studio_lens").to_string();
     ui_kit::checkbox(ui, &lens, &mut app.render_workspace.view.studio.lens_enabled);
     if app.render_workspace.view.studio.lens_enabled {
@@ -132,6 +162,11 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui.label(app.tr("render.studio_focus"));
         ui_kit::number_field(ui, &mut app.render_workspace.view.studio.lens.focus_distance_mm, 1e-6..=1e9, 1.0, " mm");
     }
+}
+
+pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    finishing_controls(app, ui);
+    lens_controls(app, ui);
     let title = app.tr("render.studio_environment").to_string();
     ui_kit::section(ui, "render_environment", &title, false, |ui| environment_controls(app, ui));
     let title = app.tr("render.studio_lighting").to_string();
@@ -139,7 +174,8 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui.small(app.tr("render.studio_runtime_help"));
 }
 
-fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    super::transport::volume_controls(app, ui);
     let variants =
         [(Environment::None, "render.studio_environment_none"), (Environment::Sky, "render.studio_sky"), (Environment::Hdr, "render.studio_hdr")];
     let selected = app.render_workspace.view.studio.environment;
@@ -167,6 +203,21 @@ fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui.small(app.tr("render.studio_hdr_help"));
     } else {
         ui.small(app.tr("render.studio_sky_help"));
+        for (index, key) in [(0, "render.sky_zenith"), (1, "render.sky_horizon"), (2, "render.sky_ground")] {
+            let label = app.tr(key).to_string();
+            let gradient = &mut app.render_workspace.view.studio.gradient;
+            let field = match index {
+                0 => &mut gradient.zenith,
+                1 => &mut gradient.horizon,
+                _ => &mut gradient.ground,
+            };
+            let mut editable = field.map(f64::from);
+            let before = editable;
+            vector(ui, &label, &mut editable, 0.0..=1e6, 0.01);
+            if editable != before {
+                *field = editable.map(|value| value as f32);
+            }
+        }
     }
     ui.label(app.tr("render.studio_intensity"));
     ui_kit::number_field(ui, &mut app.render_workspace.view.studio.intensity, 0.0..=100.0, 0.1, "");
@@ -177,7 +228,7 @@ fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
-fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let label = app.tr("render.studio_lighting_enable").to_string();
     ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.lighting_enabled);
     if !app.render_workspace.view.studio.lighting_enabled {
@@ -246,4 +297,166 @@ fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
     }
     ui.small(app.tr("render.studio_area_help"));
+}
+
+/// Presentation is opt-in; raw radiance and engineering appearance stay untouched.
+fn post_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let title = app.tr("render.post_title").to_string();
+    ui_kit::section(ui, "render_post_filters", &title, false, |ui| {
+        ui_kit::text(ui, app.tr("render.post_help"), ui_kit::Text::Note("render.post_help"));
+        let before = app.render_workspace.view.studio.finishing;
+        for (channel, key) in ["render.post_gain_r", "render.post_gain_g", "render.post_gain_b"].into_iter().enumerate() {
+            let label = app.tr(key).to_string();
+            let Some(value) = app.render_workspace.view.studio.finishing.rgb_gain.get_mut(channel) else {
+                continue;
+            };
+            let r = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, 0.1..=8.0, 0.01, ""));
+            crate::scenario::publish_target(key, r.rect);
+        }
+        for key in ["render.post_contrast", "render.post_saturation", "render.post_vignette"] {
+            let label = app.tr(key).to_string();
+            let finish = &mut app.render_workspace.view.studio.finishing;
+            let (value, range) = match key {
+                "render.post_contrast" => (&mut finish.contrast, 0.25..=4.0),
+                "render.post_saturation" => (&mut finish.saturation, 0.0..=2.0),
+                _ => (&mut finish.vignette, 0.0..=1.0),
+            };
+            let r = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, range, 0.01, ""));
+            crate::scenario::publish_target(key, r.rect);
+        }
+        let mut enabled = app.render_workspace.view.studio.finishing.bloom.is_some();
+        let label = app.tr("render.bloom_enable").to_string();
+        let toggle = ui_kit::checkbox(ui, &label, &mut enabled);
+        crate::scenario::publish_target("render:bloom-enable", toggle.rect);
+        if toggle.changed() {
+            app.render_workspace.view.studio.finishing.bloom =
+                enabled.then_some(solidcraft_engine::render::job::bloom::Bloom { strength: 0.15, ..Default::default() });
+        }
+        if enabled {
+            for key in ["render.bloom_strength", "render.bloom_threshold", "render.bloom_radius"] {
+                let label = app.tr(key).to_string();
+                if let Some(bloom) = &mut app.render_workspace.view.studio.finishing.bloom {
+                    let response = ui_kit::row(ui, &label, |ui| match key {
+                        "render.bloom_strength" => ui_kit::number_field(ui, &mut bloom.strength, 0.0..=2.0, 0.01, ""),
+                        "render.bloom_threshold" => ui_kit::number_field(ui, &mut bloom.threshold, 0.0..=1e6, 0.05, ""),
+                        _ => ui_kit::number_field(ui, &mut bloom.radius, 1..=64, 1.0, " px"),
+                    });
+                    crate::scenario::publish_target(key, response.rect);
+                }
+            }
+            ui_kit::text(ui, app.tr("render.bloom_help"), ui_kit::Text::Note("render.bloom_help"));
+            if app.render_workspace.view.transparent {
+                ui_kit::text(ui, app.tr("render.bloom_opaque"), ui_kit::Text::Error("render.bloom_opaque"));
+            }
+        }
+        let reset = ui_kit::button(ui, app.tr("render.post_reset"), ui_kit::Button::Normal);
+        crate::scenario::publish_target("render:post-reset", reset.rect);
+        if reset.clicked() {
+            app.render_workspace.view.studio.finishing = Default::default();
+        }
+        if before != app.render_workspace.view.studio.finishing {
+            app.render_workspace.view.dirty = true;
+        }
+    });
+    let regrade = ui_kit::button(
+        ui,
+        app.tr("render.regrade_action"),
+        ui_kit::Button::Enabled(super::ribbon::action_ready(app, "render.result.regrade").is_ok()),
+    );
+    crate::scenario::publish_target("render:regrade", regrade.rect);
+    if regrade.clicked() {
+        if let Err(error) = super::ribbon::perform_job(app, "render.result.regrade") {
+            app.set_status(error, true);
+        }
+        ui.ctx().request_repaint();
+    }
+    ui_kit::text(ui, app.tr("render.regrade_help"), ui_kit::Text::Note("render.regrade_help"));
+    let label = app.tr("render.linear_retain").to_string();
+    let r = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.linear_exr);
+    crate::scenario::publish_target("render:retain-exr", r.rect);
+    app.render_workspace.view.dirty |= r.changed();
+    if app.render_workspace.view.studio.linear_exr {
+        ui_kit::text(ui, app.tr("render.linear_help"), ui_kit::Text::Note("render.linear_help"));
+    }
+}
+
+pub(super) fn backdrop_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    use solidcraft_engine::render::job::finishing::BackdropMode;
+    let label = app.tr("render.backdrop_enable").to_string();
+    let r = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.backdrop_enabled);
+    crate::scenario::publish_target("render:backdrop-enabled", r.rect);
+    app.render_workspace.view.dirty |= r.changed();
+    if !app.render_workspace.view.studio.backdrop_enabled {
+        return;
+    }
+    ui_kit::text(ui, app.tr("render.backdrop_help"), ui_kit::Text::Note("render.backdrop_help"));
+    let before = app.render_workspace.view.studio.backdrop;
+    let modes = [
+        (BackdropMode::Vertical, "render.backdrop_vertical"),
+        (BackdropMode::Horizontal, "render.backdrop_horizontal"),
+        (BackdropMode::Radial, "render.backdrop_radial"),
+    ];
+    let current = app.render_workspace.view.studio.backdrop.mode;
+    let key = modes.iter().find(|(m, _)| *m == current).map_or("render.backdrop_vertical", |(_, key)| *key);
+    let label = app.tr(key).to_string();
+    let r = ui_kit::dropdown_menu(ui, "render_backdrop_mode", &label, |ui| {
+        for (mode, key) in modes {
+            if ui_kit::list_picker(ui, key, app.tr(key), mode == current).clicked() {
+                app.render_workspace.view.studio.backdrop.mode = mode;
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_target("render:backdrop-mode", r.rect);
+    for (first, key) in [(true, "render.backdrop_first"), (false, "render.backdrop_second")] {
+        let label = app.tr(key).to_string();
+        ui.label(label);
+        let backdrop = &mut app.render_workspace.view.studio.backdrop;
+        let color = if first { &mut backdrop.first_srgb } else { &mut backdrop.second_srgb };
+        let r = ui_kit::color_field(ui, color);
+        crate::scenario::publish_target(key, r.rect);
+    }
+    if current == BackdropMode::Radial {
+        for (axis, key) in [(0, "render.backdrop_x"), (1, "render.backdrop_y")] {
+            let label = app.tr(key).to_string();
+            let Some(value) = app.render_workspace.view.studio.backdrop.center.get_mut(axis) else {
+                continue;
+            };
+            ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, value, 0.0..=1.0, 0.01, ""));
+        }
+        let label = app.tr("render.backdrop_radius").to_string();
+        ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.studio.backdrop.radius, 0.05..=4.0, 0.01, ""));
+    }
+    if app.render_workspace.view.transparent {
+        ui_kit::text(ui, app.tr("render.backdrop_alpha_conflict"), ui_kit::Text::Error("render.backdrop_alpha_conflict"));
+    }
+    if before != app.render_workspace.view.studio.backdrop {
+        app.render_workspace.view.dirty = true;
+    }
+}
+
+pub(super) fn export_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let exr = app.render_workspace.view.studio.export_exr;
+    let key = if exr { "render.export_linear" } else { "render.export_display" };
+    let label = app.tr(key).to_string();
+    let r = ui_kit::dropdown_menu(ui, "render_export_format", &label, |ui| {
+        for (value, key) in [(false, "render.export_display"), (true, "render.export_linear")] {
+            if ui_kit::list_picker(ui, key, app.tr(key), value == exr).clicked() {
+                app.render_workspace.view.studio.export_exr = value;
+                ui.close();
+            }
+        }
+    });
+    crate::scenario::publish_target("render:export-format", r.rect);
+    if app.render_workspace.view.studio.export_exr && !linear_export_available(app) {
+        ui_kit::text(ui, app.tr("render.linear_unavailable"), ui_kit::Text::Note("render.linear_unavailable"));
+    }
+}
+pub(super) fn linear_export_available(app: &SolveApp) -> bool {
+    app.render_workspace
+        .view
+        .completed
+        .and_then(|job| app.session.render_job_handle(job).ok())
+        .and_then(|handle| handle.frame().ok().flatten())
+        .is_some_and(|frame| frame.linear_exr().is_some())
 }
