@@ -34,7 +34,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("view.delete", "Delete Named View", view_delete).icon("delete").params("view: name"),
     CommandSpec::new("view.list", "List Named Views", view_list).icon("list").noundo().doc_only(),
     CommandSpec::new("view.apply", "Restore Named View", view_apply).icon("camera").noundo().params(
-        "view?: front|back|top|bottom|left|right|iso|home (frames the model) | a named view's name; or camera?: {target: [x,y,z], yaw, pitch, distance, fov?} (radians, mm) → camera. The viewport (and the MCP screenshot) moves there. View state: not saved, not an undo step",
+        "view?: front|back|top|bottom|left|right|iso|home (frames the model) | a named view's name; or camera?: {target: [x,y,z], yaw, pitch, roll?, distance, fov?, up?: z|y} (radians, mm; omitted roll/up preserve legacy zero-roll/Z-up defaults) → camera. The viewport (and the MCP screenshot) moves there. View state: not saved, not an undo step",
     ),
     CommandSpec::new("browser.order", "Order Browser Items", order).icon("reorder").params("folder, component?, order: [keys] (the folder's items in display order)"),
     CommandSpec::new("browser.visibility", "Show/Hide", visibility).icon("eye").noundo().params(
@@ -454,7 +454,16 @@ fn view_apply(s: &mut Session, p: &Value) -> Result<Value> {
         (None, None) => return Err(bad(cmd, "`view` (a name) or `camera` is required")),
         (None, Some(c)) => {
             let v: solidcraft_doc::NamedView = serde_json::from_value(c.clone()).map_err(|e| bad(cmd, format!("bad camera: {e}")))?;
-            camera_of(&v)
+            // Named views deliberately retain their legacy Z-up/no-roll schema,
+            // but an explicit live Camera must not lose its orientation fields.
+            let mut camera = camera_of(&v);
+            if let Some(value) = c.get("roll") {
+                camera.roll = serde_json::from_value(value.clone()).map_err(|e| bad(cmd, format!("bad camera roll: {e}")))?;
+            }
+            if let Some(value) = c.get("up") {
+                camera.up = serde_json::from_value(value.clone()).map_err(|e| bad(cmd, format!("bad camera up axis: {e}")))?;
+            }
+            camera
         }
         // Standard view names come first, as in the browser's Named Views folder.
         (Some(name), None) => match crate::render::StandardView::parse(name) {
@@ -1218,5 +1227,33 @@ mod tests {
             assert!(s.execute("browser.visibility", &p).is_err(), "{p}");
         }
         assert_eq!(s.visibility.hidden_folders, vec!["o:4/sketches".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod explicit_camera_tests {
+    use super::*;
+    #[test]
+    fn explicit_camera_preserves_roll_and_world_up_without_changing_saved_named_views() {
+        let mut session = Session::default();
+        let doc = session.doc.to_json();
+        let undo = session.undo.len();
+        for up in [crate::render::UpAxis::Z, crate::render::UpAxis::Y] {
+            let camera = crate::render::Camera { roll: 0.41, yaw: -0.3, pitch: 0.5, up, ..Default::default() };
+            let response = session.execute("view.apply", &json!({"camera":camera})).unwrap();
+            assert_eq!(session.camera, Some(camera));
+            assert_eq!(response["camera"], json!(camera));
+            for (key, value) in [("roll", json!(null)), ("roll", json!("invalid")), ("up", json!("invalid")), ("up", json!(null))] {
+                let mut invalid = json!({"camera":camera});
+                invalid["camera"][key] = value;
+                assert!(session.execute("view.apply", &invalid).is_err());
+                assert_eq!(session.camera, Some(camera));
+            }
+        }
+        session.execute("view.apply", &json!({"camera":{"target":[0,0,0],"yaw":0.2,"pitch":0.3,"distance":100}})).unwrap();
+        assert_eq!(session.camera.unwrap().roll, 0.0);
+        assert_eq!(session.camera.unwrap().up, crate::render::UpAxis::Z);
+        assert_eq!(session.doc.to_json(), doc);
+        assert_eq!(session.undo.len(), undo);
     }
 }
