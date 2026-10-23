@@ -106,7 +106,37 @@ struct Highlight {
     radiance: f64,
 }
 
+/// The large bounded highlight/LUT state is fallibly allocated inside the
+/// already admitted 16 KiB allowance, not embedded in every host task slot.
 pub struct PhotographicTask {
+    state: Vec<PhotographicState>,
+}
+impl PhotographicTask {
+    pub fn new(width: u32, height: u32, source: Vec<u8>, linear: Vec<[f32; 4]>, options: Photographic, cancel: CancelToken) -> Result<Self> {
+        options.scratch_bytes(width, height)?;
+        if std::mem::size_of::<PhotographicState>() > 16_384 {
+            return Err(invalid("photographic metadata exceeds its admitted allowance"));
+        }
+        let mut state = Vec::new();
+        state.try_reserve_exact(1).map_err(|_| JobError::new(ErrorCode::AllocationFailed, "photographic state allocation failed"))?;
+        if state.capacity() != 1 {
+            return Err(invalid("photographic state exceeds bounded capacity"));
+        }
+        state.push(PhotographicState::new(width, height, source, linear, options, cancel)?);
+        Ok(Self { state })
+    }
+    pub fn step(&mut self, units: usize) -> Result<bool> {
+        self.state.first_mut().ok_or_else(|| invalid("missing photographic state"))?.step(units)
+    }
+    pub fn progress(&self) -> (u64, u64) {
+        self.state.first().map_or((0, 0), PhotographicState::progress)
+    }
+    pub fn finish(mut self) -> Result<Vec<u8>> {
+        self.state.pop().ok_or_else(|| invalid("missing photographic state"))?.finish()
+    }
+}
+
+struct PhotographicState {
     width: usize,
     height: usize,
     options: Photographic,
@@ -122,7 +152,7 @@ pub struct PhotographicTask {
     pixel: usize,
     ready: bool,
 }
-impl PhotographicTask {
+impl PhotographicState {
     pub fn new(width: u32, height: u32, source: Vec<u8>, linear: Vec<[f32; 4]>, options: Photographic, cancel: CancelToken) -> Result<Self> {
         options.validate()?;
         cancel.check()?;
