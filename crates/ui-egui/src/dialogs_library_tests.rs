@@ -40,7 +40,7 @@ fn clicked_catalog(pbr: Option<solidcraft_engine::doc::pbr_appearance::PbrParame
     }
     h.frames(3);
     let undo = h.app.session.undo.len();
-    h.step(&json!({"widget":"Load library"})).unwrap();
+    h.step(&json!({"widget":"Load library"}))?;
     for handle in [
         "library:path",
         "library:load",
@@ -60,13 +60,13 @@ fn clicked_catalog(pbr: Option<solidcraft_engine::doc::pbr_appearance::PbrParame
     {
         assert!(h.widget(message).is_some(), "missing {message}");
     }
-    h.step(&json!({"click":{"handle":"library:search"}})).unwrap();
-    h.step(&json!({"text":"no such appearance"})).unwrap();
+    h.step(&json!({"click":{"handle":"library:search"}}))?;
+    h.step(&json!({"text":"no such appearance"}))?;
     assert!(h.widget("No matching appearance presets.").is_some());
-    h.step(&json!({"key":"A","cmd":true})).unwrap();
-    h.step(&json!({"key":"Backspace"})).unwrap();
-    h.step(&json!({"click":{"handle":"library:entry:0"}})).unwrap();
-    h.step(&json!({"widget":"Apply library appearance"})).unwrap();
+    h.step(&json!({"key":"A","cmd":true}))?;
+    h.step(&json!({"key":"Backspace"}))?;
+    h.step(&json!({"click":{"handle":"library:entry:0"}}))?;
+    h.step(&json!({"widget":"Apply library appearance"}))?;
     assert_eq!(h.app.session.doc.appearances.bodies["Body1"].name, "Warm oak colour");
     assert_eq!(h.app.session.doc.appearances.bodies["Body1"].pbr, pbr);
     if let Some(dialog) = &h.app.dialog
