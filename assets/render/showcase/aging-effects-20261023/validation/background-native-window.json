@@ -1,0 +1,20 @@
+{
+  "status": "CLOSED",
+  "executable_sha256": "2acc780b33a6fe7e75e306cfe51de5881eaf93496a2c85fe1828c80386e13ebf",
+  "source_head": "9bc71b298719bbe62e1bdbc49eba45f6863e55d0",
+  "source_tree": "a086c7beccd6e604ab33d4c4ee6124ed0a88a273",
+  "screenshots": [
+    {
+      "name": "ui-backgrounds-final",
+      "file": "ui-backgrounds-final.png",
+      "sha256": "cd28e2a7aa2753d58d7fc0727dcf158b806f1fa09783352c51e98b1f2a9cdcf9",
+      "bytes": 1003257
+    }
+  ],
+  "scope": "Actual native GUI acceptance with public-safe command-created geometry; explicit settings profile protects personal preferences",
+  "initial_renderer": "gpu",
+  "source_sample_sha256": "6affeba4c5733343324492990fbf279edc50bdebe2db3236ad0cb833559b4c68",
+  "forced_termination": false,
+  "personal_preferences_unchanged": true,
+  "returncode": 0
+}

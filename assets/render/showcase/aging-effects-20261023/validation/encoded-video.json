@@ -1,0 +1,121 @@
+{
+  "status": "PASS",
+  "actual_decoded_video_frames": 3660,
+  "all_sixteen_encoded_chapter_frames_checked": [
+    {
+      "chapter": 1,
+      "encoded_frame": 90,
+      "mae_against_composition_jpeg": 1.5166,
+      "file": "chapter-01.png"
+    },
+    {
+      "chapter": 2,
+      "encoded_frame": 330,
+      "mae_against_composition_jpeg": 1.5448,
+      "file": "chapter-02.png"
+    },
+    {
+      "chapter": 3,
+      "encoded_frame": 600,
+      "mae_against_composition_jpeg": 1.3978,
+      "file": "chapter-03.png"
+    },
+    {
+      "chapter": 4,
+      "encoded_frame": 840,
+      "mae_against_composition_jpeg": 1.5305,
+      "file": "chapter-04.png"
+    },
+    {
+      "chapter": 5,
+      "encoded_frame": 1050,
+      "mae_against_composition_jpeg": 1.407,
+      "file": "chapter-05.png"
+    },
+    {
+      "chapter": 6,
+      "encoded_frame": 1245,
+      "mae_against_composition_jpeg": 1.5971,
+      "file": "chapter-06.png"
+    },
+    {
+      "chapter": 7,
+      "encoded_frame": 1470,
+      "mae_against_composition_jpeg": 1.5397,
+      "file": "chapter-07.png"
+    },
+    {
+      "chapter": 8,
+      "encoded_frame": 1710,
+      "mae_against_composition_jpeg": 1.5156,
+      "file": "chapter-08.png"
+    },
+    {
+      "chapter": 9,
+      "encoded_frame": 1935,
+      "mae_against_composition_jpeg": 1.4784,
+      "file": "chapter-09.png"
+    },
+    {
+      "chapter": 10,
+      "encoded_frame": 2190,
+      "mae_against_composition_jpeg": 1.3798,
+      "file": "chapter-10.png"
+    },
+    {
+      "chapter": 11,
+      "encoded_frame": 2430,
+      "mae_against_composition_jpeg": 1.3612,
+      "file": "chapter-11.png"
+    },
+    {
+      "chapter": 12,
+      "encoded_frame": 2625,
+      "mae_against_composition_jpeg": 1.394,
+      "file": "chapter-12.png"
+    },
+    {
+      "chapter": 13,
+      "encoded_frame": 2865,
+      "mae_against_composition_jpeg": 1.5909,
+      "file": "chapter-13.png"
+    },
+    {
+      "chapter": 14,
+      "encoded_frame": 3120,
+      "mae_against_composition_jpeg": 1.3381,
+      "file": "chapter-14.png"
+    },
+    {
+      "chapter": 15,
+      "encoded_frame": 3360,
+      "mae_against_composition_jpeg": 1.5091,
+      "file": "chapter-15.png"
+    },
+    {
+      "chapter": 16,
+      "encoded_frame": 3570,
+      "mae_against_composition_jpeg": 1.5336,
+      "file": "chapter-16.png"
+    }
+  ],
+  "transition_sample_seconds": [
+    6.3,
+    45.3,
+    61.3,
+    91.3,
+    121.95
+  ],
+  "audio": {
+    "codec": "AAC LC per stream metadata",
+    "channels": 2,
+    "sample_rate": 48000,
+    "decoded_seconds": 122.00533333333334,
+    "peak": 0.08674565702676773,
+    "rms": 0.02503647112194736,
+    "clipping_detected": false
+  },
+  "scope": "Complete encoded video decode plus sampled actual MP4 chapter/transition frames and numerical audio integrity; not a claim of a human full-length playback or subjective audio audition",
+  "visual_review": "ACCEPTED",
+  "visual_review_method": "Actual encoded MP4 chapter contact sheets for all 16 chapters, individual background/transition frames, and final fade inspected. Full video decoded to 3660 frames; AAC duration/level integrity checked numerically."
+}

@@ -1,0 +1,1482 @@
+{
+  "commands": [
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Display plinth",
+        "radius": 60,
+        "height": 5,
+        "base": [
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Display plinth"
+        ],
+        "color": [
+          36,
+          43,
+          53
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.4,
+          "roughness": 0.32,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Plinth rim",
+        "major": 58.5,
+        "minor": 1.5,
+        "center": [
+          0,
+          0,
+          4.2
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Plinth rim"
+        ],
+        "color": [
+          74,
+          84,
+          95
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.9,
+          "roughness": 0.24,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Steel flange",
+        "radius": 36,
+        "height": 7,
+        "base": [
+          0,
+          0,
+          5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Steel flange"
+        ],
+        "color": [
+          150,
+          161,
+          175
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.24,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Painted housing",
+        "radius": 28.5,
+        "height": 36,
+        "base": [
+          0,
+          0,
+          12
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Painted housing"
+        ],
+        "color": [
+          24,
+          75,
+          96
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Lower seal",
+        "major": 28.0,
+        "minor": 1.5,
+        "center": [
+          0,
+          0,
+          14
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Lower seal"
+        ],
+        "color": [
+          22,
+          26,
+          28
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Upper seal",
+        "major": 27.7,
+        "minor": 1.3,
+        "center": [
+          0,
+          0,
+          46
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Upper seal"
+        ],
+        "color": [
+          22,
+          26,
+          28
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Steel collar",
+        "radius": 30.4,
+        "height": 5,
+        "base": [
+          0,
+          0,
+          46.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Steel collar"
+        ],
+        "color": [
+          170,
+          181,
+          194
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.18,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Collar highlight",
+        "major": 29.6,
+        "minor": 1.0,
+        "center": [
+          0,
+          0,
+          51
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Collar highlight"
+        ],
+        "color": [
+          180,
+          191,
+          203
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.16,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.sphere",
+      "params": {
+        "operation": "new",
+        "body_name": "Copper dome",
+        "radius": 21,
+        "center": [
+          0,
+          0,
+          52
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Copper dome"
+        ],
+        "color": [
+          193,
+          112,
+          62
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.22,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 1",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          32.0,
+          0.0,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 1"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 1",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          32.0,
+          0.0,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 1"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 1",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          32.0,
+          0.0,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 1"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 2",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          22.627416997969522,
+          22.627416997969522,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 2"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 2",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          22.627416997969522,
+          22.627416997969522,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 2"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 2",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          22.627416997969522,
+          22.627416997969522,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 2"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 3",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          1.959434878635765e-15,
+          32.0,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 3"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 3",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          1.959434878635765e-15,
+          32.0,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 3"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 3",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          1.959434878635765e-15,
+          32.0,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 3"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 4",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          -22.62741699796952,
+          22.627416997969522,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 4"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 4",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          -22.62741699796952,
+          22.627416997969522,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 4"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 4",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          -22.62741699796952,
+          22.627416997969522,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 4"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 5",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          -32.0,
+          3.91886975727153e-15,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 5"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 5",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          -32.0,
+          3.91886975727153e-15,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 5"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 5",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          -32.0,
+          3.91886975727153e-15,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 5"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 6",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          -22.627416997969526,
+          -22.62741699796952,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 6"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 6",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          -22.627416997969526,
+          -22.62741699796952,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 6"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 6",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          -22.627416997969526,
+          -22.62741699796952,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 6"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 7",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          -5.878304635907295e-15,
+          -32.0,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 7"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 7",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          -5.878304635907295e-15,
+          -32.0,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 7"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 7",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          -5.878304635907295e-15,
+          -32.0,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 7"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.torus",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener washer 8",
+        "major": 2.4,
+        "minor": 0.6,
+        "center": [
+          22.627416997969515,
+          -22.627416997969526,
+          12.4
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener washer 8"
+        ],
+        "color": [
+          142,
+          153,
+          169
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.28,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener head 8",
+        "radius": 2.6,
+        "height": 2.4,
+        "base": [
+          22.627416997969515,
+          -22.627416997969526,
+          12.5
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener head 8"
+        ],
+        "color": [
+          172,
+          184,
+          199
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.2,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.box",
+      "params": {
+        "operation": "new",
+        "body_name": "Fastener slot 8",
+        "length": 3.5,
+        "width": 0.55,
+        "height": 0.08,
+        "center": [
+          22.627416997969515,
+          -22.627416997969526,
+          14.93
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Fastener slot 8"
+        ],
+        "color": [
+          14,
+          17,
+          22
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.8,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Port ferrule -1",
+        "radius": 7.0,
+        "height": 17,
+        "axis": "X",
+        "base": [
+          -43,
+          0,
+          28
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Port ferrule -1"
+        ],
+        "color": [
+          180,
+          138,
+          68
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.3,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Port recess -1",
+        "radius": 4.8,
+        "height": 0.08,
+        "axis": "X",
+        "base": [
+          -43.05,
+          0,
+          28
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Port recess -1"
+        ],
+        "color": [
+          12,
+          17,
+          19
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.75,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Port ferrule 1",
+        "radius": 7.0,
+        "height": 17,
+        "axis": "X",
+        "base": [
+          26,
+          0,
+          28
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Port ferrule 1"
+        ],
+        "color": [
+          180,
+          138,
+          68
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 1.0,
+          "roughness": 0.3,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Port recess 1",
+        "radius": 4.8,
+        "height": 0.08,
+        "axis": "X",
+        "base": [
+          43.0,
+          0,
+          28
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Port recess 1"
+        ],
+        "color": [
+          12,
+          17,
+          19
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.75,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Front indicator 1",
+        "radius": 0.65,
+        "height": 0.2,
+        "axis": [
+          -0.4349655341112303,
+          -0.9004471023526769,
+          0
+        ],
+        "base": [
+          -12.35302116875894,
+          -25.572697706816022,
+          31
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Front indicator 1"
+        ],
+        "color": [
+          215,
+          164,
+          63
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.23,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Front indicator 2",
+        "radius": 0.65,
+        "height": 0.2,
+        "axis": [
+          -0.2667314366888311,
+          -0.9637708963658905,
+          0
+        ],
+        "base": [
+          -7.575172801962802,
+          -27.37109345679129,
+          31
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Front indicator 2"
+        ],
+        "color": [
+          215,
+          164,
+          63
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.23,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Front indicator 3",
+        "radius": 0.65,
+        "height": 0.2,
+        "axis": [
+          -0.08987854919801107,
+          -0.9959527330119943,
+          0
+        ],
+        "base": [
+          -2.5525507972235144,
+          -28.285057617540637,
+          31
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Front indicator 3"
+        ],
+        "color": [
+          215,
+          164,
+          63
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.23,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Front indicator 4",
+        "radius": 0.65,
+        "height": 0.2,
+        "axis": [
+          0.08987854919801119,
+          -0.9959527330119943,
+          0
+        ],
+        "base": [
+          2.552550797223518,
+          -28.285057617540637,
+          31
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Front indicator 4"
+        ],
+        "color": [
+          44,
+          163,
+          178
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.23,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Front indicator 5",
+        "radius": 0.65,
+        "height": 0.2,
+        "axis": [
+          0.2667314366888312,
+          -0.9637708963658905,
+          0
+        ],
+        "base": [
+          7.575172801962806,
+          -27.37109345679129,
+          31
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Front indicator 5"
+        ],
+        "color": [
+          44,
+          163,
+          178
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.23,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "solid.cylinder",
+      "params": {
+        "operation": "new",
+        "body_name": "Front indicator 6",
+        "radius": 0.65,
+        "height": 0.2,
+        "axis": [
+          0.43496553411123023,
+          -0.9004471023526769,
+          0
+        ],
+        "base": [
+          12.353021168758938,
+          -25.572697706816022,
+          31
+        ]
+      }
+    },
+    {
+      "command": "appearance.assign",
+      "params": {
+        "bodies": [
+          "Front indicator 6"
+        ],
+        "color": [
+          44,
+          163,
+          178
+        ],
+        "opacity": 1,
+        "pbr": {
+          "metallic": 0.0,
+          "roughness": 0.23,
+          "dielectric_ior": 1.5
+        }
+      }
+    },
+    {
+      "command": "view.apply",
+      "params": {
+        "camera": {
+          "target": [
+            0,
+            0,
+            35
+          ],
+          "yaw": -0.72,
+          "pitch": 0.42,
+          "roll": 0,
+          "distance": 325,
+          "fov": 0.48,
+          "up": "z"
+        }
+      }
+    }
+  ]
+}

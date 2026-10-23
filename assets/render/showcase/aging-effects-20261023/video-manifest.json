@@ -1,0 +1,240 @@
+{
+  "schema": "solidcraft-native-effects-video/1",
+  "sources": {
+    "renders/clean-production.png": {
+      "sha256": "58a69d1e79c00a5ab0f4ef903bc3f20c67fa4d84268618a45d359f44a41f9ac9",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/aged-production.png": {
+      "sha256": "530ed296e9f2beca9cb567261793ac6baf3421c570ee78669cf7f457e770491f",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/aged-macro.png": {
+      "sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/alternate-studio.png": {
+      "sha256": "ed797158f6185db1604eb3f562b58e7b324c74610fe218f4a6d3e9bf4ad4145e",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/airborne-production.png": {
+      "sha256": "d354e154accadb86d15c48c365beb147e71224676eed16dbf959c6d61a9f6b5d",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/clear-air-production.png": {
+      "sha256": "1354b824cc099d62e11c0d362ffeedf1cc7f512fba8a9a97d61de31d6ab00b65",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/cinematic-refined.png": {
+      "sha256": "1c61dcb86c999dcce0887e5048e524399dcbe6574ccfd524360cfa08749a56a9",
+      "classification": "native_regrade",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/monochrome-master.png": {
+      "sha256": "997ccb4ee120101c0ecedd66230687ff27320cc2a05986ba8b6bb1f88930f9ad",
+      "classification": "native_regrade",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/cyanotype-master.png": {
+      "sha256": "3130103cb3cfd682c494f31efb4f657ff3306209f3167347a8b52a7aaae9568c",
+      "classification": "native_regrade",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/background-neutral.png": {
+      "sha256": "70be13a67830a2ad17cafd37de6afe757b5b4eb117ac549014d56535e142d95a",
+      "classification": "native_regrade",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/background-gradient.png": {
+      "sha256": "33f805aba75ab49ac098455ddf0fe134a1323e3bde886a12d6532c0ea480a31c",
+      "classification": "native_regrade",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/background-floor-wall.png": {
+      "sha256": "6ecad7600b88a8602127ceb9c0542b48491691349bf864b05b3694fab7d594de",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "renders/background-cyclorama.png": {
+      "sha256": "feb78e0fabd90640191574c519d818444f222850b7fc32803628b21b116f4484",
+      "classification": "native_render",
+      "producer": "native application source 9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e; exact job and immutable master in receipts"
+    },
+    "screenshots/ui-aging-final.png": {
+      "sha256": "af20c15412fe8af4bab7d24c7aca1be170959aa0343c910de2c1471f85289abc",
+      "classification": "native_ui_capture",
+      "producer": "actual isolated native application window, not a UI mockup"
+    },
+    "screenshots/ui-effects-final.png": {
+      "sha256": "846b6d7ac4ce3257390dba6aed3ef6d60837cf0cb9309f0ad04135fc37c75c71",
+      "classification": "native_ui_capture",
+      "producer": "actual isolated native application window, not a UI mockup"
+    },
+    "screenshots/ui-library-final.png": {
+      "sha256": "7a87acb1cb5bbfcb575ad6bcb325660cfebafd1b38175de79291d806c50d9fa6",
+      "classification": "native_ui_capture",
+      "producer": "actual isolated native application window, not a UI mockup"
+    },
+    "screenshots/ui-volume-final.png": {
+      "sha256": "0a25d973aaabc0ccdeffc0e25243c694587995fcd139d30d64a0cb452b637465",
+      "classification": "native_ui_capture",
+      "producer": "actual isolated native application window, not a UI mockup"
+    },
+    "screenshots/ui-backgrounds-final.png": {
+      "sha256": "cd28e2a7aa2753d58d7fc0727dcf158b806f1fa09783352c51e98b1f2a9cdcf9",
+      "classification": "native_ui_capture",
+      "producer": "actual newer native Backgrounds-page window; transport sources unchanged from the render producer"
+    },
+    "reference/SELENE-studio-4k.png": {
+      "sha256": "40a492e7979137d0f4027300da3d8af7ca1008c1aab2c309259e65d309a17316",
+      "classification": "previous_verified_native_render",
+      "producer": "earlier verified full-assembly native render, explicitly labelled; original manifest assets/render/selene/scenes/studio-hero.json"
+    }
+  },
+  "scenes": [
+    {
+      "image": "renders/clean-production.png",
+      "seconds": 6,
+      "title": "Surface stories",
+      "subtitle": "Native materials, layered weathering and photographic finishing.",
+      "eyebrow": "SolidCraft / collaborator development showcase"
+    },
+    {
+      "image": "renders/clean-production.png",
+      "compare": "renders/aged-production.png",
+      "seconds": 10,
+      "title": "From pristine to lived-in",
+      "subtitle": "Six ordered layers: rust, patina, chips, grime, dust and scratches.",
+      "left_label": "AGED",
+      "right_label": "CLEAN",
+      "eyebrow": "Same geometry / same camera / same studio"
+    },
+    {
+      "image": "screenshots/ui-aging-final.png",
+      "kind": "ui",
+      "seconds": 8,
+      "title": "Layer. Target. Reorder.",
+      "subtitle": "Actual native controls, exact body targets and portable saved intent.",
+      "eyebrow": "Shared UI kit / not a mockup"
+    },
+    {
+      "image": "renders/aged-macro.png",
+      "seconds": 8,
+      "title": "Scale makes the detail",
+      "subtitle": "World-millimetre masks; original geometry and engineering properties stay intact.",
+      "eyebrow": "Native QHD material close-up"
+    },
+    {
+      "image": "screenshots/ui-library-final.png",
+      "kind": "ui",
+      "seconds": 6,
+      "title": "An authored resource library",
+      "subtitle": "Original surface maps and studios remain distinct from unimplemented concepts.",
+      "eyebrow": "Native materials / saved resource identity"
+    },
+    {
+      "image": "renders/alternate-studio.png",
+      "seconds": 7,
+      "title": "Light changes the story",
+      "subtitle": "Another authored HDR studio and camera; the same original material study.",
+      "eyebrow": "Native PBR / studio variants"
+    },
+    {
+      "image": "renders/background-neutral.png",
+      "compare": "renders/background-gradient.png",
+      "seconds": 8,
+      "title": "Choose what the camera sees",
+      "subtitle": "Solid and radial backgrounds from the same exact linear master.",
+      "left_label": "GRADIENT",
+      "right_label": "SOLID",
+      "eyebrow": "Camera-only backdrop / raw EXR unchanged"
+    },
+    {
+      "image": "renders/background-floor-wall.png",
+      "compare": "renders/background-cyclorama.png",
+      "seconds": 8,
+      "title": "Build a physical background",
+      "subtitle": "A floor and wall, or a 24-strip cove: native shadows and reflections.",
+      "left_label": "CYCLORAMA",
+      "right_label": "WALL",
+      "eyebrow": "Same subject and camera / actual scene geometry"
+    },
+    {
+      "image": "screenshots/ui-backgrounds-final.png",
+      "kind": "ui",
+      "seconds": 7,
+      "title": "Backgrounds, finally together",
+      "subtitle": "Camera finish, physical stage and HDR lighting are separate, explicit controls.",
+      "eyebrow": "New shared-kit Backgrounds page / actual application"
+    },
+    {
+      "image": "renders/clear-air-production.png",
+      "compare": "renders/airborne-production.png",
+      "seconds": 10,
+      "title": "Light in the air",
+      "subtitle": "Finite volumetric scattering, not a fog bitmap or individual dust particles.",
+      "left_label": "VOLUME",
+      "right_label": "CLEAR AIR",
+      "eyebrow": "Same lights and geometry / native participating medium",
+      "badge": "VOLUME: 2048 SAMPLES / PIXEL"
+    },
+    {
+      "image": "screenshots/ui-volume-final.png",
+      "kind": "ui",
+      "seconds": 6,
+      "title": "Surface dust is not airborne dust",
+      "subtitle": "A separate bounded transport medium, with explicit optical compatibility rules.",
+      "eyebrow": "Actual native volume controls"
+    },
+    {
+      "image": "screenshots/ui-effects-final.png",
+      "kind": "ui",
+      "seconds": 7,
+      "title": "Finish without retracing",
+      "subtitle": "Ordered looks and lens-inspired effects from an exact retained linear master.",
+      "eyebrow": "Shared Effects inspector / raw EXR preserved"
+    },
+    {
+      "image": "renders/aged-production.png",
+      "compare": "renders/cinematic-refined.png",
+      "seconds": 9,
+      "title": "A photographic finish",
+      "subtitle": "Highlight-driven flare, chromatic edges and original artistic colour looks.",
+      "left_label": "FINISHED",
+      "right_label": "ORIGINAL",
+      "eyebrow": "Same raw EXR / presentation only / no new rays"
+    },
+    {
+      "image": "renders/monochrome-master.png",
+      "compare": "renders/cyanotype-master.png",
+      "seconds": 8,
+      "title": "One master. Many moods.",
+      "subtitle": "Monochrome and cyanotype-inspired looks; the original EXR bytes are unchanged.",
+      "left_label": "CYANOTYPE",
+      "right_label": "MONOCHROME",
+      "eyebrow": "Original creative transforms / not branded film LUTs"
+    },
+    {
+      "image": "reference/SELENE-studio-4k.png",
+      "seconds": 8,
+      "title": "Complete assemblies",
+      "subtitle": "Earlier verified native 4K reference: 2,094 visible bodies and 2.14M triangles.",
+      "eyebrow": "SELENE / previously verified assembly reference",
+      "badge": "EARLIER NATIVE 4K REFERENCE"
+    },
+    {
+      "image": "renders/aged-macro.png",
+      "seconds": 6,
+      "title": "Ready for collaborator review",
+      "subtitle": "Code, reproducible scenes and verified media in 0xlillith/solidcraft.",
+      "eyebrow": "Development branch / not a release"
+    }
+  ],
+  "editorial_scope": "Actual native still renders and UI screenshots with comparison wipes, captions, crossfades and original synthesized music. Not real-time rendering or a recorded dynamics simulation."
+}

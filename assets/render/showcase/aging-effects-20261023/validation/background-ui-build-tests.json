@@ -1,0 +1,126 @@
+{
+  "head": "9bc71b298719bbe62e1bdbc49eba45f6863e55d0",
+  "tree": "a086c7beccd6e604ab33d4c4ee6124ed0a88a273",
+  "status": "PASS",
+  "steps": [
+    {
+      "name": "background-ui-test-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "ci",
+        "-p",
+        "solidcraft-ui-egui",
+        "--features",
+        "solidcraft-engine/raytrace-cpu",
+        "--lib",
+        "--no-run",
+        "--message-format",
+        "json"
+      ],
+      "exit_code": 0,
+      "seconds": 611.85,
+      "summary": null
+    },
+    {
+      "name": "background-render-ui",
+      "command": [
+        "solidcraft_ui_egui-065700bc180cb6fd.exe",
+        "render_workspace::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 273.05,
+      "summary": [
+        93,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "background-ribbon",
+      "command": [
+        "solidcraft_ui_egui-065700bc180cb6fd.exe",
+        "toolbar::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 4.74,
+      "summary": [
+        27,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "background-i18n",
+      "command": [
+        "solidcraft_ui_egui-065700bc180cb6fd.exe",
+        "i18n::tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 0.12,
+      "summary": [
+        29,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "background-kit",
+      "command": [
+        "solidcraft_ui_egui-065700bc180cb6fd.exe",
+        "ui_kit_guard_tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 3.58,
+      "summary": [
+        16,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "background-native-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--profile",
+        "ci",
+        "-p",
+        "solidcraft",
+        "--bin",
+        "solidcraft"
+      ],
+      "exit_code": 0,
+      "seconds": 136.89,
+      "summary": null
+    },
+    {
+      "name": "background-wasm",
+      "command": [
+        "cargo",
+        "xtask",
+        "wasm"
+      ],
+      "exit_code": 0,
+      "seconds": 16.49,
+      "summary": null
+    }
+  ],
+  "scope": "UI-only background changes; native render transport and original showcase image producer remain unchanged",
+  "application": {
+    "path": "solidcraft.exe",
+    "sha256": "2acc780b33a6fe7e75e306cfe51de5881eaf93496a2c85fe1828c80386e13ebf"
+  },
+  "source_unchanged": true
+}

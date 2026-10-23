@@ -1,0 +1,20 @@
+{
+  "status": "PASS",
+  "original_model_unchanged": true,
+  "production_shots_reopened_identically": 13,
+  "original_nine_explicit_parameters_preserved": true,
+  "exit_code": 0,
+  "forced_termination": false,
+  "preferences_baseline": "Hash comparison from the control reconnection; the entire process uses its isolated settings directory, not the ordinary profile.",
+  "preferences_unchanged_since_reconnection": true,
+  "backgrounds": {
+    "status": "PASS",
+    "camera_gradient_changes_png_only": true,
+    "physical_floor_wall_panels": 2,
+    "physical_cyclorama_panels": 26,
+    "physical_stage_changes_raw": true,
+    "same_subject_camera": true,
+    "scope": "actual native 1920x1080 images, 256 sample maximum; camera-only versus real stage interaction"
+  },
+  "scope": "Frozen 9f8c3d30 native renderer, exact PNG/EXR jobs, canonical saved-shot roundtrip and normal close; newer Backgrounds UI accepted separately"
+}

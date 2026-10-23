@@ -1,0 +1,287 @@
+{
+  "name": "12 Background - floor and wall",
+  "setup": {
+    "backend": "builtin",
+    "background": [
+      235,
+      239,
+      246
+    ],
+    "camera": {
+      "distance": 310.0,
+      "fov": 0.48,
+      "pitch": 0.42,
+      "roll": 0.0,
+      "target": [
+        0.0,
+        0.0,
+        34.0
+      ],
+      "up": "z",
+      "yaw": -0.72
+    },
+    "environment_intensity": 1.0,
+    "environment_rotation": 0.0,
+    "exposure_ev": -1.0,
+    "format": "png",
+    "height": 1080,
+    "job": {
+      "method": "gpu_path",
+      "options": {
+        "adaptive": {
+          "absolute_error": 0.002,
+          "coverage_error": 0.01,
+          "min_samples": 64,
+          "pilot_samples": 16,
+          "relative_error": 0.035
+        },
+        "denoise": true,
+        "hdr": {
+          "assume_linear_srgb": false,
+          "intensity": 1.0,
+          "resource": "09a4ff8376eff857fb1c7181e99bdf69310358e4bcc024af37922ec4361f3156",
+          "rotation_rad": 3.491592653589793
+        },
+        "lighting": {
+          "area_lights": [],
+          "environment": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "sun": null
+        },
+        "linear_exr": true,
+        "max_depth": 10,
+        "nested_media": false,
+        "samples": 256,
+        "seed": 20261023,
+        "tone_map": "aces_fitted",
+        "transmission_samples": 1
+      },
+      "transparent_background": false
+    },
+    "mode": "preview",
+    "stage": [
+      {
+        "center_mm": [
+          59.343469208339485,
+          -67.6612029887405,
+          -0.011999767203345375
+        ],
+        "half_u_mm": [
+          270.64481195496205,
+          237.3738768333579,
+          0.0
+        ],
+        "half_v_mm": [
+          -138.46809481945877,
+          157.87614030706118,
+          0.0
+        ],
+        "id": "backdrop_floor",
+        "reflectance_linear": [
+          0.29,
+          0.19,
+          0.12
+        ]
+      },
+      {
+        "center_mm": [
+          -79.12462561111928,
+          90.21493731832068,
+          216.49050816657893
+        ],
+        "half_u_mm": [
+          270.64481195496205,
+          237.3738768333579,
+          0.0
+        ],
+        "half_v_mm": [
+          0.0,
+          0.0,
+          216.50250793378228
+        ],
+        "id": "backdrop_wall",
+        "reflectance_linear": [
+          0.29,
+          0.19,
+          0.12
+        ]
+      }
+    ],
+    "surfaces": [
+      {
+        "local_frame": {
+          "origin": [
+            -3.552713678800501e-15,
+            3.552713678800501e-15,
+            8.5
+          ],
+          "u": [
+            100.0,
+            0.0,
+            0.0
+          ],
+          "v": [
+            0.0,
+            100.0,
+            0.0
+          ]
+        },
+        "normal_strength": 1.0,
+        "source": {
+          "base_color_sha256": "a67822d67efa9598d6ce0d9db84c73d232c3219476d8ef7f4da07aadcced2c02",
+          "id": "SURF-001",
+          "metallic_sha256": "bcd735b2fd94028e2f7b9109c5d6a2180c7128ecaf1a8ccf2e0b08788fda9493",
+          "normal_sha256": "cb863cef7524b29fae44decf97e0b403e2da7dd365f94c37011ea7bf3b494d69",
+          "roughness_sha256": "3ce8cb1d6623fef855f783e4d79f9d57980632457c1686e8d650ae4099c48aa7",
+          "version": "1.0.0"
+        },
+        "target": {
+          "component": 0,
+          "definition": "Steel flange",
+          "feature": 3,
+          "occurrence_path": []
+        }
+      },
+      {
+        "local_frame": {
+          "origin": [
+            5.329070518200751e-15,
+            0.0,
+            48.99999999999997
+          ],
+          "u": [
+            100.0,
+            0.0,
+            0.0
+          ],
+          "v": [
+            0.0,
+            100.0,
+            0.0
+          ]
+        },
+        "normal_strength": 1.0,
+        "source": {
+          "base_color_sha256": "2226753bfcc3a11ba40e7c54d3d5dfeeb4e5d96b06fc4a6934c8e94fab2f9be2",
+          "id": "SURF-002",
+          "metallic_sha256": "bcd735b2fd94028e2f7b9109c5d6a2180c7128ecaf1a8ccf2e0b08788fda9493",
+          "normal_sha256": "e272f8bcbd5cb62d49c143a95ee00ad784e10b5b24ac5ae72954f6fc9cd29b9a",
+          "roughness_sha256": "1c1fd197b1fcf66ba155788d6a18ee1d702b66bd96db994bd2952af139f0e2f3",
+          "version": "1.0.0"
+        },
+        "target": {
+          "component": 0,
+          "definition": "Steel collar",
+          "feature": 7,
+          "occurrence_path": []
+        }
+      },
+      {
+        "local_frame": {
+          "origin": [
+            0.0,
+            0.0,
+            52.0
+          ],
+          "u": [
+            100.0,
+            0.0,
+            0.0
+          ],
+          "v": [
+            0.0,
+            100.0,
+            0.0
+          ]
+        },
+        "normal_strength": 1.0,
+        "source": {
+          "base_color_sha256": "60990bcda01728db3838755d58ac431d77b0f1b339f46dbc0e99769dda3bd1eb",
+          "id": "SURF-009",
+          "metallic_sha256": "bcd735b2fd94028e2f7b9109c5d6a2180c7128ecaf1a8ccf2e0b08788fda9493",
+          "normal_sha256": "c4a874336b80f7d814a2371a507113d26c56af29ddbda80629a5c6caed9e791a",
+          "roughness_sha256": "9f0b7daaf53a92673a28dd28af6992ddb861d59e92e2192c3e09de4822d6b808",
+          "version": "1.0.0"
+        },
+        "target": {
+          "component": 0,
+          "definition": "Copper dome",
+          "feature": 9,
+          "occurrence_path": []
+        }
+      },
+      {
+        "local_frame": {
+          "origin": [
+            1.5987211554602254e-14,
+            0.0,
+            14.0
+          ],
+          "u": [
+            80.0,
+            0.0,
+            0.0
+          ],
+          "v": [
+            0.0,
+            80.0,
+            0.0
+          ]
+        },
+        "normal_strength": 1.0,
+        "source": {
+          "base_color_sha256": "00a2720ae6bd7725694b1383782ba970c95fd9e3d4c05e8574ec9d2b76ffe32f",
+          "id": "SURF-024",
+          "metallic_sha256": "f5df0628643ba99754cee39c30291c6fca5a9fe242838fbbb57dc7926aec76de",
+          "normal_sha256": "8ec4959cc4ce0c93afa3cd8563287ff29cb3dd76960d2a72e296b2d8bba54c84",
+          "roughness_sha256": "81b51b95294b6e15503bcfb50a6830aa22171aa38be81432f6ddb2dc9fdd1a85",
+          "version": "1.0.0"
+        },
+        "target": {
+          "component": 0,
+          "definition": "Lower seal",
+          "feature": 5,
+          "occurrence_path": []
+        }
+      },
+      {
+        "local_frame": {
+          "origin": [
+            -9.769962616701378e-14,
+            1.7763568394002505e-15,
+            46.0
+          ],
+          "u": [
+            80.0,
+            0.0,
+            0.0
+          ],
+          "v": [
+            0.0,
+            80.0,
+            0.0
+          ]
+        },
+        "normal_strength": 1.0,
+        "source": {
+          "base_color_sha256": "00a2720ae6bd7725694b1383782ba970c95fd9e3d4c05e8574ec9d2b76ffe32f",
+          "id": "SURF-024",
+          "metallic_sha256": "f5df0628643ba99754cee39c30291c6fca5a9fe242838fbbb57dc7926aec76de",
+          "normal_sha256": "8ec4959cc4ce0c93afa3cd8563287ff29cb3dd76960d2a72e296b2d8bba54c84",
+          "roughness_sha256": "81b51b95294b6e15503bcfb50a6830aa22171aa38be81432f6ddb2dc9fdd1a85",
+          "version": "1.0.0"
+        },
+        "target": {
+          "component": 0,
+          "definition": "Upper seal",
+          "feature": 6,
+          "occurrence_path": []
+        }
+      }
+    ],
+    "width": 1920
+  }
+}

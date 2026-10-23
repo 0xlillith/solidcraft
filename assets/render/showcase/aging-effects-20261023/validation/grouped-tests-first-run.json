@@ -1,0 +1,178 @@
+{
+  "head": "9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e",
+  "tree": "54adad82e33e9e5b0f08c125d0a1d3085d416ad7",
+  "status": "FAIL",
+  "mode": "tests",
+  "steps": [
+    {
+      "name": "grouped-build",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "ci",
+        "--lib",
+        "--no-run",
+        "--message-format",
+        "json",
+        "-p",
+        "solidcraft-doc",
+        "-p",
+        "solidcraft-engine",
+        "-p",
+        "solidcraft-gpu",
+        "-p",
+        "solidcraft-ui-egui",
+        "--features",
+        "solidcraft-render/raytrace-cpu,solidcraft-engine/raytrace-cpu"
+      ],
+      "exit_code": 0,
+      "seconds": 1380.4,
+      "log": "grouped-build-r1.log"
+    },
+    {
+      "name": "engine-render",
+      "command": [
+        "solidcraft_engine-00ba89a6831b5364.exe",
+        "cmd::render::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 1.12,
+      "log": "engine-render-r1.log",
+      "summary": [
+        71,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "render-ui",
+      "command": [
+        "solidcraft_ui_egui-b27a173162ddf229.exe",
+        "render_workspace::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 395.04,
+      "log": "render-ui-r1.log",
+      "summary": [
+        91,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "workspace",
+      "command": [
+        "solidcraft_ui_egui-b27a173162ddf229.exe",
+        "workspace::tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 11.49,
+      "log": "workspace-r1.log",
+      "summary": [
+        78,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "ribbon",
+      "command": [
+        "solidcraft_ui_egui-b27a173162ddf229.exe",
+        "toolbar::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 5.32,
+      "log": "ribbon-r1.log",
+      "summary": [
+        27,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "i18n",
+      "command": [
+        "solidcraft_ui_egui-b27a173162ddf229.exe",
+        "i18n::tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 0.14,
+      "log": "i18n-r1.log",
+      "summary": [
+        29,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "kit-guards",
+      "command": [
+        "solidcraft_ui_egui-b27a173162ddf229.exe",
+        "ui_kit_guard_tests::",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 3.67,
+      "log": "kit-guards-r1.log",
+      "summary": [
+        16,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "document",
+      "command": [
+        "solidcraft_doc-d01edef8d35844a9.exe",
+        "",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "seconds": 132.9,
+      "log": "document-r1.log",
+      "summary": [
+        302,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "gpu",
+      "command": [
+        "solidcraft_gpu-9b1a92bfc5a5c359.exe",
+        "",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit_code": 101,
+      "seconds": 79.34,
+      "log": "gpu-r1.log",
+      "summary": [
+        114,
+        1,
+        3
+      ]
+    }
+  ],
+  "binaries": {
+    "solidcraft_gpu": "solidcraft_gpu-9b1a92bfc5a5c359.exe",
+    "solidcraft_engine": "solidcraft_engine-00ba89a6831b5364.exe",
+    "solidcraft_ui_egui": "solidcraft_ui_egui-b27a173162ddf229.exe",
+    "solidcraft_doc": "solidcraft_doc-d01edef8d35844a9.exe"
+  },
+  "error": "gpu failed; original evidence retained"
+}

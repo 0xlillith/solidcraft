@@ -1,0 +1,231 @@
+{
+  "status": "PASS",
+  "job": {
+    "generation": 10,
+    "serial": 10,
+    "session": 6
+  },
+  "job_status": {
+    "error": null,
+    "frame": {
+      "alpha": "straight",
+      "backend": "builtin",
+      "encoding": "srgb",
+      "executor": "linear-master",
+      "height": 1440,
+      "job": {
+        "generation": 10,
+        "serial": 10,
+        "session": 6
+      },
+      "png_bytes": 2801557,
+      "png_sha256": "997ccb4ee120101c0ecedd66230687ff27320cc2a05986ba8b6bb1f88930f9ad",
+      "scene_generation": 16,
+      "width": 2560
+    },
+    "job": {
+      "generation": 10,
+      "serial": 10,
+      "session": 6
+    },
+    "linear_master": {
+      "alpha": "coverage_premultiplied",
+      "bytes": 59006067,
+      "encoding": "scene_linear_srgb_d65",
+      "sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623"
+    },
+    "options": {
+      "denoise": false,
+      "exposure_ev": -1.0,
+      "finishing": {
+        "contrast": 1.13,
+        "looks": [
+          {
+            "enabled": true,
+            "kind": "monochrome",
+            "strength": 1.0
+          }
+        ],
+        "photographic": {
+          "chromatic_pixels": 0.0,
+          "flare": {
+            "ghosts": 3,
+            "halo": 0.25,
+            "streak": 0.4,
+            "strength": 0.0,
+            "threshold": 1.5
+          },
+          "grain": 0.012,
+          "radial_distortion": 0.0,
+          "seed": 77,
+          "sharpening": 0.0,
+          "soft_focus": 0.0
+        },
+        "rgb_gain": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "saturation": 1.0,
+        "vignette": 0.0
+      },
+      "lens": null,
+      "lighting": null,
+      "linear_exr": false,
+      "max_depth": 8,
+      "nested_media": false,
+      "samples": 64,
+      "seed": 0,
+      "tone_map": "aces_fitted",
+      "transmission_samples": 1
+    },
+    "presentation": {
+      "denoise_applied": false,
+      "master_job": {
+        "generation": 7,
+        "serial": 7,
+        "session": 6
+      },
+      "master_sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623",
+      "presentation": {
+        "backdrop": null,
+        "background": [
+          32,
+          38,
+          48
+        ],
+        "exposure_ev": -1.0,
+        "finishing": {
+          "contrast": 1.13,
+          "looks": [
+            {
+              "enabled": true,
+              "kind": "monochrome",
+              "strength": 1.0
+            }
+          ],
+          "photographic": {
+            "chromatic_pixels": 0.0,
+            "flare": {
+              "ghosts": 3,
+              "halo": 0.25,
+              "streak": 0.4,
+              "strength": 0.0,
+              "threshold": 1.5
+            },
+            "grain": 0.012,
+            "radial_distortion": 0.0,
+            "seed": 77,
+            "sharpening": 0.0,
+            "soft_focus": 0.0
+          },
+          "rgb_gain": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "saturation": 1.0,
+          "vignette": 0.0
+        },
+        "tone_map": "aces_fitted",
+        "transparent_background": false
+      },
+      "source_job": {
+        "generation": 9,
+        "serial": 9,
+        "session": 6
+      }
+    },
+    "progress": {
+      "done": 1,
+      "phase": "completed",
+      "total": 1
+    },
+    "request": {
+      "background": [
+        32,
+        38,
+        48
+      ],
+      "camera": {
+        "distance": 310.0,
+        "fov": 0.48,
+        "pitch": 0.42,
+        "roll": 0.0,
+        "target": [
+          0.0,
+          0.0,
+          34.0
+        ],
+        "up": "z",
+        "yaw": -0.72
+      },
+      "height": 1440,
+      "integrator": "raster",
+      "transparent_background": false,
+      "width": 2560
+    },
+    "resolved": {
+      "backend": "builtin",
+      "estimated_scratch_bytes": 176947200,
+      "executor": "linear-master",
+      "format": "png",
+      "height": 1440,
+      "profile": {
+        "features": [],
+        "formats": [
+          "png"
+        ],
+        "mode": "preview",
+        "operation": "image"
+      },
+      "warnings": [],
+      "width": 2560
+    },
+    "scene_generation": 16,
+    "textures": null
+  },
+  "outputs": {
+    "png": {
+      "file": "monochrome-master.png",
+      "bytes": 2801557,
+      "sha256": "997ccb4ee120101c0ecedd66230687ff27320cc2a05986ba8b6bb1f88930f9ad"
+    },
+    "exr": {
+      "file": "monochrome-master.exr",
+      "bytes": 59006067,
+      "sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623"
+    }
+  },
+  "model_source_sha256": "53f2879f1076ca8b235e20da4a998d58df4b08be1a293a2ce0c5996c552ea22d",
+  "executable_sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20",
+  "visual_review": "ACCEPTED",
+  "raw_master_unchanged": true,
+  "presentation": {
+    "exposure_ev": -1.0,
+    "tone_map": "aces_fitted",
+    "background": [
+      32,
+      38,
+      48
+    ],
+    "finishing": {
+      "looks": [
+        {
+          "kind": "monochrome",
+          "strength": 1.0,
+          "enabled": true
+        }
+      ],
+      "contrast": 1.13,
+      "photographic": {
+        "grain": 0.012,
+        "seed": 77
+      }
+    }
+  },
+  "visual_review_detail": {
+    "method": "Direct image inspection: whole native image or lossless-downscaled review plus recorded native detail inspection for the nine original selected views; original PNG bytes unchanged",
+    "scope": "Selected development showcase composition/material/background effect, not quantitative optical fidelity or zero-noise certification"
+  }
+}

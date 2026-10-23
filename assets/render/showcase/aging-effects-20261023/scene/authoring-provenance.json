@@ -1,0 +1,18 @@
+{
+  "command": [
+    "solidcraft-cli.exe",
+    "run",
+    "instrument.json",
+    "--save",
+    "instrument.solidcraft",
+    "--results",
+    "--json-out",
+    "authoring-results.json"
+  ],
+  "exit_code": 0,
+  "seconds": 1.62,
+  "scope": "Original public-command geometry authoring using retained native CLI; not evidence of the new effect renderer",
+  "source_commands": 87,
+  "authoring_cli_sha256": "b2ca1f089a90589f5dc323faee50aad771364fe10b33cd23ee1a769d059fb48b",
+  "native_file_sha256": "53f2879f1076ca8b235e20da4a998d58df4b08be1a293a2ce0c5996c552ea22d"
+}

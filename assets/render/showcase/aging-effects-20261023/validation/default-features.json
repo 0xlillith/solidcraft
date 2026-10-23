@@ -1,0 +1,48 @@
+{
+  "head": "9d5a1b4b62b0aa4130841cb2a15386cda7fab339",
+  "status": "PASS",
+  "steps": [
+    {
+      "name": "default-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--profile",
+        "ci",
+        "-p",
+        "solidcraft-render",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "seconds": 8.55,
+      "summary": null
+    },
+    {
+      "name": "default-tests",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--profile",
+        "ci",
+        "-p",
+        "solidcraft-render",
+        "--lib",
+        "--",
+        "--test-threads=8"
+      ],
+      "exit_code": 0,
+      "seconds": 45.77,
+      "summary": [
+        271,
+        0,
+        0
+      ]
+    }
+  ],
+  "source_unchanged": true
+}

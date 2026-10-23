@@ -1,0 +1,387 @@
+{
+  "status": "PASS",
+  "job": {
+    "generation": 17,
+    "serial": 17,
+    "session": 6
+  },
+  "job_status": {
+    "environment": {
+      "color_policy": "declared_linear_srgb_d65",
+      "encoded_bytes": 70727,
+      "height": 512,
+      "intensity": 0.035,
+      "kind": "radiance_hdr",
+      "rotation_rad": 3.491592653589793,
+      "source_sha256": "09a4ff8376eff857fb1c7181e99bdf69310358e4bcc024af37922ec4361f3156",
+      "width": 1024
+    },
+    "error": null,
+    "frame": {
+      "alpha": "straight",
+      "backend": "builtin",
+      "encoding": "srgb",
+      "executor": "gpu-path",
+      "height": 1080,
+      "job": {
+        "generation": 17,
+        "serial": 17,
+        "session": 6
+      },
+      "png_bytes": 2387904,
+      "png_sha256": "d354e154accadb86d15c48c365beb147e71224676eed16dbf959c6d61a9f6b5d",
+      "scene_generation": 25,
+      "width": 1920
+    },
+    "job": {
+      "generation": 17,
+      "serial": 17,
+      "session": 6
+    },
+    "linear_master": {
+      "alpha": "coverage_premultiplied",
+      "bytes": 33195507,
+      "encoding": "scene_linear_srgb_d65",
+      "sha256": "b4eaa703b1258574118f175e70357c4fc8687b9bda8e79b0f9e6d0727124856b"
+    },
+    "options": {
+      "aging": [
+        {
+          "color_srgb": [
+            139,
+            56,
+            20
+          ],
+          "coverage": 0.48,
+          "enabled": true,
+          "kind": "rust",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.9,
+          "scale_mm": 1.8,
+          "seed": 32,
+          "strength": 0.86,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 2,
+            "body_name": "Steel flange"
+          },
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            43,
+            126,
+            102
+          ],
+          "coverage": 0.43,
+          "enabled": true,
+          "kind": "patina",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.78,
+          "scale_mm": 3.2,
+          "seed": 117,
+          "strength": 0.84,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 8,
+            "body_name": "Copper dome"
+          },
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            143,
+            151,
+            160
+          ],
+          "coverage": 0.19,
+          "enabled": true,
+          "kind": "paint_chips",
+          "metallic": 1.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.4,
+          "scale_mm": 1.25,
+          "seed": 46,
+          "strength": 0.95,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 3,
+            "body_name": "Painted housing"
+          },
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            39,
+            30,
+            19
+          ],
+          "coverage": 0.4,
+          "enabled": true,
+          "kind": "grime",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.72,
+          "scale_mm": 8.0,
+          "seed": 4,
+          "strength": 0.12,
+          "surface_class": "any_opaque",
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            186,
+            170,
+            133
+          ],
+          "coverage": 0.94,
+          "enabled": true,
+          "kind": "dust",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.98,
+          "scale_mm": 5.0,
+          "seed": 71,
+          "strength": 0.16,
+          "surface_class": "any_opaque",
+          "upward_bias": 0.96
+        },
+        {
+          "color_srgb": [
+            180,
+            186,
+            191
+          ],
+          "coverage": 0.7,
+          "enabled": true,
+          "kind": "scratches",
+          "metallic": 1.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.28,
+          "scale_mm": 8.0,
+          "seed": 5,
+          "strength": 0.55,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 3,
+            "body_name": "Painted housing"
+          },
+          "upward_bias": 0.0
+        }
+      ],
+      "denoise": false,
+      "exposure_ev": -0.65,
+      "finishing": {
+        "contrast": 1.0,
+        "photographic": {
+          "chromatic_pixels": 0.0,
+          "flare": {
+            "ghosts": 3,
+            "halo": 0.25,
+            "streak": 0.4,
+            "strength": 0.0,
+            "threshold": 1.5
+          },
+          "grain": 0.0,
+          "radial_distortion": 0.0,
+          "seed": 0,
+          "sharpening": 0.0,
+          "soft_focus": 0.65
+        },
+        "rgb_gain": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "saturation": 1.0,
+        "vignette": 0.0
+      },
+      "lens": null,
+      "lighting": {
+        "area_lights": [
+          {
+            "center": [
+              -170.0,
+              30.0,
+              140.0
+            ],
+            "radiance": [
+              160.0,
+              230.0,
+              400.0
+            ],
+            "u": [
+              0.0,
+              5.0,
+              0.0
+            ],
+            "v": [
+              0.0,
+              0.0,
+              30.0
+            ]
+          },
+          {
+            "center": [
+              50.0,
+              -80.0,
+              180.0
+            ],
+            "radiance": [
+              5.0,
+              3.0,
+              1.5
+            ],
+            "u": [
+              35.0,
+              0.0,
+              0.0
+            ],
+            "v": [
+              0.0,
+              -25.0,
+              0.0
+            ]
+          }
+        ],
+        "environment": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "sun": null
+      },
+      "linear_exr": true,
+      "max_depth": 10,
+      "nested_media": false,
+      "samples": 2048,
+      "seed": 20261023,
+      "tone_map": "aces_fitted",
+      "transmission_samples": 1,
+      "volume": {
+        "anisotropy": 0.35,
+        "extinction_per_mm": 0.0012,
+        "max_mm": [
+          220.0,
+          180.0,
+          150.0
+        ],
+        "min_mm": [
+          -200.0,
+          -180.0,
+          -0.2
+        ],
+        "scattering_albedo": [
+          0.65,
+          0.75,
+          0.9
+        ]
+      }
+    },
+    "progress": {
+      "done": 1,
+      "phase": "completed",
+      "total": 1
+    },
+    "request": {
+      "background": [
+        32,
+        38,
+        48
+      ],
+      "camera": {
+        "distance": 310.0,
+        "fov": 0.48,
+        "pitch": 0.42,
+        "roll": 0.0,
+        "target": [
+          0.0,
+          0.0,
+          34.0
+        ],
+        "up": "z",
+        "yaw": -0.72
+      },
+      "height": 1080,
+      "integrator": "raster",
+      "transparent_background": false,
+      "width": 1920
+    },
+    "resolved": {
+      "backend": "builtin",
+      "estimated_scratch_bytes": 99532800,
+      "executor": "gpu-path",
+      "format": "png",
+      "height": 1080,
+      "profile": {
+        "features": [
+          "hdri",
+          "pbr",
+          "refraction",
+          "progressive"
+        ],
+        "formats": [
+          "png"
+        ],
+        "mode": "preview",
+        "operation": "image"
+      },
+      "warnings": [],
+      "width": 1920
+    },
+    "scene_generation": 25,
+    "textures": {
+      "bodies": 5,
+      "encoded_bytes": 567749,
+      "linear_pixel_bytes": 58720256
+    }
+  },
+  "outputs": {
+    "png": {
+      "file": "airborne-production.png",
+      "bytes": 2387904,
+      "sha256": "d354e154accadb86d15c48c365beb147e71224676eed16dbf959c6d61a9f6b5d"
+    },
+    "exr": {
+      "file": "airborne-production.exr",
+      "bytes": 33195507,
+      "sha256": "b4eaa703b1258574118f175e70357c4fc8687b9bda8e79b0f9e6d0727124856b"
+    }
+  },
+  "model_source_sha256": "53f2879f1076ca8b235e20da4a998d58df4b08be1a293a2ce0c5996c552ea22d",
+  "executable_sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20",
+  "visual_review": "ACCEPTED",
+  "elapsed_seconds": 528.642,
+  "not_a_performance_benchmark": true,
+  "visual_review_detail": {
+    "method": "Direct image inspection: whole native image or lossless-downscaled review plus recorded native detail inspection for the nine original selected views; original PNG bytes unchanged",
+    "scope": "Selected development showcase composition/material/background effect, not quantitative optical fidelity or zero-noise certification",
+    "note": "Residual volumetric Monte Carlo grain is not individual dust particles; surface-guided denoising is disabled, authored soft focus disclosed."
+  }
+}

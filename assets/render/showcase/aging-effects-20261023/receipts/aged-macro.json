@@ -1,0 +1,314 @@
+{
+  "status": "PASS",
+  "job": {
+    "generation": 12,
+    "serial": 12,
+    "session": 6
+  },
+  "job_status": {
+    "environment": {
+      "color_policy": "declared_linear_srgb_d65",
+      "encoded_bytes": 70727,
+      "height": 512,
+      "intensity": 1.0,
+      "kind": "radiance_hdr",
+      "rotation_rad": 3.491592653589793,
+      "source_sha256": "09a4ff8376eff857fb1c7181e99bdf69310358e4bcc024af37922ec4361f3156",
+      "width": 1024
+    },
+    "error": null,
+    "frame": {
+      "alpha": "straight",
+      "backend": "builtin",
+      "encoding": "srgb",
+      "executor": "gpu-path",
+      "height": 1440,
+      "job": {
+        "generation": 12,
+        "serial": 12,
+        "session": 6
+      },
+      "png_bytes": 1172025,
+      "png_sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808",
+      "scene_generation": 18,
+      "width": 2560
+    },
+    "job": {
+      "generation": 12,
+      "serial": 12,
+      "session": 6
+    },
+    "linear_master": {
+      "alpha": "coverage_premultiplied",
+      "bytes": 59006067,
+      "encoding": "scene_linear_srgb_d65",
+      "sha256": "d5dff5c43d8a92b05227fe9a96cbf7090032d3cd76a47064d7b9a3c0c55e54e8"
+    },
+    "options": {
+      "adaptive": {
+        "absolute_error": 0.0015,
+        "coverage_error": 0.007,
+        "min_samples": 128,
+        "pilot_samples": 32,
+        "relative_error": 0.025
+      },
+      "aging": [
+        {
+          "color_srgb": [
+            139,
+            56,
+            20
+          ],
+          "coverage": 0.48,
+          "enabled": true,
+          "kind": "rust",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.9,
+          "scale_mm": 1.8,
+          "seed": 32,
+          "strength": 0.86,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 2,
+            "body_name": "Steel flange"
+          },
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            43,
+            126,
+            102
+          ],
+          "coverage": 0.43,
+          "enabled": true,
+          "kind": "patina",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.78,
+          "scale_mm": 3.2,
+          "seed": 117,
+          "strength": 0.84,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 8,
+            "body_name": "Copper dome"
+          },
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            143,
+            151,
+            160
+          ],
+          "coverage": 0.19,
+          "enabled": true,
+          "kind": "paint_chips",
+          "metallic": 1.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.4,
+          "scale_mm": 1.25,
+          "seed": 46,
+          "strength": 0.95,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 3,
+            "body_name": "Painted housing"
+          },
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            39,
+            30,
+            19
+          ],
+          "coverage": 0.4,
+          "enabled": true,
+          "kind": "grime",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.72,
+          "scale_mm": 8.0,
+          "seed": 4,
+          "strength": 0.12,
+          "surface_class": "any_opaque",
+          "upward_bias": 0.0
+        },
+        {
+          "color_srgb": [
+            186,
+            170,
+            133
+          ],
+          "coverage": 0.94,
+          "enabled": true,
+          "kind": "dust",
+          "metallic": 0.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.98,
+          "scale_mm": 5.0,
+          "seed": 71,
+          "strength": 0.16,
+          "surface_class": "any_opaque",
+          "upward_bias": 0.96
+        },
+        {
+          "color_srgb": [
+            180,
+            186,
+            191
+          ],
+          "coverage": 0.7,
+          "enabled": true,
+          "kind": "scratches",
+          "metallic": 1.0,
+          "origin_mm": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "roughness": 0.28,
+          "scale_mm": 8.0,
+          "seed": 5,
+          "strength": 0.55,
+          "surface_class": "any_opaque",
+          "target": {
+            "body_index": 3,
+            "body_name": "Painted housing"
+          },
+          "upward_bias": 0.0
+        }
+      ],
+      "denoise": true,
+      "exposure_ev": -1.0,
+      "lens": null,
+      "lighting": {
+        "area_lights": [],
+        "environment": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "sun": null
+      },
+      "linear_exr": true,
+      "max_depth": 12,
+      "nested_media": false,
+      "samples": 512,
+      "seed": 20261023,
+      "tone_map": "aces_fitted",
+      "transmission_samples": 1
+    },
+    "progress": {
+      "done": 1,
+      "phase": "completed",
+      "total": 1
+    },
+    "request": {
+      "background": [
+        32,
+        38,
+        48
+      ],
+      "camera": {
+        "distance": 255.0,
+        "fov": 0.48,
+        "pitch": 0.38,
+        "roll": 0.0,
+        "target": [
+          0.0,
+          0.0,
+          42.0
+        ],
+        "up": "z",
+        "yaw": -0.9
+      },
+      "height": 1440,
+      "integrator": "raster",
+      "transparent_background": false,
+      "width": 2560
+    },
+    "resolved": {
+      "backend": "builtin",
+      "estimated_scratch_bytes": 176947200,
+      "executor": "gpu-path",
+      "format": "png",
+      "height": 1440,
+      "profile": {
+        "features": [
+          "hdri",
+          "pbr",
+          "refraction",
+          "progressive"
+        ],
+        "formats": [
+          "png"
+        ],
+        "mode": "preview",
+        "operation": "image"
+      },
+      "warnings": [],
+      "width": 2560
+    },
+    "sampling": {
+      "maximum_production_samples": 512,
+      "minimum_production_samples": 128,
+      "pilot_samples_per_pixel": 32,
+      "pixels_at_cap": 685290,
+      "primary_path_evaluations": 1201749962,
+      "production_samples": 1083785162,
+      "transmission_strata": 1
+    },
+    "scene_generation": 18,
+    "textures": {
+      "bodies": 5,
+      "encoded_bytes": 567749,
+      "linear_pixel_bytes": 58720256
+    }
+  },
+  "outputs": {
+    "png": {
+      "file": "aged-macro.png",
+      "bytes": 1172025,
+      "sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808"
+    },
+    "exr": {
+      "file": "aged-macro.exr",
+      "bytes": 59006067,
+      "sha256": "d5dff5c43d8a92b05227fe9a96cbf7090032d3cd76a47064d7b9a3c0c55e54e8"
+    }
+  },
+  "model_source_sha256": "53f2879f1076ca8b235e20da4a998d58df4b08be1a293a2ce0c5996c552ea22d",
+  "executable_sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20",
+  "visual_review": "ACCEPTED",
+  "elapsed_seconds": 73.263,
+  "not_a_performance_benchmark": true,
+  "visual_review_detail": {
+    "method": "Direct image inspection: whole native image or lossless-downscaled review plus recorded native detail inspection for the nine original selected views; original PNG bytes unchanged",
+    "scope": "Selected development showcase composition/material/background effect, not quantitative optical fidelity or zero-noise certification",
+    "note": "Intentional close-up crop of the plinth to emphasize the aged surfaces."
+  }
+}
