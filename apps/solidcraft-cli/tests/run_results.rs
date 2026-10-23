@@ -359,8 +359,10 @@ fn render_setup_overrides_obey_shared_validation_before_host_initialization() {
     let dir = Scratch::new();
     let script = render_setup_script(&dir, json!({"method":"cpu_raytrace","options":{"progressive":{"samples_per_pixel":64}}}));
     let out = dir.0.join("invalid.png");
+    // 1024 * 1024 * 64 exceeds the unchanged default Compact camera-sample
+    // budget. Admission must name that envelope before initializing any host.
     for (flags, message) in [
-        (&["--width", "1024", "--height", "1024"][..], "CPU progressive exceeds"),
+        (&["--width", "1024", "--height", "1024"][..], "CPU Compact exceeds its 16777216 camera-sample admission"),
         (&["--width", "0"][..], "render output must be at least"),
         (&["--exposure", "NaN"][..], "render exposure must be finite"),
     ] {
