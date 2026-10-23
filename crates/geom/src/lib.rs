@@ -17,6 +17,7 @@ pub mod bspline;
 mod bvh;
 mod chain;
 pub mod compare;
+pub mod drawing_sheet;
 pub mod env;
 pub mod fill;
 pub mod fill_general;
