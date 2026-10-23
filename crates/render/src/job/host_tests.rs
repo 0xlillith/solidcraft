@@ -701,6 +701,7 @@ fn texture_payload_is_owned_by_admitted_work_not_retained_status() {
         image::codecs::png::PngEncoder::new(&mut bytes).write_image(&[128, 128, 255, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
         let source = Arc::new(
             RuntimeTextures::new(vec![TextureBinding {
+                displacement: None,
                 body_index: 0,
                 body_name: "unused test resource".into(),
                 frame: PlanarFrame { origin: [0.; 3], u: [1., 0., 0.], v: [0., 1., 0.] },

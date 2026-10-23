@@ -220,8 +220,8 @@ mod tests {
         let upload = super::super::flatten(&scene, Vec3::ZERO, &CancelToken::default()).unwrap();
         let word = |index: usize| u32::from_le_bytes(upload.geometry[index * 4..index * 4 + 4].try_into().unwrap()) as usize;
         assert_eq!(word(0), 6);
-        assert_eq!(word(3), word(2) + 6 * 16);
-        assert_eq!(upload.geometry.len(), 16 + 6 * 84 + 12 * 32);
+        assert_eq!(word(3), word(2) + 6 * 20);
+        assert_eq!(upload.geometry.len(), 16 + 6 * 100 + 12 * 32);
         let mut pairs = Vec::new();
         for index in 0..6 {
             let vertex = word(4 + index * 4);

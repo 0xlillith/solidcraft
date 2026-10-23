@@ -257,6 +257,21 @@ fn asset_bytes(key: &str, maximum: u64, command: &str) -> Result<Vec<u8>> {
     Ok(owned)
 }
 
+pub(super) fn height_bytes(id: &str, maximum: u64, command: &str) -> Result<Vec<u8>> {
+    let (bytes, expected) = super::library_data::height_asset(id).ok_or_else(|| bad(command, "unknown original height source"))?;
+    if bytes.len() as u64 > maximum {
+        return Err(bad(command, "height source exceeds remaining encoded budget"));
+    }
+    let actual = solidcraft_doc::render_resources::HdrId::of(bytes);
+    if actual.as_str() != expected {
+        return Err(bad(command, "built-in height source checksum mismatch"));
+    }
+    let mut captured = Vec::new();
+    captured.try_reserve_exact(bytes.len()).map_err(|_| bad(command, "height source reservation failed"))?;
+    captured.extend_from_slice(bytes);
+    Ok(captured)
+}
+
 pub(super) fn texture_bytes(key: &str, role: MapRole, maximum: u64, command: &str) -> Result<Vec<u8>> {
     let (id, channel) = key.split_once('/').ok_or_else(|| bad(command, "built-in texture requires SURF-id/channel"))?;
     item("surfaces", id, command)?;
@@ -435,6 +450,10 @@ pub(super) fn apply_environment(s: &mut Session, params: &Value) -> Result<Value
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SurfacePrepare {
+    #[serde(default)]
+    displacement: Option<solidcraft_render::job::displacement::Displacement>,
+    #[serde(default)]
+    replace_matching_normal_with_geometry: bool,
     id: String,
     body_index: usize,
     body_name: String,
@@ -457,6 +476,12 @@ enum Plane {
 pub(super) fn prepare_surface(s: &mut Session, params: &Value) -> Result<Value> {
     let command = "render.library.surface.prepare";
     let input: SurfacePrepare = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
+    if let Some(height) = input.displacement {
+        height.validate().map_err(|e| bad(command, e.to_string()))?;
+        if !input.replace_matching_normal_with_geometry {
+            return Err(bad(command, "real authored-height displacement requires explicit replacement of matching normal-map detail"));
+        }
+    }
     let value = item("surfaces", &input.id, command)?;
     if !input.scale.is_finite() || !(0.001..=1000.0).contains(&input.scale) {
         return Err(bad(command, "surface repeat scale must be finite in 0.001..1000"));
@@ -482,12 +507,22 @@ pub(super) fn prepare_surface(s: &mut Session, params: &Value) -> Result<Value> 
     let frame = solidcraft_render::job::textures::PlanarFrame { origin, u, v };
     frame.validate().map_err(|e| bad(command, e.to_string()))?;
     let manifest = item("surface_manifest", &input.id, command)?;
-    Ok(json!({"id":input.id,"revision":s.revision,"executor":"gpu-path","variant":"gpu_planar_maps",
+    let mut prepared = json!({"id":input.id,"revision":s.revision,"executor":"gpu-path","variant":"gpu_planar_maps",
         "texture":{"body_index":input.body_index,"body_name":input.body_name,"frame":frame,"normal_strength":1.0,"flip_v":true,"base_color_mode":"replace",
             "base_color_srgb":format!("builtin://{}/base_color",input.id),"normal_opengl":format!("builtin://{}/normal_open_gl",input.id),
             "roughness_linear":format!("builtin://{}/roughness",input.id),"metallic_linear":format!("builtin://{}/metallic",input.id)},
         "source_maps":manifest["maps"],"omitted":["height_displacement","true_anisotropic_brdf","manufacturing_geometry"],
-        "dielectric_ior":"captured_body_value","persistence":"transient_request_binding; authored source bytes are built in"}))
+        "dielectric_ior":"captured_body_value","persistence":"transient_request_binding; authored source bytes are built in"});
+    if let Some(height) = input.displacement {
+        prepared["variant"] = json!("gpu_projected_height_micromesh");
+        prepared["texture"]["displacement"] = json!(height);
+        prepared["texture"]["height_linear"] = json!(format!("builtin://{}/height", input.id));
+        prepared["texture"]["normal_strength"] = json!(0.0);
+        prepared["omitted"] = json!(["adaptive_or_vector_displacement", "true_anisotropic_brdf", "manufacturing_geometry"]);
+        prepared["geometry_scope"] =
+            json!("render-only projected micromesh; uniform power-of-two subdivision and physical world-mm height; no CAD or engineering mutation");
+    }
+    Ok(prepared)
 }
 
 #[derive(Deserialize)]

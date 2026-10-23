@@ -160,6 +160,7 @@ pub enum BaseColorMode {
 
 #[derive(Clone, Debug)]
 pub struct TextureBinding {
+    pub displacement: Option<super::displacement::HeightDisplacement>,
     pub body_index: usize,
     pub body_name: String,
     pub frame: PlanarFrame,
@@ -183,12 +184,15 @@ pub struct RuntimeTextures {
     bindings: Vec<TextureBinding>,
     source_bytes: u64,
     pixel_bytes: u64,
+    height_bytes: u64,
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct TextureSummary {
     pub bodies: usize,
     pub encoded_bytes: u64,
     pub linear_pixel_bytes: u64,
+    pub height_pixel_bytes: u64,
+    pub displacement_bodies: usize,
 }
 impl RuntimeTextures {
     pub fn new(mut bindings: Vec<TextureBinding>) -> Result<Self> {
@@ -198,6 +202,8 @@ impl RuntimeTextures {
         let mut seen = std::collections::BTreeSet::new();
         let mut source_bytes = 0u64;
         let mut pixel_bytes = 0u64;
+        let mut height_bytes = 0u64;
+        let mut heights = std::collections::BTreeMap::<[u8; 32], super::displacement::HeightSource>::new();
         let mut shared = std::collections::BTreeMap::<([u8; 32], u8), TextureMap>::new();
         for binding in &mut bindings {
             binding.frame.validate()?;
@@ -208,7 +214,11 @@ impl RuntimeTextures {
                 || !seen.insert(binding.body_index)
                 || !binding.normal_strength.is_finite()
                 || !(0.0..=1.0).contains(&binding.normal_strength)
-                || (binding.base_color.is_none() && binding.normal.is_none() && binding.roughness.is_none() && binding.metallic.is_none())
+                || (binding.base_color.is_none()
+                    && binding.normal.is_none()
+                    && binding.roughness.is_none()
+                    && binding.metallic.is_none()
+                    && binding.displacement.is_none())
             {
                 return Err(invalid("invalid or duplicate runtime texture body binding"));
             }
@@ -218,6 +228,24 @@ impl RuntimeTextures {
                 || binding.metallic.as_ref().is_some_and(|m| m.role() != MapRole::Metallic)
             {
                 return Err(invalid("texture role does not match its binding"));
+            }
+            if let Some(height) = &mut binding.displacement {
+                height.controls.validate()?;
+                if binding.normal.is_some() && binding.normal_strength != 0.0 && height.controls.amplitude_mm != 0.0 {
+                    return Err(invalid("real height displacement requires explicit zero normal strength to avoid applying the same detail twice"));
+                }
+                if let Some(original) = heights.get(&height.source.identity()) {
+                    height.source = original.clone();
+                } else {
+                    source_bytes =
+                        source_bytes.checked_add(height.source.retained_bytes()).ok_or_else(|| invalid("height source accounting overflow"))?;
+                    height_bytes =
+                        height_bytes.checked_add(height.source.decoded_bytes()).ok_or_else(|| invalid("height pixel accounting overflow"))?;
+                    if source_bytes > MAX_TEXTURE_SOURCE_BYTES || height_bytes > 96 * 1024 * 1024 {
+                        return Err(invalid("unique displacement resources exceed their encoded or height pixel budget"));
+                    }
+                    heights.insert(height.source.identity(), height.source.clone());
+                }
             }
             for slot in [&mut binding.base_color, &mut binding.normal, &mut binding.roughness, &mut binding.metallic] {
                 let Some(map) = slot else { continue };
@@ -239,18 +267,24 @@ impl RuntimeTextures {
         if source_bytes > MAX_TEXTURE_SOURCE_BYTES || pixel_bytes > MAX_TEXTURE_PIXELS_BYTES {
             return Err(invalid("unique texture sources exceed 64 MiB encoded or 96 MiB linear pixel budget"));
         }
-        Ok(Self { bindings, source_bytes, pixel_bytes })
+        Ok(Self { bindings, source_bytes, pixel_bytes, height_bytes })
     }
     pub fn bindings(&self) -> &[TextureBinding] {
         &self.bindings
     }
     pub fn summary(&self) -> TextureSummary {
-        TextureSummary { bodies: self.bindings.len(), encoded_bytes: self.source_bytes, linear_pixel_bytes: self.pixel_bytes }
+        TextureSummary {
+            bodies: self.bindings.len(),
+            encoded_bytes: self.source_bytes,
+            linear_pixel_bytes: self.pixel_bytes,
+            height_pixel_bytes: self.height_bytes,
+            displacement_bodies: self.bindings.iter().filter(|b| b.displacement.as_ref().is_some_and(|d| d.controls.amplitude_mm != 0.0)).count(),
+        }
     }
     /// Source snapshots, codec scratch, decoded bytes, staging and device buffer,
     /// plus lookup records. Conservatively includes overlapping preparation.
     pub fn working_bytes(&self) -> u64 {
-        self.source_bytes + self.pixel_bytes * 4 + 64 * 1024 * 1024 + 1024 * 1024
+        self.source_bytes + self.pixel_bytes * 4 + self.height_bytes + 64 * 1024 * 1024 + 1024 * 1024
     }
     pub fn validate_scene(&self, scene: &ProductScene) -> Result<()> {
         for binding in &self.bindings {
@@ -294,6 +328,7 @@ mod tests {
     }
     fn binding() -> TextureBinding {
         TextureBinding {
+            displacement: None,
             body_index: 0,
             body_name: "opaque".into(),
             frame: frame(),

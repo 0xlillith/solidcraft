@@ -97,9 +97,18 @@ pub(super) fn resolve(s: &Session, scene: &ProductScene, bindings: &SurfaceBindi
         }
         let frame = transform(binding.local_frame, &body.source_transform, command)?;
         let id = &binding.source.id;
-        let wire = json!({"body_index":ordinal,"body_name":name,"frame":frame,"normal_strength":binding.normal_strength,
+        let mut wire = json!({"body_index":ordinal,"body_name":name,"frame":frame,"normal_strength":binding.normal_strength,
             "flip_v":true,"base_color_mode":"replace","base_color_srgb":format!("builtin://{id}/base_color"),
             "normal_opengl":format!("builtin://{id}/normal_open_gl"),"roughness_linear":format!("builtin://{id}/roughness"),"metallic_linear":format!("builtin://{id}/metallic")});
+        if let Some(height) = &binding.displacement {
+            let manifest = super::library::item("surface_manifest", id, command)?;
+            let expected: HdrId = serde_json::from_value(manifest["maps"]["height"]["sha256"].clone()).map_err(|e| bad(command, e.to_string()))?;
+            if expected != height.height_sha256 {
+                return Err(bad(command, "saved height source digest changed; explicit rebinding required"));
+            }
+            wire["height_linear"] = json!(format!("builtin://{id}/height"));
+            wire["displacement"] = json!(height.controls);
+        }
         result.push(serde_json::from_value(wire).map_err(|e| bad(command, e.to_string()))?);
     }
     Ok(result)
@@ -150,10 +159,26 @@ pub(super) fn bind(s: &mut Session, params: &Value) -> Result<Value> {
     let body = world.body(name).ok_or_else(|| bad(command, "surface target disappeared"))?;
     let inverse = solidcraft_doc::mat_inverse(&body.source_transform).ok_or_else(|| bad(command, "surface mapping transform is singular"))?;
     let frame: PlanarFrame = serde_json::from_value(prepared["texture"]["frame"].clone()).map_err(|e| bad(command, e.to_string()))?;
+    let displacement = if prepared["texture"]["displacement"].is_null() {
+        None
+    } else {
+        let controls = serde_json::from_value(prepared["texture"]["displacement"].clone()).map_err(|e| bad(command, e.to_string()))?;
+        let manifest = super::library::item("surface_manifest", id, command)?;
+        Some(solidcraft_doc::render_surface::SavedDisplacement {
+            controls,
+            height_sha256: serde_json::from_value(manifest["maps"]["height"]["sha256"].clone()).map_err(|e| bad(command, e.to_string()))?,
+        })
+    };
     setup
         .surfaces
         .set(
-            SavedSurface { target, source: source(id, command)?, local_frame: transform(frame, &inverse, command)?, normal_strength: 1.0 },
+            SavedSurface {
+                displacement,
+                target,
+                source: source(id, command)?,
+                local_frame: transform(frame, &inverse, command)?,
+                normal_strength: prepared["texture"]["normal_strength"].as_f64().ok_or_else(|| bad(command, "missing prepared normal strength"))?,
+            },
             input.replace,
         )
         .map_err(|e| bad(command, e.to_string()))?;

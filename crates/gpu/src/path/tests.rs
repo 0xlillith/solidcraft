@@ -1558,6 +1558,7 @@ fn texture_fixture(frame: solidcraft_render::job::textures::PlanarFrame) -> Arc<
     };
     Arc::new(
         RuntimeTextures::new(vec![TextureBinding {
+            displacement: None,
             body_index: 0,
             body_name: "original sphere".into(),
             frame,

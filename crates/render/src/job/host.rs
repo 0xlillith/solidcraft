@@ -1038,6 +1038,11 @@ impl ImageHost {
     }
 
     pub fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        if request.textures.as_ref().is_some_and(|t| t.summary().displacement_bodies > 0)
+            && !self.0.executor.as_ref().is_some_and(|e| e.supports_displacement())
+        {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "image producer does not implement real height displacement"));
+        }
         let scatter = |t: Option<crate::transmission::Transmission>| t.and_then(|v| v.subsurface()).is_some_and(|s| s.active());
         if scene.meshes.iter().any(|b| scatter(b.transmission) || b.faces.iter().any(|f| scatter(f.transmission)))
             && !self.0.executor.as_ref().is_some_and(|executor| executor.supports_subsurface())

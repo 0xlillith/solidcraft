@@ -311,13 +311,21 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     let pixels = u64::from(request.width) * u64::from(request.height);
     let denoise_bytes = pixels * if options.denoise { denoise::BYTES_PER_PIXEL } else { 0 };
     admission.pixel_scratch_bytes = pixels * 64 + denoise_bytes;
-    let vertex_bytes = scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
+    let displacement = request.textures.as_ref().map(|t| t.displacement_plan(scene)).transpose()?;
+    if let Some(plan) = displacement {
+        admission.triangles = plan.rendered_triangles;
+    }
+    let vertex_bytes =
+        displacement.map_or_else(|| scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>(), |p| p.rendered_vertices * 32);
     let triangle_preparation =
         (admission.triangles * 400_u64.max(scene::planar_preparation_bytes_per_triangle() as u64)).max(scene::medium_preparation_bytes(scene));
     admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8)
         .max(admission.triangles * 264 + vertex_bytes * 2 + pixels * 32 + denoise_bytes)
         .max(admission.triangles * 132 + vertex_bytes + admission.pixel_scratch_bytes)
         + 1_048_576;
+    if let Some(plan) = displacement {
+        admission.preparation_bytes += plan.generated_mesh_bytes + plan.scratch_bytes;
+    }
     admission.preparation_bytes += request.environment.as_ref().map_or(0, |source| source.admitted_bytes());
     if let Some(textures) = &request.textures {
         textures.validate_scene(scene)?;
@@ -349,6 +357,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_displacement(&self) -> bool {
+        true
+    }
     fn supports_subsurface(&self) -> bool {
         true
     }
@@ -382,7 +393,10 @@ impl ImageExecutor for Executor {
     fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
         let a = admission(scene, request, options)?;
         let limit = self.context.device.limits().max_storage_buffer_binding_size;
-        let geometry_bytes = 16 + a.triangles.max(1) * 100 + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
+        let plan = request.textures.as_ref().map(|t| t.displacement_plan(scene)).transpose()?;
+        let vertex_bytes =
+            plan.map_or_else(|| scene.meshes.iter().map(|body| body.mesh.positions.len() as u64 * 32).sum::<u64>(), |p| p.rendered_vertices * 32);
+        let geometry_bytes = 16 + a.triangles.max(1) * 100 + vertex_bytes;
         let texture_bytes = request
             .textures
             .as_ref()
@@ -437,7 +451,7 @@ struct Task {
     metrics: (f64, u64, f64),
 }
 impl Task {
-    fn new(context: Arc<Context>, scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
+    fn new(context: Arc<Context>, mut scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
         cancel.check()?;
         let start = Instant::now();
         let volume = if let Some(v) = options.volume.filter(|v| v.active()) {
@@ -452,6 +466,7 @@ impl Task {
         };
         if let Some(resources) = &request.textures {
             resources.validate_scene(&scene)?;
+            resources.apply_displacement(&mut scene, &cancel)?;
         }
         let texture_upload = textures::flatten(request.textures.as_deref(), scene.meshes.len(), request.camera.target, &cancel)?;
         request.textures = None; // GPU upload owns decoded pixels; release captured source bytes.

@@ -11,6 +11,10 @@ use std::sync::Arc;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Override {
+    #[serde(default)]
+    height_linear: Option<String>,
+    #[serde(default)]
+    displacement: Option<solidcraft_render::job::displacement::Displacement>,
     body_index: usize,
     body_name: String,
     frame: PlanarFrame,
@@ -74,6 +78,15 @@ pub(super) fn validate_targets(scene: &ProductScene, overrides: &[Override], com
     let mut seen = std::collections::BTreeSet::new();
     for input in overrides {
         input.frame.validate().map_err(|e| bad(command, e.to_string()))?;
+        if input.height_linear.is_some() != input.displacement.is_some() {
+            return Err(bad(command, "height source and displacement controls must be supplied together"));
+        }
+        if let Some(height) = input.displacement {
+            height.validate().map_err(|e| bad(command, e.to_string()))?;
+            if input.normal_opengl.is_some() && input.normal_strength != 0.0 && height.amplitude_mm != 0.0 {
+                return Err(bad(command, "disable matching normal-map detail explicitly before geometric displacement"));
+            }
+        }
         if !seen.insert(input.body_index) {
             return Err(bad(command, "duplicate texture target"));
         }
@@ -106,6 +119,7 @@ pub(super) fn capture(scene: &ProductScene, overrides: &[Override], command: &st
     validate_targets(scene, overrides, command)?;
     let mut remaining = MAX_TEXTURE_SOURCE_BYTES;
     let mut captured = std::collections::BTreeMap::new();
+    let mut heights = std::collections::BTreeMap::<String, solidcraft_render::job::displacement::HeightSource>::new();
     let mut bindings = Vec::new();
     bindings.try_reserve_exact(overrides.len()).map_err(|_| bad(command, "could not reserve texture bindings"))?;
     for input in overrides {
@@ -123,7 +137,34 @@ pub(super) fn capture(scene: &ProductScene, overrides: &[Override], command: &st
         let normal = input.normal_opengl.as_ref().map(|p| load(p, MapRole::NormalOpenGl, &mut remaining, command, &mut captured)).transpose()?;
         let roughness = input.roughness_linear.as_ref().map(|p| load(p, MapRole::Roughness, &mut remaining, command, &mut captured)).transpose()?;
         let metallic = input.metallic_linear.as_ref().map(|p| load(p, MapRole::Metallic, &mut remaining, command, &mut captured)).transpose()?;
+        let displacement = match (&input.height_linear, input.displacement) {
+            (None, None) => None,
+            (Some(path), Some(controls)) => {
+                let source = if let Some(source) = heights.get(path) {
+                    source.clone()
+                } else {
+                    if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+                        return Err(bad(command, "height source path must be bounded and explicit"));
+                    }
+                    let maximum = remaining.min(16 * 1024 * 1024);
+                    let bytes = if let Some(key) = path.strip_prefix("builtin://") {
+                        let id = key.strip_suffix("/height").ok_or_else(|| bad(command, "expected builtin://SURF-nnn/height"))?;
+                        super::library::height_bytes(id, maximum, command)?
+                    } else {
+                        solidcraft_io::vfs::read(path, maximum as usize).map_err(|e| bad(command, e.to_string()))?
+                    };
+                    let source = solidcraft_render::job::displacement::HeightSource::new(bytes).map_err(|e| bad(command, e.to_string()))?;
+                    remaining =
+                        remaining.checked_sub(source.retained_bytes()).ok_or_else(|| bad(command, "encoded height exceeds texture source budget"))?;
+                    heights.insert(path.clone(), source.clone());
+                    source
+                };
+                Some(solidcraft_render::job::displacement::HeightDisplacement { source, controls })
+            }
+            _ => return Err(bad(command, "height source and controls must be supplied together")),
+        };
         bindings.push(TextureBinding {
+            displacement,
             body_index: input.body_index,
             body_name: input.body_name.clone(),
             frame: input.frame,

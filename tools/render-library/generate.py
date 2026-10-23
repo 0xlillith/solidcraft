@@ -79,8 +79,20 @@ def generated() -> tuple[str, dict]:
     for key, (relative, digest) in sorted(assets.items()):
         text.append(f'        {q(key)} => Some((include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../{relative}")), {q(digest)})),')
     text += ["        _ => None,", "    }", "}", ""]
-    return "\n".join(text), {"embedded_maps": maps, "embedded_hdr": len(assets)-maps,
-                              "assets_checked": len(assets), "catalogs": len(CATALOGS),
+    heights={}
+    for item in load(CATALOGS["surface_manifest"])["items"]:
+        record=item["maps"]["height"]
+        path=checked_file(record["path"],record["sha256"])
+        data=(ROOT/path).read_bytes()
+        if record["bit_depth"]!=16 or data[:8]!=b"\x89PNG\r\n\x1a\n" or data[12:16]!=b"IHDR" or data[24:26]!=bytes([16,0]):
+            raise ValueError("Height resource must remain original single-channel unsigned 16-bit PNG")
+        heights[item["id"]]=(path,record["sha256"])
+    text += ["", "#[rustfmt::skip]", "pub(super) fn height_asset(id: &str) -> Option<(&'static [u8], &'static str)> {", "    match id {"]
+    for key,(relative,digest) in sorted(heights.items()):
+        text.append(f'        {q(key)} => Some((include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../{relative}")), {q(digest)})),')
+    text += ["        _ => None,", "    }", "}", ""]
+    return "\n".join(text), {"embedded_heights":len(heights),"embedded_maps": maps, "embedded_hdr": len(assets)-maps,
+                              "assets_checked": len(assets)+len(heights), "catalogs": len(CATALOGS),
                               "source_readiness_changed": False}
 
 

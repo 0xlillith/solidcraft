@@ -14,6 +14,8 @@ use crate::{BackendId, Camera, ExecutorId};
 pub mod adaptive;
 pub mod bloom;
 mod cpu_budget;
+pub mod displacement;
+mod displacement_resources;
 pub(crate) mod encoding;
 pub mod finishing;
 mod host;
@@ -172,6 +174,9 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_displacement(&self) -> bool {
+        false
+    }
     fn supports_subsurface(&self) -> bool {
         false
     }

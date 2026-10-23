@@ -71,15 +71,29 @@ impl BuiltinSurfaceSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SavedSurface {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub displacement: Option<SavedDisplacement>,
     pub target: RenderBodyTarget,
     pub source: BuiltinSurfaceSource,
     pub local_frame: PlanarFrame,
     pub normal_strength: f64,
 }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedDisplacement {
+    pub controls: solidcraft_render::job::displacement::Displacement,
+    pub height_sha256: HdrId,
+}
 impl SavedSurface {
     pub fn validate(&self) -> Result<()> {
         self.target.validate()?;
         self.source.validate()?;
+        if let Some(height) = &self.displacement {
+            height.controls.validate().map_err(|e| invalid(e.to_string()))?;
+            if self.normal_strength != 0.0 && height.controls.amplitude_mm != 0.0 {
+                return Err(invalid("saved height cannot double-apply its matching normal map"));
+            }
+        }
         self.local_frame.validate().map_err(|e| invalid(e.to_string()))?;
         if !self.normal_strength.is_finite() || !(0.0..=1.0).contains(&self.normal_strength) {
             return Err(invalid("saved surface normal strength must be finite in 0..1"));
@@ -182,6 +196,7 @@ mod tests {
     use serde_json::json;
     fn fixture() -> SavedSurface {
         SavedSurface {
+            displacement: None,
             target: RenderBodyTarget { definition: "Panel".into(), feature: 7, component: 0, occurrence_path: vec![] },
             source: BuiltinSurfaceSource {
                 id: "SURF-001".into(),
