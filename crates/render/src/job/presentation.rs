@@ -35,7 +35,9 @@ impl Presentation {
         if !self.exposure_ev.is_finite() || !(-32.0..=32.0).contains(&self.exposure_ev) {
             return Err(JobError::new(ErrorCode::InvalidRequest, "presentation exposure must be -32..32 EV"));
         }
-        if self.transparent_background && (self.backdrop.is_some() || self.finishing.bloom.is_some_and(|b| b.active())) {
+        if self.transparent_background
+            && (self.backdrop.is_some() || self.finishing.bloom.is_some_and(|b| b.active()) || self.finishing.photographic.active())
+        {
             return Err(JobError::new(ErrorCode::InvalidRequest, "choose opaque presentation for bloom or a camera backdrop"));
         }
         Ok(())
@@ -109,7 +111,7 @@ impl Display {
         {
             return Err(JobError::new(ErrorCode::InvalidRequest, "invalid presentation dimensions, exposure or storage"));
         }
-        if self.transparent && (self.backdrop.is_some() || self.finishing.bloom.is_some_and(|b| b.active())) {
+        if self.transparent && (self.backdrop.is_some() || self.finishing.bloom.is_some_and(|b| b.active()) || self.finishing.photographic.active()) {
             return Err(JobError::new(ErrorCode::InvalidRequest, "bloom and camera backdrops require opaque presentation"));
         }
         for (index, (pixel, rgba)) in input.iter().zip(output.as_chunks_mut::<4>().0).enumerate() {

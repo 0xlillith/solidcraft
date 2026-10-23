@@ -11,6 +11,8 @@ pub(super) enum Page {
     #[default]
     Scene,
     Appearance,
+    Aging,
+    Effects,
     Lighting,
     Environment,
     Camera,
@@ -19,12 +21,24 @@ pub(super) enum Page {
     All,
 }
 impl Page {
-    const ALL: [Self; 8] =
-        [Self::Scene, Self::Appearance, Self::Lighting, Self::Environment, Self::Camera, Self::Output, Self::Diagnostics, Self::All];
+    const ALL: [Self; 10] = [
+        Self::Scene,
+        Self::Appearance,
+        Self::Aging,
+        Self::Lighting,
+        Self::Environment,
+        Self::Camera,
+        Self::Effects,
+        Self::Output,
+        Self::Diagnostics,
+        Self::All,
+    ];
     pub(super) fn key(self) -> &'static str {
         match self {
             Self::Scene => "render.page_scene",
             Self::Appearance => "render.page_appearance",
+            Self::Aging => "render.page_aging",
+            Self::Effects => "render.page_effects",
             Self::Lighting => "render.page_lighting",
             Self::Environment => "render.page_environment",
             Self::Camera => "render.page_camera",
@@ -37,6 +51,8 @@ impl Page {
         match self {
             Self::Scene => "scene",
             Self::Appearance => "appearance",
+            Self::Aging => "aging",
+            Self::Effects => "effects",
             Self::Lighting => "lighting",
             Self::Environment => "environment",
             Self::Camera => "camera",
@@ -49,6 +65,8 @@ impl Page {
         match self {
             Self::Scene => "render_scene",
             Self::Appearance => "appearance",
+            Self::Aging => "appearance",
+            Self::Effects => "camera",
             Self::Lighting => "settings",
             Self::Environment => "environment_map",
             Self::Camera => "camera",
@@ -60,6 +78,7 @@ impl Page {
 }
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    pub effects: super::effects::View,
     pub page: Page,
     reveal: Option<&'static str>,
     pub library_open: bool,
@@ -164,6 +183,7 @@ impl View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            effects: Default::default(),
             page: Page::Scene,
             reveal: None,
             library_open: false,
@@ -225,6 +245,8 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                         match page {
                             Page::Scene => scene_controls(app, ui),
                             Page::Appearance => appearance_controls(app, ui),
+                            Page::Aging => super::effects::aging_controls(app, ui),
+                            Page::Effects => super::effects::presentation_controls(app, ui),
                             Page::Lighting => lighting_controls(app, ui),
                             Page::Environment => environment_controls(app, ui),
                             Page::Camera => camera_controls(app, ui),
@@ -235,6 +257,8 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 camera_actions(app, ui);
                                 let title = app.tr("render.page_camera").to_string();
                                 ui_kit::section(ui, "render_all_camera", &title, false, |ui| camera_controls(app, ui));
+                                let title = app.tr("render.page_aging").to_string();
+                                ui_kit::section(ui, "render_all_aging", &title, false, |ui| super::effects::aging_controls(app, ui));
                                 super::image_edit_controls(app, ui);
                             }
                         }
@@ -262,7 +286,10 @@ fn pages(app: &mut SolveApp, ui: &mut egui::Ui) {
     for (i, page) in Page::ALL.iter().enumerate() {
         crate::scenario::publish_target(
             &format!("render:page:{}", page.handle()),
-            egui::Rect::from_min_size(top + egui::vec2(width * i as f32 / 8.0, 0.0), egui::vec2(width / 8.0, height)),
+            egui::Rect::from_min_size(
+                top + egui::vec2(width * i as f32 / Page::ALL.len() as f32, 0.0),
+                egui::vec2(width / Page::ALL.len() as f32, height),
+            ),
         );
     }
     ui.add_space(Tokens::get().space_4);

@@ -231,7 +231,15 @@ pub(super) fn flatten_with_media(scene: &ProductScene, origin: Vec3, cancel: &Ca
         }
         vector(
             &mut materials,
-            Vec3::new(scatter.map_or(0.0, |s| s.scattering_per_mm), scatter.map_or(0.0, |s| s.anisotropy), 0.0),
+            Vec3::new(
+                scatter.map_or(0.0, |s| s.scattering_per_mm),
+                scatter.map_or(0.0, |s| s.anisotropy),
+                if scene.meshes.get(t.medium.saturating_sub(1) as usize).is_some_and(|body| body.name.starts_with("__render_stage__/")) {
+                    1.0
+                } else {
+                    0.0
+                },
+            ),
             parent_triangle as f32,
         );
     }

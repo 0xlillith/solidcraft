@@ -479,3 +479,74 @@ fn public_render_inspection_exposes_exact_identities_without_execution_or_docume
     assert_eq!(h.app.cam, camera);
     h.app.session.execute("render.cancel", &json!({"job":identity})).unwrap();
 }
+
+#[test]
+fn aging_tab_adds_reorders_disables_and_persists_layers_without_engineering_edits() {
+    use solidcraft_engine::render::job::aging::AgingKind;
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let before = h.app.session.doc.to_json();
+    h.app.start("render.aging.describe");
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Aging);
+    assert!(!crate::icon_svg::resolve(solidcraft_engine::find_command("render.aging.describe").unwrap().icon).placeholder);
+    for code in [1, 3] {
+        h.step(&json!({"click":{"handle":"render:aging-add"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":format!("dialog:list:aging-add-{code}")}})).unwrap();
+        h.frames(2);
+    }
+    assert_eq!(h.app.render_workspace.view.studio.aging.len(), 2);
+    assert_eq!(h.app.render_workspace.view.studio.aging.get(1).unwrap().kind, AgingKind::Dust);
+    h.step(&json!({"click":{"handle":"render:aging-up"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.studio.aging.get(0).unwrap().kind, AgingKind::Dust);
+    h.step(&json!({"click":{"handle":"render:aging-enabled"}})).unwrap();
+    h.frames(2);
+    assert!(!h.app.render_workspace.view.studio.aging.get(0).unwrap().enabled);
+    assert_eq!(h.app.session.doc.to_json(), before, "editing layers only edits the render draft");
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio.aging = Default::default();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups[&h.app.render_workspace.view.name], expected);
+    h.step(&json!({"click":{"handle":"render:aging-remove"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.studio.aging.len(), 1);
+}
+
+#[test]
+fn effects_tab_retains_ordered_looks_and_photographic_intent_across_save_and_reload() {
+    use solidcraft_engine::render::job::looks::LookKind;
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let before = h.app.session.doc.to_json();
+    h.app.start("render.effects.describe");
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Effects);
+    for code in [3, 6] {
+        h.step(&json!({"click":{"handle":"render:look-add"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":format!("dialog:list:look-add-{code}")}})).unwrap();
+        h.frames(2);
+    }
+    assert_eq!(h.app.render_workspace.view.studio.finishing.looks.len(), 2);
+    assert_eq!(h.app.render_workspace.view.studio.finishing.looks.get(0).unwrap().kind, LookKind::Warm);
+    h.step(&json!({"click":{"handle":"render:look-up"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.studio.finishing.looks.get(0).unwrap().kind, LookKind::Faded);
+    assert_eq!(h.app.session.doc.to_json(), before);
+    h.app.render_workspace.view.studio.finishing.photographic.chromatic_pixels = 1.5;
+    h.app.render_workspace.view.studio.finishing.photographic.flare.strength = 0.4;
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio.finishing = Default::default();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    let doc = h.app.session.doc.to_json();
+    h.app.render_workspace.view.transparent = true;
+    assert!(super::super::ribbon::presentation(&h.app).validate().is_err(), "spatial lens effects cannot silently flatten alpha");
+    assert_eq!(h.app.session.doc.to_json(), doc);
+}

@@ -152,6 +152,8 @@ impl CpuJob {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpuJob {
+    #[serde(skip_serializing_if = "solidcraft_render::job::aging::AgingStack::is_empty")]
+    pub aging: solidcraft_render::job::aging::AgingStack,
     pub nested_media: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
@@ -184,6 +186,7 @@ impl Default for GpuJob {
     fn default() -> Self {
         let options = JobOptions::default();
         Self {
+            aging: options.aging,
             nested_media: options.nested_media,
             volume: options.volume,
             adaptive: options.adaptive,
@@ -217,6 +220,7 @@ impl GpuJob {
             environment.validate()?;
         }
         let options = JobOptions {
+            aging: self.aging,
             nested_media: self.nested_media,
             volume: self.volume,
             adaptive: self.adaptive,

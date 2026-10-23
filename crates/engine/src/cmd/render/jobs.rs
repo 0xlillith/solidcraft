@@ -46,6 +46,7 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
+    aging: solidcraft_render::job::aging::AgingStack,
     #[serde(default)]
     nested_media: bool,
     volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
@@ -192,7 +193,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
             "lens":options.lens,"lighting":options.lighting,"tone_map":options.tone_map,
             "denoise":options.denoise,"environment":options.environment,
             "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr,
-            "adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume,"nested_media":options.nested_media
+            "adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume,"nested_media":options.nested_media,"aging":options.aging
             })
         }
     };
@@ -522,6 +523,7 @@ fn prepare_progressive(
     options.finishing = input.finishing;
     options.backdrop = input.backdrop;
     options.linear_exr = input.linear_exr;
+    options.aging = input.aging;
     options.nested_media = input.nested_media;
     options.volume = input.volume;
     options.adaptive = input.adaptive;

@@ -32,10 +32,13 @@ const SHADER: &str = concat!(
     include_str!("textures.wgsl"),
     "
 ",
-    include_str!("volume.wgsl")
+    include_str!("volume.wgsl"),
+    "
+",
+    include_str!("aging.wgsl")
 );
 const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
-const PARAMETER_BYTES: usize = 528;
+const PARAMETER_BYTES: usize = 1168;
 // Eight u32 words: count low, pixel, bounce, sample, code, count high, first-writer flag, spare.
 const FAILURE_BYTES: u64 = 32;
 // A path that cannot classify its glass medium ends there. Isolated paths at the
@@ -251,6 +254,10 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
     options.validate()?;
+    options.aging.validate_scene(scene)?;
+    if options.finishing.photographic.active() && request.transparent_background {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "photographic effects require opaque output; choose it explicitly"));
+    }
     if let Some(volume) = options.volume.filter(|v| v.active()) {
         volume.relative_bounds([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
         if options.lighting.is_none() && request.environment.is_none() {
@@ -338,6 +345,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         .preparation_bytes
         .checked_add(bloom_bytes)
         .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "bloom preparation estimate overflow"))?;
+    let photo_bytes = options.finishing.photographic.scratch_bytes(request.width, request.height)?;
+    admission.pixel_scratch_bytes += photo_bytes;
+    admission.preparation_bytes += photo_bytes;
     let adaptive_bytes = pixels * if options.adaptive.is_some() { 32 } else { 0 };
     admission.pixel_scratch_bytes += adaptive_bytes;
     admission.preparation_bytes += adaptive_bytes;
@@ -349,6 +359,12 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_aging(&self) -> bool {
+        true
+    }
+    fn supports_photographic(&self) -> bool {
+        true
+    }
     fn supports_subsurface(&self) -> bool {
         true
     }
@@ -422,6 +438,8 @@ struct Task {
     lane: u32,
     sampling_report: Option<solidcraft_render::job::adaptive::SamplingReport>,
     volume: [[f32; 4]; 3],
+    aging: [[f32; 20]; 8],
+    photographic: Option<solidcraft_render::job::photographic::PhotographicTask>,
     offset: u32,
     epsilon: f32,
     png: Option<PngTask>,
@@ -440,6 +458,7 @@ impl Task {
     fn new(context: Arc<Context>, scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
         cancel.check()?;
         let start = Instant::now();
+        let aging = options.aging.gpu_layers([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
         let volume = if let Some(v) = options.volume.filter(|v| v.active()) {
             let bounds = v.relative_bounds([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
             [
@@ -553,6 +572,8 @@ impl Task {
             lane: 0,
             sampling_report: None,
             volume,
+            aging,
+            photographic: None,
             offset: 0,
             epsilon: upload.epsilon,
             png: None,
@@ -643,6 +664,11 @@ impl Task {
         }
         for vector in self.volume {
             for value in vector {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for layer in self.aging {
+            for value in layer {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
@@ -765,6 +791,15 @@ impl ImageWork for Task {
         if let Some(png) = &mut self.png {
             return png.step(units);
         }
+        if let Some(mut task) = self.photographic.take() {
+            if !task.step(units)? {
+                let (done, total) = task.progress();
+                self.photographic = Some(task);
+                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done, total }));
+            }
+            self.png = Some(PngTask::new(&self.request, task.finish()?, self.cancel.clone())?);
+            return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }));
+        }
         if self.sample < self.target_samples() {
             self.dispatch()?;
             return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.target_samples()) }));
@@ -853,7 +888,18 @@ impl Task {
             jobs.into_iter()
                 .try_for_each(|job| job.join().unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "display encoding worker failed"))))
         })?;
-        self.png = Some(PngTask::new(&self.request, rgba, self.cancel.clone())?);
+        if self.options.finishing.photographic.active() {
+            self.photographic = Some(solidcraft_render::job::photographic::PhotographicTask::new(
+                self.request.width,
+                self.request.height,
+                rgba,
+                linear,
+                self.options.finishing.photographic,
+                self.cancel.clone(),
+            )?);
+        } else {
+            self.png = Some(PngTask::new(&self.request, rgba, self.cancel.clone())?);
+        }
         Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }))
     }
 }

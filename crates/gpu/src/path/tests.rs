@@ -3031,3 +3031,6 @@ mod resource_pack_tests;
 
 #[path = "optical_media_tests.rs"]
 mod optical_media_tests;
+
+#[path = "effects_tests.rs"]
+mod effects_tests;
