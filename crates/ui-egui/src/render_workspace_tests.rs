@@ -45,6 +45,67 @@ mod async_path_host {
     }
 
     #[test]
+    fn design_frames_and_document_reset_never_start_the_deferred_path_host() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        h.frames(5);
+        crate::documents::adopt(&mut h.app, Session::default());
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        assert!(h.app.render_workspace.pending_setup.is_some());
+        enter(&mut h.app, true).unwrap();
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn first_render_before_adapter_install_starts_once_when_the_adapter_arrives() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = panel_fixture();
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        h.app.render_workspace.defer_path_host("late selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err("deliberate device refusal".into())
+        });
+        sync_backend(&mut h.app);
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Failed(_)));
+        h.app.render_workspace.defer_path_host("must not retry".into(), || panic!("failed setup retried"));
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_fallback_viewport_replaces_an_unstarted_factory_without_opening_the_old_device() {
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("old hardware adapter".into(), || panic!("superseded device opened"));
+        h.app.render_workspace.defer_path_host("selected safe-mode adapter".into(), || Err("selected adapter unavailable".into()));
+        h.frames(5);
+        assert_eq!(h.app.render_workspace.setup_key.as_deref(), Some("selected safe-mode adapter"));
+        enter(&mut h.app, true).unwrap();
+        finish_setup(&mut h);
+        let PathHost::Failed(message) = &h.app.render_workspace.path_host else { panic!("expected selected adapter result") };
+        assert_eq!(message, "selected adapter unavailable");
+    }
+
+    #[test]
     fn preparing_keeps_frames_responsive_then_registers_ready_host() {
         let mut h = panel_fixture();
         let cpu_host = h.app.session.render_job_host().unwrap().clone();

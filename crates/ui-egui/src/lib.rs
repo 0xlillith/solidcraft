@@ -678,10 +678,8 @@ impl SolveApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let adapter = rs.adapter.clone();
-            if matches!(self.render_workspace.path_host, render_workspace::PathHost::NotStarted) {
-                self.render_workspace.setup_key = Some(render_workspace::adapter_key(&adapter.get_info()));
-            }
-            self.render_workspace.path_host.start(move || solidcraft_gpu::path::host_on_adapter(&adapter).map_err(|e| e.to_string()));
+            let key = render_workspace::adapter_key(&adapter.get_info());
+            self.render_workspace.defer_path_host(key, move || solidcraft_gpu::path::host_on_adapter(&adapter).map_err(|e| e.to_string()));
         }
         render_workspace::sync_backend(self);
         self.msaa_supported = rs.msaa_supported.clone();

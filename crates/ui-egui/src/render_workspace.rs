@@ -22,7 +22,10 @@ const MAX_GEOMETRY_BYTES: usize = 128 * 1024 * 1024;
 #[path = "render_workspace_tests.rs"]
 mod tests;
 
+type PathFactory = Box<dyn FnOnce() -> Result<ImageHost, String> + Send>;
+
 pub struct State {
+    pending_setup: Option<PathFactory>,
     pub host: Option<ExecutorDescriptor>,
     pub path_host: PathHost,
     /// How long the last path tracer setup took, in seconds, per viewport adapter
@@ -190,6 +193,7 @@ impl Default for State {
         Self {
             host: None,
             path_host: PathHost::default(),
+            pending_setup: None,
             setup_seconds: Default::default(),
             setup_key: None,
             image_host: None,
@@ -201,6 +205,28 @@ impl Default for State {
             scene_signature: None,
             scene: None,
             image: None,
+        }
+    }
+}
+
+impl State {
+    /// Retain the selected viewport adapter, but do not open another device or
+    /// compile shaders until Render is used. A later viewport installation (for
+    /// example safe-mode fallback) replaces only a not-yet-started factory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn defer_path_host(&mut self, key: String, create: impl FnOnce() -> Result<ImageHost, String> + Send + 'static) {
+        if matches!(self.path_host, PathHost::NotStarted) {
+            self.setup_key = Some(key);
+            self.pending_setup = Some(Box::new(create));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_deferred_path_host(&mut self) {
+        if matches!(self.path_host, PathHost::NotStarted)
+            && let Some(create) = self.pending_setup.take()
+        {
+            self.path_host.start(create);
         }
     }
 }
@@ -237,6 +263,10 @@ pub fn host_executor(max_dimension: u32, depth: bool, samples: u32) -> Result<Ex
 }
 
 pub fn sync_backend(app: &mut SolveApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if active(app) {
+        app.render_workspace.start_deferred_path_host();
+    }
     if let Some(took) = app.render_workspace.path_host.poll() {
         record_setup(&mut app.render_workspace, took);
     }
@@ -284,7 +314,8 @@ pub fn reset_document(app: &mut SolveApp) {
     let path_host = std::mem::take(&mut app.render_workspace.path_host);
     let setup_seconds = std::mem::take(&mut app.render_workspace.setup_seconds);
     let setup_key = app.render_workspace.setup_key.take();
-    app.render_workspace = State { host, image_host, path_host, setup_seconds, setup_key, ..Default::default() };
+    let pending_setup = app.render_workspace.pending_setup.take();
+    app.render_workspace = State { host, image_host, path_host, setup_seconds, setup_key, pending_setup, ..Default::default() };
     if active(app) {
         app.ui.tab = "MODEL".into();
     }
@@ -312,6 +343,8 @@ pub fn enter(app: &mut SolveApp, render: bool) -> Result<(), String> {
                 app.cam.fit(&scene.bounds);
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        app.render_workspace.start_deferred_path_host();
     } else {
         if let Some((camera, perspective)) = app.render_workspace.design_camera.take() {
             app.cam = camera;
