@@ -238,6 +238,47 @@ mod tests {
     use crate::Document;
     use std::sync::Arc;
 
+    #[test]
+    fn saved_light_coordinates_are_admitted_only_when_the_document_can_reopen() {
+        use serde_json::json;
+        for coordinate in [-1e9, 1e9] {
+            let variants = [
+                json!({"method":"cpu_raytrace","options":{"punctual_lights":[{
+                    "position_mm":[coordinate,0.0,0.0],"color":[1.0,1.0,1.0],"intensity":1.0,
+                    "reference_distance_mm":100.0,"minimum_distance_mm":0.001}]}}),
+                json!({"method":"gpu_path","options":{"lighting":{"area_lights":[{
+                    "center":[coordinate,0.0,0.0],"u":[1.0,0.0,0.0],"v":[0.0,1.0,0.0],"radiance":[1.0,1.0,1.0]}]}}}),
+                json!({"method":"cpu_raytrace","options":{"lights":[{
+                    "direction":[coordinate,0.0,0.0],"color":[1.0,1.0,1.0],"intensity":1.0}]}}),
+            ];
+            for job in variants {
+                let settings: RenderSettings = serde_json::from_value(json!({"setups":{"Bounds":{"job":job}}})).unwrap();
+                settings.validate().unwrap();
+                let document = Document { render: Arc::new(settings), ..Default::default() };
+                assert_eq!(Document::from_json(&document.to_json()).unwrap(), document);
+            }
+        }
+        for coordinate in [-5e9, 5e9, 1e9_f64.next_up()] {
+            let mut point: solidcraft_render::job::PunctualLightOptions = serde_json::from_value(json!({
+                "position_mm":[coordinate,0.0,0.0],"color":[1.0,1.0,1.0],"intensity":1.0,
+                "reference_distance_mm":100.0,"minimum_distance_mm":0.001}))
+            .unwrap();
+            assert!(point.validate().is_err());
+            point.position_mm = [0.0; 3];
+            point.cone = Some(solidcraft_render::job::SpotConeOptions {
+                emitted_axis: [coordinate, 0.0, 0.0],
+                inner_half_angle_radians: 0.1,
+                outer_half_angle_radians: 0.5,
+            });
+            assert!(point.validate().is_err());
+            let area =
+                solidcraft_render::job::AreaLight { center: [coordinate, 0.0, 0.0], u: [1.0, 0.0, 0.0], v: [0.0, 1.0, 0.0], radiance: [1.0; 3] };
+            assert!(area.validate().is_err());
+            let frame = solidcraft_render::job::textures::PlanarFrame { origin: [coordinate, 0.0, 0.0], u: [1.0, 0.0, 0.0], v: [0.0, 1.0, 0.0] };
+            assert!(frame.validate().is_err());
+        }
+    }
+
     fn hdr_fixture(pixel: u8) -> Vec<u8> {
         let mut bytes = b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\nPRIMARIES=0.64 0.33 0.30 0.60 0.15 0.06 0.3127 0.3290\n\n-Y 2 +X 4\n".to_vec();
         for _ in 0..8 {

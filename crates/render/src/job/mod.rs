@@ -37,7 +37,7 @@ mod rt2_tests;
 pub mod textures;
 pub mod volume;
 
-pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_TRIANGLES, MAX_CPU_WORK, NATIVE_CPU_POOL_BYTES};
+pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_SAMPLES_PER_PIXEL, MAX_CPU_TRIANGLES, MAX_CPU_WORK, NATIVE_CPU_POOL_BYTES};
 #[cfg(feature = "raytrace-cpu")]
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
@@ -967,7 +967,7 @@ impl RaytraceOptions {
                 for a in [-0.5, 0.5] {
                     for b in [-0.5, 0.5] {
                         let p = c + u * a + v * b;
-                        if !p.is_finite() || [p.x, p.y, p.z].into_iter().any(|x| x.abs() > 1e12) {
+                        if !p.is_finite() || [p.x, p.y, p.z].into_iter().any(|x| x.abs() > 1e9) {
                             return Err(JobError::new(ErrorCode::InvalidRequest, "rectangular light corner exceeds world bounds"));
                         }
                     }
@@ -1019,7 +1019,7 @@ impl RaytraceOptions {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "at most eight directional lights"));
             }
             for light in lights {
-                let direction_valid = light.direction.iter().all(|n| n.is_finite()) && light.direction.iter().any(|n| *n != 0.0);
+                let direction_valid = light.direction.iter().all(|n| n.is_finite() && n.abs() <= 1e9) && light.direction.iter().any(|n| *n != 0.0);
                 if !direction_valid
                     || !light.color.iter().all(|n| n.is_finite() && (0.0..=1.0).contains(n))
                     || !light.intensity.is_finite()

@@ -13,6 +13,8 @@ pub const NATIVE_CPU_POOL_BYTES: u64 = 16 * GIB;
 pub const MAX_CPU_WORK: u64 = 16_000_000_000_000;
 pub const MAX_CPU_TRIANGLES: usize = 8_000_000;
 pub const MAX_CPU_BODIES: usize = 262_144;
+/// Maximum admitted primary-film samples, shared with the display resolver.
+pub const MAX_CPU_SAMPLES_PER_PIXEL: u32 = 4096;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,7 +76,7 @@ impl CpuBudget {
                 max_dimension: 16_384,
                 max_pixels: 67_108_864,
                 max_progressive_pixels: 67_108_864,
-                max_samples_per_pixel: 4096,
+                max_samples_per_pixel: MAX_CPU_SAMPLES_PER_PIXEL,
                 max_camera_samples: 68_719_476_736,
                 max_triangles: MAX_CPU_TRIANGLES as u64,
                 max_bodies: MAX_CPU_BODIES,

@@ -117,6 +117,8 @@ impl PrimaryFilm {
             return Err(invalid("primary film has no uniform complete pass"));
         }
         let pixel = self.pixels.get(index).ok_or_else(|| invalid("primary film resolve index out of range"))?;
-        Ok((pixel.sum.map(|sum| sum / f64::from(self.samples)), pixel.covered as u16, self.samples as u16))
+        let covered = u16::try_from(pixel.covered).map_err(|_| limit("primary coverage exceeds resolve representation"))?;
+        let samples = u16::try_from(self.samples).map_err(|_| limit("primary sample count exceeds resolve representation"))?;
+        Ok((pixel.sum.map(|sum| sum / f64::from(self.samples)), covered, samples))
     }
 }

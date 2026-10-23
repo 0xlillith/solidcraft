@@ -446,3 +446,25 @@ fn actual_colored_lit_partial_coverage_wires_positive_radiance_exposure_and_back
         }
     }
 }
+
+#[test]
+fn workstation_progressive_resolves_every_checkpoint_through_its_admitted_cap() {
+    let fixed = fixture(1, 1, Some(true));
+    let cap = job::CpuBudget::Workstation.limits().max_samples_per_pixel;
+    assert_eq!(cap, 4096);
+    for samples in [2048, cap] {
+        let mut options = fixed.options.clone();
+        options.budget = job::CpuBudget::Workstation;
+        options.progressive = Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed: 123 });
+        let request = ImageRequest { raytrace: Some(options.clone()), ..fixed.request.clone() };
+        let task = ImageTask::new(fixed.scene.clone(), request, CancelToken::default(), options).unwrap();
+        let (previews, final_png, _) = progressive_complete(task, 16_384);
+        let expected: Vec<_> = (0..samples.ilog2()).map(|power| 1_u32 << power).collect();
+        assert_eq!(previews.iter().map(|(n, _)| *n).collect::<Vec<_>>(), expected);
+        for (_, png) in &previews {
+            assert_eq!(::image::load_from_memory(png).unwrap().to_rgba8().dimensions(), (1, 1));
+        }
+        assert_eq!(::image::load_from_memory(&final_png).unwrap().to_rgba8().dimensions(), (1, 1));
+    }
+    assert!(composite_spatial(Vec3::ZERO, 0, 4097, [0; 3], 0.0).is_err());
+}

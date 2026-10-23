@@ -196,6 +196,29 @@ mod tests {
         }
     }
     #[test]
+    fn saved_surface_origin_bounds_match_the_document_roundtrip() {
+        use crate::render_settings::{GpuJob, RenderJob, RenderSetup};
+        for coordinate in [-1e9, 1e9] {
+            let mut binding = fixture();
+            binding.local_frame.origin = [coordinate, 0.0, 0.0];
+            let mut setup = RenderSetup {
+                job: Some(RenderJob::GpuPath { transparent_background: false, options: Box::new(GpuJob::default()) }),
+                ..Default::default()
+            };
+            setup.surfaces.set(binding, false).unwrap();
+            let mut document = crate::Document::default();
+            std::sync::Arc::make_mut(&mut document.render).setups.insert("Frame".into(), setup);
+            document.render.validate().unwrap();
+            assert_eq!(crate::Document::from_json(&document.to_json()).unwrap(), document);
+        }
+        for coordinate in [-5e9, 5e9, 1e9_f64.next_up()] {
+            let mut binding = fixture();
+            binding.local_frame.origin = [coordinate, 0.0, 0.0];
+            assert!(binding.validate().is_err());
+        }
+    }
+
+    #[test]
     fn saved_surfaces_roundtrip_without_paths_or_ordinals() {
         let mut bindings = SurfaceBindings::default();
         bindings.set(fixture(), false).unwrap();

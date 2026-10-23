@@ -1,4 +1,4 @@
-//! Transient, bounded point/spot options; never design persistence.
+//! Bounded point/spot intent, also embedded by saved CPU render setups.
 use serde::{Deserialize, Serialize};
 
 use super::{ErrorCode, JobError, Result};
@@ -28,7 +28,7 @@ pub struct PunctualLightOptions {
 impl PunctualLightOptions {
     pub fn validate(&self) -> Result<()> {
         let invalid = || JobError::new(ErrorCode::InvalidRequest, "invalid bounded point/spot light");
-        if !self.position_mm.iter().all(|v| v.is_finite() && v.abs() <= 1e12)
+        if !self.position_mm.iter().all(|v| v.is_finite() && v.abs() <= 1e9)
             || !self.color.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v))
             || !self.intensity.is_finite()
             || !(0.0..=64.0).contains(&self.intensity)
@@ -42,7 +42,7 @@ impl PunctualLightOptions {
         if let Some(cone) = self.cone {
             let inner = cone.inner_half_angle_radians;
             let outer = cone.outer_half_angle_radians;
-            if !cone.emitted_axis.iter().all(|v| v.is_finite())
+            if !cone.emitted_axis.iter().all(|v| v.is_finite() && v.abs() <= 1e9)
                 || !cone.emitted_axis.iter().any(|v| *v != 0.0)
                 || !inner.is_finite()
                 || !outer.is_finite()

@@ -37,7 +37,7 @@ impl PlanarFrame {
         let vv = v(self.v);
         let ul = u.len();
         let vl = vv.len();
-        if self.origin.into_iter().any(|c| !c.is_finite() || c.abs() > 1e12)
+        if self.origin.into_iter().any(|c| !c.is_finite() || c.abs() > 1e9)
             || !u.is_finite()
             || !vv.is_finite()
             || !(0.001..=1e6).contains(&ul)

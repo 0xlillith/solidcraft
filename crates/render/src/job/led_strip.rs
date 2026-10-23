@@ -78,13 +78,13 @@ impl LedStripOptions {
             return Err(invalid("normalized LED edges exceed rectangle length or orthogonality bounds"));
         }
         let center = vec(self.center_mm);
-        if !center.is_finite() || [center.x, center.y, center.z].into_iter().any(|n| n.abs() > 1e12) {
+        if !center.is_finite() || [center.x, center.y, center.z].into_iter().any(|n| n.abs() > 1e9) {
             return Err(invalid("LED center exceeds finite world bounds"));
         }
         for a in [-0.5, 0.5] {
             for b in [-0.5, 0.5] {
                 let p = center + edge_u * a + edge_v * b;
-                if !p.is_finite() || [p.x, p.y, p.z].into_iter().any(|n| n.abs() > 1e12) {
+                if !p.is_finite() || [p.x, p.y, p.z].into_iter().any(|n| n.abs() > 1e9) {
                     return Err(invalid("LED corner exceeds finite world bounds"));
                 }
             }

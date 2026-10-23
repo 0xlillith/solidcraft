@@ -1588,7 +1588,7 @@ fn spatial_key(pixel: u64, ordinal: u8, samples: u8) -> job::Result<u64> {
         .ok_or_else(|| invalid("spatial seed overflow"))
 }
 fn composite_spatial(premultiplied: Vec3, covered: u16, attempts: u16, background: [u8; 3], exposure: f64) -> job::Result<[u8; 4]> {
-    if attempts == 0 || attempts > 1024 || covered > attempts || !bounded_radiance(premultiplied) {
+    if attempts == 0 || u32::from(attempts) > job::MAX_CPU_SAMPLES_PER_PIXEL || covered > attempts || !bounded_radiance(premultiplied) {
         return Err(invalid("invalid spatial coverage/radiance"));
     }
     if covered == 0 {
