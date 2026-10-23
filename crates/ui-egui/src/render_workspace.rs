@@ -319,6 +319,23 @@ pub(crate) fn fit_result(app: &mut SolveApp) {
     app.render_workspace.view.result_scale = ResultScale::Fit;
 }
 
+/// Read-only identities for automation and diagnostics. Does not prepare a
+/// request, open a device, evaluate geometry, change the selected result or pump
+/// a job. Clients must use render.status for the exact identity returned here.
+pub(crate) fn inspect_state(app: &SolveApp) -> serde_json::Value {
+    let view = &app.render_workspace.view;
+    let method = match view.method {
+        ImageMethod::Raster => "raster",
+        ImageMethod::CpuRaytrace => "cpu_raytrace",
+        ImageMethod::GpuRaytrace => "gpu_path",
+    };
+    json!({
+        "active": active(app), "setup": view.name, "draft_dirty": view.dirty,
+        "method": method, "job": view.job, "completed": view.completed,
+        "showing_result": view.result, "export_format": if view.studio.export_exr {"exr"} else {"png"},
+    })
+}
+
 pub fn host_executor(max_dimension: u32, depth: bool, samples: u32) -> Result<ExecutorDescriptor, String> {
     if !matches!(samples, 1 | 2 | 4 | 8 | 16) {
         return Err("unsupported GPU sample count".into());

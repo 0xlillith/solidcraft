@@ -69,3 +69,19 @@ References:
 ## Acceptance checkpoint
 
 The renderer core has executed 473 passing tests with zero failures, including allocation-oracle, native-master decode/regrade/lease/cancellation and homogeneous-medium mathematical checks. Earlier strict all-workspace checks passed before the final volume integration. The combined current-head strict checks, real GPU transport tests, native application walkthrough and any final catalog-family acceptance must be recorded separately when actually executed. No aggregate project CI, merge or release is claimed here.
+
+## Frozen GPU execution on db68f9e3
+
+The complete hardware/Vulkan GPU suite finished with **108 passed, 0 failed, 3 explicit ignores** on the AMD Radeon 8060S. The exact source tree stayed unchanged. Static WGSL validation and its 528-byte parameter-layout assertion passed separately. Total GPU-suite runtime was 338.13 seconds including cold pipeline setup; this is not per-image render time or a universal startup promise.
+
+The mixed 16 × 16 adaptive fixture used 5,226 production samples plus 4,096 independent pilot evaluations: 9,322 total primary-path evaluations, compared with 16,384 for the fixed 64-sample budget. Its per-pixel production counts ranged from 16 to 64, with 23 pixels at the cap. This is work-accounting evidence, not a certified equal-noise benchmark.
+
+The absorbing-sheet fixture compared 64 ordinary paths with 16 groups of four conditional strata over 32 seeds. Mean squared error against the analytic reference changed from `4.5285017712954006e-5` to `4.037571061352023e-6`, about 11.2 times lower at the same primary-path budget. This measured pilot does not establish faster rendering or universal improvement for every glass scene.
+
+The homogeneous slab produced mean coverage `0.6313934326171875` against `1-exp(-1)`. Single-scattering linear RGB was `0.19750170083716512` against independent slab quadrature `0.1985499369280803`. Absorption-only RGB was exactly zero. HG inverse-CDF/phase tests passed including nearly isotropic media. Zero extinction preserves the previous output; volume/glass and volume/denoiser refusals remain tested.
+
+All **48 authored PBR surfaces and 25 native compositions** completed actual 48 × 32, four-sample GPU images. Every setup reopened exactly and preserved engineering geometry/materials. The 73 PNGs and per-resource receipts are in the isolated `resource-execution-r3` evidence folder. This is individual executable-pack coverage, not a visual certification, all 1,200 material/studio combinations, or completion of the 600 advanced material concepts.
+
+The GPU engine test also regraded a retained master after the CAD geometry changed. It retained the original capture generation and raw-master pointer/digest, changed only the PNG and left the design/revision intact. The fresh UI test build, native control walkthrough and new application/CLI acceptance are still separate pending checks.
+
+Public `ui.inspect` now exposes the current Render draft method, exact active/completed job identities and export destination format without evaluating geometry or pumping a job. Native acceptance can inspect the actual clicked job instead of guessing a session or serial.

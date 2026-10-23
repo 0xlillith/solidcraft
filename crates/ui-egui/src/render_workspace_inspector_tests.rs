@@ -457,3 +457,25 @@ fn master_regrade_requires_a_retained_master_instead_of_reconstructing_a_png() {
     assert!(!super::super::interactive_command_info(&h.app, spec).enabled);
     assert_eq!(h.app.session.doc.to_json(), document);
 }
+
+#[test]
+fn public_render_inspection_exposes_exact_identities_without_execution_or_document_mutation() {
+    let mut h = fixture();
+    let doc = h.app.session.doc.to_json();
+    let undo = h.app.session.undo.len();
+    let camera = h.app.cam;
+    let inspected = h.call("ui.inspect", json!({}));
+    assert_eq!(inspected["result"]["render"]["active"], true);
+    assert_eq!(inspected["result"]["render"]["method"], "raster");
+    assert!(inspected["result"]["render"]["job"].is_null());
+    h.app.render_workspace.view.draft.width = 8;
+    h.app.render_workspace.view.draft.height = 8;
+    h.app.start("render.start");
+    let identity = h.app.render_workspace.view.job.unwrap();
+    let inspected = h.call("ui.inspect", json!({}));
+    assert_eq!(inspected["result"]["render"]["job"], json!(identity));
+    assert_eq!(h.app.session.doc.to_json(), doc);
+    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.cam, camera);
+    h.app.session.execute("render.cancel", &json!({"job":identity})).unwrap();
+}
