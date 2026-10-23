@@ -764,34 +764,37 @@ pub(super) fn saved_surface_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 
 pub(super) fn stage_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.passive_stage").to_string();
-    ui_kit::section(ui, "render_passive_stage", &title, false, |ui| {
-        ui_kit::text(ui, app.tr("render.passive_stage_help"), ui_kit::Text::Note("render.passive_stage_help"));
-        let stage = &app.render_workspace.view.draft.stage;
-        ui.label(format!("{}: {}", app.tr("render.stage_panel_count"), stage.len()));
-        let empty = stage.is_empty();
-        let candidate = patch(app);
-        if ui_kit::button(
-            ui,
-            app.tr("render.add_ground"),
-            ui_kit::Button::Enabled(empty && candidate.is_ok() && app.render_workspace.view.method != ImageMethod::Raster),
-        )
-        .clicked()
-            && let Ok(set) = candidate
-        {
-            let name = app.render_workspace.view.name.clone();
-            match app.run("render.stage.ground", json!({"name":name,"set":set})) {
-                Ok(_) => setups::load(app),
-                Err(e) => app.set_status(e, true),
-            }
+    ui_kit::section(ui, "render_passive_stage", &title, false, |ui| stage_content(app, ui));
+}
+pub(super) fn stage_content(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::text(ui, app.tr("render.passive_stage_help"), ui_kit::Text::Note("render.passive_stage_help"));
+    let stage = &app.render_workspace.view.draft.stage;
+    ui.label(format!("{}: {}", app.tr("render.stage_panel_count"), stage.len()));
+    let empty = stage.is_empty();
+    let candidate = patch(app);
+    if ui_kit::button(
+        ui,
+        app.tr("render.add_ground"),
+        ui_kit::Button::Enabled(empty && candidate.is_ok() && app.render_workspace.view.method != ImageMethod::Raster),
+    )
+    .clicked()
+        && let Ok(set) = candidate
+    {
+        let name = app.render_workspace.view.name.clone();
+        match app.run("render.stage.ground", json!({"name":name,"set":set})) {
+            Ok(_) => setups::load(app),
+            Err(e) => app.set_status(e, true),
         }
-        if ui_kit::button(ui, app.tr("render.clear_stage"), ui_kit::Button::Enabled(!empty)).clicked() {
-            let name = app.render_workspace.view.name.clone();
-            match app.run("render.stage.clear", json!({"name":name})) {
-                Ok(_) => setups::load(app),
-                Err(e) => app.set_status(e, true),
-            }
+    }
+    let clear = ui_kit::button(ui, app.tr("render.clear_stage"), ui_kit::Button::Enabled(!empty && patch(app).is_ok()));
+    crate::scenario::publish_target("render:stage-clear", clear.rect);
+    if clear.clicked() {
+        let name = app.render_workspace.view.name.clone();
+        match patch(app).and_then(|set| app.run("render.stage.clear", json!({"name":name,"set":set})).map(|_| ())) {
+            Ok(()) => setups::load(app),
+            Err(error) => app.set_status(error, true),
         }
-    });
+    }
 }
 
 fn physical_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id: &str, detail: &Value) {

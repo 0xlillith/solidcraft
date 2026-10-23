@@ -45,3 +45,14 @@ Video assembly tooling remains isolated outside the application dependency graph
 ## Acceptance status at implementation checkpoint
 
 Static validation of the combined path shader and denoiser-guide shader passes with a 1,168-byte parameter layout. This is not native GPU execution evidence. Tests cover bounded layer storage, hostile input, reorder/disabled identities, periodic field rebasing, look order, deterministic photographic quanta, cancellation, transparent-output refusal, exact raw-master preservation, native layer execution and UI save/reopen behavior. The numerical, native and visual results must be filled in from actual runs; they are not inferred from these test sources.
+
+
+## Background usability and delivery closure
+
+The Backgrounds ribbon previously led only to physical stage controls on the Scene page, while camera colour/gradient controls were elsewhere under Environment. It now leads to a dedicated shared-kit Backgrounds page containing camera presentation, physical stage controls, an exact-master regrade action and a separate HDR-library link. Merely navigating does not change a shot, renderer or document.
+
+The page explicitly explains that a completed image is immutable, Live Preview is a modelling view, and a large physical floor/wall can hide a camera-only backdrop. A gradient affects only uncovered camera pixels; it does not recolour the lighting, replace visible geometry or turn the HDR into a panoramic background. Transparency remains explicit. Physical-stage replacement still requires consent.
+
+A real numerical-draft loss bug was also corrected: clearing a physical stage now forwards the current complete draft to the registered clear-stage command, rather than restoring other values from an older saved shot. Stage controls no longer nest a second same-titled section. Regression sources check navigation, nonmutation and exact preservation/reopen of unsaved camera background, exposure and output dimensions.
+
+On the frozen native producer `9f8c3d30`, actual 1920x1080 background images completed: no-stage neutral and radial-gradient presentations share an identical raw EXR; the two-panel floor/wall and 26-panel polygonal cyclorama change the raw transport and retain the same subject/camera. These are real native renders, not video-editor substitutions. Their source/header hashes and visibility limitations are retained in the delivery manifests. The new UI-only build/acceptance and the final video/package checks are recorded separately after execution.
