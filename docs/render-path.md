@@ -1,8 +1,12 @@
-# Progressive opaque product images
+# Progressive product images
+
+This integration is a draft. Final combined CPU, wasm and GPU verification and
+full-resolution showcase acceptance remain incomplete. Test descriptions below
+state intended coverage, not a claim that every backend has passed.
 
 Native applications can register `solidcraft_gpu::path::host()` alongside the
 existing CPU image host. `render.backends` then exposes `builtin/gpu-path` with
-Preview, Image, PNG, Pbr and Progressive. The browser keeps its CPU image host.
+Preview, Image, PNG, Pbr, Progressive and Refraction. The browser keeps its CPU image host.
 Device discovery follows `SOLIDCRAFT_GPU` and `WGPU_BACKEND`; a device which cannot
 create the compute pipeline does not register an available path executor.
 The native UI opens its independent job device on the viewport's selected adapter,
@@ -28,13 +32,19 @@ Cancel, status, retained-image ownership and atomic PNG export use the same host
 protocol as CPU jobs. Defaults are 64 samples, depth 8 and seed 0; the bounds are
 1–4096 samples and 1–16 bounces. Sampling controls require `progressive: true`.
 
+Runtime request-only [glass overrides](render-transmission.md) and an optional
+[thin-lens camera](render-thin-lens.md) and [clear coat](render-clear-coat.md) are available through those same commands.
+Neither adds saved document fields. Positive aperture requires perspective.
+
 ```sh
 solidcraft-cli render examples/render-path-studio.json --out enclosure.png --progressive --samples 64 --max-depth 8 --seed 0 --width 800 --height 600
 ```
 
 The CLI explicitly fails if a progressive request has no suitable device. Ordinary
 CPU requests retain their prior behavior. GPU PNG export averages linear radiance,
-applies saved exposure and the existing Reinhard map, then encodes sRGB once. A
+applies saved exposure and the selected tone map (Reinhard by default), then
+encodes sRGB once. Runtime `aces_fitted` is described in
+[studio lighting](render-studio-lighting.md). A
 transparent background uses straight alpha; background color is independent of
 illumination.
 
@@ -43,23 +53,40 @@ the symmetric diffuse attenuation defined by `render::surface`. Each hit evaluat
 the three existing directional studio lights with shadow visibility. Continuation
 samples a mixture of cosine-weighted diffuse and GGX normals with the combined
 PDF; Russian roulette begins after four hits. There are indirect bounces, but no
-environment illumination in the production profile. All legacy opaque colors use
+environment illumination in the default legacy lighting profile. All legacy opaque colors use
 linear-sRGB base color, metallic 0, roughness 0.5, IOR 1.5. Explicit face appearances
 take precedence over body appearances.
 
-This initial executor rejects opacity below one. It does not implement refraction,
-absorption, HDRI, area lights, denoising, textures, EXR or Final mode. A path-traced
-preview is not a declaration of those capabilities. The uniform environment used
-by the numerical furnace test is deliberately not exposed as an HDRI feature.
+Explicit optical appearances can now select smooth dielectric reflection,
+refraction, Beer–Lambert absorption and ideal thin sheets; see
+[the transmission contract](render-transmission.md). Preview opacity remains a
+separate scalar-alpha approximation. Opacity below one without an explicit
+transmission record is rejected by the path executor. Runtime
+[area lights](render-studio-lighting.md), [sun/HDR environment lighting](render-environment.md)
+and [opaque planar color/normal maps](render-runtime-textures.md) are available
+through explicit job inputs. They do not add saved document fields. Denoising,
+texture LOD/mipmap selection, EXR and Final mode remain unimplemented by this
+executor; a path-traced preview does not declare those capabilities.
 
-Each job builds a balanced median-split BVH over its immutable captured meshes;
-there is no cross-document cache to confuse scene generations. Positions are
+Each job builds a BVH over its immutable captured meshes with a sixteen-bin
+surface-area heuristic on triangle centres; there is no cross-document cache to
+confuse scene generations. A split is accepted only when a median split of its
+larger side would still keep the tree within 30 levels, the shader's 32-entry
+traversal stack; otherwise that node falls back to the median split. Traversal
+tests both child boxes at their parent and visits the nearer first. On the
+exploded coffee machine at 1080p and 8 samples per pixel, this halves render
+time on an NVIDIA GB10 (opaque 4.95 s to 2.49 s, closed glass 5.65 s to
+2.79 s) with bit-identical images. Positions are
 rebased around the camera target before f32 upload. The upload packs indexed 32-byte position/normal vertices, 16-byte triangle records
-(including material IDs), 32-byte resolved materials and 32-byte BVH nodes. The
-geometry arrays share one buffer so traversal fits baseline storage-binding limits.
-Geometry must be
-within 1e7 mm of the camera target; ray offsets are max(1e-5 mm, extent × 1e-7).
-This is a bounded preview precision policy, not a robust CAD intersection oracle.
+(including material IDs), 64-byte resolved materials, four-byte planar patch IDs
+and 32-byte BVH nodes. Geometry arrays share one buffer. The progressive executor
+requires six storage buffers per stage for geometry, BVH, accumulation,
+environment, textures and medium-failure counts; raster device requirements remain unchanged.
+Geometry must be within 1e7 mm of the camera target. Opaque and thin-sheet ray
+offsets use max(1e-5 mm, extent × 1e-7); closed glass instead retains an anchor
+and local displacement with strictly positive intersections, as described in
+[closed-glass boundaries](render-glass-boundaries.md). These are bounded preview
+precision policies, not a robust CAD intersection oracle.
 
 Each GPU dispatch computes at most 262,144 pixel paths at one sample index. The
 worker waits for that dispatch before checking cancellation and issuing another.

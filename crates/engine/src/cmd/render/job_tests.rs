@@ -33,6 +33,7 @@ fn additional_executor_routes_by_capability_and_survives_document_adoption() {
             let mut descriptor = CpuHost::cooperative().descriptor()?;
             descriptor.id = solidcraft_render::ExecutorId::new("test-progressive").unwrap();
             descriptor.profiles[0].features.push(solidcraft_render::RenderFeature::Progressive);
+            descriptor.profiles[0].features.push(solidcraft_render::RenderFeature::Hdri);
             Ok(descriptor)
         }
         fn admit(
@@ -42,7 +43,10 @@ fn additional_executor_routes_by_capability_and_survives_document_adoption() {
             options: JobOptions,
         ) -> solidcraft_render::job::Result<Admission> {
             options.validate()?;
-            solidcraft_render::job::admit(scene, request)
+            // admit_geometry counts source geometry only; this executor renders through the
+            // CPU task, which ignores the environment and textures, so budget its pixels and
+            // PNG with the CPU estimate for the same frame.
+            solidcraft_render::job::admit(scene, &ImageRequest { environment: None, textures: None, ..request.clone() })
         }
         fn begin(
             &self,
@@ -66,6 +70,26 @@ fn additional_executor_routes_by_capability_and_survives_document_adoption() {
     let preflight = session.execute("render.preflight", &request).unwrap();
     assert_eq!(preflight["resolved"]["executor"], "test-progressive");
     assert_eq!(additional.admitted_bytes(), 0);
+    let mut studio = request.clone();
+    studio["lighting"] = json!({"environment":[1,1,1],"area_lights":[{"center":[0,0,10],"u":[2,0,0],"v":[0,-2,0],"radiance":[4,4,4]}]});
+    studio["tone_map"] = json!("aces_fitted");
+    let document = session.doc.clone();
+    let studio_reply = session.execute("render.preflight", &studio).unwrap();
+    assert_eq!(studio_reply["options"]["lighting"]["environment"], json!([1.0, 1.0, 1.0]));
+    assert_eq!(studio_reply["options"]["tone_map"], "aces_fitted");
+    assert!(Arc::ptr_eq(&document, &session.doc));
+    studio["environment"] = json!({"kind":"sky","intensity":0.5,"rotation_rad":0.3});
+    let env_reply = session.execute("render.preflight", &studio).unwrap();
+    assert_eq!(env_reply["environment"]["kind"], "original_gradient_sky");
+    assert_eq!(env_reply["environment"]["width"], 512);
+    assert_eq!(env_reply["environment"]["source_sha256"].as_str().unwrap().len(), 64);
+    assert!(env_reply["request"].get("environment").is_none());
+    assert!(Arc::ptr_eq(&document, &session.doc));
+    studio["progressive"] = json!(false);
+    assert!(session.execute("render.preflight", &studio).unwrap_err().to_string().contains("require progressive"));
+    studio["progressive"] = json!(true);
+    studio["lighting"]["area_lights"][0]["u"] = json!([0, 0, 0]);
+    assert!(session.execute("render.preflight", &studio).is_err());
     let started = session.execute("render.start", &request).unwrap();
     let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
     let status = session.render_job_handle(id).unwrap().wait_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -280,4 +304,14 @@ fn native_start_and_cancel_measure_cached_capture_without_timing_assertions() {
         status.progress.phase
     );
     assert!(status.progress.phase.terminal());
+}
+
+#[test]
+fn runtime_texture_controls_require_progressive_and_leave_document_unchanged() {
+    let (mut s, _) = session();
+    let doc = s.doc.clone();
+    let input = json!({"raytrace":{"textures":[{"body_index":0,"body_name":"No body","frame":{"origin":[0,0,0],"u":[1,0,0],"v":[0,1,0]},"normal_opengl":"not-opened.png"}]}});
+    let error = s.execute("render.preflight", &input).unwrap_err().to_string();
+    assert!(error.contains("require progressive"), "{error}");
+    assert!(Arc::ptr_eq(&doc, &s.doc));
 }

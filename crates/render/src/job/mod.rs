@@ -13,9 +13,14 @@ use crate::{BackendId, Camera, ExecutorId};
 
 mod host;
 mod image;
+mod lens;
+mod lighting;
 mod png;
+pub mod textures;
 pub use host::{CpuHost, HostKind, ImageHost, JobHandle, JobStatus, RenderFrame};
 pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry};
+pub use lens::ThinLens;
+pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};
 pub use png::PngTask;
 
 /// Runtime sampling intent, separate from saved documents and device resources.
@@ -26,16 +31,27 @@ pub struct JobOptions {
     pub max_depth: u32,
     pub seed: u32,
     pub exposure_ev: f64,
+    pub lens: Option<ThinLens>,
+    pub lighting: Option<StudioLighting>,
+    pub tone_map: ToneMap,
+    /// Optional final spatial filter. Raw progressive accumulation remains unchanged.
+    pub denoise: bool,
 }
 
 impl Default for JobOptions {
     fn default() -> Self {
-        Self { samples: 64, max_depth: 8, seed: 0, exposure_ev: 0.0 }
+        Self { samples: 64, max_depth: 8, seed: 0, exposure_ev: 0.0, lens: None, lighting: None, tone_map: ToneMap::default(), denoise: false }
     }
 }
 
 impl JobOptions {
     pub fn validate(&self) -> Result<()> {
+        if let Some(lighting) = self.lighting {
+            lighting.validate()?;
+        }
+        if let Some(lens) = self.lens {
+            lens.validate()?;
+        }
         if !(1..=4096).contains(&self.samples)
             || !(1..=16).contains(&self.max_depth)
             || !self.exposure_ev.is_finite()
@@ -157,11 +173,16 @@ impl CancelToken {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageRequest {
+    /// Captured runtime resources; never persisted or accepted as serialized pixel arrays.
+    #[serde(skip)]
+    pub environment: Option<Arc<crate::lighting::environment::EnvironmentSource>>,
     pub camera: Camera,
     pub width: u32,
     pub height: u32,
     pub background: [u8; 3],
     pub transparent_background: bool,
+    #[serde(skip)]
+    pub textures: Option<Arc<textures::RuntimeTextures>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

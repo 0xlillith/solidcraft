@@ -51,6 +51,12 @@ fn add_bytes(sum: &mut u64, count: usize, size: usize) -> Result<()> {
 /// counted even when another owner already holds them. Allocator and codec internals are estimates.
 /// Includes the CPU raster work estimate and its 384 MiB per-job check.
 pub fn admit(scene: &ProductScene, request: &ImageRequest) -> Result<Admission> {
+    if request.environment.is_some() {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "CPU product does not support environment maps"));
+    }
+    if request.textures.is_some() {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "runtime textures require the progressive GPU executor"));
+    }
     admit_raster(admit_source(scene, request, MAX_TRIANGLES)?)
 }
 
@@ -119,7 +125,7 @@ fn admit_source(scene: &ProductScene, request: &ImageRequest, max_triangles: u64
         for count in [m.seams.capacity(), m.smooth_edges.capacity(), m.sharp_edges.capacity()] {
             add_bytes(&mut geometry, count, 1)?;
         }
-        if body.surface.is_some() && body.opacity != 1.0 {
+        if body.surface.is_some() && body.transmission.is_none() && body.opacity != 1.0 {
             return Err(invalid("opaque PBR requires opacity 1"));
         }
         if !body.opacity.is_finite() || !(0.0..=1.0).contains(&body.opacity) {
@@ -417,7 +423,11 @@ impl ImageTask {
             return Err(invalid("non-finite product triangle"));
         }
         let look = self.looks.get(draw.body as usize).and_then(|looks| mesh.tri_face.get(draw.triangle as usize).and_then(|face| looks.get(face)));
-        let (colour, opacity, surface) = look.map_or((body.color, body.opacity, body.surface), |look| (look.color, look.opacity, look.surface));
+        // Transmission is physical optical data, never a request to change CPU preview.
+        // Keep the existing scalar sorted-alpha shading for glass previews.
+        let (colour, opacity, surface) = look.map_or((body.color, body.opacity, body.surface.filter(|_| body.transmission.is_none())), |look| {
+            (look.color, look.opacity, look.surface.filter(|_| look.transmission.is_none()))
+        });
         if surface.is_some() && opacity != 1.0 {
             return Err(invalid("opaque PBR requires opacity 1"));
         }
