@@ -53,6 +53,21 @@ impl ImageExecutor for CpuExecutor {
     }
 }
 
+// Completion notification precedes destruction of the worker's temporary handle.
+// Lease tests join their owned, idle worker before checking exact retained bytes.
+#[cfg(all(test, feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+impl ImageHost {
+    pub(super) fn join_worker_for_test(&mut self) -> Result<()> {
+        self.0.shared.stop.store(true, Ordering::Release);
+        self.0.shared.wake.notify_all();
+        let inner = Arc::get_mut(&mut self.0).ok_or_else(|| JobError::new(ErrorCode::Internal, "test must own its host"))?;
+        if let Some(worker) = inner._worker.take() {
+            worker.join().map_err(|_| JobError::new(ErrorCode::Internal, "test worker panicked"))?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[path = "host_tests.rs"]
 mod tests;
@@ -1443,7 +1458,7 @@ mod environment_metadata_lease_tests {
         let input = EnvironmentInput::new(HdrSource::new(bytes).unwrap(), 0.5, 2.0, 16).unwrap();
         let metadata = input.metadata();
         let expected = std::mem::size_of::<EnvironmentInfo>() as u64;
-        let host = CpuHost::for_platform().unwrap();
+        let mut host = CpuHost::for_platform().unwrap();
         let budget = host.0.shared.budget.clone();
         let request = ImageRequest {
             environment: None,
@@ -1468,6 +1483,7 @@ mod environment_metadata_lease_tests {
         let status = job.wait_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert_eq!(status.progress.phase, Phase::Completed);
         assert!(matches!(status.environment, Some(JobEnvironmentInfo::Cpu(info)) if info.source_sha256 == metadata.source_sha256));
+        host.join_worker_for_test().unwrap();
         let frame = job.frame().unwrap().unwrap();
         job.0.data.lock().unwrap().frame = None;
         assert_eq!(host.admitted_bytes(), frame._reservation.bytes + expected);

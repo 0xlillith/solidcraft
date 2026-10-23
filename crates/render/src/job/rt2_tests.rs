@@ -82,7 +82,7 @@ fn rejected_raytrace_submission_leaves_existing_raster_reservation_intact() {
 #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
 #[test]
 fn native_integrators_share_one_host_and_retained_frame_budget() {
-    let host = CpuHost::for_platform().unwrap();
+    let mut host = CpuHost::for_platform().unwrap();
     let scene = || ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
     let raster_id = JobId { session: 10, serial: 1, generation: 1 };
     let raytrace_id = JobId { session: 20, serial: 1, generation: 1 };
@@ -92,6 +92,7 @@ fn native_integrators_share_one_host_and_retained_frame_budget() {
     for job in [&raster, &raytrace] {
         assert_eq!(job.wait_timeout(std::time::Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
     }
+    host.join_worker_for_test().unwrap();
     let raster_frame = raster.frame().unwrap().unwrap();
     let raytrace_frame = raytrace.frame().unwrap().unwrap();
     assert_eq!(raster_frame.info.job, raster_id);
