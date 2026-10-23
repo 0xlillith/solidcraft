@@ -49,7 +49,7 @@ pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geo
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};
 pub use png::PngTask;
-pub use punctual::{PunctualLightOptions, SpotConeOptions};
+pub use punctual::{PunctualDiagnostics, PunctualLightOptions, SpotConeOptions};
 
 /// Native path-tracing ceilings, further restricted by the actual device.
 /// Kept in the device-independent layer so saved intent and UI agree with execution.

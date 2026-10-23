@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(feature = "bundled-render-library")]
 use solidcraft_render::job::textures::{BaseColorMode, TextureMap};
 
 #[test]
@@ -36,6 +37,7 @@ fn authored_library_search_is_bounded_and_concepts_are_not_runtime_presets() {
     assert_eq!(s.execute("render.library.list", &json!({"kind":"surfaces","query":"SURF-001"})).unwrap()["total"], 1);
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn built_in_maps_keep_exact_published_bytes_and_explicit_channel_roles() {
     let mut count = 0;
@@ -62,6 +64,7 @@ fn built_in_maps_keep_exact_published_bytes_and_explicit_channel_roles() {
     assert!(texture_bytes("SURF-001/base_color", MapRole::BaseColor, 1, "test").is_err());
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn builtin_hdr_capture_is_atomic_undoable_deduplicated_and_path_independent() {
     let mut s = Session::default();
@@ -108,6 +111,7 @@ fn authored_hdr_orientation_matches_the_documented_longitude_origin() {
     }
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn explicit_surface_prepare_has_physical_scale_and_does_not_assign_materials() {
     let mut s = Session::default();
@@ -180,6 +184,7 @@ fn studio_adapter_does_not_invent_passive_cards_calibration_or_extra_suns() {
     assert!(actual.direction[2] > 0.0, "runtime direction points toward the sun, not along incoming photons");
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn saved_authored_maps_roundtrip_and_resolve_without_paths_or_captured_ordinals() {
     let mut s = Session::default();
@@ -213,6 +218,7 @@ fn saved_authored_maps_roundtrip_and_resolve_without_paths_or_captured_ordinals(
     assert_eq!(s.doc, before);
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn saved_surface_follows_its_occurrence_without_rebinding_another_instance() {
     let mut s = Session::default();
@@ -243,6 +249,7 @@ fn saved_surface_follows_its_occurrence_without_rebinding_another_instance() {
     assert_eq!(s.doc.render.setups["P"].surfaces, bindings);
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn saved_surface_rejects_changed_feature_and_hidden_target_and_can_be_removed_offline() {
     let mut s = Session::default();
@@ -330,6 +337,7 @@ fn complete_authored_rig_keeps_passive_cards_nonemissive_and_scales_exactly_once
     assert_eq!(projected["stage"], json!([]));
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[test]
 fn patch_cannot_hide_existing_resources_from_replacement_consent() {
     let mut s = Session::default();
@@ -357,4 +365,25 @@ fn patch_cannot_hide_existing_resources_from_replacement_consent() {
         .is_err()
     );
     assert_eq!(s.doc.to_json(), before);
+}
+
+#[cfg(not(feature = "bundled-render-library"))]
+#[test]
+fn omitted_optional_pack_keeps_discovery_but_refuses_resource_mutation() {
+    let mut session = Session::default();
+    let before = session.doc.clone();
+    let history = (session.revision, session.undo.len());
+    let hdr = session.execute("render.library.list", &json!({"kind":"hdr","availability":"usable"})).unwrap();
+    assert_eq!(hdr["total"], 0);
+    assert!(
+        texture_bytes("SURF-001/base_color", MapRole::BaseColor, 16 * 1024 * 1024, "test")
+            .unwrap_err()
+            .to_string()
+            .contains("bundled-render-library")
+    );
+    let request = json!({"id":"HDR-001","name":"No pack","set":{"job":{"method":"gpu_path","options":{}}}});
+    assert!(session.execute("render.library.environment.apply", &request).unwrap_err().to_string().contains("bundled-render-library"));
+    assert!(session.execute("render.library.surface.bind", &json!({})).unwrap_err().to_string().contains("bundled-render-library"));
+    assert_eq!(session.doc, before);
+    assert_eq!((session.revision, session.undo.len()), history);
 }

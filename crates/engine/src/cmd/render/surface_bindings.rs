@@ -127,6 +127,7 @@ fn publish(s: &mut Session, name: String, setup: RenderSetup, command: &str) -> 
     Ok(json!({"name":name,"setup":setup,"mapping_space":"definition_local_mm","geometry_and_physical_materials_unchanged":true}))
 }
 pub(super) fn bind(s: &mut Session, params: &Value) -> Result<Value> {
+    super::library::require_bundled("render.library.surface.bind")?;
     let command = "render.library.surface.bind";
     let input: Bind = serde_json::from_value(params.clone()).map_err(|e| bad(command, e.to_string()))?;
     let mut setup = super::patched_settings(s, &input.name, &input.set, command)?;

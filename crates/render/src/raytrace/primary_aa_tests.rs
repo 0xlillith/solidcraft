@@ -468,3 +468,22 @@ fn workstation_progressive_resolves_every_checkpoint_through_its_admitted_cap() 
     }
     assert!(composite_spatial(Vec3::ZERO, 0, 4097, [0; 3], 0.0).is_err());
 }
+
+#[test]
+fn area_light_points_include_spatial_and_film_sample_identity() {
+    let mut keys = std::collections::BTreeSet::new();
+    let mut points = std::collections::BTreeSet::new();
+    for film in [0, 1, 1023, 2047, 4095] {
+        for spatial in 0..16 {
+            let key = area_sample_key(41, spatial, 16, film).unwrap();
+            assert!(keys.insert(key));
+            let (u, v) = super::super::area::sample_uv(key, 2, 0, 4, 73).unwrap();
+            assert!(points.insert((u.to_bits(), v.to_bits())));
+            assert_eq!(super::super::area::sample_uv(key, 2, 0, 4, 73).unwrap(), (u, v));
+        }
+    }
+    assert_eq!(area_sample_key(41, 0, 1, 0).unwrap(), 41);
+    assert!(area_sample_key(41, 0, 1, 4096).is_err());
+    assert!(area_sample_key(41, 4, 4, 0).is_err());
+    assert!(area_sample_key(u64::MAX, 0, 4, 0).is_err());
+}

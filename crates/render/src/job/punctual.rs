@@ -180,3 +180,17 @@ mod tests {
         assert!(input.validate().is_err());
     }
 }
+
+/// Runtime-only counters: scene-dependent singular light samples contribute zero,
+/// but remain visible to the caller. These are not saved design fields.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PunctualDiagnostics {
+    pub near_source: u64,
+    pub radiance_limit: u64,
+    pub shadow_offset_crossed: u64,
+}
+impl PunctualDiagnostics {
+    pub fn is_empty(self) -> bool {
+        self.near_source == 0 && self.radiance_limit == 0 && self.shadow_offset_crossed == 0
+    }
+}

@@ -8,7 +8,8 @@ publish = false
 default-run = "solidcraft"
 
 [features]
-default = ["raytrace-cpu"]
+default = ["raytrace-cpu", "bundled-render-library"]
+bundled-render-library = ["solidcraft-engine/bundled-render-library"]
 raytrace-cpu = ["solidcraft-engine/raytrace-cpu"]
 
 # The workspace lints, except unsafe_code: denied, not forbidden, so that src/open_documents.rs

@@ -3034,3 +3034,15 @@ mod optical_media_tests;
 
 #[path = "effects_tests.rs"]
 mod effects_tests;
+
+#[test]
+fn display_bloom_slices_refuse_invalid_ranges_without_panicking() {
+    let pixels = [[1.0_f32, 2.0, 3.0]; 3];
+    assert_eq!(bloom_chunk(Some(&pixels), 1, 2).unwrap().unwrap(), &pixels[1..3]);
+    assert_eq!(bloom_chunk(Some(&pixels), 3, 0).unwrap().unwrap(), &[]);
+    for (offset, count) in [(0, 4), (2, 2), (4, 0), (usize::MAX, 1), (1, usize::MAX)] {
+        let result = std::panic::catch_unwind(|| bloom_chunk(Some(&pixels), offset, count));
+        assert!(result.expect("invalid retained image range must not panic").is_err());
+    }
+    assert!(bloom_chunk(None, 0, 3).unwrap().is_none());
+}

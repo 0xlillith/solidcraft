@@ -338,6 +338,8 @@ pub enum JobEnvironmentInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct JobStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub punctual_diagnostics: Option<super::PunctualDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub presentation: Option<super::presentation::MasterPresentation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sampling: Option<super::adaptive::SamplingReport>,
@@ -359,6 +361,7 @@ pub struct JobStatus {
 }
 
 struct Data {
+    punctual_diagnostics: Option<super::PunctualDiagnostics>,
     sampling: Option<super::adaptive::SamplingReport>,
     progress: Progress,
     error: Option<JobError>,
@@ -398,6 +401,7 @@ impl JobHandle {
     pub fn status(&self) -> Result<JobStatus> {
         let data = self.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         Ok(JobStatus {
+            punctual_diagnostics: data.punctual_diagnostics,
             presentation: self.0.presentation.as_deref().map(|retained| retained.info.clone()),
             sampling: data.sampling.clone(),
             linear_master: data.frame.as_ref().and_then(|frame| frame.linear_master_info().cloned()),
@@ -581,6 +585,14 @@ enum WorkPoll {
 }
 
 impl WorkTask {
+    fn punctual_diagnostics(&self) -> Option<super::PunctualDiagnostics> {
+        match self {
+            #[cfg(feature = "raytrace-cpu")]
+            Self::Raytrace(slot) => slot.0.first().and_then(|task| task.punctual_diagnostics()),
+            _ => None,
+        }
+    }
+
     fn source_master(&self) -> Result<Option<Arc<RenderFrame>>> {
         match self {
             Self::Regrade(slot) => {
@@ -704,6 +716,7 @@ impl Running {
         }
         let result = self.task.as_mut().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render task"))?.step(units)?;
         let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
+        data.punctual_diagnostics = self.task.as_ref().and_then(WorkTask::punctual_diagnostics);
         // The final publication check is under the same lock as cancellation.
         if self.handle.0.cancel.is_cancelled() {
             data.progress.phase = Phase::Cancelled;
@@ -1315,6 +1328,7 @@ impl ImageHost {
             resolved,
             cancel: CancelToken::default(),
             data: Mutex::new(Data {
+                punctual_diagnostics: None,
                 sampling: None,
                 progress: Progress { phase: Phase::Queued, done: 0, total: 1 },
                 error: None,
@@ -1430,6 +1444,7 @@ impl ImageHost {
             resolved,
             cancel: CancelToken::default(),
             data: Mutex::new(Data {
+                punctual_diagnostics: None,
                 sampling: None,
                 progress: Progress { phase: Phase::Queued, done: 0, total: 1 },
                 error: None,

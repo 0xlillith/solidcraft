@@ -4,14 +4,14 @@
 #[rustfmt::skip]
 pub(super) fn catalog(kind: &str) -> Option<&'static str> {
     match kind {
-        "capabilities" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/render-materials/capabilities.json"))),
-        "environments" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/render-materials/environments.json"))),
+        "capabilities" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/catalog/capabilities.json"))),
+        "environments" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/catalog/environments.json"))),
         "hdr" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/starter/environments/manifest.json"))),
-        "lighting" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/render-materials/lighting.json"))),
-        "materials" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/render-materials/materials.json"))),
-        "quality" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/render-materials/quality-presets.json"))),
+        "lighting" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/catalog/lighting.json"))),
+        "materials" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/catalog/materials.json"))),
+        "quality" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/catalog/quality-presets.json"))),
         "rigs" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/starter/lighting/exports/rigs.json"))),
-        "scenes" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/render-materials/scene-presets.json"))),
+        "scenes" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/catalog/scene-presets.json"))),
         "selene_appearances" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/selene/materials/appearance-pack.json"))),
         "selene_shots" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/selene/scenes/shots.json"))),
         "surface_manifest" => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/render/starter/materials/manifest.json"))),
@@ -20,6 +20,7 @@ pub(super) fn catalog(kind: &str) -> Option<&'static str> {
     }
 }
 
+#[cfg(feature = "bundled-render-library")]
 #[rustfmt::skip]
 pub(super) fn asset(key: &str) -> Option<(&'static [u8], &'static str)> {
     match key {
@@ -242,3 +243,7 @@ pub(super) fn asset(key: &str) -> Option<(&'static [u8], &'static str)> {
         _ => None,
     }
 }
+
+#[cfg(not(feature = "bundled-render-library"))]
+#[rustfmt::skip]
+pub(super) fn asset(_key: &str) -> Option<(&'static [u8], &'static str)> { None }

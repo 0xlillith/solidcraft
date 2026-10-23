@@ -859,8 +859,12 @@ impl ImageWork for Task {
 }
 impl Task {
     fn encode_output(&mut self, linear: Vec<[f32; 4]>, bloom: Option<Vec<[f32; 3]>>) -> Result<TaskPoll> {
-        let mut rgba = scene::reserved(linear.len() * 4)?;
-        rgba.resize(linear.len() * 4, 0);
+        let encoded_len = linear.len().checked_mul(4).ok_or_else(|| gpu("display byte length overflow"))?;
+        if bloom.as_ref().is_some_and(|pixels| pixels.len() != linear.len()) {
+            return Err(gpu("bloom and display pixel counts differ"));
+        }
+        let mut rgba = scene::reserved(encoded_len)?;
+        rgba.resize(encoded_len, 0);
         let display = Display {
             finishing: self.options.finishing,
             backdrop: self.options.backdrop,
@@ -874,15 +878,20 @@ impl Task {
         // Pixels are independent: encode contiguous chunks on every core.
         let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 16);
         let chunk = linear.len().div_ceil(workers).max(1);
+        let output_chunk = chunk.checked_mul(4).ok_or_else(|| gpu("display chunk byte length overflow"))?;
+        let bloom = bloom.as_deref();
         let cancel = &self.cancel;
         std::thread::scope(|scope| {
             let jobs: Vec<_> = linear
                 .chunks(chunk)
-                .zip(rgba.chunks_mut(chunk * 4))
+                .zip(rgba.chunks_mut(output_chunk))
                 .enumerate()
                 .map(|(i, (input, output))| {
-                    let glow = bloom.as_ref().map(|pixels| &pixels[i * chunk..i * chunk + input.len()]);
-                    scope.spawn(move || display.encode_bloom_at(input, output, cancel, i * chunk, glow))
+                    scope.spawn(move || {
+                        let offset = i.checked_mul(chunk).ok_or_else(|| gpu("display chunk offset overflow"))?;
+                        let glow = bloom_chunk(bloom, offset, input.len())?;
+                        display.encode_bloom_at(input, output, cancel, offset, glow)
+                    })
                 })
                 .collect();
             jobs.into_iter()
@@ -902,4 +911,12 @@ impl Task {
         }
         Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }))
     }
+}
+
+/// A malformed intermediate image is a job error, never an indexing panic in a
+/// display worker. Also bound addition before constructing the range.
+fn bloom_chunk(pixels: Option<&[[f32; 3]]>, offset: usize, count: usize) -> Result<Option<&[[f32; 3]]>> {
+    let Some(pixels) = pixels else { return Ok(None) };
+    let end = offset.checked_add(count).ok_or_else(|| gpu("bloom chunk range overflow"))?;
+    pixels.get(offset..end).map(Some).ok_or_else(|| gpu("bloom chunk is outside the retained image"))
 }

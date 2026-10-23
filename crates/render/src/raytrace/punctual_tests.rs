@@ -58,7 +58,7 @@ fn world_translation_and_rotation_preserve_response() {
 }
 
 #[test]
-fn hostile_inputs_and_near_source_refuse_without_clamping() {
+fn hostile_inputs_refuse_but_scene_singularities_are_reported_without_clamping() {
     for bad in [f64::NAN, f64::INFINITY, -1.0] {
         assert!(PunctualLight::new(Vec3::ZERO, Vec3::X, bad, 100.0, 0.001, None).is_err());
         assert!(PunctualLight::new(Vec3::ZERO, Vec3::X, 1.0, bad, 0.001, None).is_err());
@@ -67,16 +67,19 @@ fn hostile_inputs_and_near_source_refuse_without_clamping() {
     assert!(SpotCone::new(Vec3::ZERO, 0.0, 0.5).is_err());
     assert!(SpotCone::new(Vec3::Z, 0.5, 0.5).is_err());
     assert!(SpotCone::new(Vec3::Z, 0.0, f64::MIN_POSITIVE).is_err());
-    assert!(point(Vec3::ZERO).sample(Vec3::ZERO).is_err());
-    assert!(point(Vec3::ZERO).sample(Vec3::Z * 0.0009).is_err());
+    assert_eq!(point(Vec3::ZERO).sample(Vec3::ZERO).unwrap().omitted, Some(OmittedSample::NearSource));
+    assert_eq!(point(Vec3::ZERO).sample(Vec3::Z * 0.0009).unwrap().omitted, Some(OmittedSample::NearSource));
     assert!(point(Vec3::ZERO).sample(Vec3::Z * 0.001).is_ok());
-    assert!(PunctualLight::new(Vec3::ZERO, Vec3::X, 64.0, 1e6, 0.001, None).unwrap().sample(Vec3::Z * 0.001).is_err());
+    assert_eq!(
+        PunctualLight::new(Vec3::ZERO, Vec3::X, 64.0, 1e6, 0.001, None).unwrap().sample(Vec3::Z * 0.001).unwrap().omitted,
+        Some(OmittedSample::RadianceLimit)
+    );
 }
 
 #[test]
 fn shadow_interval_excludes_source_and_geometry_beyond_it() {
     let sample = point(Vec3::Z * 10.0).sample(Vec3::ZERO).unwrap();
-    let ray = sample.shadow_ray(hit(Vec3::ZERO)).unwrap();
+    let ray = sample.shadow_ray(hit(Vec3::ZERO)).unwrap().unwrap();
     assert!(ray.interval()[0] > 0.0 && ray.interval()[1] < 10.0);
     let triangle = |z| super::super::Triangle::new([Vec3::new(-1.0, -1.0, z), Vec3::new(1.0, -1.0, z), Vec3::new(0.0, 1.0, z)]).unwrap();
     assert!(triangle(5.0).intersect(&ray).is_some());
@@ -85,8 +88,8 @@ fn shadow_interval_excludes_source_and_geometry_beyond_it() {
 }
 
 #[test]
-fn offset_passing_source_refuses_instead_of_reversing_shadow() {
+fn offset_passing_source_contributes_nothing_instead_of_reversing_shadow() {
     let p = Vec3::Z * (1e12 - 1.0);
     let sample = point(p + Vec3::Z * 0.0011).sample(p).unwrap();
-    assert!(sample.shadow_ray(hit(p)).is_err());
+    assert!(sample.shadow_ray(hit(p)).unwrap().is_none());
 }

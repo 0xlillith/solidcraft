@@ -55,11 +55,19 @@ pub struct PunctualSample {
     pub direction: Vec3,
     pub incident_linear_srgb: Vec3,
     position: Vec3,
+    pub omitted: Option<OmittedSample>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OmittedSample {
+    NearSource,
+    RadianceLimit,
 }
 
 impl PunctualLight {
     /// Intensity equals the relative on-axis incident value at reference_mm.
-    /// Distances below minimum_mm REFUSE; the inverse square is never clamped.
+    /// Distances below minimum_mm contribute zero with a recorded diagnostic.
+    /// The inverse-square response is not silently clamped.
     pub fn new(position: Vec3, color: Vec3, intensity: f64, reference_mm: f64, minimum_mm: f64, cone: Option<SpotCone>) -> Result<Self> {
         if !bounded(position) || !color.is_finite() || [color.x, color.y, color.z].into_iter().any(|x| !(0.0..=1.0).contains(&x)) {
             return Err(TraceError::InvalidInput("punctual position or linear sRGB colour"));
@@ -83,28 +91,44 @@ impl PunctualLight {
         let delta = self.position - hit_position;
         let distance = delta.len();
         if !distance.is_finite() || distance < self.minimum_mm {
-            return Err(TraceError::InvalidInput("punctual source nearer than explicit minimum distance"));
+            return Ok(PunctualSample {
+                direction: Vec3::Z,
+                incident_linear_srgb: Vec3::ZERO,
+                position: self.position,
+                omitted: Some(OmittedSample::NearSource),
+            });
         }
         let direction = delta / distance;
         let cone = self.cone.map_or(1.0, |cone| cone.weight(-direction));
         let ratio = self.reference_mm / distance;
         let incident_linear_srgb = self.color * (self.intensity * ratio * ratio * cone);
-        super::lighting::validate_radiance(incident_linear_srgb)?;
-        Ok(PunctualSample { direction, incident_linear_srgb, position: self.position })
+        if super::lighting::validate_radiance(incident_linear_srgb).is_err() {
+            return Ok(PunctualSample {
+                direction,
+                incident_linear_srgb: Vec3::ZERO,
+                position: self.position,
+                omitted: Some(OmittedSample::RadianceLimit),
+            });
+        }
+        Ok(PunctualSample { direction, incident_linear_srgb, position: self.position, omitted: None })
     }
 }
 
 impl PunctualSample {
     /// Re-aim from the common robust geometric offset, then exclude the source.
-    /// An offset that crossed the source refuses; no backwards/unbounded ray.
-    pub fn shadow_ray(self, hit: SharedHit<'_>) -> Result<Ray> {
+    /// An offset that crossed the source contributes zero; no backwards/unbounded ray.
+    pub fn shadow_ray(self, hit: SharedHit<'_>) -> Result<Option<Ray>> {
         let origin = hit.spawn(self.direction)?.origin();
         let delta = self.position - origin;
         let distance = delta.len();
         if !distance.is_finite() || distance <= 0.0 || delta.dot(self.direction) <= 0.0 {
-            return Err(TraceError::InvalidInput("punctual shadow offset crossed source"));
+            return Ok(None);
         }
-        Ray::new(origin, delta, 0.0_f64.next_up(), distance.next_down())
+        let far = distance.next_down();
+        if far <= 0.0_f64.next_up() {
+            return Ok(None);
+        }
+        Ray::new(origin, delta, 0.0_f64.next_up(), far).map(Some)
     }
 }
 

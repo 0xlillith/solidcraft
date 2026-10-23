@@ -14,6 +14,12 @@ Editable drawing code, native projects and shipped exports are collected under `
 
 | File | Author | Source | Licence |
 |---|---|---|---|
+| assets/render/catalog/capabilities.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/capabilities.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
+| assets/render/catalog/environments.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/environments.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
+| assets/render/catalog/lighting.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/lighting.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
+| assets/render/catalog/materials.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/materials.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
+| assets/render/catalog/quality-presets.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/quality-presets.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
+| assets/render/catalog/scene-presets.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/scene-presets.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
 | examples/chebyshev-motion-trace.json | SolidCraft contributors | Original parametric Chebyshev lambda mechanism and associative-trace demo, constructed from analytic circle intersections; classical link proportions documented at https://doi.org/10.1002/rcs.70095; no external CAD geometry or artwork | MIT OR Apache-2.0 |
 | crates/gpu/src/path/denoise.wgsl | SolidCraft contributors | original bounded edge-aware a-trous spatial filter; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
 | crates/gpu/src/path/denoise_guides.wgsl | SolidCraft contributors | original deterministic centre-ray material and geometry guide pass; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |

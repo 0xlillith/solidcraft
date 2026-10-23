@@ -45,6 +45,27 @@ def checked_file(relative: str, expected: str) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
+def runtime_catalog_path(relative: str) -> str:
+    if relative.startswith("docs/render-materials/"):
+        return "assets/render/catalog/" + Path(relative).name
+    return relative
+
+
+def catalog_exports(check: bool) -> None:
+    for relative in CATALOGS.values():
+        destination = runtime_catalog_path(relative)
+        if destination == relative:
+            continue
+        data = (ROOT / relative).read_bytes()
+        target = ROOT / destination
+        if check:
+            if not target.is_file() or target.read_bytes() != data:
+                raise ValueError(f"Stale runtime catalog export: {destination}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+
+
 def generated() -> tuple[str, dict]:
     assets: dict[str, tuple[str, str]] = {}
     for item in load(CATALOGS["surface_manifest"])["items"]:
@@ -72,13 +93,16 @@ def generated() -> tuple[str, dict]:
     ]
     for kind, relative in sorted(CATALOGS.items()):
         load(relative)
+        relative = runtime_catalog_path(relative)
         text.append(f'        {q(kind)} => Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../{relative}"))),')
-    text += ["        _ => None,", "    }", "}", "", "#[rustfmt::skip]",
+    text += ["        _ => None,", "    }", "}", "", "#[cfg(feature = \"bundled-render-library\")]", "#[rustfmt::skip]",
              "pub(super) fn asset(key: &str) -> Option<(&'static [u8], &'static str)> {",
              "    match key {"]
     for key, (relative, digest) in sorted(assets.items()):
         text.append(f'        {q(key)} => Some((include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../{relative}")), {q(digest)})),')
-    text += ["        _ => None,", "    }", "}", ""]
+    text += ["        _ => None,", "    }", "}", "",
+             "#[cfg(not(feature = \"bundled-render-library\"))]",
+             "#[rustfmt::skip]", "pub(super) fn asset(_key: &str) -> Option<(&'static [u8], &'static str)> { None }", ""]
     return "\n".join(text), {"embedded_maps": maps, "embedded_hdr": len(assets)-maps,
                               "assets_checked": len(assets), "catalogs": len(CATALOGS),
                               "source_readiness_changed": False}
@@ -88,6 +112,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
+    catalog_exports(args.check)
     text, summary = generated()
     if args.check:
         if not OUTPUT.is_file() or OUTPUT.read_text(encoding="utf-8") != text:

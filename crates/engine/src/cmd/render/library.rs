@@ -83,10 +83,15 @@ fn projection(kind: &str, value: &Value) -> Value {
     match kind {
         "native_scenes" => json!({"status":"native_composition","executor":"gpu-path","variants":["review_then_apply"],
             "preserves":["camera","materials","geometry","engineering_properties"],"requires_subject_and_explicit_replacement_consent":true}),
-        "surfaces" => json!({"status":"implemented_pending_batch_validation","variants":["uniform_opaque","gpu_planar_maps"],
-            "omitted":["height_displacement","true_anisotropic_brdf","manufacturing_geometry"],"maps_portability":"version_and_digest_pinned_builtin_setup_bindings"}),
+        "surfaces" => {
+            json!({"status":"implemented_pending_batch_validation","variants":if cfg!(feature="bundled-render-library") {vec!["uniform_opaque","gpu_planar_maps"]} else {vec!["uniform_opaque"]},
+            "omitted":["height_displacement","true_anisotropic_brdf","manufacturing_geometry"],"maps_portability":"version_and_digest_pinned_builtin_setup_bindings"})
+        }
         "selene_appearances" => json!({"status":"implemented_pending_batch_validation","variants":["uniform_opaque"],
             "omitted":value["baseline_projection"]["omitted_target_features"]}),
+        "hdr" if !cfg!(feature = "bundled-render-library") => {
+            json!({"status":"blocked","reason":"optional bundled-render-library pack is not included in this build","variants":[]})
+        }
         "hdr" => json!({"status":"implemented_pending_batch_validation","variants":["embedded_hdr"],
             "author_to_native_rotation_offset_rad":std::f64::consts::PI,"geometry_included":false}),
         "rigs" => {
@@ -243,7 +248,15 @@ pub(super) fn preview(_s: &mut Session, params: &Value) -> Result<Value> {
 }
 
 /// The key is matched against generated constants, never joined to a filesystem path.
+pub(super) fn require_bundled(command: &str) -> Result<()> {
+    if !cfg!(feature = "bundled-render-library") {
+        return Err(bad(command, "this build does not include the optional bundled-render-library texture/HDR pack"));
+    }
+    Ok(())
+}
+
 fn asset_bytes(key: &str, maximum: u64, command: &str) -> Result<Vec<u8>> {
+    require_bundled(command)?;
     let (bytes, expected) = super::library_data::asset(key).ok_or_else(|| bad(command, "unknown built-in asset"))?;
     if bytes.len() as u64 > maximum || HdrId::of(bytes).to_string() != expected {
         return Err(bad(command, "built-in asset exceeds admission or does not match its published SHA-256"));

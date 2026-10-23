@@ -242,3 +242,33 @@ fn mixed_normal_incidence_radiance_is_summed_before_single_display_transform() {
     let expected = encode(linear / (1.0 + linear));
     assert_eq!(render(task), [expected, expected, expected, 255]);
 }
+
+#[test]
+fn scene_dependent_punctual_singularities_complete_and_keep_diagnostic_counts() {
+    for (height, reference, near_source) in [(0.0, 10.0, true), (0.0009, 10.0, true), (0.001, 1e6, false)] {
+        let previous = task(None, true);
+        let mut options = previous.options.clone();
+        let light = &mut options.punctual_lights.as_mut().unwrap()[0];
+        light.position_mm = [0.0, 0.0, height];
+        light.reference_distance_mm = reference;
+        light.intensity = 64.0;
+        let mut request = previous.request.clone();
+        request.raytrace = Some(options.clone());
+        let mut work = ImageTask::new(previous.scene.clone(), request, CancelToken::default(), options).unwrap();
+        let mut completed = false;
+        for _ in 0..100_000 {
+            if let TaskPoll::Complete(png) = work.step(1).unwrap() {
+                assert_eq!(::image::load_from_memory(&png).unwrap().to_rgba8().get_pixel(0, 0).0, [0, 0, 0, 255]);
+                let report = work.punctual_diagnostics().unwrap();
+                if near_source {
+                    assert!(report.near_source > 0);
+                } else {
+                    assert!(report.radiance_limit > 0);
+                }
+                completed = true;
+                break;
+            }
+        }
+        assert!(completed, "singular sample must not fail or stall the image");
+    }
+}

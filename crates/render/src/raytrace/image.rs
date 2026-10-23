@@ -452,6 +452,7 @@ fn resume_optical_path(pending: &mut PendingPixel, path: OpticalPath) {
 }
 
 pub struct ImageTask {
+    punctual_diagnostics: job::PunctualDiagnostics,
     progressive: Option<Progressive>,
     optical: Vec<OpticalTask>,
     anisotropic_targets: [Option<PlanarTarget>; 2],
@@ -500,6 +501,10 @@ pub enum ImagePoll {
 }
 
 impl ImageTask {
+    pub fn punctual_diagnostics(&self) -> Option<job::PunctualDiagnostics> {
+        (!self.punctual_diagnostics.is_empty()).then_some(self.punctual_diagnostics)
+    }
+
     pub fn new(scene: ProductScene, request: ImageRequest, cancel: CancelToken, options: RaytraceOptions) -> job::Result<Self> {
         Self::new_with_environment(scene, request, cancel, options, None)
     }
@@ -600,6 +605,7 @@ impl ImageTask {
             })
             .transpose()?;
         Ok(Self {
+            punctual_diagnostics: Default::default(),
             progressive,
             optical,
             anisotropic_targets,
@@ -1073,7 +1079,7 @@ impl ImageTask {
             let target = anisotropic_faces::target_index(&self.options, shared.body_index, face)
                 .map(|i| self.anisotropic_targets.get(i).copied().flatten().ok_or_else(|| invalid("punctual anisotropic target missing")))
                 .transpose()?;
-            punctual_one(pending, &self.options, bvh, (shared, target, mode), &mut self.work, &self.cancel)?;
+            punctual_one(pending, &self.options, bvh, (shared, target, mode), &mut self.work, &self.cancel, &mut self.punctual_diagnostics)?;
             return Ok(());
         }
         if pending.area_light < self.options.area_lights.as_ref().map_or(0, Vec::len) {
@@ -1084,7 +1090,20 @@ impl ImageTask {
             let target = anisotropic_faces::target_index(&self.options, shared.body_index, face)
                 .map(|i| self.anisotropic_targets.get(i).copied().flatten().ok_or_else(|| invalid("area anisotropic target missing")))
                 .transpose()?;
-            area_one(pending, &self.options, bvh, (shared, target, mode), &mut self.work, &self.cancel, self.pixel as u64)?;
+            area_one(
+                pending,
+                &self.options,
+                bvh,
+                (shared, target, mode),
+                &mut self.work,
+                &self.cancel,
+                area_sample_key(
+                    self.pixel as u64,
+                    self.spatial,
+                    self.options.primary_samples,
+                    self.progressive.as_ref().map_or(0, |progress| progress.film.samples()),
+                )?,
+            )?;
             return Ok(());
         }
         if let Some(cursor) = &mut pending.environment_cursor {
@@ -1587,6 +1606,23 @@ fn spatial_key(pixel: u64, ordinal: u8, samples: u8) -> job::Result<u64> {
         .map(|n| n ^ 0x4141_5052_494d_4152)
         .ok_or_else(|| invalid("spatial seed overflow"))
 }
+/// Distinguish film and spatial ordinals before sampling an emitter. The legacy
+/// single-primary first pass keeps its original key and reference image bytes.
+fn area_sample_key(pixel: u64, spatial: u8, spatial_samples: u8, film_sample: u32) -> job::Result<u64> {
+    primary_offset(spatial_samples, spatial)?;
+    if film_sample >= job::MAX_CPU_SAMPLES_PER_PIXEL {
+        return Err(invalid("area-light film sample ordinal exceeds the admitted cap"));
+    }
+    if spatial_samples == 1 && film_sample == 0 {
+        return Ok(pixel);
+    }
+    pixel
+        .checked_mul(u64::from(job::MAX_CPU_SAMPLES_PER_PIXEL) * 16)
+        .and_then(|key| key.checked_add(u64::from(film_sample) * 16 + u64::from(spatial)))
+        .map(|key| key ^ 0x4152_4541_5341_4d50)
+        .ok_or_else(|| invalid("area-light sample identity overflow"))
+}
+
 fn composite_spatial(premultiplied: Vec3, covered: u16, attempts: u16, background: [u8; 3], exposure: f64) -> job::Result<[u8; 4]> {
     if attempts == 0 || u32::from(attempts) > job::MAX_CPU_SAMPLES_PER_PIXEL || covered > attempts || !bounded_radiance(premultiplied) {
         return Err(invalid("invalid spatial coverage/radiance"));
@@ -1617,6 +1653,7 @@ fn punctual_one(
     context: (super::prepared::SharedHit<'_>, Option<PlanarTarget>, Option<job::ReflectionMode>),
     work: &mut WorkBudget,
     cancel: &CancelToken,
+    diagnostics: &mut job::PunctualDiagnostics,
 ) -> job::Result<()> {
     let (shared, target, mode) = context;
     if pending.punctual_shadow {
@@ -1631,8 +1668,7 @@ fn punctual_one(
     }
     work.tick(cancel).map_err(error)?;
     if pending.punctual_ready {
-        pending.radiance += multiply(pending.throughput, pending.punctual_value);
-        super::lighting::validate_radiance(pending.radiance).map_err(error)?;
+        add_punctual_radiance(pending, pending.punctual_value, diagnostics);
         pending.punctual_index += 1;
         pending.punctual_ready = false;
         return Ok(());
@@ -1644,6 +1680,14 @@ fn punctual_one(
     }
     let light = inputs.get(pending.punctual_index).copied().ok_or_else(|| invalid("punctual source index"))?.light().map_err(error)?;
     let sample = light.sample(shared.position).map_err(error)?;
+    if let Some(reason) = sample.omitted {
+        match reason {
+            super::punctual::OmittedSample::NearSource => diagnostics.near_source = diagnostics.near_source.saturating_add(1),
+            super::punctual::OmittedSample::RadianceLimit => diagnostics.radiance_limit = diagnostics.radiance_limit.saturating_add(1),
+        }
+        pending.punctual_index += 1;
+        return Ok(());
+    }
     let geometric = shared.oriented_geometric_normal();
     let cosine = if target.is_some() { geometric } else { shared.shading_normal }.dot(sample.direction).max(0.0);
     let contribution = if geometric.dot(sample.direction) <= 0.0 || cosine == 0.0 || sample.incident_linear_srgb == Vec3::ZERO {
@@ -1657,17 +1701,34 @@ fn punctual_one(
         };
         multiply(f, sample.incident_linear_srgb) * cosine
     };
-    super::lighting::validate_radiance(contribution).map_err(error)?;
+    if super::lighting::validate_radiance(contribution).is_err() {
+        diagnostics.radiance_limit = diagnostics.radiance_limit.saturating_add(1);
+        pending.punctual_index += 1;
+        return Ok(());
+    }
     pending.punctual_value = contribution;
     if options.shadows && contribution != Vec3::ZERO {
-        pending.cursor = TraceCursor::new(sample.shadow_ray(shared).map_err(error)?, true);
+        let Some(ray) = sample.shadow_ray(shared).map_err(error)? else {
+            diagnostics.shadow_offset_crossed = diagnostics.shadow_offset_crossed.saturating_add(1);
+            pending.punctual_index += 1;
+            return Ok(());
+        };
+        pending.cursor = TraceCursor::new(ray, true);
         pending.punctual_shadow = true;
     } else {
-        pending.radiance += multiply(pending.throughput, contribution);
-        super::lighting::validate_radiance(pending.radiance).map_err(error)?;
+        add_punctual_radiance(pending, contribution, diagnostics);
         pending.punctual_index += 1;
     }
     Ok(())
+}
+
+fn add_punctual_radiance(pending: &mut PendingPixel, contribution: Vec3, diagnostics: &mut job::PunctualDiagnostics) {
+    let candidate = pending.radiance + multiply(pending.throughput, contribution);
+    if super::lighting::validate_radiance(candidate).is_ok() {
+        pending.radiance = candidate;
+    } else {
+        diagnostics.radiance_limit = diagnostics.radiance_limit.saturating_add(1);
+    }
 }
 
 fn multiply(a: Vec3, b: Vec3) -> Vec3 {
