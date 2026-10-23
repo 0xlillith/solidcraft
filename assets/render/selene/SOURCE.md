@@ -42,7 +42,13 @@ The source lock preserves the earlier bounded public search as historical eviden
 
 The [original rover attribution](https://github.com/0xlillith/solidcraft-rover/blob/b32437915372d32b71419dc8f5143fe22ff1e869/ATTRIBUTION.md) offers the original model under **MIT OR Apache-2.0** and credits the SolidCraft emblem to SolidCraft contributors. The original modeled lettering follows **Ubuntu Light** outlines by Canonical Ltd., under the **Ubuntu Font Licence 1.0**. Its exact notice is retained in [licenses/UFL.txt](licenses/UFL.txt). No font binary is added.
 
-SychPL is credited for the improved assembly, helper geometry and showcase study. The author branch contains the native file and three GIFs; it has no separate license file. Its parent commit records the original model's Apache-2.0/MIT attribution. This review preserves that evidence and does not invent a separate file-specific license declaration for the additions. The owner supplied the model and requested further work in their personal repository.
+SychPL is credited for the improved assembly, helper geometry and showcase study.
+On 2026-10-23T22:13:37Z, [SychPL explicitly licensed their additions](https://github.com/tangency-labs/solidcraft/pull/5494#issuecomment-6375788360)
+under **MIT OR Apache-2.0**, at the recipient's option. The grant expressly covers
+redistribution and derived files, including `SELENE-functional.solidcraft`.
+The author media branch itself has no separate licence file; the linked public
+author declaration supplies the previously missing permission. The original
+rover and Ubuntu Font Licence notices above remain applicable and unchanged.
 
 New procedural geometry, English documentation and command generators in this derivative are original contributions. Raspberry Pi references inform dimensions and component identity; manufacturer CAD, logos, PCB artwork, electrical netlists and photographs are not embedded. No commercial CAD assets or GPL geometry implementations are imported.
 

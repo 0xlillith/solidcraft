@@ -12,6 +12,7 @@ mod icons;
 mod layers;
 mod licences;
 mod lists;
+mod render_assets;
 mod test;
 mod ui_containers;
 mod web_offline;

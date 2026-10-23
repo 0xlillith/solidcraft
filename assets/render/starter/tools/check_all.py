@@ -38,7 +38,7 @@ def input_snapshot() -> dict[str, str]:
         "Cargo.toml", "Cargo.lock", "crates/render/Cargo.toml",
         "crates/render/examples/validate_starter.rs", "ATTRIBUTION.md",
         ".gitattributes", "assets/render/.gitattributes", "rustfmt.toml",
-        "crates/geom/Cargo.toml", ".github/workflows/render-resources.yml",
+        "crates/geom/Cargo.toml", "xtask/src/render_assets.rs",
     )]
     # Native source changes affect this gate even if the authored bytes did not change.
     paths += [p for p in (ROOT / "crates/render/src").rglob("*.rs")]

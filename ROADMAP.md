@@ -3,16 +3,6 @@
 Status as of **2026-10-14**. SolidCraft supports parametric modelling (sketch →
 features → parametric timeline) as an open, pure-Rust, agent-drivable application.
 
-**Personal rendering branch, 2026-10-21:** `lab/render-materials` develops against
-the fixed upstream snapshot `93a2922c`, independently of the upstream milestones
-below. Its integration covers the result canvas, CPU/GPU image controls,
-original appearance recipes, editable physical material cards, advanced studio
-options, saved numerical jobs, embedded HDR environments and bounded progressive
-CPU sampling with provisional image inspection. CI and observed
-application-output acceptance belong to each exact integrated revision. Current
-scope, source provenance, validation status and remaining capabilities are tracked in
-[the branch development record](docs/render-materials-lab.md).
-
 ## At a glance
 
 | Question | Answer |
