@@ -1260,3 +1260,31 @@ mod tests {
         assert_eq!(s.visibility.hidden_folders, vec!["o:4/sketches".to_string()]);
     }
 }
+
+#[cfg(test)]
+mod explicit_camera_tests {
+    use super::*;
+    #[test]
+    fn explicit_camera_preserves_roll_and_world_up_without_changing_saved_named_views() {
+        let mut session = Session::default();
+        let doc = session.doc.to_json();
+        let undo = session.undo.len();
+        for up in [crate::render::UpAxis::Z, crate::render::UpAxis::Y] {
+            let camera = crate::render::Camera { roll: 0.41, yaw: -0.3, pitch: 0.5, up, ..Default::default() };
+            let response = session.execute("view.apply", &json!({"camera":camera})).unwrap();
+            assert_eq!(session.camera, Some(camera));
+            assert_eq!(response["camera"], json!(camera));
+            for (key, value) in [("roll", json!(null)), ("roll", json!("invalid")), ("up", json!("invalid")), ("up", json!(null))] {
+                let mut invalid = json!({"camera":camera});
+                invalid["camera"][key] = value;
+                assert!(session.execute("view.apply", &invalid).is_err());
+                assert_eq!(session.camera, Some(camera));
+            }
+        }
+        session.execute("view.apply", &json!({"camera":{"target":[0,0,0],"yaw":0.2,"pitch":0.3,"distance":100}})).unwrap();
+        assert_eq!(session.camera.unwrap().roll, 0.0);
+        assert_eq!(session.camera.unwrap().up, crate::render::UpAxis::Z);
+        assert_eq!(session.doc.to_json(), doc);
+        assert_eq!(session.undo.len(), undo);
+    }
+}

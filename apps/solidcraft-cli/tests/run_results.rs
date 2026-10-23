@@ -209,3 +209,173 @@ fn timings_and_profile_report_each_command() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("--timings needs a script"));
 }
+
+fn render_setup_script(dir: &Scratch, job: Value) -> PathBuf {
+    let path = dir.0.join("render.json");
+    std::fs::write(
+        &path,
+        json!({"commands":[
+            {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+            {"command":"render.settings.set","params":{"name":"Portable setup","set":{"width":16,"height":16,"job":job}}}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    path
+}
+
+#[cfg(feature = "raytrace-cpu")]
+#[test]
+fn render_uses_typed_cpu_setups_from_scripts_and_saved_designs() {
+    for options in [json!({}), json!({"progressive":{"samples_per_pixel":3,"seed":81},"lights":[]})] {
+        let dir = Scratch::new();
+        let script = render_setup_script(&dir, json!({"method":"cpu_raytrace","options":options}));
+        let image = dir.0.join("script.png");
+        let result = json_output(
+            cli()
+                .arg("render")
+                .arg(&script)
+                .args(["--setup", "Portable setup", "--out"])
+                .arg(&image)
+                .env("SOLIDCRAFT_GPU", "must-not-be-read-for-cpu")
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(result["preflight"]["resolved"]["executor"], "cpu-raytrace");
+        assert_eq!(result["export"]["frame"]["executor"], "cpu-raytrace");
+        assert_eq!(result["preflight"]["request"]["integrator"], "raytrace");
+        assert_eq!(result["preflight"]["request"]["raytrace"].get("progressive"), options.get("progressive"));
+        let png = image::load_from_memory(&std::fs::read(&image).unwrap()).unwrap();
+        assert_eq!((png.width(), png.height()), (16, 16));
+
+        let saved = dir.0.join("portable.solidcraft");
+        json_output(cli().arg("run").arg(&script).arg("--save").arg(&saved).output().unwrap());
+        let original = std::fs::read(&saved).unwrap();
+        let overridden = dir.0.join("overridden.png");
+        let result = json_output(
+            cli()
+                .arg("render")
+                .arg(&saved)
+                .args(["--setup", "Portable setup", "--out"])
+                .arg(&overridden)
+                .args(["--width", "12", "--height", "8", "--exposure", "1.25"])
+                .env("SOLIDCRAFT_GPU", "must-not-be-read-for-cpu")
+                .output()
+                .unwrap(),
+        );
+        assert_eq!(result["preflight"]["request"]["width"], 12);
+        assert_eq!(result["preflight"]["request"]["height"], 8);
+        assert_eq!(result["preflight"]["request"]["raytrace"]["exposure_ev"], 1.25);
+        assert_eq!(result["export"]["frame"]["executor"], "cpu-raytrace");
+        assert_eq!(result["preflight"]["request"]["raytrace"].get("progressive"), options.get("progressive"));
+        let png = image::load_from_memory(&std::fs::read(overridden).unwrap()).unwrap();
+        assert_eq!((png.width(), png.height()), (12, 8));
+        assert_eq!(std::fs::read(saved).unwrap(), original, "CLI overrides must not rewrite saved intent");
+    }
+}
+
+#[test]
+fn render_preserves_typed_raster_and_legacy_runtime_controls() {
+    for job in [Value::Null, json!({"method":"raster","transparent_background":true})] {
+        let dir = Scratch::new();
+        let script = render_setup_script(&dir, job.clone());
+        let out = dir.0.join("raster.png");
+        let mut command = cli();
+        command
+            .arg("render")
+            .arg(&script)
+            .args(["--setup", "Portable setup", "--out"])
+            .arg(&out)
+            .env("SOLIDCRAFT_GPU", "must-not-be-read-for-raster");
+        if job.is_null() {
+            command.arg("--transparent");
+        }
+        let result = json_output(command.output().unwrap());
+        assert_eq!(result["preflight"]["resolved"]["executor"], "cpu-product");
+        assert_eq!(result["export"]["frame"]["executor"], "cpu-product");
+        assert_eq!(result["preflight"]["request"]["transparent_background"], true);
+        assert!(std::fs::read(out).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+}
+
+#[test]
+fn typed_render_rejects_explicit_runtime_flags_before_gpu_or_option_file_reads() {
+    let dir = Scratch::new();
+    let script = render_setup_script(&dir, json!({"method":"gpu_path","options":{"samples":64,"seed":0}}));
+    let out = dir.0.join("existing.png");
+    std::fs::write(&out, b"previous completed image").unwrap();
+    for flags in [
+        &["--progressive"][..],
+        &["--transparent"][..],
+        &["--samples", "64"][..],
+        &["--max-depth", "8"][..],
+        &["--seed", "0"][..],
+        &["--lighting", "deliberately-missing-lighting.json"][..],
+        &["--tone-map", "reinhard"][..],
+        &["--environment", "deliberately-missing-environment.json"][..],
+    ] {
+        let output = cli()
+            .arg("render")
+            .arg(&script)
+            .args(["--setup", "Portable setup", "--out"])
+            .arg(&out)
+            .arg("--overwrite")
+            .args(flags)
+            .env("SOLIDCRAFT_GPU", "must-not-be-read-for-conflicts")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(&format!("{} cannot accompany a typed saved render setup", flags[0])), "{error}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(std::fs::read(&out).unwrap(), b"previous completed image");
+    }
+}
+
+#[test]
+fn typed_gpu_render_selects_its_host_without_a_progressive_runtime_flag() {
+    // A deliberately invalid policy proves that dispatch reached the GPU host
+    // without depending on an adapter or accepting a CPU fallback. The legacy
+    // --progressive path must still reach that same host-selection boundary.
+    for job in [json!({"method":"gpu_path","options":{"samples":2}}), Value::Null] {
+        let dir = Scratch::new();
+        let script = render_setup_script(&dir, job.clone());
+        let out = dir.0.join("gpu.png");
+        let mut command = cli();
+        command.arg("render").arg(&script).args(["--setup", "Portable setup", "--out"]).arg(&out).env("SOLIDCRAFT_GPU", "not-a-gpu-policy");
+        if job.is_null() {
+            command.arg("--progressive");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("SOLIDCRAFT_GPU must be auto, hardware, software or cpu"), "{error}");
+        assert!(!out.exists());
+    }
+}
+
+#[test]
+fn render_setup_overrides_obey_shared_validation_before_host_initialization() {
+    let dir = Scratch::new();
+    let script = render_setup_script(&dir, json!({"method":"cpu_raytrace","options":{"progressive":{"samples_per_pixel":64}}}));
+    let out = dir.0.join("invalid.png");
+    for (flags, message) in [
+        (&["--width", "1024", "--height", "1024"][..], "CPU progressive exceeds"),
+        (&["--width", "0"][..], "render output must be at least"),
+        (&["--exposure", "NaN"][..], "render exposure must be finite"),
+    ] {
+        let output = cli()
+            .arg("render")
+            .arg(&script)
+            .args(["--setup", "Portable setup", "--out"])
+            .arg(&out)
+            .args(flags)
+            .env("SOLIDCRAFT_GPU", "must-not-be-read-for-invalid-settings")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains(message), "{error}");
+        assert!(!out.exists());
+    }
+}
