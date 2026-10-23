@@ -1041,10 +1041,36 @@ const MAX_REAL: f64 = 1e9;
 /// alone: it is other tools' data, kept as it is and never read as a number (#1015); parsing
 /// already bounds its nesting.
 fn check_design_numbers(v: &Value) -> Result<()> {
-    match v {
-        Value::Object(m) => m.iter().filter(|(k, _)| k.as_str() != "metadata").try_for_each(|(_, x)| check_numbers(x, 1)),
-        v => check_numbers(v, 0),
+    let Some(root) = v.as_object() else { return check_numbers(v, 0) };
+    for (key, value) in root {
+        if key == "metadata" {
+            continue;
+        }
+        if key != "user_materials" {
+            check_numbers(value, 1)?;
+            continue;
+        }
+        let Some(materials) = value.as_array() else { return check_numbers(value, 1) };
+        if materials.len() > crate::MAX_USER_MATERIALS {
+            return Err(DocError::Invalid("document exceeds 1000 user materials".into()));
+        }
+        for material in materials {
+            let Some(fields) = material.as_object() else {
+                check_numbers(material, 2)?;
+                continue;
+            };
+            for (field, data) in fields {
+                // SI engineering constants have separate typed bounds. No other field,
+                // including nested fields with this name, bypasses coordinate limits.
+                if field == "physical_card" && !data.is_null() {
+                    crate::physical_material::validate_card(data)?;
+                } else {
+                    check_numbers(data, 3)?;
+                }
+            }
+        }
     }
+    Ok(())
 }
 
 /// The range check again, on the typed design: an integer such as `9223372036854775808` passes
