@@ -1,0 +1,385 @@
+{
+  "files": [
+    {
+      "path": "background-comparison.json",
+      "bytes": 314,
+      "sha256": "6081eab4680a9404f9d1767261d7bc633cd367ed0ad44ff703974b262e707404"
+    },
+    {
+      "path": "native-acceptance.json",
+      "bytes": 926,
+      "sha256": "ad8d9e5ccf99b7d9732dd2a050c0749113028c07c1160dbeaa3e7f5c801651cd"
+    },
+    {
+      "path": "native-window.json",
+      "bytes": 2633,
+      "sha256": "2351c24e521c330378f137b3530108156229126b3e2dde3d925fa6543c265af3"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7080,
+      "sha256": "b3b0225ce51cb429afcf83b6ef4e7c26231a9a9a5b6b107c612bdfbaaeea16a5"
+    },
+    {
+      "path": "receipts/aged-macro.json",
+      "bytes": 7660,
+      "sha256": "61f80b90a994877424e56acdc098a2da96948442a97490520005feacb5735d78"
+    },
+    {
+      "path": "receipts/aged-production.json",
+      "bytes": 7618,
+      "sha256": "512c7bc86b0f43df4e435f4275f380408f9eac74e883fe404d97d3654f368868"
+    },
+    {
+      "path": "receipts/airborne-production.json",
+      "bytes": 9003,
+      "sha256": "f613059dd7423fb239ddd0f0839bdfe55c8a9f4ed08a1f1343c7f858adf7d60f"
+    },
+    {
+      "path": "receipts/alternate-studio.json",
+      "bytes": 4239,
+      "sha256": "6544f6c04e6b1a3139212edd3f149887474159ed88afe733fc5756a7c9819b6a"
+    },
+    {
+      "path": "receipts/background-cyclorama.json",
+      "bytes": 4384,
+      "sha256": "ae6f7de51994765145cca6d82b17fe1d7a23f08bdc21978a79b9a8aa95dcff64"
+    },
+    {
+      "path": "receipts/background-floor-wall.json",
+      "bytes": 4246,
+      "sha256": "29ed71aaa0cbdde940f46da604c73077fad8d3f13e6e249bafc7db330231d6d3"
+    },
+    {
+      "path": "receipts/background-gradient.json",
+      "bytes": 4882,
+      "sha256": "e17a21514e293cb940ea8e70c9a15051223dfc61ec7141341018811f037cdc16"
+    },
+    {
+      "path": "receipts/background-neutral.json",
+      "bytes": 4022,
+      "sha256": "2778d6d7781eada70a908a0304de1cf2341c5fd61cf9b2942e1c0ccf6306a628"
+    },
+    {
+      "path": "receipts/cinematic-refined.json",
+      "bytes": 5357,
+      "sha256": "470ccdaf1346d8b8ed8e53d7d921ee7f2477782602c36d377679c659056680bd"
+    },
+    {
+      "path": "receipts/clean-production.json",
+      "bytes": 4233,
+      "sha256": "88a6bc927ce2020e5f65a0aef40e559a55905eb1e333984930d18432bfb26d64"
+    },
+    {
+      "path": "receipts/clear-air-production.json",
+      "bytes": 8505,
+      "sha256": "56eb2538300646e50315ff4425eb0bcbf87414cf28ccade18d76344cb809fd56"
+    },
+    {
+      "path": "receipts/cyanotype-master.json",
+      "bytes": 5858,
+      "sha256": "87fa73602daf5ebb1c83962ae7d13fb90d7bb261f76ad4cc26e0628b8875fb0b"
+    },
+    {
+      "path": "receipts/monochrome-master.json",
+      "bytes": 5551,
+      "sha256": "e2fe22cad309e97173f2c33128f021d3e7e095cc7126afa9e889d300016b0472"
+    },
+    {
+      "path": "recipes/aged-macro.json",
+      "bytes": 9609,
+      "sha256": "f5ef33172fe044ba6d470a064f11821781d9d79201d6901082e770ceb34d6f70"
+    },
+    {
+      "path": "recipes/aged-production.json",
+      "bytes": 9388,
+      "sha256": "dd8d827c73a5d3488f181a0bcc879e8bb9161e789d566bb303e86ef9a94db80b"
+    },
+    {
+      "path": "recipes/airborne-production.json",
+      "bytes": 11160,
+      "sha256": "4d0ba19588ad0bdcae953dbf4d3f3a078d772eb1f640e6df503a0bfb2fe37cf6"
+    },
+    {
+      "path": "recipes/alternate-studio.json",
+      "bytes": 6268,
+      "sha256": "1aaa81ed369f860e32bef27af525f8b7d76fef40c1c30bbb8556cf1588f48b06"
+    },
+    {
+      "path": "recipes/background-cyclorama.json",
+      "bytes": 17498,
+      "sha256": "2f5fbbdf8c057ef3f7541e4105832bda07cc07a4336b512ef0becae176a062b6"
+    },
+    {
+      "path": "recipes/background-floor-wall.json",
+      "bytes": 6762,
+      "sha256": "bc1f5e44de5bba74a6bcf7ce25d6c20ed9bafbfcad22d9902074741ff33c55ac"
+    },
+    {
+      "path": "recipes/clean-production.json",
+      "bytes": 6266,
+      "sha256": "eaa005917ab6f16db547a61cb355da8079c7b3730ad9c722b11b78ba201a7e27"
+    },
+    {
+      "path": "recipes/clear-air-production.json",
+      "bytes": 10817,
+      "sha256": "1135ff4edfe97aaa5a279d30f6f86b8e1af6b780e41d72aef76078e2c17e7fce"
+    },
+    {
+      "path": "recipes/saved-01-clean-materials.json",
+      "bytes": 6833,
+      "sha256": "75a9da5ad879c2bdca378380086f4b491d9f6b7a5e6e674d70babd96ca60547a"
+    },
+    {
+      "path": "recipes/saved-02-aged-surfaces.json",
+      "bytes": 10475,
+      "sha256": "0cc9d6dfd1517d939a32d0986e8c48910d692d88753b28cdff705c9df3fcbc2c"
+    },
+    {
+      "path": "recipes/saved-03-photographic-finish.json",
+      "bytes": 11381,
+      "sha256": "c5a3162756825ad3126063720f7acdb292b4f839704ccb1949fbc680a10e0b44"
+    },
+    {
+      "path": "recipes/saved-04-macro-details.json",
+      "bytes": 10474,
+      "sha256": "09b89cdd02a95ae338f5019887df8bd0cac29dac83598006bb06d22f68640d64"
+    },
+    {
+      "path": "recipes/saved-05-electronics-studio.json",
+      "bytes": 6838,
+      "sha256": "4e92272294e9f111b0e75b976bab96898ada6720844692ac9759ec6e11d84d3d"
+    },
+    {
+      "path": "recipes/saved-06-airborne-dust.json",
+      "bytes": 12189,
+      "sha256": "10a26f0afa98d55b9ad31d0dc8c9ab424759cc8d390973806fade16fb85ccd02"
+    },
+    {
+      "path": "recipes/saved-07-clear-air.json",
+      "bytes": 11804,
+      "sha256": "bbe247c478d7f0894400c001a079f960095b730261a1e8b3864abec7263ebc96"
+    },
+    {
+      "path": "recipes/saved-08-monochrome.json",
+      "bytes": 11249,
+      "sha256": "1ac19246e2e39287dcb614b661636972a334890834b73919b6880bbcd2f73924"
+    },
+    {
+      "path": "recipes/saved-09-cyanotype.json",
+      "bytes": 11368,
+      "sha256": "12d3659e4f150cd84b793ef5756a3e4afb89f8d488617541547ebee8545f2138"
+    },
+    {
+      "path": "recipes/saved-10-background---solid.json",
+      "bytes": 6419,
+      "sha256": "f417cf56e4fa1326bee406771644aeb3d94dd7cf1c9f3191b59cd7ac9c50438d"
+    },
+    {
+      "path": "recipes/saved-11-background---gradient.json",
+      "bytes": 6752,
+      "sha256": "bd9e73cfb674327c1975bbe029542c2ecf23b36c07216afce2e3f73ccd7050ef"
+    },
+    {
+      "path": "recipes/saved-12-background---floor-and-wall.json",
+      "bytes": 7387,
+      "sha256": "1c26f640e4edbbe965fcaf2780bcbc8c628921a6e22ea6d25a997c77cc663b20"
+    },
+    {
+      "path": "recipes/saved-13-background---cyclorama.json",
+      "bytes": 19222,
+      "sha256": "4f1ce62fa745924dd464fa26a8732badcba92530ad062f78f530c0952f5968ed"
+    },
+    {
+      "path": "reference/SELENE-original-provenance.json",
+      "bytes": 49757,
+      "sha256": "f44a9a911e9e6ba0d49284a80db257d98eafa8f15441a3b232f71d1bdf0c07b3"
+    },
+    {
+      "path": "reference/SELENE-studio-4k.png",
+      "bytes": 2388114,
+      "sha256": "40a492e7979137d0f4027300da3d8af7ca1008c1aab2c309259e65d309a17316"
+    },
+    {
+      "path": "renders/aged-macro.png",
+      "bytes": 1172025,
+      "sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808"
+    },
+    {
+      "path": "renders/aged-production.png",
+      "bytes": 1000251,
+      "sha256": "530ed296e9f2beca9cb567261793ac6baf3421c570ee78669cf7f457e770491f"
+    },
+    {
+      "path": "renders/airborne-production.png",
+      "bytes": 2387904,
+      "sha256": "d354e154accadb86d15c48c365beb147e71224676eed16dbf959c6d61a9f6b5d"
+    },
+    {
+      "path": "renders/alternate-studio.png",
+      "bytes": 1014100,
+      "sha256": "ed797158f6185db1604eb3f562b58e7b324c74610fe218f4a6d3e9bf4ad4145e"
+    },
+    {
+      "path": "renders/background-cyclorama.png",
+      "bytes": 718917,
+      "sha256": "feb78e0fabd90640191574c519d818444f222850b7fc32803628b21b116f4484"
+    },
+    {
+      "path": "renders/background-floor-wall.png",
+      "bytes": 690961,
+      "sha256": "6ecad7600b88a8602127ceb9c0542b48491691349bf864b05b3694fab7d594de"
+    },
+    {
+      "path": "renders/background-gradient.png",
+      "bytes": 1086811,
+      "sha256": "33f805aba75ab49ac098455ddf0fe134a1323e3bde886a12d6532c0ea480a31c"
+    },
+    {
+      "path": "renders/background-neutral.png",
+      "bytes": 739656,
+      "sha256": "70be13a67830a2ad17cafd37de6afe757b5b4eb117ac549014d56535e142d95a"
+    },
+    {
+      "path": "renders/cinematic-refined.png",
+      "bytes": 6024043,
+      "sha256": "1c61dcb86c999dcce0887e5048e524399dcbe6574ccfd524360cfa08749a56a9"
+    },
+    {
+      "path": "renders/clean-production.png",
+      "bytes": 947707,
+      "sha256": "58a69d1e79c00a5ab0f4ef903bc3f20c67fa4d84268618a45d359f44a41f9ac9"
+    },
+    {
+      "path": "renders/clear-air-production.png",
+      "bytes": 1033161,
+      "sha256": "1354b824cc099d62e11c0d362ffeedf1cc7f512fba8a9a97d61de31d6ab00b65"
+    },
+    {
+      "path": "renders/cyanotype-master.png",
+      "bytes": 4449731,
+      "sha256": "3130103cb3cfd682c494f31efb4f657ff3306209f3167347a8b52a7aaae9568c"
+    },
+    {
+      "path": "renders/monochrome-master.png",
+      "bytes": 2801557,
+      "sha256": "997ccb4ee120101c0ecedd66230687ff27320cc2a05986ba8b6bb1f88930f9ad"
+    },
+    {
+      "path": "scene/authoring-provenance.json",
+      "bytes": 562,
+      "sha256": "a6f5d0a43043b9111febd07dd9be4f164c16589d9c23b20cb706ffa511d18b10"
+    },
+    {
+      "path": "scene/effects-showcase.solidcraft",
+      "bytes": 326965,
+      "sha256": "6affeba4c5733343324492990fbf279edc50bdebe2db3236ad0cb833559b4c68"
+    },
+    {
+      "path": "scene/instrument-commands.json",
+      "bytes": 27883,
+      "sha256": "f2ea62cf733b4722c29652b64150bf861a4e53d558231a161fa56d6ce4c394c6"
+    },
+    {
+      "path": "scene/saved-shot-roundtrip.json",
+      "bytes": 143184,
+      "sha256": "3977db94fbe43fab3569f827f5c847014190571d9e2af845f6808ccd077a282b"
+    },
+    {
+      "path": "scene/shot-restoration.json",
+      "bytes": 468,
+      "sha256": "ad74b33c5490485befad2d00accf99d405e371d376bc1ccdd02c072c4031dec7"
+    },
+    {
+      "path": "screenshots/ui-aging-final.png",
+      "bytes": 3789326,
+      "sha256": "af20c15412fe8af4bab7d24c7aca1be170959aa0343c910de2c1471f85289abc"
+    },
+    {
+      "path": "screenshots/ui-backgrounds-final.png",
+      "bytes": 1003257,
+      "sha256": "cd28e2a7aa2753d58d7fc0727dcf158b806f1fa09783352c51e98b1f2a9cdcf9"
+    },
+    {
+      "path": "screenshots/ui-effects-final.png",
+      "bytes": 4719411,
+      "sha256": "846b6d7ac4ce3257390dba6aed3ef6d60837cf0cb9309f0ad04135fc37c75c71"
+    },
+    {
+      "path": "screenshots/ui-library-final.png",
+      "bytes": 4752853,
+      "sha256": "7a87acb1cb5bbfcb575ad6bcb325660cfebafd1b38175de79291d806c50d9fa6"
+    },
+    {
+      "path": "screenshots/ui-volume-final.png",
+      "bytes": 1474146,
+      "sha256": "0a25d973aaabc0ccdeffc0e25243c694587995fcd139d30d64a0cb452b637465"
+    },
+    {
+      "path": "SolidCraft-Aging-Effects-Showcase.mp4",
+      "bytes": 11467697,
+      "sha256": "227ecf8d5dc15ef9b7bbafb1d56ff239ce88b5b01e9488d6a9d96c25fcf401e4"
+    },
+    {
+      "path": "sources.json",
+      "bytes": 5425,
+      "sha256": "7fcd2790bb5d8600733c7cf1255fb462186e6749a8ae887782bc090cdb394c35"
+    },
+    {
+      "path": "validation/background-native-actions.json",
+      "bytes": 1309,
+      "sha256": "ee9ad747d011a311e69fb415e5e60407aff5d2bbffbdc55f574375d45f707420"
+    },
+    {
+      "path": "validation/background-native-window.json",
+      "bytes": 818,
+      "sha256": "6ab7bf6471a827abdb289dc83c31865b7f8db155d5c219f21fb2393e14707630"
+    },
+    {
+      "path": "validation/background-ui-build-tests.json",
+      "bytes": 2600,
+      "sha256": "618f8792895422348c10d3bd632e883a5d8e6f33dc714c86ceb8bb246229fa04"
+    },
+    {
+      "path": "validation/default-features.json",
+      "bytes": 835,
+      "sha256": "014562b6585cb92c8ee9c2e500bb4760a2a1fa2ff2373c383a8ad3bf1a3dca93"
+    },
+    {
+      "path": "validation/encoded-video.json",
+      "bytes": 3146,
+      "sha256": "d60563724e0ed251f608a11ceff106f84efa1436cc5a226607e34165fd0e1c97"
+    },
+    {
+      "path": "validation/gpu-corrected.json",
+      "bytes": 550,
+      "sha256": "d045fac2aa92f2e1411090099ec82148c5ae0180ec13b8de234eababeb4b41ce"
+    },
+    {
+      "path": "validation/grouped-tests-first-run.json",
+      "bytes": 3706,
+      "sha256": "15922394d64fd0534a4464b79d67a1a647d517e7802aba5915a98a2907100ced"
+    },
+    {
+      "path": "validation/native-build.json",
+      "bytes": 1061,
+      "sha256": "2f479910d2869e0f7bdcf8262bb5b0f6598dcd9f4cd51e97a115dc0629b64878"
+    },
+    {
+      "path": "validation/remote-actions.json",
+      "bytes": 807,
+      "sha256": "93847a9d596179f35fd5b3bd8086ba24dced74052448ef78635356f399132ff4"
+    },
+    {
+      "path": "video-manifest.json",
+      "bytes": 11268,
+      "sha256": "1e3ac3ea538db01ea6f158d2abe63f66e6ae0b1abc4c93c2651d932b53256820"
+    },
+    {
+      "path": "video-receipt.json",
+      "bytes": 7985,
+      "sha256": "e9293a201ecf4bcae4afa66af887f1e90add10613398060190d188d3d3bbdbb7"
+    }
+  ],
+  "scope": "Exact public LF-normalized text and unchanged native binary media; original encoder-input provenance preserved separately"
+}

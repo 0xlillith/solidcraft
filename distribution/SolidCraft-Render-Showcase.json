@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "path": "distribution/SolidCraft-Render-Showcase.zip",
+  "bytes": 54107781,
+  "sha256": "1183f4c1be9cef9942f64eca56688a8ae13a0758948f357d1742c72b4f5943ff",
+  "members": 78,
+  "crc_and_each_member_sha256_verified": true,
+  "video_sha256": "227ecf8d5dc15ef9b7bbafb1d56ff239ce88b5b01e9488d6a9d96c25fcf401e4",
+  "no_fonts_or_executables": true,
+  "scope": "Selected completed MP4, native renders/UI captures, editable scene, portable shot recipes and public verification manifests"
+}

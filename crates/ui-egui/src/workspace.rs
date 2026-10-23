@@ -279,10 +279,11 @@ pub const SECTIONS: &[Section] = &[
     Section {
         tab: "RENDER",
         panel: "APPEARANCE",
-        promoted: 2,
+        promoted: 3,
         ids: &[
             "render.library.appearance.apply",
             "render.library.surface.bind",
+            "render.aging.describe",
             "render.library.surface.prepare",
             "render.library.surface.unbind",
             "render.library.physical.prepare",
@@ -306,10 +307,11 @@ pub const SECTIONS: &[Section] = &[
     Section {
         tab: "RENDER",
         panel: "IMAGE",
-        promoted: 2,
+        promoted: 3,
         ids: &[
             "render.start",
             "render.preflight",
+            "render.effects.describe",
             "render.cancel",
             "render.export",
             "render.result.regrade",
@@ -323,6 +325,8 @@ pub const SECTIONS: &[Section] = &[
 /// Compact source labels for painted big buttons only. Menus, search and tooltips
 /// retain the engine label. Route these through `tr_label`, like other UI labels.
 pub const RIBBON_LABELS: &[(&str, &str)] = &[
+    ("render.aging.describe", "Aging"),
+    ("render.effects.describe", "Effects"),
     ("render.camera.fit", "Frame"),
     ("render.camera.get", "Camera"),
     ("render.preset.resolve", "Studios"),

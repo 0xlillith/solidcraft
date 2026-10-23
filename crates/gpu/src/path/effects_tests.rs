@@ -1,0 +1,178 @@
+//! Device execution for layered weathering and nondestructive presentation.
+use super::*;
+use serde_json::json;
+use solidcraft_render::job::{
+    JobId, Phase,
+    aging::{AgingKind, AgingLayer, AgingStack, BodyName, BodyTarget},
+    finishing::Finishing,
+    looks::{LookKind, LookLayer, LookStack},
+    photographic::{Flare, Photographic},
+};
+
+#[test]
+fn opaque_aging_changes_transport_but_disabled_layers_and_passive_stage_are_exact_identities() {
+    let Some(executor) = executor() else { return };
+    let options = JobOptions { samples: 16, seed: 42, max_depth: 4, linear_exr: true, ..Default::default() };
+    let baseline = complete_linear_fixture(executor.context.clone(), options);
+    let mut aging = AgingStack::default();
+    aging.push(AgingLayer { enabled: false, ..Default::default() }).unwrap();
+    assert_eq!(complete_linear_fixture(executor.context.clone(), JobOptions { aging, ..options }), baseline);
+    *aging.get_mut(0).unwrap() = AgingLayer { strength: 1.0, coverage: 0.65, scale_mm: 0.7, ..Default::default() };
+    let aged = complete_linear_fixture(executor.context.clone(), JobOptions { aging, ..options });
+    assert_ne!(aged.0, baseline.0);
+    assert_ne!(aged.1, baseline.1, "surface aging participates in transport rather than grading PNG");
+    let denoised = complete_linear_fixture(executor.context.clone(), JobOptions { aging, denoise: true, ..options });
+    assert_eq!(aged.1, denoised.1, "guides may not mutate the raw aging master");
+    let render = |mut source: ProductScene, aging: AgingStack| {
+        source.meshes[0].name = "__render_stage__/test".into();
+        let mut task = Task::new(executor.context.clone(), source, request(16), JobOptions { aging, ..options }, CancelToken::default()).unwrap();
+        for _ in 0..4096 {
+            if let TaskPoll::Complete(png) = task.step(4096).unwrap() {
+                return (png, task.take_linear_exr());
+            }
+        }
+        panic!("bounded stage fixture did not complete")
+    };
+    assert_eq!(render(sphere(white()), aging), render(sphere(white()), Default::default()), "passive stages are not aged implicitly");
+}
+
+#[test]
+fn weathering_layer_order_and_upward_deposition_are_executed_in_the_shader() {
+    let Some(executor) = executor() else { return };
+    let context = executor.context;
+    let shader = format!(
+        "{SHADER}\n{}",
+        r#"
+@compute @workgroup_size(64)
+fn weathering_reference(@builtin(global_invocation_id) gid:vec3<u32>){
+    if gid.x>=4u{return;}
+    var t=triangle(0u);
+    var normal=vec3<f32>(0.0,0.0,1.0);
+    if gid.x==1u{normal=-normal;}
+    if gid.x==2u{t.base.w=1.0;}
+    if gid.x==3u{t.interior.z=1.0;}
+    let result=aged_surface(t,vec3<f32>(0.125,0.25,0.5),normal);
+    accumulation[gid.x]=vec4<f32>(result.base.xyz,1.0);
+}
+"#
+    );
+    let module = context.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(shader.into()) });
+    let layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&context.layout)],
+        immediate_size: 0,
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &module,
+        entry_point: Some("weathering_reference"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let mut dust = AgingLayer::preset(AgingKind::Dust);
+    dust.strength = 1.0;
+    dust.coverage = 1.0;
+    dust.upward_bias = 1.0;
+    let mut stack = AgingStack::default();
+    stack.push(AgingLayer { strength: 1.0, coverage: 1.0, ..Default::default() }).unwrap();
+    stack.push(dust).unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let mut task =
+            Task::new(context.clone(), sphere(white()), request(2), JobOptions { aging: stack, ..Default::default() }, CancelToken::default())
+                .unwrap();
+        context.queue.write_buffer(&task.uniform, 0, &task.parameters(4));
+        let mut encoder = context.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &task.bind, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        context.queue.submit([encoder.finish()]);
+        task.sample = 1;
+        let pixels = task.read_linear().unwrap();
+        assert_eq!(pixels[2], [1.0; 4], "glass is untouched");
+        assert_eq!(pixels[3], [1.0; 4], "render stage is untouched");
+        seen.push(pixels);
+        stack.move_layer(0, 1).unwrap();
+    }
+    let expected = dust.color_srgb.map(solidcraft_render::surface::srgb8_to_linear);
+    for (actual, expected) in seen[0][0][..3].iter().zip(expected) {
+        assert!((f64::from(*actual) - expected).abs() < 1e-6);
+    }
+    assert_ne!(seen[0][0], seen[0][1], "upward dust differs from downward rust");
+    assert_ne!(seen[0][0], seen[1][0], "layer order changes the final material");
+}
+
+#[test]
+fn aging_rejects_stale_or_glass_targets_and_photographic_alpha_is_never_flattened() {
+    let source = sphere(white());
+    let mut aging = AgingStack::default();
+    aging
+        .push(AgingLayer { target: Some(BodyTarget { body_index: 0, body_name: BodyName::new("wrong sphere").unwrap() }), ..Default::default() })
+        .unwrap();
+    assert!(admission(&source, &request(16), JobOptions { aging, ..Default::default() }).unwrap_err().message.contains("identity"));
+    aging.get_mut(0).unwrap().target = Some(BodyTarget { body_index: 0, body_name: BodyName::new("original sphere").unwrap() });
+    assert!(admission(&source, &request(16), JobOptions { aging, ..Default::default() }).is_ok());
+    let mut glass = source.clone();
+    glass.meshes[0].transmission = Some(clear_glass());
+    assert!(admission(&glass, &request(16), JobOptions { aging, ..Default::default() }).is_err());
+    let mut req = request(16);
+    req.transparent_background = true;
+    let options = JobOptions {
+        finishing: Finishing { photographic: Photographic { grain: 0.01, ..Default::default() }, ..Default::default() },
+        ..Default::default()
+    };
+    assert!(admission(&source, &req, options).unwrap_err().message.contains("opaque"));
+}
+
+#[test]
+fn photographic_and_ordered_colour_effects_change_png_not_raw_master_and_regrade_matches() {
+    let Some(executor) = executor() else { return };
+    let mut looks = LookStack::default();
+    looks.push(LookLayer { kind: LookKind::Warm, strength: 0.7, ..Default::default() }).unwrap();
+    looks.push(LookLayer { kind: LookKind::Faded, strength: 0.25, ..Default::default() }).unwrap();
+    let finish = Finishing {
+        looks,
+        photographic: Photographic {
+            flare: Flare { strength: 0.8, threshold: 0.2, ..Default::default() },
+            chromatic_pixels: 1.2,
+            radial_distortion: 0.03,
+            soft_focus: 0.1,
+            sharpening: 0.2,
+            grain: 0.025,
+            seed: 77,
+        },
+        ..Default::default()
+    };
+    let options = JobOptions { samples: 16, seed: 713, linear_exr: true, ..Default::default() };
+    let base = complete_linear_fixture(executor.context.clone(), options);
+    let photo = complete_linear_fixture(executor.context.clone(), JobOptions { finishing: finish, ..options });
+    assert_ne!(base.0, photo.0);
+    assert_eq!(base.1, photo.1);
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let mut session = solidcraft_engine::Session::default();
+    session.register_render_job_host(host).unwrap();
+    session.execute("solid.box", &json!({"length":20,"width":15,"height":6})).unwrap();
+    let request =
+        json!({"progressive":true,"samples":16,"seed":714,"linear_exr":true,"settings":{"width":32,"height":24},"lighting":{"environment":[8,8,8]}});
+    let first = session.execute("render.start", &request).unwrap();
+    let id: JobId = serde_json::from_value(first["job"].clone()).unwrap();
+    let original_handle = session.render_job_handle(id).unwrap();
+    assert_eq!(original_handle.wait_timeout(Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
+    let original = original_handle.frame().unwrap().unwrap();
+    let revision = session.revision;
+    let document = session.doc.to_json();
+    let graded = session.execute("render.result.regrade", &json!({"job":id,"presentation":{"finishing":finish,"background":[240,243,248]}})).unwrap();
+    let id: JobId = serde_json::from_value(graded["job"].clone()).unwrap();
+    let handle = session.render_job_handle(id).unwrap();
+    assert_eq!(handle.wait_timeout(Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
+    let frame = handle.frame().unwrap().unwrap();
+    assert_eq!(frame.linear_exr().unwrap().as_ptr(), original.linear_exr().unwrap().as_ptr());
+    assert_ne!(frame.png(), original.png());
+    assert_eq!(session.revision, revision);
+    assert_eq!(session.doc.to_json(), document);
+    assert_eq!(frame.presentation().unwrap().presentation.finishing, finish);
+}

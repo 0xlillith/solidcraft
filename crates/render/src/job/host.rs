@@ -1051,6 +1051,12 @@ impl ImageHost {
             if request.raytrace.is_some() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executors do not accept CPU raytrace options"));
             }
+            if options.aging.active() && !executor.supports_aging() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot evaluate ordered surface aging"));
+            }
+            if options.finishing.photographic.active() && !executor.supports_photographic() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot apply photographic lens effects"));
+            }
             if options.nested_media && !executor.supports_nested_media() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement certified nested media"));
             }

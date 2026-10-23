@@ -16,6 +16,7 @@ pub(super) enum Environment {
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    pub aging: solidcraft_engine::render::job::aging::AgingStack,
     pub nested_media: bool,
     pub volume: Option<solidcraft_engine::render::job::volume::HomogeneousVolume>,
     pub adaptive: Option<solidcraft_engine::render::job::adaptive::AdaptiveSampling>,
@@ -45,6 +46,7 @@ pub(super) struct View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            aging: Default::default(),
             nested_media: false,
             volume: None,
             adaptive: None,
@@ -80,6 +82,7 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     params["finishing"] = json!(view.finishing);
     params["backdrop"] = json!(view.backdrop_enabled.then_some(view.backdrop));
     params["linear_exr"] = json!(view.linear_exr);
+    params["aging"] = json!(view.aging);
     params["nested_media"] = json!(view.nested_media);
     params["volume"] = json!(view.volume);
     params["adaptive"] = json!(view.adaptive);
@@ -300,7 +303,7 @@ pub(super) fn lighting_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 /// Presentation is opt-in; raw radiance and engineering appearance stay untouched.
-fn post_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+pub(super) fn post_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.post_title").to_string();
     ui_kit::section(ui, "render_post_filters", &title, false, |ui| {
         ui_kit::text(ui, app.tr("render.post_help"), ui_kit::Text::Note("render.post_help"));

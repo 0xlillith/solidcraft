@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Finishing {
+    #[serde(default, skip_serializing_if = "super::looks::LookStack::is_empty")]
+    pub looks: super::looks::LookStack,
+    #[serde(default, skip_serializing_if = "super::photographic::Photographic::is_identity")]
+    pub photographic: super::photographic::Photographic,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bloom: Option<super::bloom::Bloom>,
     /// Explicit creative linear RGB gains, not a measured illuminant temperature.
@@ -18,7 +22,15 @@ pub struct Finishing {
 }
 impl Default for Finishing {
     fn default() -> Self {
-        Self { bloom: None, rgb_gain: [1.; 3], contrast: 1., saturation: 1., vignette: 0. }
+        Self {
+            looks: Default::default(),
+            photographic: Default::default(),
+            bloom: None,
+            rgb_gain: [1.; 3],
+            contrast: 1.,
+            saturation: 1.,
+            vignette: 0.,
+        }
     }
 }
 impl Finishing {
@@ -26,6 +38,8 @@ impl Finishing {
         *self == Self::default()
     }
     pub fn validate(self) -> Result<()> {
+        self.looks.validate()?;
+        self.photographic.validate()?;
         if let Some(bloom) = self.bloom {
             bloom.validate()?;
         }
@@ -47,6 +61,7 @@ impl Finishing {
     /// Called only with a validated plan and finite tone-mapped RGB. Returns
     /// linear-display values; the output encoder owns final clipping and sRGB.
     pub fn display(self, mut rgb: [f64; 3], position: [f64; 2]) -> [f64; 3] {
+        rgb = self.looks.apply(rgb);
         if self.contrast != 1. {
             rgb = rgb.map(|c| (c - 0.18) * self.contrast + 0.18);
         }

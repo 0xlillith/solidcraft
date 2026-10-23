@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{BackendId, Camera, ExecutorId};
 
 pub mod adaptive;
+pub mod aging;
 pub mod bloom;
 mod cpu_budget;
 pub(crate) mod encoding;
@@ -25,6 +26,8 @@ mod light_union_tests;
 mod lighting;
 pub mod linear_exr;
 mod linear_exr_decode;
+pub mod looks;
+pub mod photographic;
 mod png;
 pub mod presentation;
 mod punctual;
@@ -60,6 +63,8 @@ pub const MAX_GPU_DIELECTRICS: usize = 32;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct JobOptions {
+    #[serde(skip_serializing_if = "aging::AgingStack::is_empty")]
+    pub aging: aging::AgingStack,
     pub nested_media: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<volume::HomogeneousVolume>,
@@ -88,6 +93,7 @@ pub struct JobOptions {
 impl Default for JobOptions {
     fn default() -> Self {
         Self {
+            aging: Default::default(),
             nested_media: false,
             volume: None,
             adaptive: None,
@@ -109,6 +115,7 @@ impl Default for JobOptions {
 
 impl JobOptions {
     pub fn validate(&self) -> Result<()> {
+        self.aging.validate()?;
         if let Some(volume) = self.volume {
             volume.validate()?;
             if volume.active() && self.transmission_samples != 1 {
@@ -172,6 +179,12 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    fn supports_aging(&self) -> bool {
+        false
+    }
+    fn supports_photographic(&self) -> bool {
+        false
+    }
     fn supports_subsurface(&self) -> bool {
         false
     }

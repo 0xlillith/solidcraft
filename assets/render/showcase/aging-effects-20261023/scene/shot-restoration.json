@@ -1,0 +1,8 @@
+{
+  "status": "PASS",
+  "restored_name": "09 Cyanotype",
+  "authority": "production-shots.json",
+  "explicit_request_parameters_preserved": true,
+  "normalization": "Native serialization adds default upward_bias=0 and neutral photographic values, and omits null optional backdrop; roundtrip equality compares canonical saved setups.",
+  "reason": "Pre-closure inventory found this setup absent; restored its retained numerical recipe before save/reopen acceptance."
+}

@@ -1,0 +1,27 @@
+{
+  "head": "9d5a1b4b62b0aa4130841cb2a15386cda7fab339",
+  "status": "PASS",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "--profile",
+    "ci",
+    "-p",
+    "solidcraft-gpu",
+    "--features",
+    "solidcraft-render/raytrace-cpu,solidcraft-engine/raytrace-cpu",
+    "--lib",
+    "--",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "exit_code": 0,
+  "seconds": 994.88,
+  "summary": [
+    115,
+    0,
+    3
+  ],
+  "scope": "complete GPU suite after test-only packing correction; production code identical to native build 9f8c3d30"
+}

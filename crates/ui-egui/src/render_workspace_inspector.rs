@@ -11,22 +11,39 @@ pub(super) enum Page {
     #[default]
     Scene,
     Appearance,
+    Aging,
+    Effects,
     Lighting,
     Environment,
+    Background,
     Camera,
     Output,
     Diagnostics,
     All,
 }
 impl Page {
-    const ALL: [Self; 8] =
-        [Self::Scene, Self::Appearance, Self::Lighting, Self::Environment, Self::Camera, Self::Output, Self::Diagnostics, Self::All];
+    const ALL: [Self; 11] = [
+        Self::Scene,
+        Self::Appearance,
+        Self::Aging,
+        Self::Lighting,
+        Self::Environment,
+        Self::Background,
+        Self::Camera,
+        Self::Effects,
+        Self::Output,
+        Self::Diagnostics,
+        Self::All,
+    ];
     pub(super) fn key(self) -> &'static str {
         match self {
             Self::Scene => "render.page_scene",
             Self::Appearance => "render.page_appearance",
+            Self::Aging => "render.page_aging",
+            Self::Effects => "render.page_effects",
             Self::Lighting => "render.page_lighting",
             Self::Environment => "render.page_environment",
+            Self::Background => "render.page_background",
             Self::Camera => "render.page_camera",
             Self::Output => "render.page_output",
             Self::Diagnostics => "render.page_diagnostics",
@@ -37,8 +54,11 @@ impl Page {
         match self {
             Self::Scene => "scene",
             Self::Appearance => "appearance",
+            Self::Aging => "aging",
+            Self::Effects => "effects",
             Self::Lighting => "lighting",
             Self::Environment => "environment",
+            Self::Background => "background",
             Self::Camera => "camera",
             Self::Output => "output",
             Self::Diagnostics => "diagnostics",
@@ -49,8 +69,11 @@ impl Page {
         match self {
             Self::Scene => "render_scene",
             Self::Appearance => "appearance",
+            Self::Aging => "appearance",
+            Self::Effects => "camera",
             Self::Lighting => "settings",
             Self::Environment => "environment_map",
+            Self::Background => "render_scene",
             Self::Camera => "camera",
             Self::Output => "export",
             Self::Diagnostics => "inspect",
@@ -60,6 +83,7 @@ impl Page {
 }
 #[derive(Clone, Debug)]
 pub(super) struct View {
+    pub effects: super::effects::View,
     pub page: Page,
     reveal: Option<&'static str>,
     pub library_open: bool,
@@ -164,6 +188,7 @@ impl View {
 impl Default for View {
     fn default() -> Self {
         Self {
+            effects: Default::default(),
             page: Page::Scene,
             reveal: None,
             library_open: false,
@@ -225,8 +250,11 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                         match page {
                             Page::Scene => scene_controls(app, ui),
                             Page::Appearance => appearance_controls(app, ui),
+                            Page::Aging => super::effects::aging_controls(app, ui),
+                            Page::Effects => super::effects::presentation_controls(app, ui),
                             Page::Lighting => lighting_controls(app, ui),
                             Page::Environment => environment_controls(app, ui),
+                            Page::Background => background_controls(app, ui),
                             Page::Camera => camera_controls(app, ui),
                             Page::Output => output_controls(app, ui),
                             Page::Diagnostics => diagnostics(app, ui),
@@ -235,6 +263,8 @@ pub(super) fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 camera_actions(app, ui);
                                 let title = app.tr("render.page_camera").to_string();
                                 ui_kit::section(ui, "render_all_camera", &title, false, |ui| camera_controls(app, ui));
+                                let title = app.tr("render.page_aging").to_string();
+                                ui_kit::section(ui, "render_all_aging", &title, false, |ui| super::effects::aging_controls(app, ui));
                                 super::image_edit_controls(app, ui);
                             }
                         }
@@ -262,7 +292,10 @@ fn pages(app: &mut SolveApp, ui: &mut egui::Ui) {
     for (i, page) in Page::ALL.iter().enumerate() {
         crate::scenario::publish_target(
             &format!("render:page:{}", page.handle()),
-            egui::Rect::from_min_size(top + egui::vec2(width * i as f32 / 8.0, 0.0), egui::vec2(width / 8.0, height)),
+            egui::Rect::from_min_size(
+                top + egui::vec2(width * i as f32 / Page::ALL.len() as f32, 0.0),
+                egui::vec2(width / Page::ALL.len() as f32, height),
+            ),
         );
     }
     ui.add_space(Tokens::get().space_4);
@@ -398,6 +431,10 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if !selected_native {
         library::inspect_kinds(app, ui, &["native_scenes", "scenes", "selene_shots"]);
     }
+    physical_stage_controls(app, ui);
+    shot_controls(app, ui);
+}
+fn physical_stage_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.passive_stage").to_string();
     reveal_section(app, ui, "render_ground_details");
     ui_kit::section(ui, "render_ground_details", &title, false, |ui| {
@@ -408,7 +445,8 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         let label = app.tr("render.ground_linear_rgb").to_string();
         vector(ui, &label, &mut app.render_workspace.view.inspector.ground_color, 0.0..=1.0, 0.01);
         let label = app.tr("render.replace_ground").to_string();
-        ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.replace_ground);
+        let replace = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.inspector.replace_ground);
+        crate::scenario::publish_target("render:stage-replace-consent", replace.rect);
         let saved = setups::snapshot(app);
         if ui_kit::button(
             ui,
@@ -443,10 +481,49 @@ fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             }
         }
-        library::stage_controls(app, ui);
+        library::stage_content(app, ui);
     });
-    shot_controls(app, ui);
 }
+
+fn background_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    ui_kit::text(ui, app.tr("render.background_workflow"), ui_kit::Text::Note("render.background_workflow"));
+    let title = app.tr("render.background_camera_section").to_string();
+    ui_kit::section(ui, "render_camera_background_section", &title, true, |ui| {
+        ui.label(app.tr("render.background"));
+        let color = ui_kit::color_field(ui, &mut app.render_workspace.view.draft.background);
+        crate::scenario::publish_target("render:background-color", color.rect);
+        app.render_workspace.view.dirty |= color.changed();
+        if app.render_workspace.view.method == ImageMethod::GpuRaytrace {
+            studio::backdrop_controls(app, ui);
+        }
+        if !app.render_workspace.view.draft.stage.is_empty() {
+            ui_kit::text(ui, app.tr("render.background_stage_occlusion"), ui_kit::Text::Note("render.background_stage_occlusion"));
+        }
+        if app.render_workspace.view.result {
+            ui_kit::text(ui, app.tr("render.background_completed_frozen"), ui_kit::Text::Note("render.background_completed_frozen"));
+        }
+        let enabled = super::ribbon::action_ready(app, "render.result.regrade").is_ok();
+        let apply = ui_kit::button(ui, app.tr("render.background_regrade"), ui_kit::Button::Enabled(enabled));
+        crate::scenario::publish_target("render:background-regrade", apply.rect);
+        if apply.clicked() {
+            if let Err(error) = super::ribbon::perform_job(app, "render.result.regrade") {
+                app.set_status(error, true);
+            }
+            ui.ctx().request_repaint();
+        }
+        ui_kit::text(ui, app.tr("render.background_no_alpha_override"), ui_kit::Text::Note("render.background_no_alpha_override"));
+    });
+    physical_stage_controls(app, ui);
+    let title = app.tr("render.background_lighting_section").to_string();
+    ui_kit::section(ui, "render_background_hdr_section", &title, false, |ui| {
+        ui_kit::text(ui, app.tr("render.background_hdr_separate"), ui_kit::Text::Note("render.background_hdr_separate"));
+        if ui_kit::button(ui, app.tr("render.browse_environments"), ui_kit::Button::Normal).clicked() {
+            app.render_workspace.view.inspector.page = Page::Environment;
+            library::open_category(app, "hdr");
+        }
+    });
+}
+
 fn shot_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let title = app.tr("render.shot_manager").to_string();
     reveal_section(app, ui, "render_shot_manager");

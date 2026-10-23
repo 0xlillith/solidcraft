@@ -1,0 +1,78 @@
+{
+  "status": "CLOSED",
+  "executable_sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20",
+  "source_head": "9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e",
+  "source_tree": "54adad82e33e9e5b0f08c125d0a1d3085d416ad7",
+  "screenshots": [
+    {
+      "name": "ui-aging-light",
+      "file": "ui-aging-light.png",
+      "sha256": "6662c943cc6f14a4a8c8231fbbaaac8649fcf805f697cb9a4b5f6b432b9efb46",
+      "bytes": 2690497
+    },
+    {
+      "name": "ui-effects-debug",
+      "file": "ui-effects-debug.png",
+      "sha256": "e871a7208503695a715acb91078fb5e8d93cf06586a31e1d85282d0753f6afae",
+      "bytes": 2783033
+    },
+    {
+      "name": "ui-effects-dark",
+      "file": "ui-effects-dark.png",
+      "sha256": "7e203380ff5193bee9a20e1e91e48ebc018f1e4ba26f633d7ee5a58a99ff0b71",
+      "bytes": 5285742
+    },
+    {
+      "name": "ui-aging-final",
+      "file": "ui-aging-final.png",
+      "sha256": "af20c15412fe8af4bab7d24c7aca1be170959aa0343c910de2c1471f85289abc",
+      "bytes": 3789326
+    },
+    {
+      "name": "ui-effects-final",
+      "file": "ui-effects-final.png",
+      "sha256": "846b6d7ac4ce3257390dba6aed3ef6d60837cf0cb9309f0ad04135fc37c75c71",
+      "bytes": 4719411
+    },
+    {
+      "name": "ui-library-final",
+      "file": "ui-library-final.png",
+      "sha256": "7a87acb1cb5bbfcb575ad6bcb325660cfebafd1b38175de79291d806c50d9fa6",
+      "bytes": 4752853
+    },
+    {
+      "name": "background-review-start",
+      "file": "background-review-start.png",
+      "sha256": "e2604c060fb3daa5ada86480889690a4a4fec90d8e2ac7dec147c25af2719b7b",
+      "bytes": 4807304
+    },
+    {
+      "name": "ui-volume-final",
+      "file": "ui-volume-final.png",
+      "sha256": "0a25d973aaabc0ccdeffc0e25243c694587995fcd139d30d64a0cb452b637465",
+      "bytes": 1474146
+    }
+  ],
+  "scope": "Actual native GUI acceptance with public-safe command-created geometry; explicit settings profile protects personal preferences",
+  "initial_renderer": "gpu",
+  "control_reconnected": true,
+  "preference_hash_baseline": "Hash comparison from the control reconnection; the entire process uses its isolated settings directory, not the ordinary profile.",
+  "published_shots": [
+    "01 Clean materials",
+    "02 Aged surfaces",
+    "03 Photographic finish",
+    "04 Macro details",
+    "05 Electronics studio",
+    "06 Airborne dust",
+    "07 Clear air",
+    "08 Monochrome",
+    "09 Cyanotype",
+    "10 Background - solid",
+    "11 Background - gradient",
+    "12 Background - floor and wall",
+    "13 Background - cyclorama"
+  ],
+  "forced_termination": false,
+  "personal_preferences_unchanged": true,
+  "returncode": 0
+}

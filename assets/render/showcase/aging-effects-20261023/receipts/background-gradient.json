@@ -1,0 +1,216 @@
+{
+  "status": "PASS",
+  "job": {
+    "generation": 24,
+    "serial": 24,
+    "session": 6
+  },
+  "job_status": {
+    "error": null,
+    "frame": {
+      "alpha": "straight",
+      "backend": "builtin",
+      "encoding": "srgb",
+      "executor": "linear-master",
+      "height": 1080,
+      "job": {
+        "generation": 24,
+        "serial": 24,
+        "session": 6
+      },
+      "png_bytes": 1086811,
+      "png_sha256": "33f805aba75ab49ac098455ddf0fe134a1323e3bde886a12d6532c0ea480a31c",
+      "scene_generation": 41,
+      "width": 1920
+    },
+    "job": {
+      "generation": 24,
+      "serial": 24,
+      "session": 6
+    },
+    "linear_master": {
+      "alpha": "coverage_premultiplied",
+      "bytes": 33195507,
+      "encoding": "scene_linear_srgb_d65",
+      "sha256": "c3cf85156d909e867d989183a33ed15425c262ba47f245540c82d956ac00a7dc"
+    },
+    "options": {
+      "backdrop": {
+        "center": [
+          0.5,
+          0.4
+        ],
+        "first_srgb": [
+          171,
+          205,
+          232
+        ],
+        "mode": "radial",
+        "radius": 0.72,
+        "second_srgb": [
+          18,
+          30,
+          52
+        ]
+      },
+      "denoise": false,
+      "exposure_ev": -1.0,
+      "lens": null,
+      "lighting": null,
+      "linear_exr": false,
+      "max_depth": 8,
+      "nested_media": false,
+      "samples": 64,
+      "seed": 0,
+      "tone_map": "aces_fitted",
+      "transmission_samples": 1
+    },
+    "presentation": {
+      "denoise_applied": false,
+      "master_job": {
+        "generation": 23,
+        "serial": 23,
+        "session": 6
+      },
+      "master_sha256": "c3cf85156d909e867d989183a33ed15425c262ba47f245540c82d956ac00a7dc",
+      "presentation": {
+        "backdrop": {
+          "center": [
+            0.5,
+            0.4
+          ],
+          "first_srgb": [
+            171,
+            205,
+            232
+          ],
+          "mode": "radial",
+          "radius": 0.72,
+          "second_srgb": [
+            18,
+            30,
+            52
+          ]
+        },
+        "background": [
+          235,
+          239,
+          246
+        ],
+        "exposure_ev": -1.0,
+        "finishing": {
+          "contrast": 1.0,
+          "rgb_gain": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "saturation": 1.0,
+          "vignette": 0.0
+        },
+        "tone_map": "aces_fitted",
+        "transparent_background": false
+      },
+      "source_job": {
+        "generation": 23,
+        "serial": 23,
+        "session": 6
+      }
+    },
+    "progress": {
+      "done": 1,
+      "phase": "completed",
+      "total": 1
+    },
+    "request": {
+      "background": [
+        235,
+        239,
+        246
+      ],
+      "camera": {
+        "distance": 310.0,
+        "fov": 0.48,
+        "pitch": 0.42,
+        "roll": 0.0,
+        "target": [
+          0.0,
+          0.0,
+          34.0
+        ],
+        "up": "z",
+        "yaw": -0.72
+      },
+      "height": 1080,
+      "integrator": "raster",
+      "transparent_background": false,
+      "width": 1920
+    },
+    "resolved": {
+      "backend": "builtin",
+      "estimated_scratch_bytes": 99532800,
+      "executor": "linear-master",
+      "format": "png",
+      "height": 1080,
+      "profile": {
+        "features": [],
+        "formats": [
+          "png"
+        ],
+        "mode": "preview",
+        "operation": "image"
+      },
+      "warnings": [],
+      "width": 1920
+    },
+    "scene_generation": 41,
+    "textures": null
+  },
+  "outputs": {
+    "png": {
+      "file": "background-gradient.png",
+      "bytes": 1086811,
+      "sha256": "33f805aba75ab49ac098455ddf0fe134a1323e3bde886a12d6532c0ea480a31c"
+    },
+    "exr": {
+      "file": "background-gradient.exr",
+      "bytes": 33195507,
+      "sha256": "c3cf85156d909e867d989183a33ed15425c262ba47f245540c82d956ac00a7dc"
+    }
+  },
+  "model_source_sha256": "53f2879f1076ca8b235e20da4a998d58df4b08be1a293a2ce0c5996c552ea22d",
+  "executable_sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20",
+  "visual_review": "ACCEPTED",
+  "raw_master_unchanged": true,
+  "presentation": {
+    "exposure_ev": -1.0,
+    "tone_map": "aces_fitted",
+    "background": [
+      235,
+      239,
+      246
+    ],
+    "backdrop": {
+      "mode": "radial",
+      "first_srgb": [
+        171,
+        205,
+        232
+      ],
+      "second_srgb": [
+        18,
+        30,
+        52
+      ],
+      "center": [
+        0.5,
+        0.4
+      ],
+      "radius": 0.72
+    }
+  },
+  "visual_review_detail": {
+    "method": "Direct image inspection: whole native image or lossless-downscaled review plus recorded native detail inspection for the nine original selected views; original PNG bytes unchanged",
+    "scope": "Selected development showcase composition/material/background effect, not quantitative optical fidelity or zero-noise certification"
+  }
+}

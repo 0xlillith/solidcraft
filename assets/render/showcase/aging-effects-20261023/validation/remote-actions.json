@@ -1,0 +1,27 @@
+{
+  "head": "9bc71b298719bbe62e1bdbc49eba45f6863e55d0",
+  "recorded_utc": "2026-10-23T12:57:13.070274+00:00",
+  "settings_changed": false,
+  "results": {
+    "permissions": {
+      "exit_code": 0,
+      "stdout": {
+        "enabled": true,
+        "allowed_actions": "all",
+        "sha_pinning_required": false
+      },
+      "stderr": ""
+    },
+    "branch_runs": {
+      "exit_code": 0,
+      "stdout": [],
+      "stderr": ""
+    },
+    "dispatch": {
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "could not create workflow dispatch event: HTTP 422: Actions has been disabled for this repository. (https://api.github.com/repos/0xlillith/solidcraft/actions/workflows/392622724/dispatches)\n"
+    }
+  },
+  "scope": "Observed server-side Actions state/dispatch, not a local or remote CI pass"
+}

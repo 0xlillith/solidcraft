@@ -29,6 +29,8 @@ mod cpu;
 #[path = "render_workspace_hdr.rs"]
 mod hdr;
 
+#[path = "render_workspace_effects.rs"]
+mod effects;
 #[path = "render_workspace_inspector.rs"]
 mod inspector;
 

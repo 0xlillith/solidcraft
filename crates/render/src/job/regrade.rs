@@ -12,7 +12,9 @@ pub(super) fn required_bytes(source: &RenderFrame, settings: Presentation) -> Re
     }
     // Includes decoded float4, bloom ping/pong float3 or display bytes, bounded
     // PNG output and codec/header/task metadata. The source keeps its own lease.
-    Ok(u64::from(source.info.width) * u64::from(source.info.height) * 48 + 1_048_576)
+    Ok(u64::from(source.info.width) * u64::from(source.info.height) * 48
+        + 1_048_576
+        + settings.finishing.photographic.scratch_bytes(source.info.width, source.info.height)?)
 }
 
 pub(super) struct RegradeTask {
@@ -26,13 +28,26 @@ pub(super) struct RegradeTask {
     rgba: Vec<u8>,
     encoded: usize,
     png: Option<PngTask>,
+    photographic: Option<super::photographic::PhotographicTask>,
 }
 impl RegradeTask {
     pub(super) fn new(source: Arc<RenderFrame>, settings: Presentation, cancel: CancelToken) -> Result<Self> {
         required_bytes(&source, settings)?;
         let raw = source.linear_exr().ok_or_else(|| JobError::new(ErrorCode::InvalidRequest, "linear master disappeared"))?;
         let decoder = Decoder::new(raw, source.info.width, source.info.height, &cancel)?;
-        Ok(Self { source, settings, cancel, decoder: Some(decoder), bloom: None, linear: None, glow: None, rgba: Vec::new(), encoded: 0, png: None })
+        Ok(Self {
+            source,
+            settings,
+            cancel,
+            decoder: Some(decoder),
+            bloom: None,
+            linear: None,
+            glow: None,
+            rgba: Vec::new(),
+            encoded: 0,
+            png: None,
+            photographic: None,
+        })
     }
     pub(super) fn source(&self) -> Arc<RenderFrame> {
         self.source.clone()
@@ -48,6 +63,26 @@ impl ImageWork for RegradeTask {
             return png.step(units);
         }
         let (width, height) = (self.source.info.width, self.source.info.height);
+        if let Some(mut task) = self.photographic.take() {
+            if !task.step(units)? {
+                let (done, total) = task.progress();
+                self.photographic = Some(task);
+                return self.pending(done, total);
+            }
+            let request = ImageRequest {
+                width,
+                height,
+                camera: Default::default(),
+                integrator: Default::default(),
+                raytrace: None,
+                environment: None,
+                textures: None,
+                background: self.settings.background,
+                transparent_background: self.settings.transparent_background,
+            };
+            self.png = Some(PngTask::new(&request, task.finish()?, self.cancel.clone())?);
+            return self.pending(0, u64::from(height));
+        }
         if let Some(mut decoder) = self.decoder.take() {
             let raw = self.source.linear_exr().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing retained master"))?;
             if !decoder.step(raw, &self.cancel)? {
@@ -93,8 +128,20 @@ impl ImageWork for RegradeTask {
         if end < count {
             return self.pending(end as u64, count as u64);
         }
-        self.linear = None;
         self.glow = None;
+        if self.settings.finishing.photographic.active() {
+            let pixels = self.linear.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing photographic master pixels"))?;
+            self.photographic = Some(super::photographic::PhotographicTask::new(
+                width,
+                height,
+                std::mem::take(&mut self.rgba),
+                pixels,
+                self.settings.finishing.photographic,
+                self.cancel.clone(),
+            )?);
+            return self.pending(0, u64::from(width) * u64::from(height));
+        }
+        self.linear = None;
         let request = ImageRequest {
             width,
             height,

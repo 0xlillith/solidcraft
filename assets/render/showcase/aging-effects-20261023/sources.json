@@ -1,0 +1,130 @@
+{
+  "schema": "solidcraft-aging-showcase/2",
+  "render_producer_commit": "9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e",
+  "render_producer_tree": "54adad82e33e9e5b0f08c125d0a1d3085d416ad7",
+  "render_application_sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20",
+  "background_ui_commit": "9bc71b298719bbe62e1bdbc49eba45f6863e55d0",
+  "background_ui_sha256": "2acc780b33a6fe7e75e306cfe51de5881eaf93496a2c85fe1828c80386e13ebf",
+  "original_model_sha256": "53f2879f1076ca8b235e20da4a998d58df4b08be1a293a2ce0c5996c552ea22d",
+  "images": [
+    {
+      "id": "clean-production",
+      "path": "renders/clean-production.png",
+      "sha256": "58a69d1e79c00a5ab0f4ef903bc3f20c67fa4d84268618a45d359f44a41f9ac9",
+      "width": 2560,
+      "height": 1440,
+      "executor": "gpu-path",
+      "raw_master_sha256": "3810c75b7e7cd58eef15c9aee223395bf36eebfb4472c1acc14434281a72d32d"
+    },
+    {
+      "id": "aged-production",
+      "path": "renders/aged-production.png",
+      "sha256": "530ed296e9f2beca9cb567261793ac6baf3421c570ee78669cf7f457e770491f",
+      "width": 2560,
+      "height": 1440,
+      "executor": "gpu-path",
+      "raw_master_sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623"
+    },
+    {
+      "id": "aged-macro",
+      "path": "renders/aged-macro.png",
+      "sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808",
+      "width": 2560,
+      "height": 1440,
+      "executor": "gpu-path",
+      "raw_master_sha256": "d5dff5c43d8a92b05227fe9a96cbf7090032d3cd76a47064d7b9a3c0c55e54e8"
+    },
+    {
+      "id": "alternate-studio",
+      "path": "renders/alternate-studio.png",
+      "sha256": "ed797158f6185db1604eb3f562b58e7b324c74610fe218f4a6d3e9bf4ad4145e",
+      "width": 2560,
+      "height": 1440,
+      "executor": "gpu-path",
+      "raw_master_sha256": "0ae59fd86f7ec7a1e5e46be5897a5d2d8bf64bbd6792c405cae26e9743009fe4"
+    },
+    {
+      "id": "airborne-production",
+      "path": "renders/airborne-production.png",
+      "sha256": "d354e154accadb86d15c48c365beb147e71224676eed16dbf959c6d61a9f6b5d",
+      "width": 1920,
+      "height": 1080,
+      "executor": "gpu-path",
+      "raw_master_sha256": "b4eaa703b1258574118f175e70357c4fc8687b9bda8e79b0f9e6d0727124856b"
+    },
+    {
+      "id": "clear-air-production",
+      "path": "renders/clear-air-production.png",
+      "sha256": "1354b824cc099d62e11c0d362ffeedf1cc7f512fba8a9a97d61de31d6ab00b65",
+      "width": 1920,
+      "height": 1080,
+      "executor": "gpu-path",
+      "raw_master_sha256": "28a4e8d75ebe8297651e431c58b81af7e046721dfcc9dbbe2b753854cefcb251"
+    },
+    {
+      "id": "cinematic-refined",
+      "path": "renders/cinematic-refined.png",
+      "sha256": "1c61dcb86c999dcce0887e5048e524399dcbe6574ccfd524360cfa08749a56a9",
+      "width": 2560,
+      "height": 1440,
+      "executor": "linear-master",
+      "raw_master_sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623"
+    },
+    {
+      "id": "monochrome-master",
+      "path": "renders/monochrome-master.png",
+      "sha256": "997ccb4ee120101c0ecedd66230687ff27320cc2a05986ba8b6bb1f88930f9ad",
+      "width": 2560,
+      "height": 1440,
+      "executor": "linear-master",
+      "raw_master_sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623"
+    },
+    {
+      "id": "cyanotype-master",
+      "path": "renders/cyanotype-master.png",
+      "sha256": "3130103cb3cfd682c494f31efb4f657ff3306209f3167347a8b52a7aaae9568c",
+      "width": 2560,
+      "height": 1440,
+      "executor": "linear-master",
+      "raw_master_sha256": "3499e9f8effd39580a1415fd419a75e9ce12223f615893d63b14030078bd4623"
+    },
+    {
+      "id": "background-neutral",
+      "path": "renders/background-neutral.png",
+      "sha256": "70be13a67830a2ad17cafd37de6afe757b5b4eb117ac549014d56535e142d95a",
+      "width": 1920,
+      "height": 1080,
+      "executor": "linear-master",
+      "raw_master_sha256": "c3cf85156d909e867d989183a33ed15425c262ba47f245540c82d956ac00a7dc"
+    },
+    {
+      "id": "background-gradient",
+      "path": "renders/background-gradient.png",
+      "sha256": "33f805aba75ab49ac098455ddf0fe134a1323e3bde886a12d6532c0ea480a31c",
+      "width": 1920,
+      "height": 1080,
+      "executor": "linear-master",
+      "raw_master_sha256": "c3cf85156d909e867d989183a33ed15425c262ba47f245540c82d956ac00a7dc"
+    },
+    {
+      "id": "background-floor-wall",
+      "path": "renders/background-floor-wall.png",
+      "sha256": "6ecad7600b88a8602127ceb9c0542b48491691349bf864b05b3694fab7d594de",
+      "width": 1920,
+      "height": 1080,
+      "executor": "gpu-path",
+      "raw_master_sha256": "7dfe15d9f1ee084e63f926ea59fac4d231688036c07d0a447cb370d3b8181301"
+    },
+    {
+      "id": "background-cyclorama",
+      "path": "renders/background-cyclorama.png",
+      "sha256": "feb78e0fabd90640191574c519d818444f222850b7fc32803628b21b116f4484",
+      "width": 1920,
+      "height": 1080,
+      "executor": "gpu-path",
+      "raw_master_sha256": "8f5996d0c7cfce22e188d535b7b02a81da032a0b6ec260916a35e35a8ae588dc"
+    }
+  ],
+  "scope": "Actual native renderer images, immutable-master grades and native UI screenshots. The video has editorial transitions and synthesized music; it is not real-time rendering or physical animation.",
+  "previous_selene_reference": "Earlier verified native assembly image; not a new aged rover render. Original model and lettering notices retained."
+}

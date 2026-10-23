@@ -1,18 +1,18 @@
 # Native Render studio UI
 
-Integration-branch source, continuing the frozen personal renderer fork. Actual execution and visual-acceptance results belong in `render-materials/UI-BATCH-2026-10-22.md`; this guide is not itself proof of acceptance.
+Integration-branch source, continuing the frozen personal renderer fork. Historical layout acceptance is retained in `render-materials/UI-BATCH-2026-10-22.md`. Current transport, aging/effects, Backgrounds-page and final showcase evidence is linked from `render-materials/AGING-EFFECTS-SHOWCASE-2026-10-23.md` and the shipped showcase manifest; this guide alone is not proof of acceptance.
 
 ## Workspace and navigation
 
 RENDER remains one ribbon tab. The existing Browser card has a local Model / Library switch in both Docked and Floating layouts. The native model tree, visibility and selection are not replaced by a competing scene tree. The central canvas retains the original product-navigation and completed-image tools.
 
-The right inspector has eight local sections: Scene, Appearance, Lighting, Environment, Camera, Output, Diagnostics and All controls. These are sections of one saved render draft, not rendering modes. All controls is the same dense native editor assembled from shared controls, not a separate simplified/advanced execution path. Each open document retains its own page and library state.
+The right inspector has eleven local sections: Scene, Appearance, Aging, Lighting, Environment, Backgrounds, Camera, Effects, Output, Diagnostics and All controls. These are sections of one saved render draft, not rendering modes. All controls retains the dense combined native editor; specialized ordered Aging/Effects and Backgrounds workflows also have their dedicated pages. They share execution/validation rather than inventing a simplified rendering path. Each open document retains its own page and library state.
 
 Check, Render, Cancel and Export remain outside the scrolling inspector body. They use the existing immutable job protocol. A later draft edit does not substitute a different image for a retained completed export. PNG export copies the completed native frame, not the reduced UI display texture. Check and Start use the same request builder; inspection does not silently start a renderer or open a GPU.
 
 ## Resource library
 
-The native library includes original surface maps, SELENE appearances, HDR environments, authored rigs, physical-reference profiles, advanced scene/material/light/environment concepts, quality specifications, capability requirements and the twelve authored SELENE shot specifications. Four separate `NATIVE-STUDIO-*` entries are executable compositions; they do not relabel the unbound `SCENE-*` concepts as finished.
+The native library includes original surface maps, SELENE appearances, HDR environments, authored rigs, physical-reference profiles, advanced scene/material/light/environment concepts, quality specifications, capability requirements and the twelve authored SELENE shot specifications. Twenty-five separate `NATIVE-STUDIO-*` entries cover all twenty-four original authored HDR resources as executable compositions; they do not relabel the unbound `SCENE-*` concepts as finished.
 
 Category-specific search, page and selection survive switching categories. Favorites are bounded at 256 entries and recent inspection at 32; these are per-open-document session state, not an on-disk shared library. Search, availability filters and collection inspection are read-only. Physical profiles remain engineering references, never optical substitutes. Resource details retain original values, omissions, source locators and provenance.
 
@@ -42,11 +42,25 @@ The Camera section edits the shared native camera via public commands, with mill
 
 ## Output and capability honesty
 
-Output dimensions follow the selected CPU/GPU/raster envelope. Named size buttons are explicit edits; invalid combinations stay visible for correction rather than being silently reduced. GPU fixed samples, path depth, seed, tone mapping and denoising preserve the existing numerical contract. CPU resource and sampling profiles remain explicit. Completed PNG supports the existing RGBA8/sRGB path; EXR and raw-linear master export are not advertised as executable formats.
+Output dimensions follow the selected CPU/GPU/raster envelope. Named size buttons are explicit edits; invalid combinations stay visible for correction rather than being silently reduced. GPU sample budgets, path depth, seed, tone mapping and denoising preserve the validated numerical contract. Optional independent-pilot adaptive allocation discards pilot radiance before production; its error targets are not a certified noise bound. Conditional Fresnel strata are explicit extra path work. CPU resource and sampling profiles remain explicit. Completed PNG supports RGBA8/sRGB; optional native uncompressed FLOAT32 RGBA linear-sRGB/D65 EXR is retained before denoising/exposure/display filters and exported from the exact completed job.
 
-`render.quality.prepare` resolves an acknowledged `fixed_samples_png` projection of a Q specification. It returns only compatible dimensions, fixed sample count, supported maximum depth, seed and denoise intent. It lists adaptive stopping/error targets, independently authored transmission-depth/Russian-roulette rules, raw-linear output, EXR and convergence guarantees as omitted. It refuses excessive profiles rather than clamping them. The UI changes only those budget fields, preserving executor, camera, lighting, optics, exposure and stage.
+`render.quality.prepare` resolves an acknowledged `fixed_samples_png` projection of a Q specification. It returns only compatible dimensions, fixed sample count, supported maximum depth, seed and denoise intent. That legacy `fixed_samples_png` projection lists adaptive rules, independently authored transmission-depth/Russian-roulette rules, raw-linear/EXR intent and convergence guarantees as omitted by the projection. This is not a statement that the separately validated native EXR or independent-pilot controls are unavailable. It refuses excessive profiles rather than clamping them. The UI changes only those budget fields, preserving executor, camera, lighting, optics, exposure and stage.
 
-Diagnostics exposes the exact current request, last preflight, logical-memory estimate, captured-job metadata, scene counts and structured errors. Stale checks are identified. Adaptive convergence, further transmission estimation work, unrestricted nested media, displacement/volumes/spectral transport and production queues remain explicitly unavailable. Seeing a concept in the library is not runtime admission.
+Diagnostics exposes the exact current request, last preflight, logical-memory estimate, captured-job metadata, scene counts and structured errors. Stale checks are identified. The native producer has bounded independent-pilot allocation, conditional transmission strata, homogeneous participating media and immutable-master regrading; advanced-optics capabilities have their own explicit admission limits. Certified convergence, arbitrary density grids, unrestricted nested optical media, a full spectral pipeline, every unbound material concept and production queues are not implied. Seeing a concept in the library is not runtime admission.
+
+## Backgrounds and visibility
+
+The Backgrounds ribbon opens one dedicated page with camera-only colour/gradient controls, physical stage actions, an exact retained-master regrade action and a separate HDR-illumination link. Merely opening it is read-only. Camera backgrounds show through uncovered pixels; they neither illuminate nor replace captured geometry. A large physical ground or wall can hide them completely. A completed result is immutable, and Live Preview is the modelling view: render or regrade explicitly to see final camera presentation.
+
+The physical floor/wall has two panels. The native cyclorama has a floor, twenty-four polygonal cove strips and a wall; it receives/casts supported native lighting interactions but is not an analytic smooth or infinite studio. Replacement consent remains explicit. Clearing a stage forwards the entire current numerical draft so unrelated unsaved background, exposure or output edits are preserved, then saves one ordinary command result. HDR resources illuminate and reflect but are not automatically displayed as a panorama behind the subject. Transparency is never silently flattened.
+
+The selected final showcase includes neutral/gradient comparisons sharing exactly the same EXR, floor/wall versus cyclorama native renders, and a capture of this actual Backgrounds page. The thirteen saved production/background shots reopen identically; the video is edited native imagery, not real-time performance evidence.
+
+## Layered aging and nondestructive finishing
+
+Aging offers up to eight ordered authored optical layers with bounded exact targets, world-millimetre scale, seed, masks and optical response. Rust, patina, deposited dust, grime, scratches, chipped paint and fading do not change CAD geometry, physical material cards, mass or pose. They are not corrosion-time, curvature/cavity or geometric-displacement simulations. Passive stages and glass are excluded. Airborne dust is a separate finite homogeneous transport medium with its own compatibility checks, not a surface layer or a fog bitmap.
+
+Effects offers up to eight ordered original colour looks plus bounded image-space photographic controls. Highlight-driven flare/ghosts/halo/streaks, chromatic offsets, radial distortion, soft focus, sharpening and deterministic grain are not calibrated optical lenses or imported commercial film LUTs. They preserve raw EXR bytes. `render.result.regrade` produces a distinct cancellable PNG job from an exact retained native master without new rays or document edits; it does not reconstruct a master from PNG or reapply absent denoiser guides.
 
 ## Verification
 

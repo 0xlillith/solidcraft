@@ -1,0 +1,51 @@
+{
+  "head": "9f8c3d3031737b19a5bb1bf8d3802f3af6915c1e",
+  "tree": "54adad82e33e9e5b0f08c125d0a1d3085d416ad7",
+  "status": "PASS",
+  "mode": "native",
+  "steps": [
+    {
+      "name": "native-build",
+      "command": [
+        "cargo",
+        "build",
+        "--locked",
+        "--profile",
+        "ci",
+        "-p",
+        "solidcraft",
+        "-p",
+        "solidcraft-cli",
+        "--bin",
+        "solidcraft",
+        "--bin",
+        "solidcraft-cli"
+      ],
+      "exit_code": 0,
+      "seconds": 1648.36,
+      "log": "native-build-r1.log"
+    },
+    {
+      "name": "wasm",
+      "command": [
+        "cargo",
+        "xtask",
+        "wasm"
+      ],
+      "exit_code": 0,
+      "seconds": 81.14,
+      "log": "wasm-r1.log"
+    }
+  ],
+  "binaries": [
+    {
+      "path": "solidcraft.exe",
+      "sha256": "704f21fb775bc49828ea467338614f2b68f1bb1e6738859b5b7b66fe376cae20"
+    },
+    {
+      "path": "solidcraft-cli.exe",
+      "sha256": "3abafd2dff2cb2ff084983f0213ec58cdeb64a58f96af8ac4135cf86bc288da3"
+    }
+  ],
+  "source_unchanged": true
+}

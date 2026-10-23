@@ -1,0 +1,297 @@
+{
+  "status": "PASS",
+  "file": "SolidCraft-Aging-Effects-Showcase.mp4",
+  "bytes": 11467697,
+  "sha256": "227ecf8d5dc15ef9b7bbafb1d56ff239ce88b5b01e9488d6a9d96c25fcf401e4",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "frames": 3660,
+  "seconds": 122.0,
+  "decode_validation": "PASS",
+  "visual_review": "ACCEPTED",
+  "chapters": [
+    {
+      "chapter": 1,
+      "second": 3.0,
+      "file": "chapter-01.jpg"
+    },
+    {
+      "chapter": 2,
+      "second": 11.0,
+      "file": "chapter-02.jpg"
+    },
+    {
+      "chapter": 3,
+      "second": 20.0,
+      "file": "chapter-03.jpg"
+    },
+    {
+      "chapter": 4,
+      "second": 28.0,
+      "file": "chapter-04.jpg"
+    },
+    {
+      "chapter": 5,
+      "second": 35.0,
+      "file": "chapter-05.jpg"
+    },
+    {
+      "chapter": 6,
+      "second": 41.5,
+      "file": "chapter-06.jpg"
+    },
+    {
+      "chapter": 7,
+      "second": 49.0,
+      "file": "chapter-07.jpg"
+    },
+    {
+      "chapter": 8,
+      "second": 57.0,
+      "file": "chapter-08.jpg"
+    },
+    {
+      "chapter": 9,
+      "second": 64.5,
+      "file": "chapter-09.jpg"
+    },
+    {
+      "chapter": 10,
+      "second": 73.0,
+      "file": "chapter-10.jpg"
+    },
+    {
+      "chapter": 11,
+      "second": 81.0,
+      "file": "chapter-11.jpg"
+    },
+    {
+      "chapter": 12,
+      "second": 87.5,
+      "file": "chapter-12.jpg"
+    },
+    {
+      "chapter": 13,
+      "second": 95.5,
+      "file": "chapter-13.jpg"
+    },
+    {
+      "chapter": 14,
+      "second": 104.0,
+      "file": "chapter-14.jpg"
+    },
+    {
+      "chapter": 15,
+      "second": 112.0,
+      "file": "chapter-15.jpg"
+    },
+    {
+      "chapter": 16,
+      "second": 119.0,
+      "file": "chapter-16.jpg"
+    }
+  ],
+  "sources": [
+    {
+      "file": "renders/clean-production.png",
+      "sha256": "58a69d1e79c00a5ab0f4ef903bc3f20c67fa4d84268618a45d359f44a41f9ac9",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "renders/clean-production.png",
+      "sha256": "58a69d1e79c00a5ab0f4ef903bc3f20c67fa4d84268618a45d359f44a41f9ac9",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "renders/aged-production.png",
+      "sha256": "530ed296e9f2beca9cb567261793ac6baf3421c570ee78669cf7f457e770491f",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "screenshots/ui-aging-final.png",
+      "sha256": "af20c15412fe8af4bab7d24c7aca1be170959aa0343c910de2c1471f85289abc",
+      "pixels": [
+        3200,
+        2000
+      ]
+    },
+    {
+      "file": "renders/aged-macro.png",
+      "sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "screenshots/ui-library-final.png",
+      "sha256": "7a87acb1cb5bbfcb575ad6bcb325660cfebafd1b38175de79291d806c50d9fa6",
+      "pixels": [
+        3200,
+        2000
+      ]
+    },
+    {
+      "file": "renders/alternate-studio.png",
+      "sha256": "ed797158f6185db1604eb3f562b58e7b324c74610fe218f4a6d3e9bf4ad4145e",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "renders/background-neutral.png",
+      "sha256": "70be13a67830a2ad17cafd37de6afe757b5b4eb117ac549014d56535e142d95a",
+      "pixels": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "file": "renders/background-gradient.png",
+      "sha256": "33f805aba75ab49ac098455ddf0fe134a1323e3bde886a12d6532c0ea480a31c",
+      "pixels": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "file": "renders/background-floor-wall.png",
+      "sha256": "6ecad7600b88a8602127ceb9c0542b48491691349bf864b05b3694fab7d594de",
+      "pixels": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "file": "renders/background-cyclorama.png",
+      "sha256": "feb78e0fabd90640191574c519d818444f222850b7fc32803628b21b116f4484",
+      "pixels": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "file": "screenshots/ui-backgrounds-final.png",
+      "sha256": "cd28e2a7aa2753d58d7fc0727dcf158b806f1fa09783352c51e98b1f2a9cdcf9",
+      "pixels": [
+        1600,
+        1000
+      ]
+    },
+    {
+      "file": "renders/clear-air-production.png",
+      "sha256": "1354b824cc099d62e11c0d362ffeedf1cc7f512fba8a9a97d61de31d6ab00b65",
+      "pixels": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "file": "renders/airborne-production.png",
+      "sha256": "d354e154accadb86d15c48c365beb147e71224676eed16dbf959c6d61a9f6b5d",
+      "pixels": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "file": "screenshots/ui-volume-final.png",
+      "sha256": "0a25d973aaabc0ccdeffc0e25243c694587995fcd139d30d64a0cb452b637465",
+      "pixels": [
+        3200,
+        2000
+      ]
+    },
+    {
+      "file": "screenshots/ui-effects-final.png",
+      "sha256": "846b6d7ac4ce3257390dba6aed3ef6d60837cf0cb9309f0ad04135fc37c75c71",
+      "pixels": [
+        3200,
+        2000
+      ]
+    },
+    {
+      "file": "renders/aged-production.png",
+      "sha256": "530ed296e9f2beca9cb567261793ac6baf3421c570ee78669cf7f457e770491f",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "renders/cinematic-refined.png",
+      "sha256": "1c61dcb86c999dcce0887e5048e524399dcbe6574ccfd524360cfa08749a56a9",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "renders/monochrome-master.png",
+      "sha256": "997ccb4ee120101c0ecedd66230687ff27320cc2a05986ba8b6bb1f88930f9ad",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "renders/cyanotype-master.png",
+      "sha256": "3130103cb3cfd682c494f31efb4f657ff3306209f3167347a8b52a7aaae9568c",
+      "pixels": [
+        2560,
+        1440
+      ]
+    },
+    {
+      "file": "reference/SELENE-studio-4k.png",
+      "sha256": "40a492e7979137d0f4027300da3d8af7ca1008c1aab2c309259e65d309a17316",
+      "pixels": [
+        3840,
+        2400
+      ]
+    },
+    {
+      "file": "renders/aged-macro.png",
+      "sha256": "115483d960428c501c096b8005845aa2e94a53dc3f1092c964253e24e22c7808",
+      "pixels": [
+        2560,
+        1440
+      ]
+    }
+  ],
+  "soundtrack": "Original mathematical oscillator bed; no samples or third-party music",
+  "editing_scope": "Native rendered stills and native UI screenshots with captions, comparison wipes and crossfades; no claim of real-time rendering, physical animation or generated imagery",
+  "source_manifest_sha256": "6f224e670d96a3c20684df02023369c3d0cc255746361c74b61a220c65d9208c",
+  "encoder_sha256": "2ce797a0f88d7f067180338fb227f7b1928ea727bd9a4d7a1d022f7c52af71a3",
+  "visual_review_detail": {
+    "method": "Actual encoded MP4 chapter contact sheets for all 16 chapters, individual background/transition frames, and final fade inspected. Full video decoded to 3660 frames; AAC duration/level integrity checked numerically.",
+    "observations": [
+      "Native material, layer, studio, volume and same-master comparisons are readable and correctly ordered.",
+      "Solid/gradient, wall/cyclorama and new Backgrounds UI chapters are present and visibly distinct.",
+      "Caption bands remain readable during image crossfades; earlier double-caption version was superseded outside publication.",
+      "Earlier SELENE reference is explicitly labelled; no real-time-rendering or dynamics claim."
+    ],
+    "audio_scope": "Original synthesized low-level bed; numerical integrity/headroom checks, not a claimed subjective audition."
+  },
+  "encoded_validation_summary": {
+    "decoded_frames": 3660,
+    "chapters": 16,
+    "audio_seconds": 122.00533333333334,
+    "audio_peak": 0.08674565702676773,
+    "audio_rms": 0.02503647112194736,
+    "clipping_detected": false
+  },
+  "published_manifest_sha256": "1e3ac3ea538db01ea6f158d2abe63f66e6ae0b1abc4c93c2651d932b53256820",
+  "manifest_publication_note": "The original encoder-input manifest hash is retained in source_manifest_sha256. The equivalent public JSON uses canonical LF line endings; published_manifest_sha256 identifies those bytes."
+}

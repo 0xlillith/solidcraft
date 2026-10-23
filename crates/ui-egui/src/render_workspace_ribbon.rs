@@ -13,7 +13,9 @@ fn handled(id: &str) -> bool {
     is_job_action(id)
         || matches!(
             id,
-            "render.preset.resolve"
+            "render.aging.describe"
+                | "render.effects.describe"
+                | "render.preset.resolve"
                 | "render.preset.apply"
                 | "render.settings.get"
                 | "render.settings.set"
@@ -201,6 +203,8 @@ fn navigate(app: &mut SolveApp, id: &str) -> Result<(), String> {
     action_ready(app, id)?;
     use inspector::Page;
     match id {
+        "render.aging.describe" => focus(app, Page::Aging, None),
+        "render.effects.describe" => focus(app, Page::Effects, None),
         "render.preset.resolve" | "render.preset.apply" => focus(app, Page::Scene, Some("native_scenes")),
         "render.settings.get" | "render.shot.duplicate" | "render.shot.rename" | "render.shot.remove" => {
             focus(app, Page::Scene, None);
@@ -216,8 +220,9 @@ fn navigate(app: &mut SolveApp, id: &str) -> Result<(), String> {
         "render.library.studio.apply" => focus(app, Page::Lighting, None),
         "render.library.environment.apply" => focus(app, Page::Environment, Some("hdr")),
         "render.hdr.inspect" | "render.settings.capture_hdr" => focus(app, Page::Environment, None),
-        "render.stage.ground" | "render.stage.backdrop" | "render.stage.clear" => {
-            focus(app, Page::Scene, None);
+        "render.stage.backdrop" => focus(app, Page::Background, None),
+        "render.stage.ground" | "render.stage.clear" => {
+            focus(app, Page::Background, None);
             inspector::reveal(app, "render_ground_details");
         }
         "render.settings.apply" => inspector::restore_camera(app)?,

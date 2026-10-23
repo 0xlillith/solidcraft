@@ -176,7 +176,7 @@ pub(super) struct View {
     target_document: Option<Weak<Document>>,
 }
 
-fn read_targets(app: &mut SolveApp) -> Result<Vec<Target>, String> {
+pub(super) fn read_targets(app: &mut SolveApp) -> Result<Vec<Target>, String> {
     let reply = app.run("render.scene", json!({}))?;
     let values = reply.get("bodies").and_then(Value::as_array).ok_or_else(|| "missing render scene bodies".to_string())?;
     if values.len() > solidcraft_engine::render::job::MAX_GPU_PATH_BODIES {

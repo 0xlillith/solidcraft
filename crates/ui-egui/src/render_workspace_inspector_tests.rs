@@ -282,7 +282,7 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
         ("render.library.studio.prepare", Page::Lighting),
         ("render.library.studio.apply", Page::Lighting),
         ("render.library.environment.apply", Page::Environment),
-        ("render.stage.backdrop", Page::Scene),
+        ("render.stage.backdrop", Page::Background),
         ("render.quality.prepare", Page::Output),
         ("render.status", Page::Diagnostics),
         ("render.camera.get", Page::Camera),
@@ -478,4 +478,136 @@ fn public_render_inspection_exposes_exact_identities_without_execution_or_docume
     assert_eq!(h.app.session.undo.len(), undo);
     assert_eq!(h.app.cam, camera);
     h.app.session.execute("render.cancel", &json!({"job":identity})).unwrap();
+}
+
+#[test]
+fn aging_tab_adds_reorders_disables_and_persists_layers_without_engineering_edits() {
+    use solidcraft_engine::render::job::aging::AgingKind;
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let before = h.app.session.doc.to_json();
+    h.app.start("render.aging.describe");
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Aging);
+    assert!(!crate::icon_svg::resolve(solidcraft_engine::find_command("render.aging.describe").unwrap().icon).placeholder);
+    for code in [1, 3] {
+        h.step(&json!({"click":{"handle":"render:aging-add"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":format!("dialog:list:aging-add-{code}")}})).unwrap();
+        h.frames(2);
+    }
+    assert_eq!(h.app.render_workspace.view.studio.aging.len(), 2);
+    assert_eq!(h.app.render_workspace.view.studio.aging.get(1).unwrap().kind, AgingKind::Dust);
+    h.step(&json!({"click":{"handle":"render:aging-up"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.studio.aging.get(0).unwrap().kind, AgingKind::Dust);
+    h.step(&json!({"click":{"handle":"render:aging-enabled"}})).unwrap();
+    h.frames(2);
+    assert!(!h.app.render_workspace.view.studio.aging.get(0).unwrap().enabled);
+    assert_eq!(h.app.session.doc.to_json(), before, "editing layers only edits the render draft");
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio.aging = Default::default();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups[&h.app.render_workspace.view.name], expected);
+    h.step(&json!({"click":{"handle":"render:aging-remove"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.studio.aging.len(), 1);
+}
+
+#[test]
+fn effects_tab_retains_ordered_looks_and_photographic_intent_across_save_and_reload() {
+    use solidcraft_engine::render::job::looks::LookKind;
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let before = h.app.session.doc.to_json();
+    h.app.start("render.effects.describe");
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Effects);
+    for code in [3, 6] {
+        h.step(&json!({"click":{"handle":"render:look-add"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click":{"handle":format!("dialog:list:look-add-{code}")}})).unwrap();
+        h.frames(2);
+    }
+    assert_eq!(h.app.render_workspace.view.studio.finishing.looks.len(), 2);
+    assert_eq!(h.app.render_workspace.view.studio.finishing.looks.get(0).unwrap().kind, LookKind::Warm);
+    h.step(&json!({"click":{"handle":"render:look-up"}})).unwrap();
+    h.frames(2);
+    assert_eq!(h.app.render_workspace.view.studio.finishing.looks.get(0).unwrap().kind, LookKind::Faded);
+    assert_eq!(h.app.session.doc.to_json(), before);
+    h.app.render_workspace.view.studio.finishing.photographic.chromatic_pixels = 1.5;
+    h.app.render_workspace.view.studio.finishing.photographic.flare.strength = 0.4;
+    let expected = setups::snapshot(&h.app).unwrap();
+    setups::save(&mut h.app).unwrap();
+    h.app.render_workspace.view.studio.finishing = Default::default();
+    setups::load(&mut h.app);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
+    let doc = h.app.session.doc.to_json();
+    h.app.render_workspace.view.transparent = true;
+    assert!(super::super::ribbon::presentation(&h.app).validate().is_err(), "spatial lens effects cannot silently flatten alpha");
+    assert_eq!(h.app.session.doc.to_json(), doc);
+}
+
+#[test]
+fn backgrounds_ribbon_exposes_camera_and_physical_options_without_mutating_draft_or_switching_renderer() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    h.app.render_workspace.view.studio.backdrop_enabled = true;
+    h.app.render_workspace.view.studio.backdrop.first_srgb = [30, 60, 90];
+    h.app.render_workspace.view.dirty = true;
+    let draft = setups::snapshot(&h.app).unwrap();
+    let doc = h.app.session.doc.to_json();
+    let revision = h.app.session.revision;
+    h.app.start("render.stage.backdrop");
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Background);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), draft);
+    assert_eq!(h.app.session.doc.to_json(), doc);
+    assert_eq!(h.app.session.revision, revision);
+    assert!(crate::scenario::rect_of("render:background-color").is_some());
+    assert!(crate::scenario::rect_of("render:backdrop-enabled").is_some());
+    assert!(crate::scenario::rect_of("render:background-regrade").is_some());
+    assert!(h.app.render_workspace.view.job.is_none());
+    assert!(
+        super::super::ribbon::action_ready(&h.app, "render.result.regrade").is_err(),
+        "no raw master cannot be silently reconstructed from the viewport"
+    );
+}
+
+#[test]
+fn clearing_physical_stage_preserves_unsaved_camera_background_and_output_intent() {
+    let mut h = fixture();
+    h.call("ui.resize", json!({"width":1600,"height":2600}));
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    setups::save(&mut h.app).unwrap();
+    let name = h.app.render_workspace.view.name.clone();
+    h.app.run("render.stage.ground", json!({"name":name})).unwrap();
+    setups::load(&mut h.app);
+    assert_eq!(h.app.render_workspace.view.draft.stage.len(), 1);
+    h.app.render_workspace.view.draft.background = [17, 53, 89];
+    h.app.render_workspace.view.draft.width = 421;
+    h.app.render_workspace.view.draft.height = 239;
+    h.app.render_workspace.view.draft.exposure_ev = 1.25;
+    h.app.render_workspace.view.studio.backdrop_enabled = true;
+    h.app.render_workspace.view.studio.backdrop.mode = solidcraft_engine::render::job::finishing::BackdropMode::Radial;
+    h.app.render_workspace.view.studio.backdrop.center = [0.3, 0.6];
+    h.app.render_workspace.view.dirty = true;
+    let mut expected = setups::snapshot(&h.app).unwrap();
+    expected.stage = Default::default();
+    let geometry = h.app.session.doc.features.clone();
+    let materials = h.app.session.doc.materials.clone();
+    h.app.start("render.stage.clear");
+    h.frames(4);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Background);
+    h.step(&json!({"click":{"handle":"render:stage-clear"}})).unwrap();
+    h.frames(3);
+    assert_eq!(setups::snapshot(&h.app).unwrap(), expected, "clearing stage must keep the unsaved numerical draft, not reload an older one");
+    assert_eq!(h.app.session.doc.render.setups[&name], expected);
+    assert_eq!(h.app.session.doc.features, geometry);
+    assert_eq!(h.app.session.doc.materials, materials);
+    let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups[&name], expected);
 }

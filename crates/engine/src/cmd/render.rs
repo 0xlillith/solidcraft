@@ -11,6 +11,7 @@ use crate::params::bad;
 use crate::{Result, Session};
 
 mod clear_coat;
+mod effects;
 mod environment;
 mod jobs;
 mod library;
@@ -28,6 +29,10 @@ mod textures;
 mod transmission;
 
 pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("render.aging.describe","Layered Surface Aging",effects::aging).icon("appearance").noundo().doc_only()
+        .params("Empty object. Read-only original Rust/patina/dust/grime/scratch/chip/fading presets and exact GPU aging contract. UI activation opens the shared Aging tab; edits remain a saved render draft, never engineering geometry or material-property mutation."),
+    CommandSpec::new("render.effects.describe","Lens and Creative Effects",effects::presentation).icon("camera").noundo().doc_only()
+        .params("Empty object. Read-only original photographic/creative filter defaults and constraints. UI activation opens shared Effects controls. Saved finishing and exact-master regrading preserve raw EXR bytes; no physical lens or branded-film calibration is implied."),
     CommandSpec::new("render.optics.bind","Save Optical Binding",optical_bindings::bind).icon("appearance")
         .params("name: GPU setup; set?: complete numerical setup patch; body_index and body_name: exact captured target; expected_revision; optics:{ior,absorption_per_mm:[r,g,b],boundary:closed_mesh|closed_box|thin_sheet,thickness_mm,shadow_transmission,subsurface?:{scattering_per_mm,anisotropy}}; replace?:false. Stores stable definition/feature/occurrence identity in one undo without modifying engineering geometry/materials. Nested media require separate job.options.nested_media and producer certification. Unresolved or incompatible targets refuse atomically."),
     CommandSpec::new("render.optics.unbind","Remove Optical Binding",optical_bindings::unbind).icon("appearance").doc_only()

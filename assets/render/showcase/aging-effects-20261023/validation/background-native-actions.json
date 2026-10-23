@@ -1,0 +1,32 @@
+{
+  "status": "PASS",
+  "native_application_sha256": "2acc780b33a6fe7e75e306cfe51de5881eaf93496a2c85fe1828c80386e13ebf",
+  "source_head": "9bc71b298719bbe62e1bdbc49eba45f6863e55d0",
+  "initial_thirteen_shots_exact": true,
+  "camera_mode_regrade_changes_png": true,
+  "regrade_preserves_raw_exr": true,
+  "first_job": {
+    "generation": 1,
+    "serial": 1,
+    "session": 6
+  },
+  "regrade_job": {
+    "generation": 2,
+    "serial": 2,
+    "session": 6
+  },
+  "raw_exr_sha256": "16741383b81a9b7a70c7abb28eb453320b6bad5b3f5398a93d885bd2580f9cef",
+  "physical_cyclorama_applied_panels": 26,
+  "physical_stage_clear_preserves_backdrop": true,
+  "production_shots_unchanged": true,
+  "scope": "Actual Backgrounds ribbon/page, real render, exact-master regrade and physical stage apply/clear actions; no HDR panorama substitution",
+  "observer_notes": [
+    "An initial observer saw the stale startup Check message although the exact clicked job completed; a real subsequent Check cleared it.",
+    "Native canonical serialization omits the empty stage field; the clear-stage verification accepts that canonical empty representation."
+  ],
+  "final_thirteen_shot_roundtrip_exact": true,
+  "source_sample_unchanged": true,
+  "exit_code": 0,
+  "forced_termination": false,
+  "personal_preferences_unchanged": true
+}

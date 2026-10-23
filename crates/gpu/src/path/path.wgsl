@@ -30,6 +30,7 @@ struct Params {
     volume_min: vec4<f32>, // camera-relative bounds minimum, extinction/mm
     volume_max: vec4<f32>, // camera-relative bounds maximum, HG mean cosine
     volume_albedo: vec4<f32>, // RGB single-scattering albedo, reserved
+    aging: array<AgingLayer,8>,
 
 };
 @group(0) @binding(0) var<uniform> u: Params;
@@ -935,6 +936,7 @@ fn sample_path_lane(pixel: u32, lane: u32) -> vec4<f32> {
         }
         let shading_position = position+position_low;
         t = texture_surface(t,shading_position);
+        t = aged_surface(t,shading_position,unit(cross(t.p1.xyz-t.p0.xyz,t.p2.xyz-t.p0.xyz)));
         let original_normal = n;
         n = texture_normal(t,shading_position,n,geometric);
         if dot(n,v)<=0.0 { n=original_normal; }
