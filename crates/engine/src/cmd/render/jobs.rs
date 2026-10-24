@@ -56,7 +56,7 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
-    aging: solidcraft_render::job::aging::AgingStack,
+    aging: solidcraft_doc::render_aging::SavedAgingStack,
     #[serde(default)]
     nested_media: bool,
     volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
@@ -534,7 +534,7 @@ fn prepare_progressive(
     options.finishing = input.finishing;
     options.backdrop = input.backdrop;
     options.linear_exr = input.linear_exr;
-    options.aging = input.aging;
+    options.aging = super::effects::resolve_aging(s, &scene, &input.aging, command)?;
     options.nested_media = input.nested_media;
     options.volume = input.volume;
     options.adaptive = input.adaptive;

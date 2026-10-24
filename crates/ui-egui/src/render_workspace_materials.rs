@@ -24,6 +24,8 @@ const MAX_BINDINGS: usize = 128;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub(super) struct Target {
+    #[serde(default)]
+    pub stable_target: Option<solidcraft_engine::doc::render_surface::RenderBodyTarget>,
     pub ordinal: usize,
     pub name: String,
 }
