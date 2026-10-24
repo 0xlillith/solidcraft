@@ -7,6 +7,8 @@
   {"expect": {"dialog": "Appearance", "shown": "Remove override"}},
   {"note": "Collapse the local-library section to keep the built-in appearance search visible in the card."},
   {"click": {"handle": "dialog:section:Local library"}},
+  {"note": "Let the collapsed library layout settle before resolving the Search handle; retain the basic workspace animation-settling guard without its obsolete scroll coordinates."},
+  {"frames": 20},
   {"click": {"handle": "appearance:search"}},
   {"text": "no-such-appearance"},
   {"expect": {"shown": "No matching appearances"}},
