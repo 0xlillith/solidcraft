@@ -1088,3 +1088,47 @@ fn four_and_five_k_viewports_preview_downscaled_within_the_limits() {
     }
     assert_eq!(preview_size(None, (5120, 2880)), (5120, 2880), "no executor: resolution reports it");
 }
+
+/// Backend failures must remain readable in the fixed-width Render panel, not
+/// disappear into an ellipsis before the reason and recovery guidance are shown.
+#[test]
+fn backend_diagnostics_and_preview_help_wrap_without_elision() {
+    fn collect<'a>(shape: &'a egui::Shape, texts: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => texts.push(text),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, texts)),
+            _ => {}
+        }
+    }
+    for mode in ["floating", "compact"] {
+        for dark in [false, true] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.ui.dark = dark;
+            h.call("ui.resize", json!({"width":1400,"height":1800}));
+            h.app.run("view.layout", json!({"mode":mode})).unwrap();
+            enter(&mut h.app, true).unwrap();
+            let reason = "The selected viewport adapter has no compatible Vulkan path device. Images remain available on the CPU; keep the original design and review the driver before retrying.";
+            h.app.render_workspace.path_host = PathHost::Failed(reason.into());
+            h.frames(3);
+            let expected = format!("{}: {reason}", h.app.tr("render.gpu_path_failed"));
+            let help = h.app.tr("render.opaque_preview_help").to_owned();
+            let mut out = h.ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1800.0))), ..Default::default() },
+                |ui| {
+                    h.app.logic(ui.ctx());
+                    h.app.ui(ui);
+                },
+            );
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            out.shapes.iter().for_each(|shape| collect(&shape.shape, &mut texts));
+            for message in [&expected, &help] {
+                let text = texts.iter().find(|text| text.galley.job.text == *message).expect("the complete diagnostic is painted");
+                assert!(!text.galley.elided, "{mode}, dark={dark}: {message}");
+                assert!(text.galley.rows.len() > 1, "long messages must wrap in the narrow panel");
+                assert!(text.galley.rect.width() <= 285.0, "the message must not expand the panel");
+            }
+        }
+    }
+}
