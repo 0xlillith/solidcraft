@@ -2,9 +2,12 @@
 //!
 //! Mathematics: Heitz, JCGT 7(4), 2018, equations 1 and 2,
 //! <https://jcgt.org/published/0007/04/01/>. No external implementation adapted.
-//! Sampling here uses the **NDF**, not Heitz's visible-normal (VNDF) sampler:
+//! The explicit legacy numerical controls use the **NDF**:
 //! `p(h) = D(h) * n.h`, then `p(l) = p(h) / (4 * v.h)`.
 //! Rejected reflections are null events, never resampled or renormalized.
+//! The separate `sample_visible_reflection` API uses a matched GGX VNDF and PDF.
+//! Its original spherical-cap construction follows Dupuy and Benyoub (2023),
+//! <https://arxiv.org/abs/2306.05044>; see docs/render-vndf-prototype.md.
 //!
 //! This numerical module does not install a renderer, persist a material or alter
 //! engineering axes. The visual frame's normal may be a shading normal, but the
@@ -115,7 +118,8 @@ pub struct AnisotropicSurface {
     roughness_y: f64,
 }
 
-/// One reflected **specular-only** NDF sample. Fields are in world coordinates.
+/// One reflected **specular-only** sample. Fields are in world coordinates.
+/// Its producing method identifies the NDF or visible-normal proposal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReflectionSample {
     /// Outgoing direction, pointing away from the surface.
@@ -148,8 +152,7 @@ impl AnisotropicSurface {
     }
 
     fn fresnel(self, cosine: f64) -> Vec3 {
-        let f0 = self.base.normal_reflectance();
-        f0 + (Vec3::new(1.0, 1.0, 1.0) - f0) * (1.0 - cosine.clamp(0.0, 1.0)).powi(5)
+        self.base.specular_fresnel(cosine)
     }
 
     fn distribution_local(self, h: Vec3) -> f64 {
@@ -194,6 +197,75 @@ impl AnisotropicSurface {
         let radial = u.sqrt();
         let h = unit_direction(Vec3::new(ax * radial * phi.cos(), ay * radial * phi.sin(), (1.0 - u).sqrt()))?;
         Ok(unit_direction(frame.world(h))?)
+    }
+
+    /// One view-conditioned visible-normal attempt. The legacy `sample_normal`
+    /// remains an explicitly projected-NDF utility, not this production proposal.
+    /// An upper-hemisphere view is required; no retries or probability clamps.
+    pub fn sample_visible_normal(self, frame: VisualFrame, view: Vec3, variates: [f64; 2]) -> Result<Option<Vec3>> {
+        if !variates.into_iter().all(|u| u.is_finite() && (0.0..1.0).contains(&u)) {
+            return Err(AnisotropicError::Variates);
+        }
+        let v = frame.local(unit_direction(view)?);
+        if v.z <= 0.0 {
+            return Ok(None);
+        }
+        let [ax, ay] = self.alpha();
+        let stretched = unit_direction(Vec3::new(ax * v.x, ay * v.y, v.z))?;
+        // The reflected unit-roughness hemisphere is uniform on z in [-v.z,1].
+        // Factor the radial square, avoiding a negative 1-z*z from cancellation.
+        let z = 1.0 - variates[0] * (1.0 + stretched.z);
+        let radius = ((1.0 - z) * (1.0 + z)).sqrt();
+        let phi = TAU * variates[1];
+        // Directly retain (v+c).z; adding cap.z to v.z loses this positive
+        // component near the lower cap boundary. Normalization is homogeneous,
+        // so apply the covector stretch before the single local normalization.
+        let height = (1.0 - variates[0]) * (1.0 + stretched.z);
+        let h = unit_direction(Vec3::new(ax * (stretched.x + radius * phi.cos()), ay * (stretched.y + radius * phi.sin()), height))?;
+        Ok(Some(unit_direction(frame.world(h))?))
+    }
+
+    /// Visible-normal density D(h)*G1(v)*max(v.h,0)/(n.v), per steradian.
+    /// This is distinct from the projected-NDF `normal_pdf` utility.
+    pub fn visible_normal_pdf(self, frame: VisualFrame, view: Vec3, half: Vec3) -> Result<f64> {
+        let v = frame.local(unit_direction(view)?);
+        let h = frame.local(unit_direction(half)?);
+        let vh = v.dot(h);
+        if v.z <= 0.0 || h.z <= 0.0 || vh <= 0.0 {
+            return Ok(0.0);
+        }
+        finite_scalar(self.distribution_local(h) * self.visibility(v) * vh)
+    }
+
+    /// Matched unconditional VNDF reflected-direction density; null attempts are
+    /// not renormalized. Reflection's Jacobian cancels the positive v.h factor.
+    pub fn visible_reflection_pdf(self, frame: VisualFrame, geometric: Vec3, view: Vec3, light: Vec3) -> Result<f64> {
+        let Some((v, _, h)) = self.directions(frame, geometric, view, light)? else { return Ok(0.0) };
+        finite_scalar(self.distribution_local(h) * self.visibility(v) * 0.25)
+    }
+
+    /// One VNDF specular attempt using the unchanged separable-Smith BSDF.
+    /// Weight f*cos/pdf reduces to F(v.h)*G1(l), without dividing by tiny n.v
+    /// or v.h. Geometric/shading rejection remains a zero event counted in R.
+    pub fn sample_visible_reflection(self, frame: VisualFrame, geometric: Vec3, view: Vec3, variates: [f64; 2]) -> Result<Option<ReflectionSample>> {
+        let geometric_unit = frame.geometric(geometric)?;
+        let view_unit = unit_direction(view)?;
+        let Some(half) = self.sample_visible_normal(frame, view, variates)? else { return Ok(None) };
+        if geometric_unit.dot(view_unit) <= 0.0 {
+            return Ok(None);
+        }
+        let vh = view_unit.dot(half);
+        if vh <= 0.0 {
+            return Ok(None);
+        }
+        let light = unit_direction(half * (2.0 * vh) - view_unit)?;
+        let Some((v, l, h)) = self.directions(frame, geometric, view, light)? else { return Ok(None) };
+        let pdf = finite_scalar(self.distribution_local(h) * self.visibility(v) * 0.25)?;
+        if pdf <= 0.0 {
+            return Err(AnisotropicError::Arithmetic);
+        }
+        let weight = finite_rgb(self.fresnel(v.dot(h)) * (l.z * self.visibility(l)))?;
+        Ok(Some(ReflectionSample { direction: light, pdf, weight }))
     }
 
     fn directions(self, frame: VisualFrame, geometric: Vec3, view: Vec3, light: Vec3) -> Result<Option<(Vec3, Vec3, Vec3)>> {
@@ -292,3 +364,7 @@ fn finite_rgb(value: Vec3) -> Result<Vec3> {
 #[cfg(test)]
 #[path = "anisotropic_surface_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "anisotropic_vndf_tests.rs"]
+mod vndf_tests;
