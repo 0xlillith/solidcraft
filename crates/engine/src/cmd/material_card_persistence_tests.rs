@@ -71,7 +71,11 @@ fn omission_retains_null_clears_and_unrelated_material_edits_retain_cards() {
         s.execute("material.edit", &p).unwrap();
         assert_eq!(s.doc.user_materials[1].physical_card, original);
     }
-    let error = solidcraft_io::catalog::ScalarMaterial::from_material(&s.doc.user_materials[1]).unwrap_err();
+    let mut only_card = Document::default();
+    only_card.user_materials.push(s.doc.user_materials[1].clone());
+    let error = solidcraft_io::catalog::Catalog::from_document(&only_card, "user.fixture", "Original", Default::default())
+        .and_then(|c| c.in_format(solidcraft_io::catalog::V1_FORMAT))
+        .unwrap_err();
     assert!(error.to_string().contains("engineering cards"));
     s.execute("material.edit", &json!({"material":"Renamed","physical_card":null})).unwrap();
     assert!(s.doc.user_materials[1].physical_card.is_none());
@@ -164,8 +168,12 @@ fn scalar_catalog_refuses_card_export_without_creating_or_replacing_files_or_his
             std::fs::write(&file.0, b"keep existing catalog").unwrap();
         }
         for overwrite in [false, true] {
-            let error = s.execute("library.export", &json!({"path":file.0,"overwrite":overwrite})).unwrap_err();
-            assert!(error.to_string().contains("cannot preserve engineering cards"));
+            // The default writer is rich v2. Request scalar v1 explicitly so this
+            // regression still exercises refusal rather than a valid lossless copy.
+            let error =
+                s.execute("library.export", &json!({"path":file.0,"overwrite":overwrite,"format":solidcraft_io::catalog::V1_FORMAT})).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("catalog v1") && message.contains("engineering cards"), "{message}");
             if existing {
                 assert_eq!(std::fs::read(&file.0).unwrap(), b"keep existing catalog");
             } else {
