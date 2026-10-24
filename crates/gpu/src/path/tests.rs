@@ -645,8 +645,163 @@ fn gpu_brdf_matches_f64_surface_oracle() {
                     task.sample = 1;
                     let actual = task.read_linear().unwrap()[0];
                     let expected = surface.brdf(Vec3::Z, view, light).unwrap();
+                    if metallic == 0.0 && ior == 1.0 {
+                        let diffuse = Vec3::new(0.8, 0.5, 0.2) / std::f64::consts::PI;
+                        assert!((expected - diffuse).len() < 1e-12, "index-matched diffuse has no interface reflection");
+                    }
                     for (a, b) in actual.iter().zip([expected.x, expected.y, expected.z]) {
                         assert!((f64::from(*a) - b).abs() <= 3e-3 * b.abs() + 2e-5, "m={metallic}, r={roughness}, ior={ior}: {a} vs {b}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The viewport embeds a separate WGSL translation. Exercise its actual function
+/// on the same native device as the path-tracer oracle, not a copied Rust formula.
+#[test]
+fn viewport_brdf_matches_f64_surface_oracle_at_index_match() {
+    let Some(executor) = executor() else { return };
+    let context = &executor.context;
+    let source = format!(
+        "{}\n{}\n{}",
+        r#"
+struct ViewUniform { vp: mat4x4<f32>, back: vec4<f32>, eye: vec4<f32>, };
+@group(1) @binding(0) var<uniform> u: ViewUniform;
+struct Probe { base: vec4<f32>, parameters: vec4<f32>, view: vec4<f32>, light: vec4<f32>, };
+@group(0) @binding(0) var<uniform> probe: Probe;
+@group(0) @binding(1) var<storage, read_write> result: array<vec4<f32>>;
+"#,
+        crate::pbr::SOURCE,
+        r#"
+@compute @workgroup_size(1)
+fn probe_pbr() {
+    result[0] = vec4<f32>(pbr_brdf(probe.base.xyz, probe.parameters.xyz,
+        vec3<f32>(0.0,0.0,1.0),probe.view.xyz,probe.light.xyz),1.0);
+}
+"#
+    );
+    let shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("actual viewport PBR oracle"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let layout = context.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("probe_pbr"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let uniform = context.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let values = context.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = context.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind = context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: values.as_entire_binding() },
+        ],
+    });
+    for metallic in [0.0, 0.5, 1.0] {
+        for roughness in [0.045, 0.5, 1.0] {
+            for ior in [1.0, 1.5, 3.0] {
+                let base = Vec3::new(0.8, 0.5, 0.2);
+                let surface = OpaqueSurface::new(base, metallic, roughness, ior).unwrap();
+                for (view, light) in [
+                    (Vec3::Z, Vec3::Z),
+                    (Vec3::new(0.5, 0.0, 1.0).normalized().unwrap(), Vec3::new(-0.4, 0.3, 0.8).normalized().unwrap()),
+                    (Vec3::new(1.0, 0.0, 0.02).normalized().unwrap(), Vec3::new(-1.0, 0.1, 0.02).normalized().unwrap()),
+                ] {
+                    let input = [
+                        0.8_f32,
+                        0.5,
+                        0.2,
+                        0.0,
+                        metallic as f32,
+                        roughness as f32,
+                        ior as f32,
+                        0.0,
+                        view.x as f32,
+                        view.y as f32,
+                        view.z as f32,
+                        0.0,
+                        light.x as f32,
+                        light.y as f32,
+                        light.z as f32,
+                        0.0,
+                    ];
+                    let bytes: Vec<u8> = input.iter().flat_map(|value| value.to_le_bytes()).collect();
+                    context.queue.write_buffer(&uniform, 0, &bytes);
+                    let mut encoder = context.device.create_command_encoder(&Default::default());
+                    {
+                        let mut pass = encoder.begin_compute_pass(&Default::default());
+                        pass.set_pipeline(&pipeline);
+                        pass.set_bind_group(0, &bind, &[]);
+                        pass.dispatch_workgroups(1, 1, 1);
+                    }
+                    encoder.copy_buffer_to_buffer(&values, 0, &readback, 0, 16);
+                    let submission = context.queue.submit([encoder.finish()]);
+                    let slice = readback.slice(..);
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    slice.map_async(wgpu::MapMode::Read, move |result| {
+                        let _ = tx.send(result);
+                    });
+                    context.wait(submission, TIMEOUT).unwrap();
+                    rx.try_recv().unwrap().unwrap();
+                    let data = slice.get_mapped_range().unwrap();
+                    let actual: Vec<f32> = data.as_chunks::<4>().0.iter().map(|bytes| f32::from_le_bytes(*bytes)).collect();
+                    drop(data);
+                    readback.unmap();
+                    let expected = surface.brdf(Vec3::Z, view, light).unwrap();
+                    if metallic == 0.0 && ior == 1.0 {
+                        assert!((expected - base / std::f64::consts::PI).len() < 1e-12);
+                    }
+                    for (a, b) in actual.iter().zip([expected.x, expected.y, expected.z]) {
+                        assert!((f64::from(*a) - b).abs() < 2e-5 + 3e-3 * b.abs(), "viewport m={metallic}, r={roughness}, ior={ior}: {a} vs {b}");
                     }
                 }
             }
@@ -1513,8 +1668,8 @@ fn gpu_hdr_and_sun_shadow_mis_preserve_index_matched_energy() {
         let l = Vec3::new((1.0 - z * z).sqrt(), 0.0, z);
         sun_expected += white().brdf(Vec3::Z, Vec3::Z, l).unwrap().x * z * 3.0 * sun.solid_angle() / 4096.0;
     }
-    // The original HDR has unit radiance everywhere, so the receiver returns
-    // its directional albedo: about 0.952 for this GGX surface, not 1.
+    // The original HDR has unit radiance everywhere. With IOR one the receiver
+    // is pure diffuse; retain the independent directional-albedo quadrature.
     let mut hdr_expected = 0.0;
     for i in 0..256 {
         let z = (f64::from(i) + 0.5) / 256.0;

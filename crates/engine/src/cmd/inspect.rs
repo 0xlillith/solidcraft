@@ -31,7 +31,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("appearance.assign", "Appearance", appearance).at("SOLID", "MODIFY").icon("appearance").key("A").params(
         "bodies?: [names]; faces?: [[x,y,z] on faces] (body?: which body, default the nearest); components?: [names or ids, or occurrence names]; \
              appearance?: library name or stable starter.* ID (appearance.library) | color: \"#rrggbb\" or [r, g, b] (0–255), opacity? (0–1, default 1); \
-             name?: inert copied look label (requires color, mutually exclusive with appearance); pbr?: {metallic:0..1, roughness:0.045..1, dielectric_ior:1..3} (requires color/appearance and opacity 1); a library name without color keeps its preset response when pbr is omitted; explicit color with a display name and no pbr, or pbr: null, selects scalar shading. Stable starter IDs resolve the recipe before color overrides; unavailable glass IDs refuse. Neither appearance nor color (or color: null): clear, so the face follows its body, the body its component, the component its material",
+             name?: inert copied look label (requires color, mutually exclusive with appearance); pbr?: {metallic:0..1, roughness:0.045..1, dielectric_ior:1..3} (requires color/appearance and opacity 1); a starter ID or registered starter name resolves its recipe before color overrides; omitted pbr retains that response and pbr: null explicitly clears it. Unavailable glass recipes refuse through either selector. Other custom labels with an explicit color retain legacy scalar behavior. Neither appearance nor color (or color: null): clear, so the face follows its body, the body its component, the component its material",
     ),
     CommandSpec::new("appearance.library", "Appearance Library", appearance_library).icon("library")
         .noundo()
@@ -400,11 +400,9 @@ pub(super) fn appearance(s: &mut Session, p: &Value) -> Result<Value> {
     if copied_name.is_some() && (p.get("color").is_none_or(Value::is_null) || p.get("appearance").is_some_and(|value| !value.is_null())) {
         return Err(bad(cmd, "`name` requires an explicit color and cannot be combined with `appearance`"));
     }
-    // A stable ID requests the recipe explicitly. A display name with an explicit
-    // color keeps the existing custom-look precedence, including reopened owned looks.
-    let preset = str_(p, "appearance")
-        .and_then(solidcraft_doc::appearance_pack::find)
-        .filter(|preset| str_(p, "appearance").is_some_and(|name| name.trim().eq_ignore_ascii_case(preset.id)));
+    // Both the stable ID and a registered display name explicitly select a recipe.
+    // Copied labels use `name`, so color overrides cannot bypass unsupported optics.
+    let preset = str_(p, "appearance").and_then(solidcraft_doc::appearance_pack::find);
     let mut look: Option<Look> = if let Some(preset) = preset {
         // Refuse unsupported optics before any color/PBR/opacity override.
         let mut look = preset.opaque_look().map_err(|e| bad(cmd, e.to_string()))?;

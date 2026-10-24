@@ -403,6 +403,7 @@ fn pack_session() -> Session {
     s.execute("material.assign", &json!({"bodies":["Swatch"],"material":"Aluminum"})).unwrap();
     s
 }
+
 #[test]
 fn pack_listing_keeps_legacy_rows_and_labels_unavailable_recipes_without_mutation() {
     let mut s = pack_session();
@@ -537,20 +538,23 @@ fn cold_native_reopen_keeps_owned_opaque_values_without_pack_metadata_or_assets(
 }
 
 #[test]
-fn starter_ids_keep_final_pbr_validation_and_display_name_custom_precedence() {
+fn starter_selectors_keep_final_validation_and_custom_names_stay_inert() {
     let mut s = pack_session();
     let preset = solidcraft_doc::appearance_pack::find("starter.wood.oak-honey").unwrap();
     let doc = s.doc.clone();
     let history = (s.undo.len(), s.redo.len(), s.revision);
-    for opacity in [json!(0.5), json!(2.0), json!("1"), json!(null)] {
-        assert!(s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":preset.id,"opacity":opacity})).is_err());
-        assert!(Arc::ptr_eq(&doc, &s.doc));
-        assert_eq!((s.undo.len(), s.redo.len(), s.revision), history);
+    for selector in [preset.id, preset.name] {
+        for opacity in [json!(0.5), json!(2.0), json!("1"), json!(null)] {
+            assert!(s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":selector,"opacity":opacity})).is_err());
+            assert!(Arc::ptr_eq(&doc, &s.doc));
+            assert_eq!((s.undo.len(), s.redo.len(), s.revision), history);
+        }
     }
     s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":preset.id,"pbr":null,"opacity":0.4})).unwrap();
     assert!(s.doc.appearances.bodies["Swatch"].pbr.is_none());
     assert_eq!(s.doc.appearances.bodies["Swatch"].opacity, 0.4);
-    s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":preset.name,"color":"#123456","opacity":0.6})).unwrap();
+    // A copied name is inert; it is not a request to select the registered recipe.
+    s.execute("appearance.assign", &json!({"bodies":["Swatch"],"name":preset.name,"color":"#123456","opacity":0.6})).unwrap();
     let look = &s.doc.appearances.bodies["Swatch"];
     assert_eq!((look.name.as_str(), look.color, look.opacity, look.pbr), (preset.name, [18, 52, 86], 0.6, None));
     s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":preset.name})).unwrap();
@@ -598,4 +602,38 @@ fn starter_visual_defaults_and_overrides_keep_saved_physical_cards_independent()
     assert_eq!(reopened.doc.user_materials, s.doc.user_materials);
     assert_eq!(reopened.execute("material.inspect", &json!({"material":"Pack substrate"})).unwrap()["physical_card"], expected_card);
     assert_eq!(reopened.execute("component.properties", &json!({})).unwrap(), mass);
+}
+
+#[test]
+fn starter_names_and_ids_share_admission_before_all_overrides() {
+    use crate::doc::appearance_pack::{Recipe, STARTER_PACK};
+    let mut s = pack_session();
+    for preset in &STARTER_PACK {
+        for selector in [preset.id, preset.name] {
+            if matches!(preset.recipe, Recipe::Glass(_)) {
+                for overrides in [
+                    json!({}),
+                    json!({"color":"#aabbcc"}),
+                    json!({"color":"#aabbcc","opacity":0.5,"pbr":null}),
+                    json!({"color":"#aabbcc","pbr":{"metallic":0.0,"roughness":0.5,"dielectric_ior":1.5}}),
+                ] {
+                    let before = s.doc.clone();
+                    let history = (s.undo.len(), s.redo.len(), s.revision);
+                    let mut params = overrides;
+                    params["bodies"] = json!(["Swatch"]);
+                    params["appearance"] = json!(selector);
+                    let error = s.execute("appearance.assign", &params).unwrap_err().to_string();
+                    assert!(error.contains("refraction"), "{selector}: {error}");
+                    assert!(Arc::ptr_eq(&before, &s.doc));
+                    assert_eq!((s.undo.len(), s.redo.len(), s.revision), history);
+                }
+            } else {
+                s.execute("appearance.assign", &json!({"bodies":["Swatch"],"appearance":selector,"color":[31,61,91]})).unwrap();
+                let look = &s.doc.appearances.bodies["Swatch"];
+                assert_eq!(look.name, preset.name);
+                assert_eq!(look.color, [31, 61, 91]);
+                assert_eq!(look.pbr, preset.opaque_look().unwrap().pbr);
+            }
+        }
+    }
 }

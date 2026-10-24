@@ -239,7 +239,7 @@ pub fn start(app: &SolveApp, id: &str) -> Option<(Kind, Vec<SelInput>)> {
 }
 
 /// The command giving `targets` (bodies or faces) a look.
-fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f64, look: Option<&str>) -> Option<Value> {
+fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f64, look: Option<&str>, pbr: Option<PbrParameters>) -> Option<Value> {
     let bodies: Vec<String> = targets.iter().filter_map(|x| if let Sel::Body { name } = x { Some(name.clone()) } else { None }).collect();
     let faces: Vec<Value> = targets
         .iter()
@@ -248,7 +248,7 @@ fn apply_params(targets: &[Sel], color: [u8; 3], opacity: f64, look: Option<&str
     if bodies.is_empty() && faces.is_empty() {
         return None;
     }
-    let mut p = json!({"color": hex(color)});
+    let mut p = json!({"color": hex(color), "pbr": pbr});
     if !bodies.is_empty() {
         p["bodies"] = json!(bodies);
     }
@@ -289,11 +289,10 @@ pub(super) fn selected_params(k: &Ap, items: &[Sel]) -> Option<Value> {
     let mut p = if let Some(component) = &k.component {
         Some(json!({"components": [component], "color": hex(k.color), "opacity": k.opacity, "name": k.look}))
     } else {
-        apply_params(items, k.color, k.opacity, k.look.as_deref())
+        apply_params(items, k.color, k.opacity, k.look.as_deref(), k.pbr)
     }?;
-    if let Some(pbr) = k.pbr {
-        p["pbr"] = json!(pbr);
-    }
+    // All entry points apply the complete owned response, including explicit clearing.
+    p["pbr"] = json!(k.pbr);
     if let Some(id) = &k.preset_id {
         if let Some(object) = p.as_object_mut() {
             object.remove("name");
@@ -539,7 +538,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Ap, inputs: &mut [Sel
             return false;
         }
         let targets = drop_target(app, k.faces);
-        if let Some(mut p) = apply_params(&targets, look.color, look.opacity, k.look.as_deref()) {
+        if let Some(mut p) = apply_params(&targets, look.color, look.opacity, k.look.as_deref(), look.pbr) {
             if let Some(pbr) = look.pbr {
                 p["pbr"] = json!(pbr);
             }
@@ -665,7 +664,7 @@ mod tests {
         a.viewport.hover = None;
         a.viewport.hover_bodies = vec!["Body2".into()];
         assert_eq!(drop_target(&a, false), vec![Sel::Body { name: "Body2".into() }]);
-        let face = apply_params(&[Sel::Face { body: "Body1".into(), index: 0, point: p }], [1, 2, 3], 0.5, None).unwrap();
+        let face = apply_params(&[Sel::Face { body: "Body1".into(), index: 0, point: p }], [1, 2, 3], 0.5, None, None).unwrap();
         assert_eq!(face["faces"][0]["body"], "Body1");
         assert_eq!(face["opacity"], 0.5);
         assert!(!library(&mut a).is_empty());
@@ -710,7 +709,7 @@ mod tests {
         let Kind::Appearance(k) = &a.dialog.as_ref().unwrap().kind else { panic!("appearance dialog") };
         assert_eq!(k.opacity, 0.25);
         assert_eq!(k.look.as_deref(), Some("Tinted glass"));
-        let p = apply_params(&[Sel::Body { name: "Body2".into() }], look.color, look.opacity, Some(&look.name)).unwrap();
+        let p = apply_params(&[Sel::Body { name: "Body2".into() }], look.color, look.opacity, Some(&look.name), look.pbr).unwrap();
         a.run("appearance.assign", p).unwrap();
         assert_eq!(a.session.doc.appearances.bodies.get("Body1"), a.session.doc.appearances.bodies.get("Body2"));
     }
@@ -1051,5 +1050,68 @@ mod tests {
         h.step(&json!({"widget":"OK"})).unwrap();
         assert_eq!(h.app.session.undo.len(), before + 1);
         assert_eq!(h.app.session.execute("component.properties", &json!({})).unwrap(), mass);
+    }
+
+    #[test]
+    fn selectable_library_entries_exclude_unavailable_starter_glass_recipes() {
+        let mut h = crate::scenario::Harness::new();
+        let listed = h.app.session.execute("appearance.library", &json!({})).unwrap();
+        let rows = listed["appearances"].as_array().unwrap();
+        let available = rows.iter().filter(|row| row.get("available").and_then(Value::as_bool) != Some(false)).count();
+        let selectable: Vec<_> = library(&mut h.app).into_iter().filter(preset_available).collect();
+        assert_eq!(selectable.len(), available);
+        for preset in &solidcraft_engine::doc::appearance_pack::STARTER_PACK {
+            assert_eq!(selectable.iter().any(|look| look.name == preset.name), preset.is_opaque());
+        }
+    }
+
+    #[test]
+    fn applying_and_clearing_owned_recipe_labels_never_resolves_the_recipe() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"body_name":"Owned","length":10,"width":10,"height":10})).unwrap();
+        for name in ["starter.glass.clear-soda-lime", "Glass Recipe - Low Iron Clear", "Metal - Warm Reflective Gold"] {
+            h.app.run("appearance.assign", json!({"bodies":["Owned"],"name":name,"color":[31,61,91],"pbr":null})).unwrap();
+            let original = h.app.session.doc.appearances.bodies["Owned"].clone();
+            h.app.session.selection = vec![Sel::Body { name: "Owned".into() }];
+            h.app.start("appearance.assign");
+            let dialog = h.app.dialog.as_ref().unwrap();
+            let Kind::Appearance(state) = &dialog.kind else { panic!("appearance editor expected") };
+            let params = selected_params(state, &dialog.inputs[0].items).unwrap();
+            let clear = clear_params(state, &dialog.inputs[0].items).unwrap();
+            assert_eq!(params["name"], name);
+            assert!(params.get("appearance").is_none());
+            assert_eq!(params["pbr"], Value::Null);
+            h.app.run("appearance.assign", params).unwrap();
+            assert_eq!(h.app.session.doc.appearances.bodies["Owned"], original);
+            assert!(clear.get("name").is_none() && clear.get("appearance").is_none());
+            h.app.run("appearance.assign", clear).unwrap();
+            assert!(!h.app.session.doc.appearances.bodies.contains_key("Owned"));
+        }
+    }
+
+    #[test]
+    fn dropped_scalar_and_pbr_requests_match_ok_without_an_extra_undo() {
+        for response in [None, Some(PbrParameters::new(0.7, 0.25, 1.5).unwrap())] {
+            let mut a = app();
+            a.session.selection = vec![Sel::Body { name: "Body1".into() }];
+            a.start("appearance.assign");
+            let mut dialog = a.dialog.clone().unwrap();
+            let Kind::Appearance(state) = &mut dialog.kind else { panic!("appearance editor") };
+            state.look = Some("Owned swatch".into());
+            state.color = [31, 61, 91];
+            state.opacity = 1.0;
+            state.pbr = response;
+            let params = apply_params(&dialog.inputs[0].items, state.color, state.opacity, state.look.as_deref(), state.pbr).unwrap();
+            assert!(params.get("pbr").is_some(), "the complete owned response is explicit");
+            assert_eq!(params["pbr"], json!(response));
+            let original = a.session.doc.clone();
+            let undo = a.session.undo.len();
+            a.run("appearance.assign", params.clone()).unwrap();
+            state.applied = Some(params);
+            assert_eq!(a.session.undo.len(), undo + 1);
+            assert!(commands(state, &dialog.inputs).is_empty(), "OK after a drop is not another edit");
+            a.run("edit.undo", json!({})).unwrap();
+            assert_eq!(a.session.doc, original);
+        }
     }
 }

@@ -144,3 +144,14 @@ retire that native executor. Existing and new jobs refuse further device work;
 preflight/session metadata reports it unavailable without inventing new capabilities.
 The application must deliberately recreate a host to recover. Merely registering the
 same cached host or opening another document does not advertise it as healthy again.
+
+
+### Shared index-matched base response
+
+The opaque base lobe uses the same Fresnel limit as `OpaqueSurface`: when the
+base IOR is exactly one, the dielectric fraction has no interface reflection at
+any angle. A metallic mixture retains its independently weighted conductor
+fraction. This applies to the specular term and both diffuse transmission factors.
+The existing actual-GPU BRDF oracle checks the limit at normal, oblique and grazing
+angles against the f64 surface, including mixed metallic values. Clear-coat and
+physical transmission contracts are unchanged by this base-lobe correction.

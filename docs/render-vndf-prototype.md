@@ -129,3 +129,11 @@ listing, figure or paper prose is copied into the repository. No supplemental
 implementation repository, GPL-family source or Blender source was consulted.
 No dependency is added. Original code remains MIT OR Apache-2.0 under the
 project contribution licence; paper licences are not relicensed as project code.
+
+
+## Landed numerical foundation versus this advanced candidate
+
+The numerical foundation is already in the basic Render delivery through #1658.
+The CPU consumer and the additional experimental work above remain part of #5494.
+Historical validation notes retain their original source pins; the current combined
+source requires its own acceptance. The two delivery scopes are not equivalent.
