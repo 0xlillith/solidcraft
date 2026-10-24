@@ -341,6 +341,9 @@ crate::dialog_descriptor::dialog_descriptors! {
                 with: Vec<String>,
                 fail: Vec<String>,
             },
+            /// Pick what the agent chat's next message is about (#2286): elements, features and bodies.
+            /// OK hands the picks to the chat (`agent_chat::pick_done`); nothing is run.
+            ChatContext,
             /// Joints and components (`dialogs_assembly`).
             Assembly(crate::dialogs_assembly::Asm),
             /// Sheet metal (`dialogs_sheet`).
@@ -630,6 +633,21 @@ impl Dialog {
             chain_applied,
             shell_chain: Default::default(),
         }
+    }
+
+    /// The picker for the agent chat's context, holding what is already picked.
+    pub fn chat_context(picked: &[Sel]) -> Dialog {
+        let mut inputs = vec![
+            SelInput::new("Elements", FACES | EDGES | selection::VERTICES, true),
+            SelInput::new("Features", selection::FEATURES, true),
+            SelInput::new("Bodies", BODIES, true),
+        ];
+        for sel in picked {
+            if let Some(input) = inputs.iter_mut().find(|i| fits(i.accept, sel)) {
+                input.items.push(sel.clone());
+            }
+        }
+        Dialog::new(Kind::ChatContext, inputs)
     }
 
     pub fn for_command(app: &SolveApp, id: &str) -> Option<Dialog> {
@@ -1247,10 +1265,12 @@ impl Dialog {
             self.profile_selection_changed = true;
         }
         let measure = matches!(self.kind, Kind::Measure { .. });
+        // The chat's picks stay what was clicked: a rim is one edge there, not its pieces.
+        let one = measure || matches!(self.kind, Kind::ChatContext);
         let sel = if measure { crate::viewport::measurement_selection(s, &sel) } else { sel };
         let chain = matches!(self.kind, Kind::Fillet { chain: true, .. });
         let single =
-            if !measure && self.active_input().is_some_and(|i| i.multi) { crate::viewport::picked_selection(s, &sel) } else { vec![sel.clone()] };
+            if !one && self.active_input().is_some_and(|i| i.multi) { crate::viewport::picked_selection(s, &sel) } else { vec![sel.clone()] };
         // Tangent chain: an edge brings the edges that continue it smoothly.
         let picked = if chain { fillet_edges(s, &sel, true) } else { single.clone() };
         // Extrude and revolve take profiles of one sketch.
@@ -1767,6 +1787,7 @@ fn title(k: &Kind) -> &'static str {
         Kind::Align { .. } => "ALIGN",
         Kind::BoundaryFill { .. } => "BOUNDARY FILL",
         Kind::Remove => "REMOVE",
+        Kind::ChatContext => "PICK CONTEXT",
         Kind::PathPattern { .. } => "PATTERN ON PATH",
         Kind::Split => "SPLIT BODY",
         Kind::Thread { .. } => "THREAD",
@@ -2467,6 +2488,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let has_ok = !matches!(d.kind, Kind::Sketch | Kind::Measure { .. });
     let valid = match &d.kind {
         Kind::Sketch => false,
+        // Nothing picked is an answer too: OK empties the chat's tray.
+        Kind::ChatContext => true,
         Kind::Material { editor, .. } if editor.editing() => false,
         Kind::SaveMesh(_) => crate::dialogs_save_mesh::ready(&d.inputs),
         Kind::SketchModify(crate::sketch_modify_ui::Mod::Corner { .. }) => {
@@ -2648,6 +2671,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         // Edit Text applies its own way: its live changes and OK are one undo step.
         let run = match &mut d.kind {
             Kind::Text(k) => Some(crate::sketch_text::apply(app, k)),
+            Kind::ChatContext => Some(crate::agent_chat::pick_done(app, &d)),
             _ => match begin_applying(app, &d) {
                 // Computing: the dialog stays, saying so, until it is in.
                 Begun::Later(job) => {
@@ -3266,6 +3290,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
     };
     let face_points = |i: usize| -> Vec<Value> { sels(d, i).face_points().into_iter().map(pt).collect() };
     let (cmd, params): (&str, Value) = match &d.kind {
+        Kind::ChatContext => return Err("the chat takes these picks; nothing runs".into()),
         Kind::Extrude {
             distance,
             direction,
