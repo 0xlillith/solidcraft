@@ -154,11 +154,17 @@ fn scene(s: &mut Session, params: &Value) -> Result<Value> {
         return Err(bad("render.scene", "expected an empty parameter object"));
     }
     let scene = crate::product_scene::extract(s)?;
+    let mut stable = std::collections::BTreeMap::new();
+    for (target, name) in surface_bindings::targets(s, "render.scene")? {
+        if stable.insert(name, target).is_some() {
+            return Err(bad("render.scene", "ambiguous stable occurrence name"));
+        }
+    }
     let bodies: Vec<_> = scene
         .meshes
         .iter()
         .enumerate()
-        .map(|(ordinal,m)| json!({"ordinal":ordinal,"name":m.name,"triangles":m.mesh.triangles.len(),"color":m.color,"opacity":m.opacity,"face_appearances":m.faces.len(),"bounds":{"min":m.mesh.bounds().min,"max":m.mesh.bounds().max}}))
+        .map(|(ordinal,m)| json!({"ordinal":ordinal,"name":m.name,"stable_target":stable.get(&m.name),"triangles":m.mesh.triangles.len(),"color":m.color,"opacity":m.opacity,"face_appearances":m.faces.len(),"bounds":{"min":m.mesh.bounds().min,"max":m.mesh.bounds().max}}))
         .collect();
     Ok(
         json!({"bodies":bodies,"bounds":if scene.bounds.is_empty() { Value::Null } else { json!({"min":scene.bounds.min,"max":scene.bounds.max}) },"overlays":false}),

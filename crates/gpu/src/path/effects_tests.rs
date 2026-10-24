@@ -176,3 +176,68 @@ fn photographic_and_ordered_colour_effects_change_png_not_raw_master_and_regrade
     assert_eq!(session.doc.to_json(), document);
     assert_eq!(frame.presentation().unwrap().presentation.finishing, finish);
 }
+
+/// Saved identities are resolved by the engine and consumed by the actual GPU,
+/// not by a raster-backed test double claiming an unsupported capability.
+#[test]
+fn saved_aging_identity_reaches_real_gpu_after_cold_reopen() {
+    use solidcraft_engine::{Session, doc, io};
+    let Some(executor) = executor() else { return };
+    assert!(executor.supports_aging());
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let mut source = Session::default();
+    source.execute("solid.box", &json!({"body_name":"Before","length":1,"width":1,"height":1})).unwrap();
+    let created = source.execute("solid.box", &json!({"body_name":"Target panel","length":2,"width":2,"height":1})).unwrap();
+    let target = doc::render_surface::RenderBodyTarget {
+        definition: "Target panel".into(),
+        feature: serde_json::from_value(created["feature"].clone()).unwrap(),
+        component: 0,
+        occurrence_path: Vec::new(),
+    };
+    let mut layers = doc::render_aging::SavedAgingStack::default();
+    layers.push(AgingLayer { strength: 1.0, coverage: 1.0, ..Default::default() }).unwrap();
+    layers.get_mut(0).unwrap().target = Some(target.clone());
+    source
+        .execute(
+            "render.settings.set",
+            &json!({"name":"Aging","set":{
+                "width":16,"height":16,"camera":request(16).camera,
+                "job":{"method":"gpu_path","options":{"samples":8,"max_depth":4,"seed":42,"aging":layers}}
+            }}),
+        )
+        .unwrap();
+    let json = source.doc.to_json();
+    assert!(!json.contains("body_index"));
+    assert_eq!(doc::Document::from_json(&json).unwrap().render, source.doc.render);
+    let bytes = io::write_design_container(&source.doc).unwrap();
+    let reopened = io::read_design(&bytes).unwrap();
+    assert_eq!(reopened.render, source.doc.render);
+    let mut session = Session::new(reopened);
+    session.set_render_job_host(Some(ImageHost::cooperative())).unwrap();
+    session.register_render_job_host(host).unwrap();
+    let first = session.execute("render.preflight", &json!({"setup":"Aging"})).unwrap();
+    // Removing an unrelated earlier capture entry must not change saved identity.
+    session.visibility.hidden_bodies.push("Before".into());
+    let checked = session.execute("render.preflight", &json!({"setup":"Aging"})).unwrap();
+    assert_ne!(first["options"]["aging"][0]["target"]["body_index"], checked["options"]["aging"][0]["target"]["body_index"]);
+    assert_eq!(checked["options"]["aging"][0]["target"]["body_name"], "Target panel");
+    let saved = session.doc.render.setups["Aging"].clone();
+    assert_eq!(checked, session.execute("render.preflight", &json!({"settings":saved})).unwrap());
+    let physical = session.execute("component.properties", &json!({})).unwrap();
+    let before = session.doc.clone();
+    let history = (session.revision, session.undo.len(), session.redo.len());
+    let started = session.execute("render.start", &json!({"setup":"Aging"})).unwrap();
+    let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
+    let handle = session.render_job_handle(id).unwrap();
+    let status = handle.wait_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Completed, "{status:?}");
+    assert_eq!(json!(status.options.aging), checked["options"]["aging"]);
+    assert!(handle.frame().unwrap().is_some());
+    assert!(Arc::ptr_eq(&before, &session.doc));
+    assert_eq!((session.revision, session.undo.len(), session.redo.len()), history);
+    assert_eq!(session.execute("component.properties", &json!({})).unwrap(), physical);
+    session.visibility.hidden_bodies.push("Target panel".into());
+    for command in ["render.preflight", "render.start"] {
+        assert!(session.execute(command, &json!({"setup":"Aging"})).unwrap_err().to_string().contains("hidden"));
+    }
+}
