@@ -150,12 +150,11 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(cmd, "appearance entries need targets and do not take a material name"));
             }
             let mut target = serde_json::to_value(&request.targets).map_err(|e| bad(cmd, e.to_string()))?;
-            target["appearance"] = json!(look.name);
+            target["name"] = json!(look.name);
             target["color"] = json!(look.color);
             target["opacity"] = json!(look.opacity);
-            if let Some(pbr) = look.pbr {
-                target["pbr"] = json!(pbr);
-            }
+            // Catalog labels are inert; a full replacement explicitly clears absent PBR.
+            target["pbr"] = json!(look.pbr);
             nested(s, "appearance.assign", &target)?
         }
         Definition::Material(material) => {

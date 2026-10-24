@@ -110,6 +110,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 | tests/oracle/63-hinge-knuckle/reference.stl | SolidCraft contributors | triangulation of our own recipe (tests/oracle/63-hinge-knuckle/recipe.json) built with FreeCAD as an external tool by tools/freecad-oracle | MIT OR Apache-2.0 |
 | tests/oracle/65-sketch-gear-tooth/reference.stl | SolidCraft contributors | triangulation of our own recipe (tests/oracle/65-sketch-gear-tooth/recipe.json) built with FreeCAD as an external tool by tools/freecad-oracle | MIT OR Apache-2.0 |
 | assets/appearances/library.rs | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
+| assets/appearances/starter_pack.rs | SolidCraft contributors | original illustrative optical recipes, authored scalar values and future procedural resource descriptors; no measured or external material dataset | MIT OR Apache-2.0 |
 | assets/fonts/biz-udp-gothic/OFL.txt | The BIZ UDGothic Project Authors | Unmodified accompanying font licence | SIL OFL 1.1 |
 | assets/fonts/ibm-plex-mono/OFL.txt | IBM Corp. | Unmodified accompanying font licence | SIL OFL 1.1 |
 | assets/fonts/ibm-plex-sans/OFL.txt | IBM Corp. | Unmodified accompanying font licence | SIL OFL 1.1 |
