@@ -199,23 +199,23 @@ fn bounded_entries<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::re
     impl<'de> serde::de::Visitor<'de> for Entries {
         type Value = Vec<Entry>;
         fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("at most 1024 scalar library entries")
+            formatter.write_str("at most 1024 material library entries")
         }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error> {
             let mut entries = Vec::new();
             loop {
                 if entries.len() == MAX_ENTRIES {
                     if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
-                        return Err(serde::de::Error::custom("scalar library exceeds 1024 entries"));
+                        return Err(serde::de::Error::custom("material library exceeds 1024 entries"));
                     }
                     break;
                 }
                 let Some(entry) = sequence.next_element::<Entry>()? else { break };
                 let revision = entry.content_revision().map_err(serde::de::Error::custom)?;
                 if entry.revision != revision || entry.id.len() > 129 {
-                    return Err(serde::de::Error::custom("invalid scalar library revision or identity"));
+                    return Err(serde::de::Error::custom("invalid material library revision or identity"));
                 }
-                entries.try_reserve(1).map_err(|_| serde::de::Error::custom("could not reserve scalar library entries"))?;
+                entries.try_reserve(1).map_err(|_| serde::de::Error::custom("could not reserve material library entries"))?;
                 entries.push(entry);
             }
             Ok(entries)
@@ -243,7 +243,7 @@ impl Catalog {
     }
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_BYTES {
-            return Err(invalid("scalar library exceeds 4 MiB"));
+            return Err(invalid("material library exceeds 4 MiB"));
         }
         // Keep the v1 wire schema strict, including newly recognized null fields.
         // This bounded raw preflight is not arbitrary JSON canonicalization.
@@ -264,7 +264,7 @@ impl Catalog {
             }
         }
         drop(raw);
-        let catalog: Self = serde_json::from_slice(bytes).map_err(|e| invalid(format!("invalid scalar library: {e}")))?;
+        let catalog: Self = serde_json::from_slice(bytes).map_err(|e| invalid(format!("invalid material library: {e}")))?;
         catalog.validate()?;
         Ok(catalog)
     }
@@ -279,7 +279,7 @@ impl Catalog {
         }
         let bytes = serde_json::to_vec_pretty(self).map_err(|e| invalid(e.to_string()))?;
         if bytes.len() > MAX_BYTES {
-            return Err(invalid("scalar library exceeds 4 MiB"));
+            return Err(invalid("material library exceeds 4 MiB"));
         }
         Ok(bytes)
     }
@@ -295,13 +295,13 @@ impl Catalog {
     pub fn read(path: &str) -> Result<Self> {
         // Check the VFS size first as well: its browser read clones the stored bytes.
         if crate::vfs::len(path).map_err(|e| invalid(e.to_string()))? > MAX_BYTES as u64 {
-            return Err(invalid("scalar library exceeds 4 MiB"));
+            return Err(invalid("material library exceeds 4 MiB"));
         }
         Self::decode(&crate::vfs::read(path, MAX_BYTES).map_err(|e| invalid(e.to_string()))?)
     }
     pub fn from_document(doc: &Document, id: &str, name: &str, provenance: Provenance) -> Result<Self> {
         if !identifier(id) || !text(name, 128) {
-            return Err(invalid("invalid scalar library identifier or name"));
+            return Err(invalid("invalid material library identifier or name"));
         }
         provenance.validate()?;
         let references = doc
@@ -324,7 +324,11 @@ impl Catalog {
                 }
             } else {
                 if entries.len() >= MAX_ENTRIES {
-                    return Err(invalid("scalar library exceeds 1024 unique entries"));
+                    return Err(invalid("material library exceeds 1024 unique entries"));
+                }
+                budget = budget.saturating_add(entry_encoded_bound(&entry)?);
+                if budget > MAX_BYTES {
+                    return Err(invalid("library exceeds 4 MiB encoded admission budget"));
                 }
                 budget = budget.saturating_add(entry_encoded_bound(&entry)?);
                 if budget > MAX_BYTES {

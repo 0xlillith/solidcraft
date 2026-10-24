@@ -153,7 +153,8 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             target["name"] = json!(look.name);
             target["color"] = json!(look.color);
             target["opacity"] = json!(look.opacity);
-            // Catalog labels are inert; a full replacement explicitly clears absent PBR.
+            // A catalog replaces the complete optical value. Null explicitly clears
+            // inherited PBR. Its label is inert, even if it matches a starter ID.
             target["pbr"] = json!(look.pbr);
             nested(s, "appearance.assign", &target)?
         }
@@ -181,9 +182,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
                 if let Some(look) = &material.appearance {
                     params["color"] = json!(look.color);
                     params["opacity"] = json!(look.opacity);
-                    if let Some(pbr) = look.pbr {
-                        params["pbr"] = json!(pbr);
-                    }
+                    params["pbr"] = json!(look.pbr);
                 }
                 if let Some(card) = &material.physical_card {
                     params["physical_card"] = json!(card);

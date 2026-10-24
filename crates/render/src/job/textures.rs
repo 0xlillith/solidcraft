@@ -7,11 +7,12 @@ use crate::{
     texture_sampling::TextureView,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use solidcraft_geom::Vec3;
 
-pub const MAX_TEXTURE_BINDINGS: usize = 16;
-pub const MAX_TEXTURE_PIXELS_BYTES: u64 = 32 * 1024 * 1024;
-pub const MAX_TEXTURE_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_TEXTURE_BINDINGS: usize = 128;
+pub const MAX_TEXTURE_PIXELS_BYTES: u64 = 96 * 1024 * 1024;
+pub const MAX_TEXTURE_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_PLANAR_REPEAT: f64 = 128.0;
 
 fn invalid(message: impl Into<String>) -> JobError {
@@ -23,7 +24,7 @@ fn v(a: [f64; 3]) -> Vec3 {
 
 /// `u` and `v` span one full repeat in world-space millimetres. Image v increases
 /// downward; normal-map green points along the caller's positive v direction.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlanarFrame {
     pub origin: [f64; 3],
@@ -36,7 +37,7 @@ impl PlanarFrame {
         let vv = v(self.v);
         let ul = u.len();
         let vl = vv.len();
-        if self.origin.into_iter().any(|c| !c.is_finite() || c.abs() > 1e12)
+        if self.origin.into_iter().any(|c| !c.is_finite() || c.abs() > 1e9)
             || !u.is_finite()
             || !vv.is_finite()
             || !(0.001..=1e6).contains(&ul)
@@ -86,6 +87,7 @@ impl PlanarFrame {
 pub struct TextureMap {
     source: TextureSource,
     retained_bytes: usize,
+    digest: [u8; 32],
 }
 impl std::fmt::Debug for TextureMap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -94,15 +96,28 @@ impl std::fmt::Debug for TextureMap {
 }
 impl TextureMap {
     pub fn new(bytes: Vec<u8>, role: MapRole) -> Result<Self> {
-        if !matches!(role, MapRole::BaseColor | MapRole::NormalOpenGl) {
-            return Err(invalid("only sRGB base color and OpenGL tangent normal maps are supported"));
+        if !matches!(role, MapRole::BaseColor | MapRole::NormalOpenGl | MapRole::Roughness | MapRole::Metallic) {
+            return Err(invalid("only sRGB base color, OpenGL normal, linear roughness and linear metallic maps are supported"));
         }
         let retained_bytes = bytes.capacity();
+        let digest = Sha256::digest(&bytes).into();
         let source = TextureSource::new(bytes, role).map_err(|e| invalid(e.to_string()))?;
         if source.info().width > 1024 || source.info().height > 1024 {
             return Err(invalid("runtime texture maps are limited to 1024x1024"));
         }
-        Ok(Self { source, retained_bytes })
+        Ok(Self { source, retained_bytes, digest })
+    }
+    /// Content plus interpretation identifies immutable pixels within one request.
+    /// No file is reopened after its first capture.
+    pub fn identity(&self) -> ([u8; 32], u8) {
+        let role = match self.role() {
+            MapRole::BaseColor => 0,
+            MapRole::NormalOpenGl => 1,
+            MapRole::Roughness => 2,
+            MapRole::Metallic => 3,
+            MapRole::AmbientOcclusion => 4,
+        };
+        (self.digest, role)
     }
     pub fn retained_bytes(&self) -> usize {
         self.retained_bytes
@@ -133,6 +148,16 @@ impl TextureMap {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BaseColorMode {
+    /// Legacy maps modulate the captured body reflectance.
+    #[default]
+    Modulate,
+    /// Authored absolute reflectance replaces RGB, never alpha or engineering data.
+    Replace,
+}
+
 #[derive(Clone, Debug)]
 pub struct TextureBinding {
     pub body_index: usize,
@@ -141,6 +166,17 @@ pub struct TextureBinding {
     pub normal_strength: f64,
     pub base_color: Option<TextureMap>,
     pub normal: Option<TextureMap>,
+    pub roughness: Option<TextureMap>,
+    pub metallic: Option<TextureMap>,
+    pub base_color_mode: BaseColorMode,
+    /// OpenGL authoring can use +V image-up while legacy external inputs use rows-down.
+    pub flip_v: bool,
+}
+impl TextureBinding {
+    pub fn uv(&self, point: Vec3) -> Result<[f64; 2]> {
+        let [u, v] = self.frame.uv(point)?;
+        Ok([u, if self.flip_v { -v } else { v }])
+    }
 }
 #[derive(Clone, Debug)]
 pub struct RuntimeTextures {
@@ -155,38 +191,53 @@ pub struct TextureSummary {
     pub linear_pixel_bytes: u64,
 }
 impl RuntimeTextures {
-    pub fn new(bindings: Vec<TextureBinding>) -> Result<Self> {
+    pub fn new(mut bindings: Vec<TextureBinding>) -> Result<Self> {
         if bindings.is_empty() || bindings.len() > MAX_TEXTURE_BINDINGS {
-            return Err(invalid("runtime textures require 1..16 distinct body bindings"));
+            return Err(invalid("runtime textures require 1..128 distinct body bindings"));
         }
         let mut seen = std::collections::BTreeSet::new();
-        let mut source_bytes = 0;
-        let mut pixel_bytes = 0;
-        for binding in &bindings {
+        let mut source_bytes = 0u64;
+        let mut pixel_bytes = 0u64;
+        let mut shared = std::collections::BTreeMap::<([u8; 32], u8), TextureMap>::new();
+        for binding in &mut bindings {
             binding.frame.validate()?;
-            if binding.body_index >= 16384
+            if binding.body_index >= super::MAX_GPU_PATH_BODIES
                 || binding.body_name.is_empty()
                 || binding.body_name.len() > 1024
                 || binding.body_name.chars().any(char::is_control)
                 || !seen.insert(binding.body_index)
                 || !binding.normal_strength.is_finite()
                 || !(0.0..=1.0).contains(&binding.normal_strength)
-                || (binding.base_color.is_none() && binding.normal.is_none())
+                || (binding.base_color.is_none() && binding.normal.is_none() && binding.roughness.is_none() && binding.metallic.is_none())
             {
                 return Err(invalid("invalid or duplicate runtime texture body binding"));
             }
             if binding.base_color.as_ref().is_some_and(|m| m.role() != MapRole::BaseColor)
                 || binding.normal.as_ref().is_some_and(|m| m.role() != MapRole::NormalOpenGl)
+                || binding.roughness.as_ref().is_some_and(|m| m.role() != MapRole::Roughness)
+                || binding.metallic.as_ref().is_some_and(|m| m.role() != MapRole::Metallic)
             {
                 return Err(invalid("texture role does not match its binding"));
             }
-            for map in [&binding.base_color, &binding.normal].into_iter().flatten() {
-                source_bytes += map.retained_bytes as u64;
-                pixel_bytes += map.source.info().rgba_bytes * 4;
+            for slot in [&mut binding.base_color, &mut binding.normal, &mut binding.roughness, &mut binding.metallic] {
+                let Some(map) = slot else { continue };
+                let identity = map.identity();
+                if let Some(canonical) = shared.get(&identity) {
+                    // Cloning the source shares the immutable encoded Arc, not just its hash.
+                    *map = canonical.clone();
+                    continue;
+                }
+                source_bytes = source_bytes.checked_add(map.retained_bytes as u64).ok_or_else(|| invalid("texture source accounting overflow"))?;
+                let decoded = map.source.info().rgba_bytes.checked_mul(4).ok_or_else(|| invalid("texture pixel accounting overflow"))?;
+                pixel_bytes = pixel_bytes.checked_add(decoded).ok_or_else(|| invalid("texture pixel accounting overflow"))?;
+                if source_bytes > MAX_TEXTURE_SOURCE_BYTES || pixel_bytes > MAX_TEXTURE_PIXELS_BYTES {
+                    return Err(invalid("unique texture sources exceed 64 MiB encoded or 96 MiB linear pixels"));
+                }
+                shared.insert(identity, map.clone());
             }
         }
         if source_bytes > MAX_TEXTURE_SOURCE_BYTES || pixel_bytes > MAX_TEXTURE_PIXELS_BYTES {
-            return Err(invalid("runtime textures exceed 16 MiB encoded or 32 MiB linear pixel budget"));
+            return Err(invalid("unique texture sources exceed 64 MiB encoded or 96 MiB linear pixel budget"));
         }
         Ok(Self { bindings, source_bytes, pixel_bytes })
     }
@@ -249,6 +300,10 @@ mod tests {
             normal_strength: 1.,
             base_color: Some(TextureMap::new(png(1, 1, &[128, 64, 255, 0]), MapRole::BaseColor).unwrap()),
             normal: None,
+            roughness: None,
+            metallic: None,
+            base_color_mode: Default::default(),
+            flip_v: false,
         }
     }
     #[test]
@@ -297,6 +352,67 @@ mod tests {
         let mut bytes = png(1, 1, &[0; 4]);
         bytes.reserve_exact(16 * 1024 * 1024);
         assert!(TextureMap::new(bytes, MapRole::BaseColor).is_err());
-        assert!(TextureMap::new(png(1, 1, &[0; 4]), MapRole::Roughness).is_err());
+        assert!(TextureMap::new(png(1, 1, &[0; 4]), MapRole::AmbientOcclusion).is_err());
+    }
+    #[test]
+    fn scalar_maps_are_linear_data_and_work_without_a_color_map() {
+        let rough = TextureMap::new(png(1, 1, &[128, 128, 128, 255]), MapRole::Roughness).unwrap();
+        let metal = TextureMap::new(png(1, 1, &[64, 64, 64, 255]), MapRole::Metallic).unwrap();
+        let cancel = CancelToken::default();
+        assert!((rough.decode(&cancel).unwrap()[0] - 128.0 / 255.0).abs() < 1e-7);
+        assert!((metal.decode(&cancel).unwrap()[0] - 64.0 / 255.0).abs() < 1e-7);
+        let mut entry = binding();
+        entry.base_color = None;
+        entry.roughness = Some(rough);
+        entry.metallic = Some(metal);
+        let resources = RuntimeTextures::new(vec![entry]).unwrap();
+        assert_eq!(resources.bindings().len(), 1);
+        let mut invalid = resources.bindings()[0].clone();
+        invalid.normal = invalid.roughness.take();
+        assert!(RuntimeTextures::new(vec![invalid]).is_err());
+    }
+
+    #[test]
+    fn repeated_bodies_share_actual_immutable_sources_and_unique_pixel_accounting() {
+        let a = binding();
+        let b = binding();
+        assert!(!a.base_color.as_ref().unwrap().source.shares_encoded_storage(&b.base_color.as_ref().unwrap().source));
+        let one = RuntimeTextures::new(vec![a.clone()]).unwrap();
+        let entries: Vec<_> = (0..128)
+            .map(|index| {
+                let mut entry = binding();
+                entry.body_index = index;
+                entry.body_name = format!("Body {index}");
+                entry
+            })
+            .collect();
+        let shared = RuntimeTextures::new(entries).unwrap();
+        assert_eq!(one.source_bytes, shared.source_bytes);
+        assert_eq!(one.pixel_bytes, shared.pixel_bytes);
+        let first = shared.bindings()[0].base_color.as_ref().unwrap();
+        for entry in shared.bindings() {
+            assert!(first.source.shares_encoded_storage(&entry.base_color.as_ref().unwrap().source));
+        }
+        let mut extra = shared.bindings().to_vec();
+        let mut last = b;
+        last.body_index = 128;
+        last.body_name = "Too many".into();
+        extra.push(last);
+        assert!(RuntimeTextures::new(extra).is_err());
+        let data = TextureMap::new(png(1, 1, &[128, 64, 255, 0]), MapRole::NormalOpenGl).unwrap();
+        assert_ne!(first.identity(), data.identity(), "same encoded bytes with different interpretation must not share decoded pixels");
+    }
+
+    #[test]
+    fn authored_image_up_coordinates_do_not_invert_the_normal_basis() {
+        let mut entry = binding();
+        entry.flip_v = true;
+        entry.base_color_mode = BaseColorMode::Replace;
+        assert_eq!(entry.uv(Vec3::new(1.0, 1.0, 0.0)).unwrap(), [0.5, -0.25]);
+        let n = entry.frame.mapped_normal(Vec3::Z, Vec3::Z, [0.5, 0.75, 1.0], 1.0).unwrap();
+        assert!(n.y > 0.0, "OpenGL green is still +V in world space; only the lookup row is flipped");
+        let encoded = serde_json::to_value(entry.base_color_mode).unwrap();
+        assert_eq!(encoded, "replace");
+        assert!(serde_json::from_str::<BaseColorMode>("\"unspecified\"").is_err());
     }
 }

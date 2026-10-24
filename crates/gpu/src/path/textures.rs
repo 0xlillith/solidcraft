@@ -2,7 +2,7 @@
 use solidcraft_geom::Vec3;
 use solidcraft_render::job::{
     CancelToken, ErrorCode, JobError, Result,
-    textures::{RuntimeTextures, TextureMap},
+    textures::{BaseColorMode, RuntimeTextures, TextureMap},
 };
 
 fn vector(a: [f64; 3]) -> Vec3 {
@@ -15,11 +15,19 @@ fn write_word(bytes: &mut [u8], word: usize, value: u32) -> Result<()> {
         .copy_from_slice(&value.to_le_bytes());
     Ok(())
 }
-fn pixels(bytes: &mut Vec<u8>, map: Option<&TextureMap>, cancel: &CancelToken) -> Result<(u32, [u32; 2])> {
+fn pixels(
+    bytes: &mut Vec<u8>,
+    map: Option<&TextureMap>,
+    cancel: &CancelToken,
+    shared: &mut std::collections::BTreeMap<([u8; 32], u8), (u32, [u32; 2])>,
+) -> Result<(u32, [u32; 2])> {
     let Some(map) = map else {
         return Ok((0, [0; 2]));
     };
     cancel.check()?;
+    if let Some(record) = shared.get(&map.identity()) {
+        return Ok(*record);
+    }
     let rgba = map.decode(cancel)?;
     let offset = bytes.len() / 4;
     for (index, value) in rgba.into_iter().enumerate() {
@@ -28,20 +36,23 @@ fn pixels(bytes: &mut Vec<u8>, map: Option<&TextureMap>, cancel: &CancelToken) -
         }
         bytes.extend_from_slice(&value.to_le_bytes());
     }
-    Ok((offset as u32, map.dimensions()))
+    let record = (u32::try_from(offset).map_err(|_| JobError::new(ErrorCode::LimitExceeded, "texture buffer offset overflow"))?, map.dimensions());
+    shared.insert(map.identity(), record);
+    Ok(record)
 }
 pub(super) fn flatten(resources: Option<&RuntimeTextures>, body_count: usize, origin: Vec3, cancel: &CancelToken) -> Result<Vec<u8>> {
     let Some(resources) = resources else {
         return Ok(vec![0; 16]);
     };
     let header = 4 + body_count + 1;
-    let record_words = resources.bindings().len() * 16;
+    let record_words = resources.bindings().len() * 24;
     let mut bytes = super::scene::reserved((header + record_words) * 4 + resources.summary().linear_pixel_bytes as usize)?;
     bytes.resize((header + record_words) * 4, 0);
     write_word(&mut bytes, 0, (body_count + 1) as u32)?;
+    let mut shared = std::collections::BTreeMap::new();
     for (index, binding) in resources.bindings().iter().enumerate() {
         cancel.check()?;
-        let record = header + index * 16;
+        let record = header + index * 24;
         write_word(&mut bytes, 4 + binding.body_index + 1, record as u32)?;
         let delta = vector(binding.frame.origin) - origin;
         if [delta.x, delta.y, delta.z].iter().any(|v| v.abs() > 1e7) {
@@ -54,8 +65,11 @@ pub(super) fn flatten(resources: Option<&RuntimeTextures>, body_count: usize, or
                 write_word(&mut bytes, record + offset + k, (c as f32).to_bits())?;
             }
         }
-        let (base, base_size) = pixels(&mut bytes, binding.base_color.as_ref(), cancel)?;
-        let (normal, normal_size) = pixels(&mut bytes, binding.normal.as_ref(), cancel)?;
+        let (base, base_size) = pixels(&mut bytes, binding.base_color.as_ref(), cancel, &mut shared)?;
+        let (normal, normal_size) = pixels(&mut bytes, binding.normal.as_ref(), cancel, &mut shared)?;
+        let (roughness, roughness_size) = pixels(&mut bytes, binding.roughness.as_ref(), cancel, &mut shared)?;
+        let (metallic, metallic_size) = pixels(&mut bytes, binding.metallic.as_ref(), cancel, &mut shared)?;
+        let flags = u32::from(binding.flip_v) | (u32::from(binding.base_color_mode == BaseColorMode::Replace) << 1);
         for (offset, value) in [
             (3, base),
             (7, base_size[0]),
@@ -64,6 +78,13 @@ pub(super) fn flatten(resources: Option<&RuntimeTextures>, body_count: usize, or
             (13, normal_size[0]),
             (14, normal_size[1]),
             (15, (binding.normal_strength as f32).to_bits()),
+            (16, roughness),
+            (17, roughness_size[0]),
+            (18, roughness_size[1]),
+            (19, flags),
+            (20, metallic),
+            (21, metallic_size[0]),
+            (22, metallic_size[1]),
         ] {
             write_word(&mut bytes, record + offset, value)?;
         }

@@ -187,7 +187,7 @@ impl Resources {
                 task.cancel.check()?;
                 let count = budget.count(pixels - offset);
                 let mut bytes = Vec::with_capacity(32);
-                for word in [task.request.width, task.request.height, 1 << pass, offset, count, task.sample, 0, 0] {
+                for word in [task.request.width, task.request.height, 1 << pass, offset, count, task.normalization_samples(), 0, 0] {
                     bytes.extend_from_slice(&word.to_le_bytes());
                 }
                 task.context.queue.write_buffer(&self.filter_uniform, 0, &bytes);

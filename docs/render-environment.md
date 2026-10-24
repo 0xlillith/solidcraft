@@ -1,7 +1,9 @@
 # Runtime sun and environment lighting
 
-These controls extend progressive image jobs. They do not change the saved design,
-its render setups, the viewport lighting, or the legacy default render.
+These runtime controls extend progressive image jobs without changing the saved
+design or viewport lighting. Numerical sky/studio options and embedded HDR can
+also be saved in a typed setup; see [saved HDR resources](render-hdr-resources.md)
+for atomic capture, byte ownership and reopening without the original file.
 
 An original artistic sky is available without downloading an image:
 
@@ -56,8 +58,11 @@ The CLI accepts `--progressive --environment FILE.json`; that small JSON file
 contains the environment object above. `--lighting FILE.json` supplies the sun
 and/or rectangle lighting object. The engine captures bounded file bytes through
 its scoped VFS. Queued jobs own immutable shared bytes and never reopen paths.
-Preflight reports source SHA-256, dimensions and colour policy. A later start is a
-new capture; compare its descriptor if a source file may have changed.
+Preflight reports source SHA-256, dimensions and colour policy. A file request's
+optional `expected_sha256` rejects a changed source on both Check and Start.
+Without that guard, each Start captures the current file. Runtime
+`{kind:"embedded_hdr",resource:<saved SHA-256>,rotation_rad,intensity,assume_linear_srgb}`
+instead uses the document's immutable bytes and does not read a path.
 
 ## Sampling and bounded preparation
 
@@ -88,7 +93,9 @@ Admission conservatively adds retained encoded-buffer capacity, 160 bytes per te
 job's existing estimate for decoded/table/work/staging/device buffers. Device
 binding limits and the existing 512 MiB job limit also apply. Preparation checks
 cancellation while decoding, generating rows, building tables and staging uploads.
-CPU product rendering rejects environment resources explicitly.
+CPU image methods reject this progressive GPU environment contract explicitly.
+CPU ray tracing keeps its separate captured HDR input and sampling contract,
+documented in `render-environment-sampling.md`.
 
 Tests use original in-memory RGBE fixtures and the generated gradient. They cover
 colour policy, malformed inputs, cancellation, polar/seam lookup, PDF normalization,

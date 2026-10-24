@@ -20,7 +20,17 @@ fn executor() -> Option<Executor> {
 fn request(size: u32) -> ImageRequest {
     let mut camera = Camera { distance: 4.0, ..Default::default() };
     camera.set_view(StandardView::Top);
-    ImageRequest { textures: None, environment: None, camera, width: size, height: size, background: [10, 20, 30], transparent_background: false }
+    ImageRequest {
+        integrator: Default::default(),
+        raytrace: None,
+        textures: None,
+        environment: None,
+        camera,
+        width: size,
+        height: size,
+        background: [10, 20, 30],
+        transparent_background: false,
+    }
 }
 fn sphere(surface: OpaqueSurface) -> ProductScene {
     sphere_grid(surface, 48, 96)
@@ -419,6 +429,8 @@ fn glass_transport_evidence() {
     let bounds = meshes.iter().fold(Aabb3::EMPTY, |a, m| a.union(&m.mesh.bounds()));
     let camera = Camera { target: Vec3::new(0.0, 0.0, 1.0), yaw: -0.45, pitch: 0.5, distance: 13.0, fov: 0.65, ..Default::default() };
     let request = ImageRequest {
+        integrator: Default::default(),
+        raytrace: None,
         textures: None,
         environment: None,
         camera,
@@ -526,7 +538,7 @@ fn path_devices_are_vulkan_only() {
         assert_eq!(adapter.get_info().backend, wgpu::Backend::Vulkan);
         assert_eq!(report.backend, "Vulkan");
     }
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") || !crate::select::native_backends().contains(wgpu::Backends::VULKAN) {
         assert!(picked.is_none());
     }
 }
@@ -535,7 +547,7 @@ fn path_devices_are_vulkan_only() {
 fn admission_rejects_hostile_parameters_and_transparency() {
     let mut scene = sphere(white());
     let mut r = request(16);
-    for size in [0, 4097, u32::MAX] {
+    for size in [0, (GPU_PATH_LIMITS.max_dimension + 1) as u32, u32::MAX] {
         r.width = size;
         assert!(admission(&scene, &r, JobOptions::default()).is_err());
     }
@@ -963,6 +975,17 @@ fn path_performance() {
         seconds,
         seconds * 1000.0 / f64::from(samples)
     );
+}
+
+#[test]
+fn admission_refuses_cpu_options_without_opening_a_device() {
+    let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    let mut input = request(16);
+    input.integrator = solidcraft_render::job::Integrator::Raytrace;
+    assert_eq!(admission(&scene, &input, JobOptions::default()).unwrap_err().code, ErrorCode::InvalidRequest);
+    input.integrator = solidcraft_render::job::Integrator::Raster;
+    input.raytrace = Some(solidcraft_render::job::RaytraceOptions::default());
+    assert_eq!(admission(&scene, &input, JobOptions::default()).unwrap_err().code, ErrorCode::InvalidRequest);
 }
 
 #[test]
@@ -1712,6 +1735,10 @@ fn texture_fixture(frame: solidcraft_render::job::textures::PlanarFrame) -> Arc<
             normal_strength: 0.75,
             base_color: Some(map(&[128, 64, 255, 0, 255, 0, 32, 255, 64, 128, 192, 0, 0, 255, 128, 255], MapRole::BaseColor)),
             normal: Some(map(&[128, 128, 255, 0, 192, 128, 224, 255, 128, 192, 224, 0, 64, 96, 224, 255], MapRole::NormalOpenGl)),
+            roughness: None,
+            metallic: None,
+            base_color_mode: Default::default(),
+            flip_v: false,
         }])
         .unwrap(),
     )
@@ -2748,6 +2775,435 @@ fn medium_failures_are_tolerated_only_when_rare() {
     assert!(medium_failures_tolerated(530, 1920 * 1080 * 256));
     assert!(!medium_failures_tolerated(531, 1920 * 1080 * 256));
     assert!(!medium_failures_tolerated(1_u64 << 32, 1_u64 << 32));
+}
+
+#[test]
+fn identical_maps_pack_once_for_multiple_gpu_bodies() {
+    use solidcraft_render::job::textures::{PlanarFrame, RuntimeTextures};
+    let fixture = texture_fixture(PlanarFrame { origin: [0.0; 3], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0] });
+    let first = fixture.bindings()[0].clone();
+    let mut second = first.clone();
+    second.body_index = 1;
+    second.body_name = "Second body".into();
+    let input = RuntimeTextures::new(vec![first, second]).unwrap();
+    let bytes = textures::flatten(Some(&input), 2, Vec3::ZERO, &CancelToken::default()).unwrap();
+    let word = |i: usize| u32::from_le_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap()) as usize;
+    let a = word(5);
+    let b = word(6);
+    assert_ne!(a, b, "bindings keep separate coordinate records");
+    assert_eq!(word(a + 3), word(b + 3), "one color payload");
+    assert_eq!(word(a + 12), word(b + 12), "one normal payload");
+}
+
+#[test]
+fn gpu_scalar_maps_match_linear_reference_without_touching_ior() {
+    use image::ImageEncoder;
+    use solidcraft_render::{
+        job::textures::{PlanarFrame, RuntimeTextures, TextureMap},
+        texture_input::MapRole,
+    };
+    let Some(executor) = executor() else { return };
+    let context = &executor.context;
+    let scalar = |value: u8, role| {
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes).write_image(&[value, value, value, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+        TextureMap::new(bytes, role).unwrap()
+    };
+    let fixture = texture_fixture(PlanarFrame { origin: [0.0; 3], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0] });
+    let mut binding = fixture.bindings()[0].clone();
+    binding.base_color = None;
+    binding.normal = None;
+    binding.flip_v = true;
+    binding.roughness = Some(scalar(192, MapRole::Roughness));
+    binding.metallic = Some(scalar(64, MapRole::Metallic));
+    let source = Arc::new(RuntimeTextures::new(vec![binding]).unwrap());
+    let shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+    let layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&context.layout)],
+        immediate_size: 0,
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        module: &shader,
+        entry_point: Some("texture_scalar_reference"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let mut input = request(2);
+    input.textures = Some(source);
+    // An explicit non-default optical fixture catches accidental IOR rewrites.
+    let original = OpaqueSurface::new(Vec3::new(0.2, 0.4, 0.6), 0.6, 0.2, 1.7).unwrap();
+    let mut task = Task::new(context.clone(), sphere(original), input, JobOptions::default(), CancelToken::default()).unwrap();
+    let mut params = vec![0; 32];
+    scene::vector(&mut params, Vec3::ZERO, 0.0);
+    scene::vector(&mut params, Vec3::ZERO, 0.0);
+    scene::vector(&mut params, Vec3::Z, 0.0);
+    scene::vector(&mut params, Vec3::Z, 0.0);
+    context.queue.write_buffer(&task.uniform, 0, &params);
+    let mut encoder = context.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &task.bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    context.queue.submit([encoder.finish()]);
+    task.sample = 1;
+    let actual = task.read_linear().unwrap();
+    for (a, b) in actual[0].iter().zip([64.0 / 255.0, 192.0 / 255.0, original.dielectric_ior()]) {
+        assert!((f64::from(*a) - b).abs() < 2e-6, "scalar map {actual:?}");
+    }
+}
+
+#[test]
+fn production_envelope_is_device_bounded_and_never_silently_resized() {
+    let mut image = request(1);
+    image.width = 3840;
+    image.height = 2160;
+    let source = sphere(white());
+    let accepted = admission(&source, &image, JobOptions::default()).unwrap();
+    assert!(accepted.estimated_total_bytes < GPU_PATH_LIMITS.max_scratch_bytes);
+    assert_eq!(descriptor().unwrap().fit(3840, 2160), Some((3840, 2160)));
+    image.width = 8193;
+    assert!(admission(&source, &image, JobOptions::default()).is_err());
+    image.width = 8192;
+    image.height = 8192;
+    assert!(admission(&source, &image, JobOptions::default()).is_err());
+    let mut supported = wgpu::Limits::downlevel_defaults();
+    supported.max_storage_buffers_per_shader_stage = 8;
+    supported.max_storage_buffer_binding_size = 2 * 1024 * 1024 * 1024;
+    supported.max_buffer_size = 2 * 1024 * 1024 * 1024;
+    let limits = device_limits(supported.clone()).unwrap();
+    assert_eq!(limits.max_storage_buffer_binding_size, 1024 * 1024 * 1024);
+    assert!(limits.max_buffer_size <= supported.max_buffer_size);
+}
+
+#[test]
+fn disjoint_glass_count_does_not_relax_closed_topology_or_overlap_validation() {
+    let template = sphere_grid(white(), 8, 16);
+    let mut source = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    for i in 0..solidcraft_render::job::MAX_GPU_DIELECTRICS {
+        let mut body = template.meshes[0].clone();
+        body.name = format!("separate glass {i}");
+        for p in &mut Arc::make_mut(&mut body.mesh).positions {
+            p.x += i as f64 * 3.0;
+        }
+        body.transmission = Some(clear_glass());
+        source.bounds = source.bounds.union(&body.mesh.bounds());
+        source.meshes.push(body);
+    }
+    assert!(scene::flatten(&source, Vec3::ZERO, &CancelToken::default()).is_ok());
+    source.meshes.push(source.meshes[0].clone());
+    assert!(scene::flatten(&source, Vec3::ZERO, &CancelToken::default()).is_err());
+}
+
+#[test]
+fn display_identity_matches_the_legacy_response_and_spatial_filters_ignore_chunking() {
+    use solidcraft_render::job::finishing::{Backdrop, BackdropMode, Finishing};
+    let cancel = CancelToken::default();
+    let input: Vec<[f32; 4]> = (0..91)
+        .map(|i| {
+            [
+                i as f32 * 0.15,
+                0.07,
+                0.8,
+                if i % 3 == 0 {
+                    0.0
+                } else if i % 3 == 1 {
+                    0.5
+                } else {
+                    1.0
+                },
+            ]
+        })
+        .collect();
+    let display = Display {
+        finishing: Finishing::default(),
+        backdrop: None,
+        width: 13,
+        height: 7,
+        exposure: 1.3,
+        tone_map: ToneMap::Reinhard,
+        background: [0.02, 0.05, 0.12],
+        transparent: false,
+    };
+    let mut reference = Vec::new();
+    for pixel in &input {
+        let alpha = f64::from(pixel[3]);
+        for (radiance, background) in pixel.iter().take(3).zip(display.background) {
+            let c = if alpha > 0.0 { f64::from(*radiance) * display.exposure / alpha } else { 0.0 };
+            let value = display.tone_map.map(c) * alpha + background * (1.0 - alpha);
+            let encoded = if value <= 0.0031308 { value * 12.92 } else { 1.055 * value.powf(1.0 / 2.4) - 0.055 };
+            reference.push((encoded.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+        reference.push(255);
+    }
+    let mut neutral = vec![0; input.len() * 4];
+    display.encode(&input, &mut neutral, &cancel).unwrap();
+    assert_eq!(neutral, reference);
+    let changed = Display {
+        finishing: Finishing { rgb_gain: [1.2, 0.9, 0.7], contrast: 1.2, saturation: 0.3, vignette: 0.45, ..Default::default() },
+        backdrop: Some(Backdrop { mode: BackdropMode::Radial, ..Default::default() }),
+        ..display
+    };
+    let mut all = vec![0; input.len() * 4];
+    changed.encode(&input, &mut all, &cancel).unwrap();
+    for chunk in [1, 5, 13, 90] {
+        let mut split = vec![0; all.len()];
+        for (index, (pixels, output)) in input.chunks(chunk).zip(split.chunks_mut(chunk * 4)).enumerate() {
+            changed.encode_at(pixels, output, &cancel, index * chunk).unwrap();
+        }
+        assert_eq!(all, split, "chunk {chunk} must preserve absolute vignette/backdrop position");
+    }
+    assert_ne!(all, neutral);
+}
+
+fn complete_linear_fixture(context: Arc<Context>, options: JobOptions) -> (Vec<u8>, Option<Vec<u8>>) {
+    // Use the public environment-lighting contract, not the test-only numerical
+    // furnace path. Primary misses remain transparent black in the linear master.
+    let options = JobOptions {
+        lighting: Some(solidcraft_render::job::StudioLighting { environment: [8.0; 3], sun: None, area_lights: Default::default() }),
+        ..options
+    };
+    let mut task = Task::new(context, sphere(white()), request(16), options, CancelToken::default()).unwrap();
+    for _ in 0..5000 {
+        match task.step(16384).unwrap() {
+            TaskPoll::Pending(_) => {}
+            TaskPoll::Complete(png) => {
+                let exr = task.take_linear_exr();
+                assert!(task.take_linear_exr().is_none(), "linear master moves exactly once");
+                return (png, exr);
+            }
+        }
+    }
+    panic!("bounded linear-output fixture did not finish")
+}
+#[test]
+fn gpu_raw_master_keeps_hdr_samples_before_denoise_gain_tone_and_camera_backdrop() {
+    use solidcraft_render::job::finishing::{Backdrop, Finishing};
+    let Some(executor) = executor() else {
+        return;
+    };
+    let options = JobOptions { samples: 16, seed: 17, max_depth: 3, ..Default::default() };
+    let (png, none) = complete_linear_fixture(executor.context.clone(), options);
+    assert!(none.is_none());
+    let (retained, raw) = complete_linear_fixture(executor.context.clone(), JobOptions { linear_exr: true, ..options });
+    assert_eq!(png, retained, "opting into raw retention does not change display pixels");
+    let raw = raw.unwrap();
+    let (filtered, other) = complete_linear_fixture(
+        executor.context.clone(),
+        JobOptions {
+            linear_exr: true,
+            denoise: true,
+            exposure_ev: -2.0,
+            tone_map: ToneMap::AcesFitted,
+            finishing: Finishing { rgb_gain: [1.4, 0.8, 0.6], saturation: 0.2, vignette: 0.4, ..Default::default() },
+            backdrop: Some(Backdrop::default()),
+            ..options
+        },
+    );
+    assert_eq!(raw, other.unwrap(), "raw sample values precede every presentation adjustment");
+    assert_ne!(png, filtered);
+    // Parse attributes/offsets independently to check real HDR data > display white.
+    let mut cursor = 8;
+    while raw[cursor] != 0 {
+        while raw[cursor] != 0 {
+            cursor += 1;
+        }
+        cursor += 1;
+        while raw[cursor] != 0 {
+            cursor += 1;
+        }
+        cursor += 1;
+        let size = i32::from_le_bytes(raw[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 4 + size;
+    }
+    cursor += 1;
+    let mut maximum = 0_f32;
+    for y in 0..16 {
+        let offset = u64::from_le_bytes(raw[cursor + y * 8..cursor + y * 8 + 8].try_into().unwrap()) as usize;
+        for bytes in raw[offset + 8 + 64..offset + 8 + 256].as_chunks::<4>().0 {
+            maximum = maximum.max(f32::from_le_bytes(*bytes));
+        }
+    }
+    assert!(maximum > 2.0, "raw highlight radiance must not be clipped or reconstructed from PNG: {maximum}");
+    // Optional fresh external evidence folder for an independent OpenEXR reader.
+    if let Some(out) = std::env::var_os("SOLIDCRAFT_FINISHING_EVIDENCE_DIR") {
+        let out = std::path::PathBuf::from(out);
+        assert!(out.is_absolute() && !out.exists());
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("raw-radiance.exr"), &raw).unwrap();
+        std::fs::write(out.join("neutral.png"), &png).unwrap();
+        std::fs::write(out.join("filtered.png"), &filtered).unwrap();
+        std::fs::write(
+            out.join("expected.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"width":16,"height":16,
+            "maximum_raw_rgb":maximum,"raw_identical_before_after_finishing":true,"png_neutral_identity":true,
+            "rgba_type":"FLOAT","encoding":"scene-linear sRGB/D65","alpha":"coverage-premultiplied"}))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn gpu_host_retains_linear_companion_under_the_same_exact_frame_lease() {
+    use solidcraft_render::job::{JobId, Phase};
+    let Some(executor) = executor() else {
+        return;
+    };
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let id = JobId { session: 999, serial: 1, generation: 42 };
+    let source = sphere(white());
+    let req = request(8);
+    let base = host.admit(&source, &req, JobOptions::default()).unwrap();
+    let options = JobOptions { samples: 4, linear_exr: true, ..Default::default() };
+    let extra = host.admit(&source, &req, options).unwrap();
+    assert_eq!(extra.estimated_total_bytes - base.estimated_total_bytes, solidcraft_render::job::linear_exr::encoded_limit(8, 8).unwrap());
+    let handle = host.submit_with_options(id, 7, source.clone(), req.clone(), options).unwrap();
+    let status = handle.wait_timeout(std::time::Duration::from_secs(30)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Completed, "{:?}", status.error);
+    let frame = handle.frame().unwrap().unwrap();
+    let bytes = frame.linear_exr().unwrap();
+    assert_eq!(frame.linear_master_info().unwrap().bytes, bytes.len() as u64);
+    assert_eq!(status.linear_master.unwrap().sha256, frame.linear_master_info().unwrap().sha256);
+    assert!(host.admitted_bytes() >= frame.png().len() as u64 + bytes.len() as u64);
+    drop(handle);
+    assert!(host.admitted_bytes() > 0);
+    drop(frame);
+    // Cancellation/completion notification and worker-owned resource destruction
+    // are distinct events. Require the actual reservation to drain, without
+    // forcing premature release or changing the host's asynchronous contract.
+    let released_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while host.admitted_bytes() != 0 {
+        assert!(std::time::Instant::now() < released_by, "worker did not release its completed/cancelled reservation");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(host.admitted_bytes(), 0);
+    let handle = host.submit_with_options(JobId { serial: 2, ..id }, 7, source, req, JobOptions { samples: 4096, ..options }).unwrap();
+    handle.cancel().unwrap();
+    let status = handle.wait_timeout(std::time::Duration::from_secs(30)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Cancelled);
+    assert!(handle.frame().unwrap().is_none());
+    drop(handle);
+    // Cancellation/completion notification and worker-owned resource destruction
+    // are distinct events. Require the actual reservation to drain, without
+    // forcing premature release or changing the host's asynchronous contract.
+    let released_by = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while host.admitted_bytes() != 0 {
+        assert!(std::time::Instant::now() < released_by, "worker did not release its completed/cancelled reservation");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
+fn engine_exports_raw_master_from_the_exact_completed_job_without_png_conversion() {
+    use serde_json::json;
+    use solidcraft_render::job::{JobId, Phase};
+    let Some(executor) = executor() else {
+        return;
+    };
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let mut s = solidcraft_engine::Session::default();
+    s.register_render_job_host(host.clone()).unwrap();
+    s.execute("solid.box", &json!({"length":2,"width":2,"height":1,"body_name":"Original output fixture"})).unwrap();
+    let before = s.doc.to_json();
+    let p = json!({"progressive":true,"samples":4,"linear_exr":true,"settings":{"width":12,"height":8},
+        "finishing":{"saturation":0.4},"backdrop":{"mode":"horizontal"}});
+    let checked = s.execute("render.preflight", &p).unwrap();
+    assert_eq!(checked["options"]["linear_exr"], true);
+    let started = s.execute("render.start", &p).unwrap();
+    let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
+    let handle = s.render_job_handle(id).unwrap();
+    assert_eq!(handle.wait_timeout(std::time::Duration::from_secs(30)).unwrap().progress.phase, Phase::Completed);
+    let frame = handle.frame().unwrap().unwrap();
+    let root = std::env::temp_dir().join(format!(
+        "solidcraft-linear-export-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("raw.exr");
+    let png = root.join("display.png");
+    let output = s.execute("render.export", &json!({"job":id,"path":path,"format":"exr"})).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), frame.linear_exr().unwrap());
+    assert_eq!(output["linear_master"]["sha256"], frame.linear_master_info().unwrap().sha256);
+    assert_eq!(output["encoding"], "scene_linear_srgb_d65");
+    assert_eq!(output["alpha"], "coverage_premultiplied");
+    assert_eq!(output["linear_master"]["encoding"], output["encoding"]);
+    s.execute("render.export", &json!({"job":id,"path":png})).unwrap();
+    assert_eq!(std::fs::read(&png).unwrap(), frame.png());
+    assert!(s.execute("render.export", &json!({"job":id,"path":path,"format":"exr"})).is_err());
+    assert!(s.execute("render.export", &json!({"job":id,"path":path,"format":"png","overwrite":true})).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), frame.linear_exr().unwrap());
+    assert!(s.execute("render.export", &json!({"job":JobId{session:id.session+1,..id},"path":root.join("wrong.exr"),"format":"exr"})).is_err());
+    assert!(!root.join("wrong.exr").exists());
+    assert_eq!(s.doc.to_json(), before);
+    drop(s);
+    drop(handle);
+    assert!(host.admitted_bytes() > 0);
+    drop(frame);
+    assert_eq!(host.admitted_bytes(), 0);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn gpu_bloom_changes_display_only_with_explicit_scratch_and_opaque_contract() {
+    use solidcraft_render::job::{bloom::Bloom, finishing::Finishing};
+    let Some(executor) = executor() else { return };
+    let options = JobOptions { samples: 16, seed: 17, max_depth: 3, linear_exr: true, ..Default::default() };
+    let (png, raw) = complete_linear_fixture(executor.context.clone(), options);
+    let bloom = Bloom { strength: 0.4, threshold: 1.0, radius: 2 };
+    let modified = JobOptions { finishing: Finishing { bloom: Some(bloom), ..Default::default() }, ..options };
+    let a = admission(&sphere(white()), &request(16), options).unwrap();
+    let b = admission(&sphere(white()), &request(16), modified).unwrap();
+    assert_eq!(b.estimated_total_bytes - a.estimated_total_bytes, 16 * 16 * 24);
+    assert_eq!(b.pixel_scratch_bytes - a.pixel_scratch_bytes, 16 * 16 * 24);
+    let (glowing, untouched) = complete_linear_fixture(executor.context.clone(), modified);
+    assert_eq!(raw, untouched, "bloom cannot alter the retained linear master or original estimator");
+    assert_ne!(png, glowing);
+    let (neutral, same) = complete_linear_fixture(
+        executor.context.clone(),
+        JobOptions { finishing: Finishing { bloom: Some(Bloom { strength: 0.0, ..bloom }), ..Default::default() }, ..options },
+    );
+    assert_eq!(png, neutral);
+    assert_eq!(raw, same);
+    let transparent = ImageRequest { transparent_background: true, ..request(16) };
+    assert!(executor.admit(&sphere(white()), &transparent, modified).is_err());
+    let decoded = image::load_from_memory(&glowing).unwrap().to_rgba8();
+    assert!(decoded.pixels().all(|p| p.0[3] == 255));
+}
+
+#[path = "adaptive_tests.rs"]
+mod adaptive_tests;
+
+#[path = "regrade_tests.rs"]
+mod regrade_tests;
+#[path = "volume_tests.rs"]
+mod volume_tests;
+
+#[path = "resource_pack_tests.rs"]
+mod resource_pack_tests;
+
+#[path = "optical_media_tests.rs"]
+mod optical_media_tests;
+
+#[path = "effects_tests.rs"]
+mod effects_tests;
+
+#[test]
+fn display_bloom_slices_refuse_invalid_ranges_without_panicking() {
+    let pixels = [[1.0_f32, 2.0, 3.0]; 3];
+    assert_eq!(bloom_chunk(Some(&pixels), 1, 2).unwrap().unwrap(), &pixels[1..3]);
+    assert!(bloom_chunk(Some(&pixels), 3, 0).unwrap().unwrap().is_empty());
+    for (offset, count) in [(0, 4), (2, 2), (4, 0), (usize::MAX, 1), (1, usize::MAX)] {
+        let result = std::panic::catch_unwind(|| bloom_chunk(Some(&pixels), offset, count));
+        assert!(result.expect("invalid retained image range must not panic").is_err());
+    }
+    assert!(bloom_chunk(None, 0, 3).unwrap().is_none());
 }
 
 /// Cancellation in fallible HDR preparation must not drop three wgpu scopes in

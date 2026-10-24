@@ -35,7 +35,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     CommandSpec::new("appearance.library", "Appearance Library", appearance_library).icon("library")
         .noundo()
-        .params("→ 20 legacy scalar appearances and 40 starter recipes with IDs, categories, provenance, requirements and availability; six starter glass recipes are unavailable"),
+        .params("→ 20 legacy scalar appearances, six opaque PBR finishes and 40 starter recipes with IDs, categories, provenance, requirements and availability; six starter glass recipes are unavailable"),
     CommandSpec::new("appearance.list", "List Appearances", appearance_list).icon("list")
         .noundo()
         .params("body?: name → assigned appearances; with body, its resolved look and its faces' (face index, look)"),
@@ -613,6 +613,12 @@ fn appearance_library(_s: &mut Session, _p: &Value) -> Result<Value> {
             json!({"name": n, "category": category, "color": format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]), "opacity": o})
         })
         .collect();
+    list.extend(solidcraft_doc::appearance::OPAQUE_FINISHES.iter().filter_map(|(name, ..)| {
+        let look = solidcraft_doc::appearance::library(name)?;
+        let mut value = look_json(&look);
+        value["category"] = json!(name.split(" - ").next().unwrap_or(name));
+        Some(value)
+    }));
     for preset in &solidcraft_doc::appearance_pack::STARTER_PACK {
         let c = preset.preview_color();
         let pbr = preset.opaque_look().ok().and_then(|look| look.pbr);

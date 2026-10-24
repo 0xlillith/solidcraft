@@ -95,6 +95,7 @@ mod look_at_tests;
 #[cfg(test)]
 mod manage_dialogs_tests;
 mod material_card_review;
+mod material_editor;
 
 #[cfg(test)]
 mod measurement_ui_tests;
@@ -964,6 +965,9 @@ impl SolveApp {
             self.set_status(format!("{label}: {why}"), true);
             return;
         }
+        if render_workspace::start_interactive(self, id) {
+            return;
+        }
         workspace::select_command_tab(self, id);
         // Move a selected assembly placement the same way as its Browser menu, retaining
         // the exact instance path and the grounding/rigid-group restrictions.
@@ -1344,6 +1348,10 @@ impl SolveApp {
     }
 
     pub fn fit_view(&mut self) {
+        if render_workspace::result_active(self) {
+            render_workspace::fit_result(self);
+            return;
+        }
         if dialogs_sheet::flat_active(self) {
             self.flat_view.fitted = false;
             return;
@@ -1450,6 +1458,10 @@ impl SolveApp {
 
     /// Animated view changes for the axis view and navigation bar.
     pub fn animate_view(&mut self, v: &str) {
+        if render_workspace::result_active(self) && matches!(v, "fit" | "home") {
+            render_workspace::fit_result(self);
+            return;
+        }
         // The flat pattern is a 2D view: Fit and Home frame it, and the Design camera stays put.
         if dialogs_sheet::flat_active(self) && matches!(v, "fit" | "home") {
             self.flat_view.fitted = false;

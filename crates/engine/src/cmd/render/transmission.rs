@@ -11,10 +11,33 @@ use solidcraft_render::{
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct Raytrace {
+    #[serde(deserialize_with = "bounded_dielectrics")]
     pub dielectrics: Vec<Override>,
     pub clear_coats: Vec<super::clear_coat::Override>,
     pub textures: Vec<super::textures::Override>,
 }
+fn bounded_dielectrics<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<Override>, D::Error> {
+    struct Inputs;
+    impl<'de> serde::de::Visitor<'de> for Inputs {
+        type Value = Vec<Override>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("at most 32 disjoint dielectric body overrides")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error> {
+            let mut result = Vec::new();
+            while let Some(value) = seq.next_element()? {
+                if result.len() >= solidcraft_render::job::MAX_GPU_DIELECTRICS {
+                    return Err(serde::de::Error::custom("too many GPU dielectric overrides"));
+                }
+                result.try_reserve(1).map_err(serde::de::Error::custom)?;
+                result.push(value);
+            }
+            Ok(result)
+        }
+    }
+    d.deserialize_seq(Inputs)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Override {
@@ -26,6 +49,8 @@ pub(super) struct Override {
     thickness_mm: f64,
     #[serde(default)]
     shadow_transmission: Option<bool>,
+    #[serde(default)]
+    subsurface: Option<solidcraft_render::transmission::subsurface::Subsurface>,
 }
 #[derive(Deserialize)]
 #[serde(try_from = "String")]
@@ -46,8 +71,8 @@ impl TryFrom<String> for Boundary {
     }
 }
 pub(super) fn apply(scene: &mut ProductScene, overrides: &[Override], command: &str) -> Result<()> {
-    if overrides.len() > 8 {
-        return Err(bad(command, "at most eight runtime dielectric overrides are supported"));
+    if overrides.len() > solidcraft_render::job::MAX_GPU_DIELECTRICS {
+        return Err(bad(command, "at most 32 runtime dielectric overrides are supported"));
     }
     let mut ordinals = std::collections::BTreeSet::new();
     for input in overrides {
@@ -69,6 +94,9 @@ pub(super) fn apply(scene: &mut ProductScene, overrides: &[Override], command: &
         let mut transmission = Transmission::new(Vec3::new(r, g, b), thickness).map_err(|e| bad(command, e.to_string()))?;
         if let Some(enabled) = input.shadow_transmission {
             transmission = transmission.with_shadow_transmission(enabled);
+        }
+        if let Some(subsurface) = input.subsurface {
+            transmission = transmission.with_subsurface(subsurface).map_err(|e| bad(command, e.to_string()))?;
         }
         OpaqueSurface::new(Vec3::ZERO, 0.0, 0.5, input.ior).map_err(|e| bad(command, e.to_string()))?;
         let body = scene
@@ -180,7 +208,7 @@ mod tests {
             };
             assert!(rejected, "{key}");
         }
-        for count in [2, 9] {
+        for count in [2, solidcraft_render::job::MAX_GPU_DIELECTRICS + 1] {
             let overrides = serde_json::from_value::<Vec<Override>>(json!(vec![input(); count])).unwrap();
             assert!(apply(&mut crate::product_scene::extract(&s).unwrap(), &overrides, "render.start").is_err());
         }

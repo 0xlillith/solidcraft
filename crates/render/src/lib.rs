@@ -17,9 +17,13 @@ pub mod lighting;
 pub mod mapping;
 mod product;
 mod raster;
+#[cfg(feature = "raytrace-cpu")]
+pub mod raytrace;
 mod scene;
+pub mod stage;
 pub mod studio;
 pub mod surface;
+pub mod surface_patterns;
 pub mod texture_input;
 pub mod texture_interpolation;
 pub mod texture_lod;

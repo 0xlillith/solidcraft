@@ -4,7 +4,7 @@ use crate::geom::Aabb3;
 use crate::render::{FaceAppearance, ProductMesh, ProductScene};
 use crate::{EngineError, Result, Session};
 
-pub const MAX_PRODUCT_BODIES: usize = 16_384;
+pub const MAX_PRODUCT_BODIES: usize = solidcraft_render::job::MAX_CPU_BODIES;
 
 /// Extract authoritative, visible geometry. Does not settle a live gesture implicitly.
 /// `render.scene` is the explicit model-reading command for that boundary.
@@ -16,7 +16,7 @@ pub fn extract(s: &Session) -> Result<ProductScene> {
     let mut scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
     for body in world.bodies.iter().filter(|b| s.body_visible(&b.name)) {
         if scene.meshes.len() >= MAX_PRODUCT_BODIES {
-            return Err(EngineError::Other("render scene exceeds 16384 visible bodies".into()));
+            return Err(EngineError::Other("render scene exceeds 262144 visible bodies".into()));
         }
         let mesh = body.mesh();
         scene.bounds = scene.bounds.union(&mesh.bounds());
@@ -37,6 +37,7 @@ pub fn extract(s: &Session) -> Result<ProductScene> {
             })
             .collect::<Result<Vec<_>>>()?;
         let surface = s.doc.model_body_look(body).map(|l| l.opaque_surface()).transpose().map_err(|e| EngineError::Other(e.to_string()))?.flatten();
+        scene.meshes.try_reserve(1).map_err(|_| EngineError::Other("could not reserve captured render bodies".into()))?;
         scene.meshes.push(ProductMesh {
             name: body.name.clone(),
             mesh,

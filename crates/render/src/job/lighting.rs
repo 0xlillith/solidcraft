@@ -1,5 +1,5 @@
 //! Runtime rectangular emitters and constant environment radiance. Coordinates are
-//! world-space millimetres; radiance is linear RGB. No saved-document contract.
+//! world-space millimetres; radiance is linear RGB. Saved setups reuse these bounds.
 use super::{ErrorCode, JobError, Result};
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::Vec3;
@@ -28,7 +28,7 @@ impl AreaLight {
         let v = vector(self.v);
         let ul = u.len();
         let vl = v.len();
-        if self.center.into_iter().any(|x| !x.is_finite() || x.abs() > 1e12)
+        if self.center.into_iter().any(|x| !x.is_finite() || x.abs() > 1e9)
             || self.u.into_iter().chain(self.v).any(|x| !x.is_finite())
             || !(1e-4..=1e6).contains(&ul)
             || !(1e-4..=1e6).contains(&vl)

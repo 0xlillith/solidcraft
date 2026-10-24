@@ -58,12 +58,17 @@ may not be detected. Edge counts and signed volume are not a proof of embedding.
 The hole, inward-winding, disconnected-shell, nested/overlapping bounds and
 camera-inside refusal paths have negative fixtures. GPU preflight reports
 `dielectric_boundaries: ["thin_sheet","closed_box","closed_mesh"]`; CPU preflight
-reports an empty list. The generic Refraction flag alone does not describe this policy.
+reports `["thin_sheet","closed_box"]` when explicit runtime dielectric overrides
+are present, and an empty list otherwise. CPU certification and finite-depth
+transport have the stricter [bounded CPU dielectric preview](render-raytrace-dielectrics.md)
+contract. The generic Refraction flag alone does not describe this policy.
 
-CPU and raster previews retain independently saved scalar opacity. CPU requests
-reject runtime dielectric/lens controls. Scalar alpha is never inferred to mean
-physical glass. Old opaque PBR appearances still require opacity one. Unknown keys,
-nonfinite inputs, invalid ordinals and out-of-range values are errors.
+Raster previews retain independently saved scalar opacity. CPU raytrace accepts
+only the bounded dielectric overrides described above; lens controls remain GPU-only.
+CPU raytrace still requires surface opacity one, including for dielectric bodies.
+Scalar alpha is never inferred to mean physical glass. Old opaque PBR appearances
+still require opacity one. Unknown keys, nonfinite inputs, invalid ordinals and
+out-of-range values are errors.
 
 ## Transport and validation
 
@@ -89,5 +94,5 @@ universal exact watertightness. The shared-edge regression at pixel171, sample35
 seed1948 remains covered by the furnace. The general coordinate-transform idea is
 from [Woop, Benthin and Wald (2013)](https://jcgt.org/published/0002/01/05/paper.pdf);
 no external shader code was copied. See [thin-lens notes](render-thin-lens.md) for
-CPU draft convention differences. The production environment is still the studio;
-a uniform environment exists only in numerical/evidence tests, not as HDRI support.
+CPU draft convention differences. The default lighting remains the legacy studio; explicit area, sun, sky and bounded
+Radiance HDR inputs are described in [environment lighting](render-environment.md).

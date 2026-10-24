@@ -2,15 +2,59 @@
 
 `material.properties.validate {card}` checks a caller-supplied candidate record,
 without assigning it, saving it in the design, reading files, fetching sources or
-changing history, selection, camera or live geometry. This is phase 1 of #923/#922,
-building towards #785. The initial validator remains read-only. The design-owned persistence
-section below extends `material.create/edit` without changing assigned density or
-optical appearance.
+changing history, selection, camera or live geometry. `material.create/edit` can
+also keep a validated card in a design-owned physical material. Saved cards use
+the same schema and validator; density used for mass and visual appearance remain
+separate. This implements the persistence slice of #1060 under #923/#922/#785.
 
 Validation means numerical and structural consistency. It does not authenticate
 sources, approve redistribution, certify design values, provide a solver or enable
 advanced rendering. The result reports `analysis_solver_available: false` and
 `rendering_properties_available: false`. Missing properties remain unknown.
+
+## Design-owned cards
+
+| Command | Engineering-card behavior |
+|---|---|
+| `material.create` | Accepts optional `physical_card`; omitted or `null` leaves engineering properties unspecified. `density_g_cm3` remains required. |
+| `material.edit` | An omitted `physical_card` retains the complete saved card; an object replaces it atomically; `null` clears it. |
+| `material.inspect` | Takes `material: name` and returns one built-in or design-owned material, its density/default look and any saved card, validation and density comparison. Read-only. |
+| `material.list` | Retains the 14 built-in density rows and includes engineering details for design-owned materials that have a card. Read-only. |
+| `material.properties.validate` | Reviews a supplied candidate without saving or assigning it. |
+
+The `physical_card` value is the schema-1 card object described below. Its typed
+wrapper revalidates input during commands and deserialization. Invalid data refuses
+before changes to the material name, body/configuration references, assigned
+density, appearance or undo history. Renaming, optical edits and density-only
+edits retain an omitted card. Undo/redo, native save and cold reopening preserve
+source claims, per-property conditions and SI values.
+
+Mass continues to use the material's `density_g_cm3`, including the existing
+generic built-ins. A card density in `kg_m3` never changes assigned density
+implicitly. When both exist, inspection reports their values in kg/m³, their
+absolute relative difference divided by the larger value, and whether that
+difference is at most `1e-9`. This is a consistency report, not a decision about
+which density applies. Appearance/PBR changes do not change a card, and a card
+does not supply optical properties or mechanical axes for a body.
+
+New files declare the `physical-material-cards` pending format change. Older
+designs without a card need no data migration and retain unspecified engineering
+properties. The last released reader refuses the newer format; a pending build
+without this descriptor refuses the unknown change. No historical format number
+or previous migration is repurposed.
+
+Engineering constants such as elastic moduli can exceed the geometry coordinate
+bound. The separate SI admission path applies only to a root
+`user_materials[].physical_card`; similarly named fields elsewhere do not bypass
+geometry checks. Normal loading and commands both bound user-defined materials
+to 1,000, in addition to the card limits below. Existing document metadata keeps
+its separate handling.
+
+The portable `solidcraft-library/2` catalog preserves physical cards, their sources
+and conditions, and independent PBR default appearances. The scalar v1 reader remains
+supported; explicit v1 export refuses any card or PBR loss before writing, including
+empty cards whose designation/source information matters. See [local material
+libraries](book/src/dev/local-libraries.md) for copy, collision, file and size contracts.
 
 ## Contract (standalone card schema 1)
 
@@ -30,9 +74,45 @@ still apply. The window does not read files, fetch references, assign properties
 replace density, modify history or save the candidate. Close discards it. Calling
 the engine's JSON command still returns its report without opening a dialog.
 
-This main-based review unit is independent of assigned-card persistence, local
-file import and the design-owned inspector follow-up in #1094. No dataset or
-rendering capability is supplied by reviewing a candidate.
+Saved cards can be reviewed and edited in the existing **Physical Material**
+assignment panel. Select a design-owned material and expand **Properties** to
+review it, or choose **Edit** to edit its fields. **New** starts a blank material;
+**Duplicate** copies the selected built-in or design-owned material into an
+independent user material. Built-ins remain immutable. Assigned density is shown
+separately in g/cm³ and controls mass; card density is in kg/m³ and does not change
+that assigned density.
+
+The graphical draft has optional engineering properties, all nine property types,
+isotropic and orthotropic elasticity, material-local axes, source metadata and
+per-property temperature, moisture, strain rate and state. Numeric fields show
+SI units and accept scientific notation. Missing properties and empty optional
+conditions remain unknown. Adding a property leaves its required values blank;
+Save refuses incomplete or invalid constants rather than creating measured data.
+Source IDs remain stable in the form; source titles, type, license and reference
+are editable. Sources still in use cannot be removed. Changing elasticity model
+clears its numeric draft fields and requires explicit values for the new model.
+
+**Save** runs one `material.create` or `material.edit` command and keeps that change
+with normal undo/redo, without assigning the material to any selected body.
+**Cancel** closes the panel and discards only an unsaved draft; it never rolls back
+a previous Save. **Discard** leaves the panel open and drops the current draft.
+While a draft is open, footer OK and assignment through Enter are blocked. After
+saving or discarding, OK retains the existing explicit body-assignment behavior.
+
+Edits omit unchanged fields, preserving every saved source, condition, anisotropic
+constant and visual appearance, including PBR. An unchanged Save creates no undo
+entry. A changed material is refused if another command altered it while the
+draft was open. Duplicates copy optical scalar/PBR values; their owned appearance
+name follows the new material name. No new window, JSON editor, persistent format,
+solver or measured material dataset is introduced by the graphical form.
+
+Numerical validation is visible before Save and the engine validates again at
+commit. Source/license claims remain unverified. Runtime checks and real UI
+captures are required in the integration gate; this documentation does not imply
+that a numerical card is engineering certification.
+
+Local file import remains a separate operation. No dataset or rendering capability
+is supplied by reviewing or saving a card.
 
 A card has `schema_version: 1`, `designation`, `family` (`wood`, `polymer`, `glass`,
 `metal`, `other`), `sources` and `properties`. Source IDs are exact, case-sensitive
@@ -142,8 +222,8 @@ still required. No assigned mass, saved material or appearance changes.
 
 ## Next phases and references
 
-Persistence/library integration needs a separately reviewed document migration,
-atomic edits, undo/redo and offline reopening, coordinated with #863. Curves,
+Portable engineering-card catalog v2 copies the validated records above. Scalar v1
+remains a strict compatibility format. Curves,
 uncertainty, hardness scales, viscoelasticity and failure criteria remain later work.
 Visual PBR/texture/environment consumption uses the renderer contract requested
 in #813, with #909/#837 input utilities; accepting physical data advertises none

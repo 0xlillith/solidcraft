@@ -20,7 +20,13 @@ fn captured_hdr_requires_explicit_color_policy_and_prepares_without_clipping() {
     let wrong = hdr("PRIMARIES=0.67 0.33 0.21 0.71 0.14 0.08 0.31 0.33\n", &[[128, 128, 128, 129]; 8]);
     assert!(EnvironmentSource::hdr(wrong, 0.0, 1.0, true).is_err());
     let declared = hdr("PRIMARIES=0.64 0.33 0.30 0.60 0.15 0.06 0.3127 0.3290\n", &[[128, 128, 128, 129]; 8]);
-    assert!(EnvironmentSource::hdr(declared, 0.0, 1.0, false).is_ok());
+    let shared = HdrSource::new(declared.clone()).unwrap();
+    let resource = EnvironmentSource::from_hdr(shared.clone(), 0.0, 1.0, false).unwrap();
+    let Source::Hdr(retained) = &resource.source else { panic!("HDR fixture") };
+    assert_eq!(shared.encoded_bytes().as_ptr(), retained.encoded_bytes().as_ptr());
+    let captured = EnvironmentSource::hdr(shared.encoded_bytes().to_vec(), 0.0, 1.0, false).unwrap();
+    assert_eq!(resource.info().source_sha256, captured.info().source_sha256);
+    assert_eq!(resource.admitted_bytes(), captured.admitted_bytes(), "sharing does not bypass the job budget");
     assert!(EnvironmentSource::sky(SkyGradient::default(), f64::NAN, 1.0).is_err());
     assert!(EnvironmentSource::sky(SkyGradient::default(), 0.0, 101.0).is_err());
     let token = CancelToken::default();
