@@ -1,5 +1,5 @@
 //! Native progressive product rendering. Software BVH traversal needs no ray-query
-//! features. Every worker quantum submits at most 256K paths, then checks cancellation.
+//! features. Small measured quanta adapt to the device, then check cancellation.
 use solidcraft_geom::Vec3;
 use solidcraft_render::{
     Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderFeature, RenderFormat, RenderLimits, RenderMode, RenderOperation,
@@ -10,12 +10,16 @@ use solidcraft_render::{
     },
 };
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use wgpu::util::DeviceExt;
 
 mod denoise;
+mod dispatch;
 mod scene;
 #[cfg(test)]
 mod tests;
@@ -29,7 +33,6 @@ const FAILURE_BYTES: u64 = 32;
 // limits of f32 geometry are tolerated and logged; more than this fraction of all
 // paths (any systematic error such as a camera inside glass) fails the job.
 const FAILURE_FRACTION: f64 = 1e-6;
-const TILE: u32 = 262_144;
 const TIMEOUT: Duration = Duration::from_secs(30);
 // Software Vulkan drivers can compile a pipeline at its first dispatch, which on a cold
 // shader cache exceeds the per-dispatch hang timeout. Setup dispatches once with no work
@@ -127,6 +130,7 @@ fn open_headless() -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
 }
 
 struct Context {
+    healthy: Arc<AtomicBool>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::ComputePipeline,
@@ -134,13 +138,53 @@ struct Context {
     denoise: std::sync::OnceLock<denoise::Pipelines>,
     layout: wgpu::BindGroupLayout,
 }
+impl Context {
+    fn ensure_available(&self) -> Result<()> {
+        if self.healthy.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(JobError::new(
+                ErrorCode::HostUnavailable,
+                "GPU path device was lost or failed to complete work; restart the renderer before retrying",
+            ))
+        }
+    }
+    fn wait(&self, submission: wgpu::SubmissionIndex, timeout: Duration) -> Result<()> {
+        wait_device(&self.device, &self.healthy, submission, timeout)
+    }
+}
+
+fn wait_device(device: &wgpu::Device, healthy: &AtomicBool, submission: wgpu::SubmissionIndex, timeout: Duration) -> Result<()> {
+    if !healthy.load(Ordering::Acquire) {
+        return Err(JobError::new(ErrorCode::HostUnavailable, "GPU path device is unavailable"));
+    }
+    if let Err(error) = device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(timeout) }) {
+        healthy.store(false, Ordering::Release);
+        return Err(JobError::new(ErrorCode::HostUnavailable, format!("GPU path completion failed; executor retired: {error}")));
+    }
+    if !healthy.load(Ordering::Acquire) {
+        return Err(JobError::new(ErrorCode::HostUnavailable, "GPU path device was lost while completing work"));
+    }
+    Ok(())
+}
+
 struct Executor {
     context: Arc<Context>,
 }
 impl Executor {
     fn new(device: wgpu::Device, queue: wgpu::Queue) -> Result<Self> {
         device_limits(device.limits())?;
-        device.on_uncaptured_error(Arc::new(|e: wgpu::Error| log::error!("gpu-path: {e}")));
+        let healthy = Arc::new(AtomicBool::new(true));
+        let uncaptured = healthy.clone();
+        device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| {
+            uncaptured.store(false, Ordering::Release);
+            log::error!("gpu-path executor retired after uncaptured error: {e}");
+        }));
+        let lost = healthy.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            lost.store(false, Ordering::Release);
+            log::warn!("gpu-path device lost ({reason:?}); executor unavailable: {message}");
+        });
         let scopes = scopes(&device);
         let shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu-path"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
@@ -175,8 +219,8 @@ impl Executor {
             cache: None,
         });
         checked(scopes)?;
-        warm_up(&device, &queue, &pipeline, &placeholder_bind(&device, &layout, 7)?)?;
-        Ok(Self { context: Arc::new(Context { device, queue, pipeline, layout, denoise: std::sync::OnceLock::new() }) })
+        warm_up(&device, &queue, &pipeline, &placeholder_bind(&device, &layout, 7)?, &healthy)?;
+        Ok(Self { context: Arc::new(Context { healthy, device, queue, pipeline, layout, denoise: std::sync::OnceLock::new() }) })
     }
 }
 
@@ -204,7 +248,7 @@ fn placeholder_bind(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, count
     Ok(bind)
 }
 
-fn warm_up(device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &wgpu::ComputePipeline, bind: &wgpu::BindGroup) -> Result<()> {
+fn warm_up(device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &wgpu::ComputePipeline, bind: &wgpu::BindGroup, healthy: &AtomicBool) -> Result<()> {
     let scopes = scopes(device);
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("gpu-path warm-up") });
     {
@@ -215,7 +259,7 @@ fn warm_up(device: &wgpu::Device, queue: &wgpu::Queue, pipeline: &wgpu::ComputeP
     }
     let submission = queue.submit([encoder.finish()]);
     checked(scopes)?;
-    device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(SETUP_TIMEOUT) }).map_err(gpu)?;
+    wait_device(device, healthy, submission, SETUP_TIMEOUT)?;
     Ok(())
 }
 
@@ -294,9 +338,14 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 
 impl ImageExecutor for Executor {
     fn descriptor(&self) -> Result<ExecutorDescriptor> {
-        descriptor()
+        let mut value = descriptor()?;
+        if !self.context.healthy.load(Ordering::Acquire) {
+            value.availability = Availability::Unavailable { reason: "GPU path device was lost or failed to complete work; restart renderer".into() };
+        }
+        Ok(value)
     }
     fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        self.context.ensure_available()?;
         let a = admission(scene, request, options)?;
         let limit = self.context.device.limits().max_storage_buffer_binding_size;
         let geometry_bytes = 16 + a.triangles.max(1) * 84 + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
@@ -350,6 +399,7 @@ fn prepare_environment(request: &ImageRequest, cancel: &CancelToken) -> Result<V
 }
 
 struct Task {
+    dispatch_budget: dispatch::Budget,
     context: Arc<Context>,
     request: ImageRequest,
     options: JobOptions,
@@ -441,11 +491,12 @@ impl Task {
             Ok((uniform, accumulation, failures, readback, bind, denoiser))
         })?;
         let submission = context.queue.submit([]);
-        device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
+        context.wait(submission, TIMEOUT)?;
         let upload_ms = uploading.elapsed().as_secs_f64() * 1000.0;
         log::info!("gpu-path BVH {bvh_ms:.3} ms, upload {upload_bytes} bytes in {upload_ms:.3} ms");
         cancel.check()?;
         Ok(Self {
+            dispatch_budget: Default::default(),
             context,
             request,
             options,
@@ -528,8 +579,10 @@ impl Task {
     }
     fn dispatch(&mut self) -> Result<()> {
         self.cancel.check()?;
+        self.context.ensure_available()?;
+        let dispatch_started = Instant::now();
         let pixels = self.request.width * self.request.height;
-        let count = (pixels - self.offset).min(TILE);
+        let count = self.dispatch_budget.count(pixels - self.offset);
         let context = &self.context;
         let scopes = scopes(&context.device);
         context.queue.write_buffer(&self.uniform, 0, &self.parameters(count));
@@ -542,7 +595,8 @@ impl Task {
         }
         let submission = context.queue.submit([encoder.finish()]);
         checked(scopes)?;
-        context.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
+        context.wait(submission, TIMEOUT)?;
+        self.dispatch_budget.observe(count, dispatch_started.elapsed());
         self.cancel.check()?;
         self.offset += count;
         if self.offset == pixels {
@@ -550,6 +604,18 @@ impl Task {
             self.offset = 0;
         }
         Ok(())
+    }
+    #[cfg(test)]
+    fn complete_sample(&mut self) -> Result<()> {
+        let wanted = self.sample.checked_add(1).ok_or_else(|| gpu("sample counter overflow"))?;
+        let maximum = (self.request.width * self.request.height).div_ceil(dispatch::MIN_PATHS);
+        for _ in 0..maximum {
+            self.dispatch()?;
+            if self.sample == wanted {
+                return Ok(());
+            }
+        }
+        Err(gpu("bounded full-sample test helper did not advance"))
     }
     fn read_linear(&self) -> Result<Vec<[f32; 4]>> {
         self.read_linear_buffer(&self.accumulation)
@@ -568,7 +634,7 @@ impl Task {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        context.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
+        context.wait(submission, TIMEOUT)?;
         rx.try_recv().map_err(gpu)?.map_err(gpu)?;
         let data = slice.get_mapped_range().map_err(gpu)?;
         let (pixels, failures) = data.split_at(data.len().saturating_sub(FAILURE_BYTES as usize));
@@ -633,6 +699,7 @@ impl Display {
 impl ImageWork for Task {
     fn step(&mut self, units: usize) -> Result<TaskPoll> {
         self.cancel.check()?;
+        self.context.ensure_available()?;
         if let Some(png) = &mut self.png {
             return png.step(units);
         }

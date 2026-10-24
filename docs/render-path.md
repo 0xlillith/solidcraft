@@ -122,3 +122,18 @@ The ignored `path_performance` test builds a 1,048,576-triangle procedural spher
 and measures 1920×1080 dispatches, BVH construction and upload. Select sample count
 with `SOLIDCRAFT_PATH_BENCH_SAMPLES` (default 1). Run it explicitly with a clear GPU
 timing window; it is excluded from normal CI.
+
+## Dispatch and device-loss behavior
+
+Each new path job begins with 64 paths. Completed submissions target approximately
+20 ms and grow at most twofold, bounded to 64–16384 paths; a short image tail is
+smaller. Denoiser guide/filter passes use the same controller. Measured wall time
+includes scheduling contention, so this is a conservative responsiveness policy,
+not a promised GPU deadline or a substitute for the OS watchdog. Sample/seed and
+pixel identities are unchanged by tile boundaries.
+
+Actual device-loss callbacks, uncaptured device errors and failed completion waits
+retire that native executor. Existing and new jobs refuse further device work;
+preflight/session metadata reports it unavailable without inventing new capabilities.
+The application must deliberately recreate a host to recover. Merely registering the
+same cached host or opening another document does not advertise it as healthy again.

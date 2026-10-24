@@ -493,16 +493,12 @@ impl Session {
         }
         if let Some(executor) = &self.render_jobs.descriptor {
             let mut executor = executor.clone();
-            if self.render_jobs.host.as_ref().is_none_or(|host| !host.is_available()) {
-                executor.availability = render::Availability::Unavailable { reason: "CPU image host is unavailable".into() };
-            }
+            executor.availability = image_host_availability(self.render_jobs.host.as_ref(), &executor.id);
             backend.executors.push(executor);
         }
         for (host, descriptor) in &self.render_jobs.additional {
             let mut descriptor = descriptor.clone();
-            if !host.is_available() {
-                descriptor.availability = render::Availability::Unavailable { reason: "image host is unavailable".into() };
-            }
+            descriptor.availability = image_host_availability(Some(host), &descriptor.id);
             backend.executors.push(descriptor);
         }
         backend
@@ -1262,4 +1258,14 @@ fn own_values(sk: &solidcraft_sketch::Sketch) -> std::collections::BTreeMap<Stri
         }
     }
     values
+}
+
+/// Capabilities are fixed at registration; availability is live device/host state.
+fn image_host_availability(host: Option<&render::job::ImageHost>, expected: &render::ExecutorId) -> render::Availability {
+    match host.map(render::job::ImageHost::descriptor) {
+        Some(Ok(current)) if current.id == *expected => current.availability,
+        Some(Ok(_)) => render::Availability::Unavailable { reason: "image executor identity changed after registration".into() },
+        Some(Err(error)) => render::Availability::Unavailable { reason: format!("image executor status unavailable: {error}") },
+        None => render::Availability::Unavailable { reason: "image host is unavailable".into() },
+    }
 }

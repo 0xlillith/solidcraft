@@ -277,7 +277,7 @@ fn gpu_denoise_default_false_is_identical_and_true_preserves_raw() {
         let mut task = Task::new(context.clone(), plane(), request(8), options, CancelToken::default()).unwrap();
         assert_eq!(task.denoiser.is_some(), options.denoise);
         while task.sample < 4 {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         let raw = task.read_linear().unwrap();
         if let Some(filter) = &task.denoiser {
