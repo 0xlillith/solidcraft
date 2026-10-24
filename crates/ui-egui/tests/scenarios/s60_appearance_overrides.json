@@ -7,6 +7,8 @@
   {"expect": {"dialog": "Appearance", "shown": "Remove override"}},
   {"note": "The shared 28 px controls make this card scroll; reveal Search inside its body."},
   {"call": "ui.scroll", "params": {"x": 1345, "y": 650, "delta": -400}},
+  {"note": "Let the scroll animation settle before resolving the moving Search handle; the larger starter catalog otherwise puts a swatch under that click."},
+  {"frames": 20},
   {"click": {"handle": "appearance:search"}},
   {"text": "no-such-appearance"},
   {"expect": {"shown": "No matching appearances"}},
