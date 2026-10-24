@@ -49,7 +49,7 @@ impl RenderJob {
                 if *transparent_background && options.backdrop.is_some() {
                     return Err(DocError::Invalid("choose a camera backdrop or transparent PNG, not both".into()));
                 }
-                options.to_runtime(exposure_ev)?;
+                options.validate(exposure_ev)?;
                 if *transparent_background && options.finishing.bloom.is_some_and(|b| b.active()) {
                     return Err(DocError::Invalid("display bloom requires opaque output".into()));
                 }
@@ -149,11 +149,11 @@ impl CpuJob {
 }
 
 /// Progressive values without a second exposure authority or captured GPU bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GpuJob {
-    #[serde(skip_serializing_if = "solidcraft_render::job::aging::AgingStack::is_empty")]
-    pub aging: solidcraft_render::job::aging::AgingStack,
+    #[serde(skip_serializing_if = "crate::render_aging::SavedAgingStack::is_empty")]
+    pub aging: crate::render_aging::SavedAgingStack,
     pub nested_media: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<solidcraft_render::job::volume::HomogeneousVolume>,
@@ -186,7 +186,7 @@ impl Default for GpuJob {
     fn default() -> Self {
         let options = JobOptions::default();
         Self {
-            aging: options.aging,
+            aging: Default::default(),
             nested_media: options.nested_media,
             volume: options.volume,
             adaptive: options.adaptive,
@@ -208,8 +208,21 @@ impl Default for GpuJob {
 }
 
 impl GpuJob {
-    /// Pure numerical validation; installing a GPU is required only to preflight/start a job.
+    /// Pure numerical validation; this does not resolve a saved occurrence.
+    pub fn validate(&self, exposure_ev: f64) -> Result<()> {
+        self.validated_parameters(exposure_ev).map(|_| ())
+    }
+
+    /// Untargeted intent is self-contained. Targeted aging requires the engine's
+    /// current capture; callers cannot silently turn an unresolved target global.
     pub fn to_runtime(&self, exposure_ev: f64) -> Result<JobOptions> {
+        if self.aging.iter().any(|layer| layer.target.is_some()) {
+            return Err(DocError::Invalid("targeted aging requires stable occurrence resolution against the current scene".into()));
+        }
+        self.validated_parameters(exposure_ev)
+    }
+
+    fn validated_parameters(&self, exposure_ev: f64) -> Result<JobOptions> {
         if let Some(hdr) = self.hdr {
             hdr.validate()?;
             if self.environment.is_some() {
@@ -220,7 +233,7 @@ impl GpuJob {
             environment.validate()?;
         }
         let options = JobOptions {
-            aging: self.aging,
+            aging: self.aging.parameters_only()?,
             nested_media: self.nested_media,
             volume: self.volume,
             adaptive: self.adaptive,
