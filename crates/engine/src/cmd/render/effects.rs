@@ -137,41 +137,32 @@ mod tests {
         assert_eq!((session.revision, session.undo.len()), history);
     }
 
-    /// An executor without aging support must still refuse a saved targeted job.
-    /// The positive cold-reopen path is exercised by the real GPU in effects_tests.
+    /// An executor identifier is not evidence of support for optical aging.
+    /// Successful command-path execution lives with the real GPU executor tests.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn saved_targeted_aging_refuses_unsupported_executor_after_cold_reopen() {
-        use solidcraft_render::job::{self, ImageExecutor, ImageHost, ImageTask};
+    fn saved_targeted_aging_is_refused_by_an_executor_without_aging() {
+        use solidcraft_render::job::{self, ImageExecutor, ImageHost};
         use std::sync::Arc;
-        struct ProtocolGpu;
-        impl ImageExecutor for ProtocolGpu {
+        struct UnsupportedGpu;
+        impl ImageExecutor for UnsupportedGpu {
             fn descriptor(&self) -> job::Result<solidcraft_render::ExecutorDescriptor> {
                 let mut descriptor = job::CpuHost::cooperative().descriptor()?;
                 descriptor.id = solidcraft_render::ExecutorId::new("gpu-path").unwrap();
                 descriptor.profiles[0].features.push(solidcraft_render::RenderFeature::Progressive);
                 Ok(descriptor)
             }
-            fn admit(
-                &self,
-                scene: &solidcraft_render::ProductScene,
-                request: &job::ImageRequest,
-                options: job::JobOptions,
-            ) -> job::Result<job::Admission> {
-                options.validate()?;
-                let target = options.aging.get(0).unwrap().target.unwrap();
-                assert_eq!(scene.meshes[target.body_index as usize].name, target.body_name.as_str());
-                job::admit(scene, request)
+            fn admit(&self, _: &solidcraft_render::ProductScene, _: &job::ImageRequest, _: job::JobOptions) -> job::Result<job::Admission> {
+                panic!("unsupported aging must be refused before executor admission")
             }
             fn begin(
                 &self,
-                scene: solidcraft_render::ProductScene,
-                request: job::ImageRequest,
-                options: job::JobOptions,
-                cancel: job::CancelToken,
+                _: solidcraft_render::ProductScene,
+                _: job::ImageRequest,
+                _: job::JobOptions,
+                _: job::CancelToken,
             ) -> job::Result<Box<dyn job::ImageWork>> {
-                self.admit(&scene, &request, options)?;
-                Ok(Box::new(ImageTask::new(scene, request, cancel)?))
+                panic!("unsupported aging must never start work")
             }
         }
         let mut session = Session::default();
@@ -189,12 +180,17 @@ mod tests {
             .unwrap();
         session = Session::new(solidcraft_io::read_design(&solidcraft_io::write_design_container(&session.doc).unwrap()).unwrap());
         session.set_render_job_host(Some(job::CpuHost::cooperative())).unwrap();
-        session.register_render_job_host(ImageHost::with_executor(Arc::new(ProtocolGpu)).unwrap()).unwrap();
+        let host = ImageHost::with_executor(Arc::new(UnsupportedGpu)).unwrap();
+        session.register_render_job_host(host.clone()).unwrap();
         let doc = session.doc.clone();
         let before = (session.revision, session.undo.len(), session.redo.len());
+        let saved = session.doc.render.setups["Aging"].clone();
         for command in ["render.preflight", "render.start"] {
-            let error = session.execute(command, &json!({"setup":"Aging"})).unwrap_err().to_string();
-            assert!(error.contains("cannot evaluate ordered surface aging"), "{error}");
+            for request in [json!({"setup":"Aging"}), json!({"settings":saved})] {
+                let error = session.execute(command, &request).unwrap_err().to_string();
+                assert!(error.contains("this executor cannot evaluate ordered surface aging"), "{error}");
+                assert_eq!(host.admitted_bytes(), 0);
+            }
         }
         assert!(Arc::ptr_eq(&doc, &session.doc));
         assert_eq!(before, (session.revision, session.undo.len(), session.redo.len()));
