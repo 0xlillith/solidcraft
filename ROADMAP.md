@@ -143,6 +143,8 @@ completed drawings publish atomically. The browser still exports synchronously.
 
 ## Render foundation
 
+- Bounded linear film accumulation (#1696) supplies caller-admitted mean/variance storage and complete-pass views; actual progressive consumers remain separate. See [the film contract](docs/render-film.md).
+
 - Definition-local visual mapping (#1214) supplies a bounded numerical frame, physical repeat coordinates and a deterministic one-time grain-axis suggestion. It adds no saved record or texture consumer; see [the mapping contract](docs/render-visual-mapping.md).
 
 - Explicit texture normalization (#1218) produces completed float RGBA with

@@ -10,6 +10,7 @@ mod backend;
 mod camera;
 pub mod clear_coat;
 mod curve_display;
+pub mod film;
 mod gif;
 pub mod job;
 pub mod lighting;
