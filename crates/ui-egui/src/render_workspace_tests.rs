@@ -1851,6 +1851,13 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
     assert_eq!(h.app.render_workspace.view.method, ImageMethod::GpuRaytrace);
     h.app.cam.fov = 0.7;
     h.app.ui.perspective = true;
+    // The positive UI fixture uses the admitted document boundary. Coordinates
+    // beyond it must still refuse before a setup that cannot reopen is created.
+    for x in [-2e9, 2e9, 1e9_f64.next_up()] {
+        assert!(
+            AreaLights::new(&[AreaLight { center: [x, 0.0, 100.0], u: [2.0, 0.0, 0.0], v: [0.0, -3.0, 0.0], radiance: [3.0, 5.0, 7.0] }]).is_err()
+        );
+    }
     let expected = RenderSetup {
         camera: h.app.cam,
         exposure_ev: 1.25,
@@ -1883,7 +1890,7 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
                     environment: [0.25, 0.5, 0.75],
                     sun: Some(Sun { direction: [2.0, 3.0, 4.0], angular_radius_rad: 0.0123456789, radiance: [11.0, 22.0, 33.0] }),
                     area_lights: AreaLights::new(&[AreaLight {
-                        center: [2e9, 0.0, 100.0],
+                        center: [1e9, 0.0, 100.0],
                         u: [2.0, 0.0, 0.0],
                         v: [0.0, -3.0, 0.0],
                         radiance: [3.0, 5.0, 7.0],
@@ -1945,6 +1952,11 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
     assert_eq!(h.app.render_workspace.view.completed, completed);
     assert_eq!(h.app.render_workspace.view.result_camera, result_camera);
+    let reopened = solidcraft_engine::doc::Document::from_json(&h.app.session.doc.to_json()).unwrap();
+    assert_eq!(reopened.render.setups["GPU copy"], expected, "the boundary setup must reopen from JSON");
+    let native = solidcraft_engine::io::write_design_container(&h.app.session.doc).unwrap();
+    let reopened = solidcraft_engine::io::read_design(&native).unwrap();
+    assert_eq!(reopened.render.setups["GPU copy"], expected, "the native container keeps exact numeric intent");
 }
 
 #[test]
