@@ -5718,8 +5718,13 @@ fn replay(
             format!("{list} suppressed and not copied")
         });
     }
+    // The copies are made in timeline order, whatever order the features were picked in: a
+    // chamfer picked before the hole it blends would otherwise find no edge to copy.
+    let mut kept: Vec<String> = features.iter().filter(|n| !suppressed.contains(n)).cloned().collect();
+    let at = |name: &String| source_feature(doc, name).ok().and_then(|f| doc.features.iter().position(|x| std::ptr::eq(x, f))).unwrap_or(usize::MAX);
+    kept.sort_by_key(at);
+    kept.dedup();
     let (mut missed, mut total) = (0usize, 0usize);
-    let kept: Vec<String> = features.iter().filter(|n| !suppressed.contains(n)).cloned().collect();
     let plan = copy_plan(doc, vals, st, &kept, mats)?;
     for (src, mats, first) in &plan {
         // A fillet or chamfer repeats at the copied edges.
