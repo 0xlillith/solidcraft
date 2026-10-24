@@ -10,6 +10,7 @@
 pub mod capture;
 pub mod cmd;
 pub mod control_auth;
+pub mod control_pending;
 pub mod crash;
 pub mod frames;
 pub mod fuzz;
@@ -138,7 +139,7 @@ pub enum Sel {
     Plane {
         name: String,
     },
-    /// An origin axis (X, Y, Z).
+    /// An origin axis (X, Y, Z) or a construction axis (by feature name).
     Axis {
         name: String,
     },
@@ -164,6 +165,16 @@ pub struct Snapshot {
     pub doc: Arc<Document>,
     pub active_sketch: Option<u64>,
     pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+}
+
+/// Where the open sketch was entered (`sketch.create`, `sketch.edit`): the design before it and
+/// the undo history then, so `sketch.cancel` can tell the entry still describes the history.
+#[derive(Clone)]
+pub(crate) struct SketchEntry {
+    pub(crate) sketch: u64,
+    pub(crate) doc: Arc<Document>,
+    pub(crate) undo_len: usize,
+    pub(crate) undo_top: Option<Arc<Document>>,
 }
 
 /// A copy of a session that evaluates commands ahead of it ([`Session::ahead`]).
@@ -243,6 +254,8 @@ pub struct Session {
     pub redo: Vec<Snapshot>,
     /// Sketch feature being edited (sketch mode).
     pub active_sketch: Option<u64>,
+    /// The design as it was when the open sketch was entered, for Cancel Sketch.
+    pub(crate) sketch_entry: Option<SketchEntry>,
     pub selection: Vec<Sel>,
     pub path: Option<String>,
     /// One-shot display-only notification during doc.open, before authoritative evaluation.
@@ -419,6 +432,7 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             active_sketch: None,
+            sketch_entry: None,
             selection: Vec::new(),
             path: None,
             open_preview: None,
@@ -675,6 +689,8 @@ impl Session {
     /// a body or a feature (or undid or redid such a rename) renames it in the model instead,
     /// which keeps every result and mesh (#3044).
     fn refresh_from(&mut self, previous: &Arc<Document>) {
+        self.follow_plane_renames(previous);
+        self.follow_axis_point_renames(previous);
         if let Some((old, new)) = self.body_rename(previous)
             && self.model.rename_body(&self.doc, &old, &new)
         {
@@ -692,6 +708,27 @@ impl Session {
             return;
         }
         self.refresh();
+    }
+
+    /// A hidden construction plane stays hidden when the design renames it, or undo or redo
+    /// gives it another name (#4353): the hidden list keeps planes by name.
+    fn follow_plane_renames(&mut self, previous: &Document) {
+        if self.visibility.hidden_origin.is_empty() {
+            return;
+        }
+        let before: std::collections::HashMap<u64, &str> = previous
+            .features
+            .iter()
+            .filter(|f| matches!(f.kind, solidcraft_doc::FeatureKind::ConstructionPlane { .. }))
+            .map(|f| (f.id, f.name.as_str()))
+            .collect();
+        for f in &self.doc.features {
+            if let Some(old) = before.get(&f.id).filter(|old| **old != f.name) {
+                for n in self.visibility.hidden_origin.iter_mut().filter(|n| *n == old) {
+                    n.clone_from(&f.name);
+                }
+            }
+        }
     }
 
     /// The body rename that turned `previous` into the design (old name, new name), if that is
@@ -830,6 +867,8 @@ impl Session {
             active_sketch: self.active_sketch,
             pending_moves: self.pending_moves.clone(),
         };
+        // Where new geometry goes: not in the design, but a replay needs it (component.activate).
+        let active_before = (self.active_component, self.active_occurrence_path.clone());
         let null = Value::Object(Default::default());
         let params = if params.is_null() { &null } else { params };
         let given = params;
@@ -871,6 +910,8 @@ impl Session {
             let changed = !Arc::ptr_eq(&self.doc, &before.doc)
                 || self.active_sketch != before.active_sketch
                 || self.pending_moves != before.pending_moves
+                || self.active_component != active_before.0
+                || self.active_occurrence_path != active_before.1
                 || spec.id.starts_with("select.");
             crash::command_done(self.crash_journal, changed, &before.doc, after, spec.id, given, failed.map_or(Ok(()), Err));
         }
@@ -984,6 +1025,7 @@ impl Session {
             undo: Vec::new(),
             redo: Vec::new(),
             active_sketch: self.active_sketch,
+            sketch_entry: None,
             selection: self.selection.clone(),
             path: None,
             open_preview: None,
@@ -1215,6 +1257,8 @@ mod face_name_tests;
 mod hole_face_tests;
 #[cfg(test)]
 mod hole_matrix_tests;
+#[cfg(test)]
+mod hole_reference_tests;
 #[cfg(test)]
 mod large_assembly_tests;
 #[cfg(test)]

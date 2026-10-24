@@ -10,6 +10,7 @@
 //!
 //! `--control <port>` (or `SOLIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
 //! server: `{"id":1,"method":"engine.execute","params":{"command":"solid.box","params":{…}}}`.
+//! Without them the channel still opens, on the default port, unless Preferences turns it off.
 //! See `solidcraft_ui_egui::control` and docs/control-protocol.md.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -140,14 +141,17 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.native_menu {
-            menu.raw_input_hook(&mut self.solve, _ctx, raw);
+            menu.raw_input_hook(&mut self.solve, ctx, raw);
         }
         // Before the app's own hook, which adds the control channel's events.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.space_mouse.raw_input_hook(self.solve.preferences.space_mouse_enabled, raw);
+        // The 3D mouse's buttons, before the app reads the frame: Esc and held modifiers join its input.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        solidcraft_ui_egui::space_mouse::buttons_hook(&mut self.solve, ctx, self.space_mouse.buttons(), raw);
         self.solve.raw_input_hook(raw);
     }
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -741,8 +745,10 @@ fn main() -> eframe::Result {
                 ));
             }
             mark("viewport pipelines");
-            if let Some(port) = control_port {
-                let rx = control_server::start(port, cc.egui_ctx.clone());
+            // `--control`/the environment name a port; otherwise the preference (on by default)
+            // opens the default one (docs/control-protocol.md).
+            if let Some(listen_on) = solidcraft_engine::control_auth::plan(control_port, app.preferences.agent_control) {
+                let rx = control_server::start(listen_on, cc.egui_ctx.clone());
                 app = app.with_control(rx);
             }
             // The agent chat's MCP bridge reaches the app through an endpoint of its own, started
