@@ -1,5 +1,5 @@
 //! Optional output filtering; never writes the Monte Carlo accumulation buffer.
-use super::{Context, Result, SHADER, TILE, TIMEOUT, Task, checked, gpu, placeholder_bind, scopes, warm_up};
+use super::{Context, Result, SHADER, TIMEOUT, Task, checked, placeholder_bind, scopes, warm_up};
 use wgpu::util::DeviceExt;
 
 pub(super) const BYTES_PER_PIXEL: u64 = 80; // three guide vec4s and two colour vec4s
@@ -67,8 +67,8 @@ impl Pipelines {
             cache: None,
         });
         checked(error_scopes)?;
-        warm_up(device, &context.queue, &guide, &placeholder_bind(device, &context.layout, 7)?)?;
-        warm_up(device, &context.queue, &filter, &placeholder_bind(device, &filter_layout, 4)?)?;
+        warm_up(device, &context.queue, &guide, &placeholder_bind(device, &context.layout, 7)?, &context.healthy)?;
+        warm_up(device, &context.queue, &filter, &placeholder_bind(device, &filter_layout, 4)?, &context.healthy)?;
         Ok(Self { guide, filter, filter_layout })
     }
 
@@ -160,15 +160,20 @@ impl Resources {
 
     pub(super) fn run(&self, task: &Task) -> Result<()> {
         let pixels = task.request.width * task.request.height;
-        for offset in (0..pixels).step_by(TILE as usize) {
+        let mut budget = super::dispatch::Budget::default();
+        let mut offset = 0;
+        while offset < pixels {
             task.cancel.check()?;
-            let count = (pixels - offset).min(TILE);
+            let count = budget.count(pixels - offset);
             let mut parameters = task.parameters(count);
             if let Some(bytes) = parameters.get_mut(12..16) {
                 bytes.copy_from_slice(&offset.to_le_bytes());
             }
             task.context.queue.write_buffer(&task.uniform, 0, &parameters);
+            let started = std::time::Instant::now();
             dispatch(&task.context, &self.guide_pipeline, &self.guide_bind, count)?;
+            budget.observe(count, started.elapsed());
+            offset += count;
         }
         self.run_filter(task)
     }
@@ -176,15 +181,20 @@ impl Resources {
     fn run_filter(&self, task: &Task) -> Result<()> {
         let pixels = task.request.width * task.request.height;
         for (pass, bind) in self.filter_binds.iter().enumerate() {
-            for offset in (0..pixels).step_by(TILE as usize) {
+            let mut budget = super::dispatch::Budget::default();
+            let mut offset = 0;
+            while offset < pixels {
                 task.cancel.check()?;
-                let count = (pixels - offset).min(TILE);
+                let count = budget.count(pixels - offset);
                 let mut bytes = Vec::with_capacity(32);
                 for word in [task.request.width, task.request.height, 1 << pass, offset, count, task.sample, 0, 0] {
                     bytes.extend_from_slice(&word.to_le_bytes());
                 }
                 task.context.queue.write_buffer(&self.filter_uniform, 0, &bytes);
+                let started = std::time::Instant::now();
                 dispatch(&task.context, &self.filter_pipeline, bind, count)?;
+                budget.observe(count, started.elapsed());
+                offset += count;
             }
         }
         task.cancel.check()
@@ -192,6 +202,7 @@ impl Resources {
 }
 
 fn dispatch(context: &Context, pipeline: &wgpu::ComputePipeline, bind: &wgpu::BindGroup, count: u32) -> Result<()> {
+    context.ensure_available()?;
     let error_scopes = scopes(&context.device);
     let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("denoise tile") });
     {
@@ -202,6 +213,6 @@ fn dispatch(context: &Context, pipeline: &wgpu::ComputePipeline, bind: &wgpu::Bi
     }
     let submission = context.queue.submit([encoder.finish()]);
     checked(error_scopes)?;
-    context.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
+    context.wait(submission, TIMEOUT)?;
     Ok(())
 }
