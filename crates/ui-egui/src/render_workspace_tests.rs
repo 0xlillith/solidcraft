@@ -46,6 +46,67 @@ mod async_path_host {
     }
 
     #[test]
+    fn design_frames_and_document_reset_never_start_the_deferred_path_host() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        h.frames(5);
+        crate::documents::adopt(&mut h.app, Session::default());
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        assert!(h.app.render_workspace.pending_setup.is_some());
+        enter(&mut h.app, true).unwrap();
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn first_render_before_adapter_install_starts_once_when_the_adapter_arrives() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = panel_fixture();
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        h.app.render_workspace.defer_path_host("late selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err("deliberate device refusal".into())
+        });
+        sync_backend(&mut h.app);
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Failed(_)));
+        h.app.render_workspace.defer_path_host("must not retry".into(), || panic!("failed setup retried"));
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_fallback_viewport_replaces_an_unstarted_factory_without_opening_the_old_device() {
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("old hardware adapter".into(), || panic!("superseded device opened"));
+        h.app.render_workspace.defer_path_host("selected safe-mode adapter".into(), || Err("selected adapter unavailable".into()));
+        h.frames(5);
+        assert_eq!(h.app.render_workspace.setup_key.as_deref(), Some("selected safe-mode adapter"));
+        enter(&mut h.app, true).unwrap();
+        finish_setup(&mut h);
+        let PathHost::Failed(message) = &h.app.render_workspace.path_host else { panic!("expected selected adapter result") };
+        assert_eq!(message, "selected adapter unavailable");
+    }
+
+    #[test]
     fn preparing_keeps_frames_responsive_then_registers_ready_host() {
         let mut h = panel_fixture();
         let cpu_host = h.app.session.render_job_host().unwrap().clone();
@@ -591,6 +652,28 @@ fn product_gpu_buffers_preserve_opacity_and_never_contain_overlays() {
     assert_eq!(invisible.meshes[0].opacity, 0.0);
     let (_, empty) = gpu_scene(&invisible).unwrap();
     assert!(empty.tris.is_empty() && empty.glass.is_empty());
+}
+
+#[test]
+fn transmission_uses_legacy_preview_buffers_and_invalidates_the_opaque_cache() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":10,"width":10,"height":10,"body_name":"Glass"})).unwrap();
+    let appearance = json!({"bodies":["Glass"],"color":"#336699",
+        "pbr":{"metallic":0,"roughness":0.1,"dielectric_ior":1.5}});
+    s.execute("appearance.assign", &appearance).unwrap();
+    let (opaque_key, opaque) = gpu_scene(&solidcraft_engine::product_scene::extract(&s).unwrap()).unwrap();
+    assert!(!opaque.pbr.is_empty());
+    let mut scene = solidcraft_engine::product_scene::extract(&s).unwrap();
+    scene.meshes[0].transmission =
+        Some(solidcraft_engine::render::transmission::Transmission::new(solidcraft_engine::geom::Vec3::ZERO, None).unwrap());
+    let (glass_key, glass) = gpu_scene(&scene).unwrap();
+    assert_ne!(opaque_key, glass_key);
+    assert!(glass.pbr.is_empty());
+    assert!(!glass.tris.is_empty());
+    scene.meshes[0].opacity = 0.4;
+    let (_, transparent) = gpu_scene(&scene).unwrap();
+    assert!(transparent.pbr.is_empty());
+    assert!(!transparent.glass.is_empty());
 }
 
 #[test]
@@ -1502,6 +1585,51 @@ fn four_and_five_k_viewports_preview_downscaled_within_the_limits() {
         }
     }
     assert_eq!(preview_size(None, (5120, 2880)), (5120, 2880), "no executor: resolution reports it");
+}
+
+/// Backend failures must remain readable in the fixed-width Render panel, not
+/// disappear into an ellipsis before the reason and recovery guidance are shown.
+#[test]
+fn backend_diagnostics_wrap_without_elision_in_bounded_image_controls() {
+    fn collect<'a>(shape: &'a egui::Shape, texts: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => texts.push(text),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, texts)),
+            _ => {}
+        }
+    }
+    for mode in ["floating", "compact"] {
+        for dark in [false, true] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.ui.dark = dark;
+            h.call("ui.resize", json!({"width":1400,"height":1800}));
+            h.app.run("view.layout", json!({"mode":mode})).unwrap();
+            enter(&mut h.app, true).unwrap();
+            let reason = "The selected viewport adapter has no compatible Vulkan path device. Images remain available on the CPU; keep the original design and review the driver before retrying.";
+            h.app.render_workspace.path_host = PathHost::Failed(reason.into());
+            h.frames(3);
+            let expected = format!("{}: {reason}", h.app.tr("render.gpu_path_failed"));
+            let mut out = h.ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1800.0))), ..Default::default() },
+                |ui| {
+                    h.app.logic(ui.ctx());
+                    ui.set_max_width(285.0);
+                    image_controls(&mut h.app, ui);
+                },
+            );
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            out.shapes.iter().for_each(|shape| collect(&shape.shape, &mut texts));
+            {
+                let message = &expected;
+                let text = texts.iter().find(|text| text.galley.job.text == *message).expect("the complete diagnostic is painted");
+                assert!(!text.galley.elided, "{mode}, dark={dark}: {message}");
+                assert!(text.galley.rows.len() > 1, "long messages must wrap in the narrow panel");
+                assert!(text.galley.rect.width() <= 285.0, "the message must not expand the panel");
+            }
+        }
+    }
 }
 
 #[test]

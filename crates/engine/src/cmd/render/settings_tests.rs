@@ -215,7 +215,7 @@ fn invalid_saved_jobs_never_partially_replace_a_setup() {
 #[test]
 fn settings_history_preserves_geometry_cache_and_dirty_state() {
     let mut s = Session::default();
-    let component = s.execute("component.create", &json!({"name":"Part"})).unwrap();
+    let component = s.execute("component.create", &json!({"name":"Part","grounded":false})).unwrap();
     s.execute("solid.box", &json!({"length":10,"width":20,"height":5})).unwrap();
     s.execute("component.activate", &json!({"component":0})).unwrap();
     s.execute("occurrence.move", &json!({"occurrence":component["occurrence"],"translate":[30,0,0]})).unwrap();

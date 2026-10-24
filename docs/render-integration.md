@@ -1,7 +1,7 @@
 # Phased render and material integration
 
 The native GPU image path is described in [Progressive product images](render-path.md).
-The personal branch also adds [CPU progressive camera sampling](render-cpu-progressive.md)
+Optional [CPU progressive camera sampling](render-cpu-progressive.md)
 through its existing CPU executor and shared image-job protocol.
 
 Tracked in #842, with parent render design #620 and physical/visual material roadmap

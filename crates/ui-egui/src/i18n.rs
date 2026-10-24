@@ -267,6 +267,22 @@ pub fn tr_name(text: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+
+    fn alias_resolution_regression() {
+        static LEGACY: Catalog = Catalog::new("test-legacy", "Test", r#"{"Pitch":"legacy pitch"}"#);
+        static ALIAS: Catalog = Catalog::new("test-alias", "Test", r#"{"coupling.pitch":"mechanical pitch"}"#);
+        assert_eq!(ENGLISH.messages().get("Pitch").map(String::as_str), Some("Pitch"));
+        assert_eq!(ENGLISH.messages().get("coupling.pitch").map(String::as_str), Some("Pitch"));
+        let legacy = Locale(&LEGACY);
+        assert_eq!(legacy.label("Pitch"), "legacy pitch");
+        assert_eq!(legacy.label("coupling.pitch"), "Pitch");
+        let alias = Locale(&ALIAS);
+        assert_eq!(alias.label("Pitch"), "mechanical pitch");
+        assert_eq!(alias.label("coupling.pitch"), "mechanical pitch");
+        assert_eq!(alias.label("original unknown caption"), "original unknown caption");
+    }
+
     /// English first, then by id, so adding a locale edits only its own line.
     #[test]
     fn locales_are_listed_english_first_then_by_id() {
@@ -538,6 +554,17 @@ mod tests {
             let id = format!("nav.{}.help", preset.id);
             assert_eq!(english.text(&id), preset.help, "{id}");
         }
+    }
+
+    #[test]
+    fn missing_sheet_metal_guidance_uses_the_message_catalog() {
+        let _scope = scope("ja");
+        let message = "there is no sheet metal body: start one with Flange > Base, or turn a plate into sheet metal with Convert to Sheet Metal (pick its large flat face)";
+        let error = format!("invalid parameters for `sheet.flange`: {message}");
+        let translated = tr("sheet.no_body");
+        assert_ne!(translated, "sheet.no_body");
+        assert_ne!(translated, message);
+        assert_eq!(crate::friendly_error("sheet.flange", &error), format!("{}: {translated}", tr_label("Flange")));
     }
 
     #[test]

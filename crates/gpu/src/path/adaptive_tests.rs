@@ -102,3 +102,25 @@ fn transmission_strata_preserve_opaque_stream_and_reduce_absorbing_sheet_error_a
     assert!((mean[0] - oracle.x).abs() < 0.005 && (mean[1] - oracle.x).abs() < 0.005);
     assert!(squared_error[1] < squared_error[0] * 0.6, "the declared pilot must show a quantitative benefit, not just a changed image");
 }
+
+/// Adaptive reports must not touch a device already retired by the current
+/// renderer health policy, even when the numerical sample budget is unchanged.
+#[test]
+fn adaptive_report_refuses_retired_device_before_readback() {
+    let Some(executor) = executor() else { return };
+    let options = JobOptions {
+        samples: 16,
+        adaptive: Some(solidcraft_render::job::adaptive::AdaptiveSampling {
+            pilot_samples: 16,
+            min_samples: 16,
+            relative_error: 0.1,
+            absolute_error: 0.01,
+            coverage_error: 0.1,
+        }),
+        ..Default::default()
+    };
+    let task = Task::new(executor.context.clone(), sphere(white()), request(1), options, CancelToken::default()).unwrap();
+    executor.context.healthy.store(false, Ordering::Release);
+    let error = adaptive::report(&task).unwrap_err();
+    assert_eq!(error.code, ErrorCode::HostUnavailable);
+}

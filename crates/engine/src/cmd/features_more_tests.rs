@@ -5,7 +5,7 @@ use crate::Session;
 #[test]
 fn grouped_face_auto_operation_keeps_implicit_and_explicit_participants() {
     let mut s = Session::default();
-    let part = run(&mut s, "component.create", json!({"name":"Part"}));
+    let part = run(&mut s, "component.create", json!({"name":"Part","grounded":false}));
     run(&mut s, "solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"}));
     run(&mut s, "component.activate", json!({"component":0}));
     for offset in [0., 30.] {
@@ -417,7 +417,7 @@ fn cylinder_cross_component_emboss_keeps_source_owner_and_placements() {
     for (pick_offset, auto) in [(0., false), (80., false), (0., true), (80., true)] {
         let run = |s: &mut Session, id: &str, p: Value| run(s, id, auto_emboss_params(p, auto && matches!(id, "solid.emboss" | "timeline.redefine")));
         let mut s = Session::default();
-        let a = run(&mut s, "component.create", json!({"name":"Source"}))["component"].as_u64().unwrap();
+        let a = run(&mut s, "component.create", json!({"name":"Source","grounded":false}))["component"].as_u64().unwrap();
         run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
         let source_feature = s.model.state().bodies.first().unwrap().feature;
         let source_names = solidcraft_doc::naming::face_names(s.model.state().body("Sleeve").unwrap());
@@ -532,7 +532,7 @@ fn check_active_second_source(auto: bool) {
 fn cylinder_pending_leaf_or_ancestor_positions_require_capture_atomically() {
     for (ancestor, auto) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut s = Session::default();
-        let parent = run(&mut s, "component.create", json!({"name":"Parent"}))["occurrence"].as_u64().unwrap();
+        let parent = run(&mut s, "component.create", json!({"name":"Parent","grounded":false}))["occurrence"].as_u64().unwrap();
         let leaf = run(&mut s, "component.create", json!({"name":"Source"}))["occurrence"].as_u64().unwrap();
         run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
         run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
@@ -561,7 +561,7 @@ fn cylinder_pending_third_component_profile_requires_capture_atomically() {
 fn check_pending_third_profile(auto: bool) {
     let mut s = Session::default();
     run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
-    let profile_occurrence = run(&mut s, "component.create", json!({"name":"ProfileOwner"}))["occurrence"].as_u64().unwrap();
+    let profile_occurrence = run(&mut s, "component.create", json!({"name":"ProfileOwner","grounded":false}))["occurrence"].as_u64().unwrap();
     run(&mut s, "sketch.create", json!({"plane":{"origin":[0,10,0],"x_dir":[-1,0,0],"y_dir":[0,0,1]},"name":"Badge"}));
     run(&mut s, "sketch.rectangle.two_point", json!({"p0":[-2,5],"p1":[2,10]}));
     run(&mut s, "sketch.finish", json!({}));
@@ -594,7 +594,7 @@ fn check_body_offset(auto: bool) {
     let mut s = Session::default();
     run(&mut s, "solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}));
     let before = exact_cylinder_volume(&s);
-    let holder = run(&mut s, "component.create", json!({"name":"Holder"}))["component"].as_u64().unwrap();
+    let holder = run(&mut s, "component.create", json!({"name":"Holder","grounded":false}))["component"].as_u64().unwrap();
     run(&mut s, "occurrence.move", json!({"occurrence":"Holder:1","translate":[0,50,0]}));
     std::sync::Arc::make_mut(&mut s.doc).body_components.insert("Sleeve".into(), holder);
     std::sync::Arc::make_mut(&mut s.doc)
@@ -1718,4 +1718,34 @@ fn loft_through_coplanar_sections_is_refused() {
     let e = s.execute("solid.loft", &json!({"sections": [{"sketch": "A"}, {"sketch": "B"}]})).unwrap_err().to_string();
     assert!(e.contains("same plane"), "{e}");
     assert!(s.model.state().bodies.is_empty());
+}
+
+#[test]
+fn duplicate_and_excess_profile_picks_are_refused_quickly() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Bottom"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [2.5, 2.5], "radius": 2.5}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "offset": 30, "name": "Top"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [2.5, 2.5], "radius": 2}));
+    run(&mut s, "sketch.finish", json!({}));
+    let started = std::time::Instant::now();
+    let many = vec![0; 10_000];
+    let e = s.execute("solid.extrude", &json!({"sketch": "Bottom", "distance": 5, "profiles": many})).unwrap_err().to_string();
+    assert!(e.contains("profile 0 is listed twice"), "{e}");
+    let loft = json!({"sections": [{"sketch": "Bottom", "profiles": many}, {"sketch": "Top"}]});
+    let e = s.execute("solid.loft", &loft).unwrap_err().to_string();
+    assert!(e.contains("profile 0 is listed twice"), "{e}");
+    // More profiles than the sketch has, or one it doesn't have.
+    let e = s.execute("solid.extrude", &json!({"sketch": "Bottom", "distance": 5, "profiles": [0, 1]})).unwrap_err().to_string();
+    assert!(e.contains("2 profiles are listed, but Bottom has 1"), "{e}");
+    let e = s.execute("solid.extrude", &json!({"sketch": "Bottom", "distance": 5, "profiles": [3]})).unwrap_err().to_string();
+    assert!(e.contains("there is no profile 3 in Bottom"), "{e}");
+    let points = json!([{"point": [1, 1]}, {"point": [2, 2]}]);
+    let e = s.execute("solid.extrude", &json!({"sketch": "Bottom", "distance": 5, "profiles": points})).unwrap_err().to_string();
+    assert!(e.contains("2 profile points are given, but Bottom has 1"), "{e}");
+    assert!(started.elapsed().as_secs_f64() < 5.0, "refusing took {:?}", started.elapsed());
+    assert!(s.world_state().bodies.is_empty(), "nothing was built");
+    // One pick of the profile still builds.
+    run(&mut s, "solid.loft", json!({"sections": [{"sketch": "Bottom", "profiles": [0]}, {"sketch": "Top"}]}));
 }

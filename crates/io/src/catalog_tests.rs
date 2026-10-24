@@ -35,7 +35,7 @@ fn strict_schema_rejects_unknown_kinds_fields_versions_and_bad_identity() {
     for changed in [
         {
             let mut v = value.clone();
-            v["format"] = json!("solidcraft-library/3");
+            v["format"] = json!("solidcraft-library/99");
             v
         },
         {

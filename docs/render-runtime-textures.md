@@ -1,6 +1,6 @@
 # Runtime planar opaque maps
 
-The personal render integration batch adds built-in sources, absolute-color mode, explicit V orientation, linear roughness/metallic maps and content-addressed texture sharing. See [built-in library](render-built-in-library.md) for the new contract and its pending validation status. Legacy examples below retain modulation and rows-down defaults.
+The renderer supports built-in sources, absolute-color mode, explicit V orientation, linear roughness/metallic maps and content-addressed texture sharing. See [built-in library](render-built-in-library.md) for its bounded resource contract. Legacy examples below retain modulation and rows-down defaults.
 
 Progressive GPU jobs accept immutable per-body base-color and OpenGL tangent-space
 normal maps. No document, appearance, recovery, or saved material format changes.

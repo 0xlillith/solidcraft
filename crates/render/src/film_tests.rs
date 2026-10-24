@@ -222,6 +222,40 @@ fn construction_and_complete_pass_share_caller_work_and_cancel() {
     assert_eq!(pass.samples_per_pixel(), 1);
 }
 
+#[test]
+fn sample_counts_reach_4096_and_the_declared_cap_without_truncation() {
+    for samples in [4096, MAX_SAMPLES] {
+        let mut film = film(1, 1, samples);
+        let cancel = CancelToken::default();
+        let mut charged = 0u64;
+        for _ in 0..samples {
+            film.add_range(0, &[[7.0, 3.0, 1.0]], &cancel, &mut |n| {
+                charged += n;
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert_eq!(charged, u64::from(samples) * 2);
+        let expected = PixelStatistics { mean: [7.0, 3.0, 1.0], variance: [0.0; 3], count: samples };
+        assert_eq!(film.pixel_statistics(0).unwrap(), expected);
+        assert_eq!(film.complete_pass(&cancel, &mut |_| Ok(())).unwrap().samples_per_pixel(), samples);
+        assert_eq!(film.add_range(0, &[[1.0; 3]], &cancel, &mut |_| Ok(())).unwrap_err().code, ErrorCode::LimitExceeded);
+        assert_eq!(film.pixel_statistics(0).unwrap(), expected);
+    }
+}
+
+#[test]
+fn construction_stops_on_exhausted_caller_work() {
+    let bytes = FilmAccumulator::required_bytes(4, 1, 1).unwrap();
+    let mut charged = 0u64;
+    let result = FilmAccumulator::new(4, 1, 1, bytes, &CancelToken::default(), &mut |n| {
+        charged += n;
+        if charged > 2 { Err(limit("existing job budget exhausted")) } else { Ok(()) }
+    });
+    assert!(matches!(result, Err(JobError { code: ErrorCode::LimitExceeded, .. })));
+    assert_eq!(charged, 3);
+}
+
 #[cfg(feature = "raytrace-cpu")]
 #[test]
 fn primary_film_large_profile_keeps_every_sample_and_cancels_before_mutation() {

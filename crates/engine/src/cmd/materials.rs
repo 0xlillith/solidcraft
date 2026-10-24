@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 use solidcraft_doc::appearance::{Look, library};
 use solidcraft_doc::config::Column;
-use solidcraft_doc::{MATERIALS, MAX_USER_MATERIALS, UserMaterial, valid_density};
+use solidcraft_doc::{DEFAULT_MATERIAL, MATERIALS, MAX_USER_MATERIALS, UserMaterial, valid_density};
 
 use super::CommandSpec;
 use super::inspect::{color_param, look_json};
@@ -28,6 +28,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         "material: a material defined in this design; replace?: material for the bodies and configuration cells that use it (without it, a material in use is refused)",
     ),
 ];
+
+#[cfg(test)]
+#[path = "material_card_persistence_tests.rs"]
+mod persistence_tests;
 
 fn has_user_materials(s: &Session) -> std::result::Result<(), String> {
     if s.doc.user_materials.is_empty() { Err("the design defines no physical materials (material.create)".into()) } else { Ok(()) }
@@ -182,13 +186,13 @@ fn uses(s: &Session, name: &str) -> (Vec<String>, Vec<String>) {
 }
 
 /// Point every use of material `from` (body assignments, configuration cells) at `to`
-/// ("Default" removes the body assignments).
+/// ([`DEFAULT_MATERIAL`] removes the body assignments).
 fn move_uses(s: &mut Session, from: &str, to: &str) {
     let columns = material_columns(s);
     let d = s.doc_mut();
     let bodies: Vec<String> = d.materials.iter().filter(|(_, m)| m.eq_ignore_ascii_case(from)).map(|(b, _)| b.clone()).collect();
     for b in bodies {
-        if to == "Default" {
+        if to == DEFAULT_MATERIAL {
             d.materials.remove(&b);
         } else {
             d.materials.insert(b, to.to_string());

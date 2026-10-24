@@ -201,19 +201,10 @@ pub fn survey(policy: Policy) -> Survey {
     Survey { backends: format!("{:?}", native_backends()), adapters: found, chosen, lands_on }
 }
 
-/// The adapter `policy` picks, with its report; `None` when no adapter qualifies.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn pick(policy: Policy) -> Option<(wgpu::Adapter, AdapterReport)> {
-    adapters(&instance())
-        .into_iter()
-        .map(|a| {
-            let r = report(&a.get_info());
-            (a, r)
-        })
-        .find(|(_, r)| policy.admits(r.tier))
-}
-
-/// Vulkan-only discovery for the path tracer, respecting the native backend filter.
+/// The Vulkan adapter `policy` picks among those `keep` accepts, with its report; `None` where
+/// the native backends (or `WGPU_BACKEND`) leave out Vulkan, as on macOS. The GPU path tracer
+/// runs on Vulkan only (#3217): D3D12 was never faster in our measurements and needs minutes to
+/// compile its shader at every start, where Vulkan keeps compiled pipelines between runs.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pick_vulkan(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) -> Option<(wgpu::Adapter, AdapterReport)> {
     if !native_backends().contains(wgpu::Backends::VULKAN) {
@@ -225,6 +216,18 @@ pub fn pick_vulkan(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) ->
     all.sort_by_key(|a| std::cmp::Reverse(rank(a.get_info().device_type)));
     all.into_iter()
         .filter(|a| keep(&a.get_info()))
+        .map(|a| {
+            let r = report(&a.get_info());
+            (a, r)
+        })
+        .find(|(_, r)| policy.admits(r.tier))
+}
+
+/// The adapter `policy` picks, with its report; `None` when no adapter qualifies.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pick(policy: Policy) -> Option<(wgpu::Adapter, AdapterReport)> {
+    adapters(&instance())
+        .into_iter()
         .map(|a| {
             let r = report(&a.get_info());
             (a, r)

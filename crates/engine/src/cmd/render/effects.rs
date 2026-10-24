@@ -110,7 +110,17 @@ mod tests {
         assert!(!session.doc.render.setups.contains_key("Aging"));
         session.execute("edit.redo", &json!({})).unwrap();
         assert_eq!(session.doc.render, native_doc.render);
-        session.execute("occurrence.move", &json!({"occurrence":component["occurrence"],"translate":[12,0,0]})).unwrap();
+        // Upstream grounds the first occurrence. Keep that refusal explicit before
+        // exercising a deliberately movable instance and its stable render binding.
+        let grounded_document = session.doc.clone();
+        let grounded_history = (session.revision, session.undo.len(), session.redo.len());
+        let movement = json!({"occurrence":component["occurrence"],"translate":[12,0,0]});
+        let error = session.execute("occurrence.move", &movement).unwrap_err().to_string();
+        assert!(error.contains("is grounded"), "{error}");
+        assert_eq!(session.doc, grounded_document);
+        assert_eq!((session.revision, session.undo.len(), session.redo.len()), grounded_history);
+        session.execute("occurrence.ground", &json!({"occurrence":component["occurrence"],"grounded":false})).unwrap();
+        session.execute("occurrence.move", &movement).unwrap();
         let changed = crate::product_scene::extract(&session).unwrap();
         let resolved = resolve_aging(&session, &changed, &layers, "test").unwrap();
         assert_eq!(resolved.get(0).unwrap().target.unwrap().body_name.as_str(), name);

@@ -5,6 +5,7 @@ use solidcraft_render::job::adaptive::SamplingReport;
 
 pub(super) fn report(task: &Task) -> Result<SamplingReport> {
     task.cancel.check()?;
+    task.context.ensure_available()?;
     let pixels = u64::from(task.request.width) * u64::from(task.request.height);
     let mut report = SamplingReport {
         pilot_samples_per_pixel: task.options.adaptive.map_or(0, |a| a.pilot_samples),
@@ -28,7 +29,7 @@ pub(super) fn report(task: &Task) -> Result<SamplingReport> {
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = tx.send(result);
     });
-    context.device.poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) }).map_err(gpu)?;
+    context.wait(submission, TIMEOUT)?;
     rx.try_recv().map_err(gpu)?.map_err(gpu)?;
     let result = (|| {
         let data = slice.get_mapped_range().map_err(gpu)?;

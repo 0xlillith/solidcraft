@@ -121,8 +121,7 @@ fn invalid_optical_requests_refuse_atomically_and_scalar_export_cannot_lose_them
     .unwrap();
     assert!(
         solidcraft_io::catalog::Catalog::from_document(&s.doc, "user.fixture", "Original", Default::default())
-            .unwrap()
-            .in_format(solidcraft_io::catalog::V1_FORMAT)
+            .and_then(|c| c.in_format(solidcraft_io::catalog::V1_FORMAT))
             .is_err()
     );
     let mut invalid: serde_json::Value = serde_json::from_str(&s.doc.to_json()).unwrap();
@@ -152,8 +151,7 @@ fn physical_default_look_and_face_override_keep_independent_optical_meaning() {
     assert_eq!(s.doc.user_materials[0].density, 0.7);
     assert!(
         solidcraft_io::catalog::Catalog::from_document(&s.doc, "user.fixture", "Original", Default::default())
-            .unwrap()
-            .in_format(solidcraft_io::catalog::V1_FORMAT)
+            .and_then(|c| c.in_format(solidcraft_io::catalog::V1_FORMAT))
             .is_err()
     );
 }

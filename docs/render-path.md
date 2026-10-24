@@ -7,17 +7,28 @@ state intended coverage, not a claim that every backend has passed.
 Native applications can register `solidcraft_gpu::path::host()` alongside the
 existing CPU image host. `render.backends` then exposes `builtin/gpu-path` with
 Preview, Image, PNG, Pbr, Progressive and Refraction. The browser keeps its CPU image host.
-The GPU path executor requires Vulkan, respecting `SOLIDCRAFT_GPU` and `WGPU_BACKEND`; a device which cannot
+Device discovery follows `SOLIDCRAFT_GPU` and `WGPU_BACKEND`; a device which cannot
 create the compute pipeline does not register an available path executor.
-The native UI opens its independent job device on the viewport's selected GPU. A
-non-Vulkan viewport is matched to the same vendor/device through Vulkan; if that is
-unavailable, the GPU method stays disabled and the user can choose a CPU method.
-Software fallback and safe mode do not rediscover a failing hardware driver.
+The native UI retains a factory for the viewport's selected adapter at installation,
+without opening another device or compiling path shaders in Design (including safe-mode startup).
+The first entry into Render starts preparation once, asynchronously; if the viewport arrives
+later, that installation starts the already-requested preparation. Document changes retain
+the pending/ready/failed host, and failures are not retried on each viewport installation.
+It opens its independent job device on the viewport's selected adapter,
+so software fallback and safe mode do not rediscover a failing hardware driver.
 An incompatible explicit GPU policy leaves progressive rendering unavailable there.
+The path tracer runs on Vulkan only (#3217). A viewport on D3D12 is reopened on the
+same GPU through Vulkan. Where there is no Vulkan driver (macOS for now, Windows over
+Remote Desktop or on the WARP software adapter, older drivers), the path executor reports
+itself unavailable and images render on the CPU. On an RTX 4090, D3D12 was never faster:
+equal per sample with DXC and about 55% slower with FXC, and it compiles the path shader
+at every start (about 82 s with DXC, about 2 hours with FXC), where Vulkan's compiled
+pipelines persist between runs.
 
 In the Render workspace, select **GPU path tracing** and samples per pixel before
 checking or starting an image. These controls are transient image-job
-intent. Existing saved setup/camera/material formats are unchanged.
+intent that can also be retained in typed saved setups. Each new saved concept
+uses the pending-format mechanism, without manually changing a version number.
 The canvas switches between live product preview and a large completed-image result,
 with Fit and 100% framing. Jobs report sample progress and export the completed PNG;
 partial accumulation buffers are not displayed on the canvas.
@@ -118,3 +129,18 @@ The ignored `path_performance` test builds a 1,048,576-triangle procedural spher
 and measures 1920×1080 dispatches, BVH construction and upload. Select sample count
 with `SOLIDCRAFT_PATH_BENCH_SAMPLES` (default 1). Run it explicitly with a clear GPU
 timing window; it is excluded from normal CI.
+
+## Dispatch and device-loss behavior
+
+Each new path job begins with 64 paths. Completed submissions target approximately
+20 ms and grow at most twofold, bounded to 64–16384 paths; a short image tail is
+smaller. Denoiser guide/filter passes use the same controller. Measured wall time
+includes scheduling contention, so this is a conservative responsiveness policy,
+not a promised GPU deadline or a substitute for the OS watchdog. Sample/seed and
+pixel identities are unchanged by tile boundaries.
+
+Actual device-loss callbacks, uncaptured device errors and failed completion waits
+retire that native executor. Existing and new jobs refuse further device work;
+preflight/session metadata reports it unavailable without inventing new capabilities.
+The application must deliberately recreate a host to recover. Merely registering the
+same cached host or opening another document does not advertise it as healthy again.

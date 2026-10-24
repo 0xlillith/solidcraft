@@ -330,6 +330,10 @@ impl Catalog {
                 if budget > MAX_BYTES {
                     return Err(invalid("library exceeds 4 MiB encoded admission budget"));
                 }
+                budget = budget.saturating_add(entry_encoded_bound(&entry)?);
+                if budget > MAX_BYTES {
+                    return Err(invalid("library exceeds 4 MiB encoded admission budget"));
+                }
                 entries.insert(entry.id.clone(), entry);
             }
             Ok(())
@@ -361,3 +365,6 @@ fn entry_encoded_bound(entry: &Entry) -> Result<usize> {
 #[cfg(test)]
 #[path = "catalog_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "catalog_v2_tests.rs"]
+mod v2_tests;

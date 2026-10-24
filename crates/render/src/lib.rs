@@ -14,6 +14,7 @@ pub mod film;
 mod gif;
 pub mod job;
 pub mod lighting;
+pub mod mapping;
 mod product;
 mod raster;
 #[cfg(feature = "raytrace-cpu")]

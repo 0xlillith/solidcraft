@@ -6,6 +6,8 @@ fn executor() -> Option<Executor> {
     let (adapter, device, queue) = match open_headless() {
         Ok(device) => device,
         Err(e) => {
+            // The path tracer runs on Vulkan only: where the backends in use leave Vulkan out
+            // (macOS, or `WGPU_BACKEND=dx12`), it is unavailable by design, not missing.
             let vulkan = crate::select::native_backends().contains(wgpu::Backends::VULKAN);
             assert!(!vulkan || std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
             eprintln!("gpu-path device test skipped: {e}");
@@ -181,7 +183,7 @@ fn gpu_nonabsorbing_glass_sphere_white_furnace_conserves_radiance() {
     task.environment = 1.0;
     task.studio = 0.0;
     for _ in 0..options.samples {
-        task.dispatch().unwrap();
+        task.complete_sample().unwrap();
     }
     for (index, pixel) in task.read_linear().unwrap().iter().enumerate() {
         assert!((pixel[0] - 1.0).abs() < 0.025, "glass furnace pixel {index}: {pixel:?}");
@@ -240,7 +242,7 @@ fn gpu_camera_inside_volume_fails_without_publishing_fake_radiance() {
     let mut request = request(1);
     request.camera.distance = 0.1;
     let mut task = Task::new(executor.context.clone(), scene.clone(), request.clone(), JobOptions::default(), CancelToken::default()).unwrap();
-    task.dispatch().unwrap();
+    task.complete_sample().unwrap();
     assert_eq!(task.read_linear().unwrap_err().code, ErrorCode::InvalidScene);
     drop(task);
     // Seed just below the 32-bit wrap: the next real failed path must carry
@@ -249,7 +251,7 @@ fn gpu_camera_inside_volume_fails_without_publishing_fake_radiance() {
     let mut failures = [0; FAILURE_BYTES as usize];
     failures[..4].copy_from_slice(&u32::MAX.to_le_bytes());
     task.context.queue.write_buffer(&task.failures, 0, &failures);
-    task.dispatch().unwrap();
+    task.complete_sample().unwrap();
     let error = task.read_linear().unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidScene);
     assert!(error.message.contains("4294967296 of 1 paths"), "{error}");
@@ -363,7 +365,7 @@ fn gpu_zero_aperture_is_bit_identical_and_lens_admission_is_explicit() {
         image.camera.fov = fov;
         let mut task = Task::new(executor.context.clone(), sphere(white()), image, options, CancelToken::default()).unwrap();
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         task.read_linear().unwrap()
     };
@@ -509,7 +511,7 @@ fn gpu_solid_and_thin_slabs_match_absorbing_interreflection_oracle() {
         task.epsilon = 0.05;
         task.studio = 0.0;
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         let actual = task.read_linear().unwrap()[0];
         for (a, b) in actual.iter().zip([expected.x, expected.y, expected.z]) {
@@ -525,6 +527,20 @@ fn shader_validates_without_a_device() {
     let naga::TypeInner::Struct { span, .. } = &parameters.inner else { panic!("Params must be a struct") };
     assert_eq!(*span as usize, PARAMETER_BYTES);
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).unwrap();
+}
+
+/// #3217: the path tracer opens Vulkan adapters only, and none where the platform has no
+/// Vulkan backend (macOS).
+#[test]
+fn path_devices_are_vulkan_only() {
+    let picked = crate::select::pick_vulkan(crate::select::Policy::Auto, |_| true);
+    if let Some((adapter, report)) = &picked {
+        assert_eq!(adapter.get_info().backend, wgpu::Backend::Vulkan);
+        assert_eq!(report.backend, "Vulkan");
+    }
+    if cfg!(target_os = "macos") || !crate::select::native_backends().contains(wgpu::Backends::VULKAN) {
+        assert!(picked.is_none());
+    }
 }
 
 #[test]
@@ -668,7 +684,7 @@ fn gpu_tiny_scene_matches_cpu_studio_with_face_appearance() {
         Task::new(executor.context.clone(), scene, request(4), JobOptions { samples: 4, max_depth: 1, ..Default::default() }, CancelToken::default())
             .unwrap();
     for _ in 0..4 {
-        task.dispatch().unwrap();
+        task.complete_sample().unwrap();
     }
     let actual = task.read_linear().unwrap();
     let expected = solidcraft_render::studio::shade(surface, Vec3::Z, Vec3::Z).unwrap();
@@ -688,7 +704,7 @@ fn gpu_furnace_fixed_seed_and_cancellation() {
     task.environment = 1.0;
     task.studio = 0.0;
     for _ in 0..options.samples {
-        task.dispatch().unwrap();
+        task.complete_sample().unwrap();
     }
     let result = task.read_linear().unwrap();
     eprintln!("furnace centre {:?}; BVH {:.3} ms; upload {} bytes / {:.3} ms", result[27], task.metrics.0, task.metrics.1, task.metrics.2);
@@ -701,7 +717,7 @@ fn gpu_furnace_fixed_seed_and_cancellation() {
     repeat.environment = 1.0;
     repeat.studio = 0.0;
     for _ in 0..options.samples {
-        repeat.dispatch().unwrap();
+        repeat.complete_sample().unwrap();
     }
     assert_eq!(result, repeat.read_linear().unwrap(), "fixed sample indices and seed must repeat on the same adapter");
     let token = CancelToken::default();
@@ -725,7 +741,7 @@ fn skinny_polar_triangles_do_not_shadow_themselves() {
         CancelToken::default(),
     )
     .unwrap();
-    task.dispatch().unwrap();
+    task.complete_sample().unwrap();
     let pixels = task.read_linear().unwrap();
     for (index, pixel) in pixels.iter().enumerate() {
         assert_eq!(pixel[3], 1.0, "polar cap covers the image: {index} {pixel:?}");
@@ -777,7 +793,7 @@ fn path_performance() {
     let mut task = Task::new(executor.context.clone(), scene, request, options, CancelToken::default()).unwrap();
     let started = Instant::now();
     while task.sample < samples {
-        task.dispatch().unwrap();
+        task.complete_sample().unwrap();
     }
     let seconds = started.elapsed().as_secs_f64();
     let linear = task.read_linear().unwrap();
@@ -1053,7 +1069,7 @@ fn gpu_studio_area_mis_matches_independent_quadrature_and_distance_visibility() 
             let mut task = Task::new(executor.context.clone(), scene, image, options, CancelToken::default()).unwrap();
             assert_eq!(task.parameters(1).len(), PARAMETER_BYTES);
             for _ in 0..options.samples {
-                task.dispatch().unwrap();
+                task.complete_sample().unwrap();
             }
             let value = f64::from(task.read_linear().unwrap()[0][0]);
             if blocker == Some(1.0) {
@@ -1079,7 +1095,7 @@ fn gpu_studio_environment_mis_matches_furnace_at_last_and_continuing_bounces() {
         };
         let mut task = Task::new(executor.context.clone(), sphere(white()), request(8), options, CancelToken::default()).unwrap();
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         let pixels = task.read_linear().unwrap();
         for index in [27, 28, 35, 36] {
@@ -1105,7 +1121,7 @@ fn gpu_emitter_inside_glass_applies_final_segment_absorption() {
     image.camera.fov = 0.0001;
     let mut task = Task::new(executor.context.clone(), glass, image, options, CancelToken::default()).unwrap();
     for _ in 0..options.samples {
-        task.dispatch().unwrap();
+        task.complete_sample().unwrap();
     }
     for pixel in task.read_linear().unwrap() {
         for (value, sigma) in pixel.iter().zip([0.7_f64, 0.3, 0.0]) {
@@ -1156,7 +1172,7 @@ fn gpu_hdr_environment_matches_constant_furnace_and_resource_admission() {
     assert_eq!(with_map.estimated_total_bytes - plain.estimated_total_bytes, source.admitted_bytes());
     let mut task = Task::new(executor.context.clone(), sphere(white()), image, options, CancelToken::default()).unwrap();
     for _ in 0..options.samples {
-        task.dispatch().unwrap();
+        task.complete_sample().unwrap();
     }
     let pixels = task.read_linear().unwrap();
     for index in [27, 28, 35, 36] {
@@ -1187,7 +1203,7 @@ fn gpu_finite_sun_matches_cone_quadrature_at_final_and_continuing_bounces() {
         };
         let mut task = Task::new(executor.context.clone(), environment_plane(), image, options, CancelToken::default()).unwrap();
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         for pixel in task.read_linear().unwrap() {
             assert!((f64::from(pixel[0]) - expected).abs() < 0.03 * expected, "depth{max_depth}: {pixel:?}, {expected}");
@@ -1415,7 +1431,7 @@ fn gpu_shadow_mis_does_not_double_direct_energy_through_index_matched_glass() {
         image.camera.fov = 0.001;
         let mut task = Task::new(executor.context.clone(), scene, image, options, CancelToken::default()).unwrap();
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         let actual = f64::from(task.read_linear().unwrap()[0][0]);
         assert!((actual - expected).abs() < 0.08 * expected, "thin={thin}, enabled={enabled}, depth={depth}: {actual} vs {expected}");
@@ -1478,7 +1494,7 @@ fn gpu_absorbing_two_sheet_mis_matches_f64_quadrature() {
         image.camera.fov = 0.001;
         let mut task = Task::new(executor.context.clone(), scene, image, options, CancelToken::default()).unwrap();
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         let actual = f64::from(task.read_linear().unwrap()[0][0]);
         assert!((actual - expected).abs() < 0.08 * expected, "thin={thin}, enabled={enabled}, depth={depth}: {actual} vs {expected}");
@@ -1536,7 +1552,7 @@ fn gpu_hdr_and_sun_shadow_mis_preserve_index_matched_energy() {
             };
             let mut task = Task::new(executor.context.clone(), scene, image, options, CancelToken::default()).unwrap();
             for _ in 0..options.samples {
-                task.dispatch().unwrap();
+                task.complete_sample().unwrap();
             }
             let actual = f64::from(task.read_linear().unwrap()[0][0]);
             let expected = if solar { sun_expected } else { hdr_expected };
@@ -1700,7 +1716,7 @@ fn gpu_finite_emitter_inside_solid_retains_entry_radiance_eta() {
         image.camera.fov = 0.001;
         let mut task = Task::new(executor.context.clone(), scene, image, options, CancelToken::default()).unwrap();
         for _ in 0..options.samples {
-            task.dispatch().unwrap();
+            task.complete_sample().unwrap();
         }
         let actual = f64::from(task.read_linear().unwrap()[0][0]);
         assert!((actual - expected).abs() < 0.08 * expected, "thin={thin}, enabled={enabled}, depth={depth}: {actual} vs {expected}");
@@ -2607,18 +2623,6 @@ fn medium_failures_are_tolerated_only_when_rare() {
 }
 
 #[test]
-fn path_devices_are_vulkan_only() {
-    let picked = crate::select::pick_vulkan(crate::select::Policy::Auto, |_| true);
-    if let Some((adapter, report)) = &picked {
-        assert_eq!(adapter.get_info().backend, wgpu::Backend::Vulkan);
-        assert_eq!(report.backend, "Vulkan");
-    }
-    if !crate::select::native_backends().contains(wgpu::Backends::VULKAN) {
-        assert!(picked.is_none());
-    }
-}
-
-#[test]
 fn identical_maps_pack_once_for_multiple_gpu_bodies() {
     use solidcraft_render::job::textures::{PlanarFrame, RuntimeTextures};
     let fixture = texture_fixture(PlanarFrame { origin: [0.0; 3], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0] });
@@ -3090,4 +3094,40 @@ fn failed_resource_creation_unwinds_gpu_error_scopes() {
     let error = outcome.expect("ordinary allocation refusal must not panic").unwrap_err();
     assert_eq!(error.code, ErrorCode::LimitExceeded);
     checked(scopes(&device)).unwrap();
+}
+
+#[test]
+fn actual_first_gpu_quantum_is_small_and_cancellation_retains_no_completed_image() {
+    let Some(executor) = executor() else { return };
+    let token = CancelToken::default();
+    let mut task = Task::new(executor.context.clone(), sphere(white()), request(64), JobOptions::default(), token.clone()).unwrap();
+    task.dispatch().unwrap();
+    assert_eq!(task.offset, dispatch::MIN_PATHS);
+    assert_eq!(task.sample, 0);
+    token.cancel();
+    assert_eq!(task.step(4096).err().unwrap().code, ErrorCode::Cancelled);
+    assert!(task.png.is_none());
+}
+
+#[test]
+fn real_device_loss_retires_the_executor_and_the_sessions_cached_availability() {
+    use solidcraft_engine::Session;
+    let Some(executor) = executor() else { return };
+    let context = executor.context.clone();
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let mut session = Session::default();
+    session.register_render_job_host(host.clone()).unwrap();
+    assert!(matches!(host.descriptor().unwrap().availability, Availability::Available));
+    context.device.destroy();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while context.healthy.load(Ordering::Acquire) && Instant::now() < deadline {
+        let _ = context.device.poll(wgpu::PollType::Poll);
+        std::thread::yield_now();
+    }
+    assert!(!context.healthy.load(Ordering::Acquire), "actual device-loss callback must retire the host");
+    assert!(matches!(host.descriptor().unwrap().availability, Availability::Unavailable { .. }));
+    let scene = sphere(white());
+    assert_eq!(host.admit(&scene, &request(1), JobOptions::default()).unwrap_err().code, ErrorCode::HostUnavailable);
+    let backend = session.render_backend();
+    assert!(backend.executors.iter().any(|d| d.id.as_str() == "gpu-path" && matches!(d.availability, Availability::Unavailable { .. })));
 }

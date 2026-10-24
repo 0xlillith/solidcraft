@@ -21,14 +21,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/render/catalog/quality-presets.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/quality-presets.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
 | assets/render/catalog/scene-presets.json | SolidCraft contributors | Byte-identical runtime export of docs/render-materials/scene-presets.json; generated and checked by tools/render-library/generate.py | MIT OR Apache-2.0 |
 | examples/chebyshev-motion-trace.json | SolidCraft contributors | Original parametric Chebyshev lambda mechanism and associative-trace demo, constructed from analytic circle intersections; classical link proportions documented at https://doi.org/10.1002/rcs.70095; no external CAD geometry or artwork | MIT OR Apache-2.0 |
-| crates/gpu/src/path/denoise.wgsl | SolidCraft contributors | original bounded edge-aware a-trous spatial filter; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
-| crates/gpu/src/path/denoise_guides.wgsl | SolidCraft contributors | original deterministic centre-ray material and geometry guide pass; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
-| crates/gpu/src/path/shadows.wgsl | SolidCraft contributors | original bounded area, sun and environment visibility transport; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
-| crates/gpu/src/path/textures.wgsl | SolidCraft contributors | original planar colour and normal map sampling; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
-| assets/appearances/starter_pack.rs | SolidCraft contributors | original illustrative optical recipes, authored scalar values and future procedural resource descriptors; no measured or external material dataset | MIT OR Apache-2.0 |
-| examples/render-studio.json | SolidCraft contributors | original procedural box/cylinder enclosure script for the integrated Render workspace | MIT OR Apache-2.0 |
-| examples/render-opaque-studio.json | SolidCraft contributors | original procedural sphere study varying opaque metal fraction and roughness independently; no external assets or engineering data | MIT OR Apache-2.0 |
-| examples/material-finishes.json | SolidCraft contributors | original procedural sphere study of six illustrative opaque finishes with generic material densities; no external assets or measured optical data | MIT OR Apache-2.0 |
+| examples/material-card.json | SolidCraft contributors | original analytic box and explicitly synthetic engineering card; invented illustrative constants, no external material dataset | MIT OR Apache-2.0 |
 | examples/studio/author_sweep.py | SolidCraft contributors | original editable CAD scene and authoring metadata; no external assets | MIT OR Apache-2.0 |
 | examples/studio/author_scene.py | SolidCraft contributors | original editable CAD scene and authoring metadata; no external assets | MIT OR Apache-2.0 |
 | examples/studio/materials.json | SolidCraft contributors | original editable CAD scene and authoring metadata; no external assets | MIT OR Apache-2.0 |
@@ -38,6 +31,14 @@ Editable drawing code, native projects and shipped exports are collected under `
 | examples/studio/stage1-sweep.json | SolidCraft contributors | original tangent circular-arc CAD cyclorama; no external assets | MIT OR Apache-2.0 |
 | examples/studio/stage1.json | SolidCraft contributors | original editable CAD studio scene; no imported geometry or external image assets | MIT OR Apache-2.0 |
 | examples/studio/stage1-render.json | SolidCraft contributors | original studio camera and lighting parameters | MIT OR Apache-2.0 |
+| examples/render-studio.json | SolidCraft contributors | original procedural box/cylinder enclosure script for the integrated Render workspace | MIT OR Apache-2.0 |
+| examples/render-opaque-studio.json | SolidCraft contributors | original procedural sphere study varying opaque metal fraction and roughness independently; no external assets or engineering data | MIT OR Apache-2.0 |
+| crates/gpu/src/path/denoise.wgsl | SolidCraft contributors | original bounded edge-aware a-trous spatial filter; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
+| crates/gpu/src/path/denoise_guides.wgsl | SolidCraft contributors | original deterministic centre-ray material and geometry guide pass; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
+| crates/gpu/src/path/shadows.wgsl | SolidCraft contributors | original bounded area, sun and environment visibility transport; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
+| crates/gpu/src/path/textures.wgsl | SolidCraft contributors | original planar colour and normal map sampling; GPU2 donor d710e31, no external shader source | MIT OR Apache-2.0 |
+| assets/appearances/starter_pack.rs | SolidCraft contributors | original illustrative optical recipes, authored scalar values and future procedural resource descriptors; no measured or external material dataset | MIT OR Apache-2.0 |
+| examples/material-finishes.json | SolidCraft contributors | original procedural sphere study of six illustrative opaque finishes with generic material densities; no external assets or measured optical data | MIT OR Apache-2.0 |
 | examples/render-path-studio.json | SolidCraft contributors | original procedural opaque enclosure, teal insert and metal fasteners for progressive rendering; no imported models | MIT OR Apache-2.0 |
 | crates/gpu/src/path/path.wgsl | SolidCraft contributors | original software BVH traversal and path integration using the existing SolidCraft surface/studio equations; no external shader source | MIT OR Apache-2.0 |
 | crates/gpu/src/pbr.rs | SolidCraft contributors | original WGSL translation of SolidCraft's opaque surface and fixed studio reference, embedded as Rust source; no external shader code | MIT OR Apache-2.0 |
@@ -48,6 +49,8 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/icons/app/macos/exports/Assets.car | SolidCraft contributors | Apple actool compilation of assets/icons/app/macos/source/SolidCraft.icon for macOS; contains original artwork only | MIT OR Apache-2.0 |
 | assets/archive/icons/macos-v1/source/icon.vectorcraft | SolidCraft contributors | retained editable historical VectorCraft source, with named face and background layers; redundant exports retired | MIT OR Apache-2.0 |
 | assets/icons/app/macos/exports/icon.icns | SolidCraft contributors | macOS fallback compiled by Apple's actool from the approved assets/icons/app/macos/source/SolidCraft.icon composition | MIT OR Apache-2.0 |
+| assets/models/test_boat.bin | 3DBenchy.com | 3DBenchy.com | Public Domain |
+| assets/models/make_test_boat.py | SolidCraft contributors | original script that packs a model into the compact file above | MIT OR Apache-2.0 |
 | docs/screenshots/class-a-blend.png | SolidCraft contributors | screenshot of SolidCraft itself: two boxes bridged by `surface.blend` (a 40x10 sheet, `solidcraft-cli snapshot` of plan/evidence script ev_blend) | MIT OR Apache-2.0 |
 | docs/screenshots/class-a-crown.png | SolidCraft contributors | screenshot of SolidCraft itself: a patch crowned with `surface.patch crown=0.3` over a saddle rim (`solidcraft-cli snapshot`) | MIT OR Apache-2.0 |
 | docs/screenshots/class-a-boundary.png | SolidCraft contributors | screenshot of SolidCraft itself: a patch through two sketch lines built by `surface.boundary` with `crown: 0.4` (`solidcraft-cli snapshot`) | MIT OR Apache-2.0 |
@@ -367,6 +370,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/icons/ui/design/svg/flat/stop.svg | SolidCraft contributors | original icon master (64 grid) | MIT OR Apache-2.0 |
 | assets/icons/ui/design/svg/flat/shield.svg | SolidCraft contributors | original icon master (64 grid) | MIT OR Apache-2.0 |
 | assets/icons/ui/design/svg/model/status_recovery.svg | SolidCraft contributors | original icon master (64 grid) | MIT OR Apache-2.0 |
+| assets/icons/ui/design/svg/model/frame_member.svg | SolidCraft contributors | original icon master (64 grid) | MIT OR Apache-2.0 |
 | assets/icons/ui/design/svg/model/placeholder.svg | SolidCraft contributors | two-tone modelling icon master (64 grid), original SolidCraft artwork | MIT OR Apache-2.0 |
 | assets/icons/ui/design/svg/model/plane.svg | SolidCraft contributors | two-tone modelling icon master (64 grid), original SolidCraft artwork | MIT OR Apache-2.0 |
 | assets/icons/ui/design/svg/model/plane_angle.svg | SolidCraft contributors | two-tone modelling icon master (64 grid), original SolidCraft artwork | MIT OR Apache-2.0 |
@@ -550,9 +554,9 @@ crates/engine/src/tests/gltf_import.rs); no third-party models are committed.
 ## FreeCAD and Rhino import library
 
 FreeCAD `.FCStd` and Rhino `.3dm` files are read with [cadmpeg](https://github.com/cadmpeg/cadmpeg)
-0.6.1 (Apache-2.0), linked as the crates `cadmpeg-core`, `cadmpeg-ir`, `cadmpeg-registry`,
+0.6.3 (Apache-2.0), linked as the crates `cadmpeg-core`, `cadmpeg-ir`, `cadmpeg-registry`,
 `cadmpeg-container`, `cadmpeg-codec-freecad`, `cadmpeg-codec-rhino` and `cadmpeg-codec-step`
-in native builds (`crates/io/src/native_cad.rs`). Only those open-format codecs are built: no
+in native and browser builds (`crates/io/src/native_cad.rs`). Only those open-format codecs are built: no
 default features, so cadmpeg's codecs for commercial CAD formats and its ShapeManager/ACIS
 codec are not compiled in. Its licence text is in THIRD-PARTY-LICENSES.txt; no code from it is
 copied into SolidCraft.
@@ -607,6 +611,7 @@ These original implementations are under SolidCraft's MIT OR Apache-2.0 licence.
 
 ## Original cylindrical coffee housing variant
 
+| File | Author | Provenance | Licence |
 |---|---|---|---|
 | examples/studio/author_coffee_cylinder.py | SolidCraft contributors | original parametric cylindrical CAD construction and editable command recipes; no external assets | MIT OR Apache-2.0 |
 | examples/studio/coffee-cylinder.json | SolidCraft contributors | original cylindrical housing on the original exploded coffee composition; no external assets | MIT OR Apache-2.0 |
@@ -665,7 +670,6 @@ on the results branch. No photographs, scans or external image assets are includ
 | assets/render/starter/tools/test_check_all.py | SolidCraft contributors | original validation-runner regression fixtures and subprocess tests | MIT OR Apache-2.0 |
 | assets/render/starter/tools/requirements.txt | SolidCraft contributors | pinned offline authoring tool requirements; no application dependency changes | MIT OR Apache-2.0 |
 | crates/render/examples/validate_starter.rs | SolidCraft contributors | original native resource conformance checker using public SolidCraft decoding, normalization, sampling and mip APIs | MIT OR Apache-2.0 |
-| .github/workflows/render-resources.yml | SolidCraft contributors | original cross-platform authored/native resource gate; action pins identified in workflow | MIT OR Apache-2.0 |
 | .gitattributes | SolidCraft contributors | original canonical line-ending policy for the existing runtime icon-discovery manifest; no artwork or icon-assignment changes | MIT OR Apache-2.0 |
 | assets/render/.gitattributes | SolidCraft contributors | original canonical line-ending policy for SHA-256-pinned renderer authoring resources | MIT OR Apache-2.0 |
 | docs/render-materials/.gitattributes | SolidCraft contributors | original canonical line-ending policy for SHA-256-pinned renderer authoring resources | MIT OR Apache-2.0 |

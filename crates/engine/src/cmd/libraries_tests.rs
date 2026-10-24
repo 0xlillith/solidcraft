@@ -280,7 +280,7 @@ fn lossy_scalar_export_never_creates_or_replaces_a_file_or_changes_history() {
         }
         for overwrite in [false, true] {
             let error =
-                s.execute("library.export", &json!({"path":file.0,"format":solidcraft_io::catalog::V1_FORMAT,"overwrite":overwrite})).unwrap_err();
+                s.execute("library.export", &json!({"path":file.0,"overwrite":overwrite,"format":solidcraft_io::catalog::V1_FORMAT})).unwrap_err();
             assert!(error.to_string().contains("cannot preserve PBR"));
             if existing {
                 assert_eq!(std::fs::read(&file.0).unwrap(), b"preserve existing library");

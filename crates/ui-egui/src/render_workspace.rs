@@ -52,7 +52,10 @@ mod transport;
 #[path = "render_workspace_tests.rs"]
 mod tests;
 
+type PathFactory = Box<dyn FnOnce() -> Result<ImageHost, String> + Send>;
+
 pub struct State {
+    pending_setup: Option<PathFactory>,
     pub host: Option<ExecutorDescriptor>,
     pub path_host: PathHost,
     /// How long the last path tracer setup took, in seconds, per viewport adapter
@@ -290,6 +293,7 @@ impl Default for State {
         Self {
             host: None,
             path_host: PathHost::default(),
+            pending_setup: None,
             setup_seconds: Default::default(),
             setup_key: None,
             image_host: None,
@@ -305,6 +309,28 @@ impl Default for State {
             image: None,
             image_info: None,
             preview_image: None,
+        }
+    }
+}
+
+impl State {
+    /// Retain the selected viewport adapter, but do not open another device or
+    /// compile shaders until Render is used. A later viewport installation (for
+    /// example safe-mode fallback) replaces only a not-yet-started factory.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn defer_path_host(&mut self, key: String, create: impl FnOnce() -> Result<ImageHost, String> + Send + 'static) {
+        if matches!(self.path_host, PathHost::NotStarted) {
+            self.setup_key = Some(key);
+            self.pending_setup = Some(Box::new(create));
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_deferred_path_host(&mut self) {
+        if matches!(self.path_host, PathHost::NotStarted)
+            && let Some(create) = self.pending_setup.take()
+        {
+            self.path_host.start(create);
         }
     }
 }
@@ -366,6 +392,10 @@ pub fn host_executor(max_dimension: u32, depth: bool, samples: u32) -> Result<Ex
 }
 
 pub fn sync_backend(app: &mut SolveApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if active(app) {
+        app.render_workspace.start_deferred_path_host();
+    }
     if let Some(took) = app.render_workspace.path_host.poll() {
         record_setup(&mut app.render_workspace, took);
     }
@@ -413,7 +443,8 @@ pub fn reset_document(app: &mut SolveApp) {
     let path_host = std::mem::take(&mut app.render_workspace.path_host);
     let setup_seconds = std::mem::take(&mut app.render_workspace.setup_seconds);
     let setup_key = app.render_workspace.setup_key.take();
-    app.render_workspace = State { host, image_host, path_host, setup_seconds, setup_key, ..Default::default() };
+    let pending_setup = app.render_workspace.pending_setup.take();
+    app.render_workspace = State { host, image_host, path_host, setup_seconds, setup_key, pending_setup, ..Default::default() };
     if active(app) {
         app.ui.tab = "MODEL".into();
     }
@@ -456,6 +487,8 @@ pub fn enter(app: &mut SolveApp, render: bool) -> Result<(), String> {
         if app.render_workspace.revision != app.session.revision && !app.render_workspace.view.dirty {
             setups::load(app);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        app.render_workspace.start_deferred_path_host();
     } else {
         if let Some((camera, perspective)) = app.render_workspace.design_camera.take() {
             app.cam = camera;
@@ -739,7 +772,7 @@ fn image_edit_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     match &app.render_workspace.path_host {
         PathHost::Preparing(_, started) => setup_progress(ui, app, *started),
         PathHost::Failed(error) => {
-            ui.label(format!("{}: {error}", app.tr("render.gpu_path_failed")));
+            ui.add(egui::Label::new(format!("{}: {error}", app.tr("render.gpu_path_failed"))).wrap());
         }
         _ => {}
     }
@@ -782,7 +815,7 @@ fn job_controls(app: &mut SolveApp, ui: &mut egui::Ui, compact: bool) {
     let params = image_params(app);
     if !compact {
         if let Err(error) = &params {
-            ui.colored_label(Tokens::get().warning, error);
+            ui.add(egui::Label::new(egui::RichText::new(error).color(Tokens::get().warning)).wrap());
         }
         cpu::checked_status(app, ui, params.as_ref().ok());
     }
@@ -800,7 +833,7 @@ fn job_controls(app: &mut SolveApp, ui: &mut egui::Ui, compact: bool) {
             }
             Err(error) => {
                 if !compact {
-                    ui.small(error.to_string());
+                    ui.add(egui::Label::new(egui::RichText::new(error.to_string()).small()).wrap());
                 }
             }
         }
@@ -856,7 +889,7 @@ fn job_controls(app: &mut SolveApp, ui: &mut egui::Ui, compact: bool) {
         if !compact {
             cpu::captured_status(app, ui, status);
             if let Some(message) = status["error"]["message"].as_str() {
-                ui.small(message);
+                ui.add(egui::Label::new(egui::RichText::new(message).small()).wrap());
             }
         }
         if busy {
@@ -918,11 +951,11 @@ fn completed_image(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             }
             Err(error) => {
-                ui.label(error);
+                ui.add(egui::Label::new(error).wrap());
             }
         }
     } else if let Some((_, Err(error))) = &app.render_workspace.image {
-        ui.label(error);
+        ui.add(egui::Label::new(error).wrap());
     }
 }
 
@@ -1601,6 +1634,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             ao_radius: 0.0,
             eye: [eye.x as f32, eye.y as f32, eye.z as f32, if camera.fov > 0.0 { 1.0 } else { 0.0 }],
             ssaa: if width < full.0 { width as f32 / full.0 as f32 } else { 1.0 },
+            hover_tint: [0.0; 3],
+            selection_tint: [0.0; 3],
         });
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, callback));
         Ok(())

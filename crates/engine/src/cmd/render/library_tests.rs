@@ -240,7 +240,17 @@ fn saved_surface_follows_its_occurrence_without_rebinding_another_instance() {
     };
     let original = capture(&s);
     let frame = original.bindings()[0].frame;
-    s.execute("occurrence.move", &json!({"occurrence":component["occurrence"],"translate":[12,0,0]})).unwrap();
+    // Upstream grounds the first occurrence. Keep that refusal explicit before
+    // exercising a deliberately movable instance and its stable render binding.
+    let grounded_document = s.doc.clone();
+    let grounded_history = (s.revision, s.undo.len(), s.redo.len());
+    let movement = json!({"occurrence":component["occurrence"],"translate":[12,0,0]});
+    let error = s.execute("occurrence.move", &movement).unwrap_err().to_string();
+    assert!(error.contains("is grounded"), "{error}");
+    assert_eq!(s.doc, grounded_document);
+    assert_eq!((s.revision, s.undo.len(), s.redo.len()), grounded_history);
+    s.execute("occurrence.ground", &json!({"occurrence":component["occurrence"],"grounded":false})).unwrap();
+    s.execute("occurrence.move", &movement).unwrap();
     let moved = capture(&s);
     assert_eq!(moved.bindings().len(), 1);
     assert!((moved.bindings()[0].frame.origin[0] - frame.origin[0] - 12.0).abs() < 1e-8);
