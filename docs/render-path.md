@@ -9,7 +9,12 @@ existing CPU image host. `render.backends` then exposes `builtin/gpu-path` with
 Preview, Image, PNG, Pbr, Progressive and Refraction. The browser keeps its CPU image host.
 Device discovery follows `SOLIDCRAFT_GPU` and `WGPU_BACKEND`; a device which cannot
 create the compute pipeline does not register an available path executor.
-The native UI opens its independent job device on the viewport's selected adapter,
+The native UI retains a factory for the viewport's selected adapter at installation,
+without opening another device or compiling path shaders in Design (including safe-mode startup).
+The first entry into Render starts preparation once, asynchronously; if the viewport arrives
+later, that installation starts the already-requested preparation. Document changes retain
+the pending/ready/failed host, and failures are not retried on each viewport installation.
+It opens its independent job device on the viewport's selected adapter,
 so software fallback and safe mode do not rediscover a failing hardware driver.
 An incompatible explicit GPU policy leaves progressive rendering unavailable there.
 The path tracer runs on Vulkan only (#3217). A viewport on D3D12 is reopened on the
