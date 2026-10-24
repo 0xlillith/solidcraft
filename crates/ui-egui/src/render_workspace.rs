@@ -372,7 +372,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading(app.tr("cmd.render_settings_get"));
                     ui.label(app.tr("render.preview"));
-                    ui.small(app.tr("render.opaque_preview_help"));
+                    ui.add(egui::Label::new(egui::RichText::new(app.tr("render.opaque_preview_help")).small()).wrap());
                     ui.separator();
                     let names: Vec<_> = app.session.doc.render.setups.keys().cloned().collect();
                     let old_name = app.render_workspace.view.name.clone();
@@ -478,7 +478,7 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     match &app.render_workspace.path_host {
         PathHost::Preparing(_, started) => setup_progress(ui, app, *started),
         PathHost::Failed(error) => {
-            ui.label(format!("{}: {error}", app.tr("render.gpu_path_failed")));
+            ui.add(egui::Label::new(format!("{}: {error}", app.tr("render.gpu_path_failed"))).wrap());
         }
         _ => {}
     }
@@ -525,7 +525,7 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                     app.render_workspace.view.completed = Some(job);
                 }
                 if let Some(message) = status["error"]["message"].as_str() {
-                    ui.label(message);
+                    ui.add(egui::Label::new(message).wrap());
                     if status["error"]["code"] == "limit_exceeded" {
                         ui.small(app.tr("render.image_reduce"));
                     }
@@ -546,7 +546,7 @@ fn image_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             }
             Err(e) => {
-                ui.label(e.to_string());
+                ui.add(egui::Label::new(e.to_string()).wrap());
             }
         }
     }
@@ -592,7 +592,7 @@ fn completed_image(app: &mut SolveApp, ui: &mut egui::Ui) {
                     .on_hover_text(app.tr("render.image_completed"));
             }
             Err(error) => {
-                ui.label(error);
+                ui.add(egui::Label::new(error).wrap());
             }
         }
     }
