@@ -287,22 +287,25 @@ impl Formats<'_> {
 
     /// Bring a design of format `version` up to [`Formats::current`]. `applied` is the file's
     /// `format_pending`: the changes of its format it already has, when it was written while they
-    /// were pending; the others' steps run first. A pending change this build doesn't have is a
-    /// newer build's, and the design is refused.
+    /// were pending; the others' steps run first. Recognize changes across the entire history:
+    /// a branch's pending change may have landed at a later number. Unknown changes are refused
+    /// even after folding, and already-applied changes never run again at their later number.
     fn upgrade(&self, v: &mut Value, version: u32, applied: Option<&[String]>) -> Result<()> {
         if version == 0 || version > self.current() {
             return Err(DocError::Invalid(format!("not a SolidCraft design (format {version})")));
         }
         // A list beside a format that isn't made of changes means nothing (a tool or a test set
         // an older number on a newer file): it is ignored, like any field an upgrade drops.
-        if let (Some(applied), Some(parts)) = (applied, self.parts(version)) {
-            let pending = version == self.current() && !self.pending.is_empty();
-            if let Some(unknown) = applied.iter().find(|name| pending && !parts.iter().any(|p| p.name == name.as_str())) {
+        let applied = applied.filter(|_| self.parts(version).is_some());
+        if let Some(applied) = applied {
+            if let Some(unknown) =
+                applied.iter().find(|name| !self.folded.iter().flat_map(|(_, parts)| *parts).chain(self.pending).any(|p| p.name == name.as_str()))
+            {
                 return Err(DocError::Invalid(format!(
                     "this design was saved by a newer SolidCraft (file format {version} with `{unknown}`, which this version doesn't know): update SolidCraft to open it"
                 )));
             }
-            for part in parts.iter().filter(|p| !applied.iter().any(|name| name == p.name)) {
+            for part in self.parts(version).unwrap_or_default().iter().filter(|p| !applied.iter().any(|name| name == p.name)) {
                 part.step.map_or(Ok(()), |step| step(v))?;
             }
         }
@@ -310,7 +313,7 @@ impl Formats<'_> {
             match self.hand.get(from as usize - 1) {
                 Some(step) => step(v)?,
                 None => {
-                    for part in self.parts(from + 1).unwrap_or_default() {
+                    for part in self.parts(from + 1).unwrap_or_default().iter().filter(|p| !applied.is_some_and(|a| a.iter().any(|n| n == p.name))) {
                         part.step.map_or(Ok(()), |step| step(v))?;
                     }
                 }
@@ -1248,6 +1251,40 @@ mod tests {
         assert_eq!(trace_of(&released), Vec::<&str>::new());
     }
 
+    /// An experimental producer can use a number that a release later folds without its
+    /// change. Its unknown concept must still be refused before any migration runs.
+    #[test]
+    fn unknown_pending_concepts_are_refused_after_folding() {
+        let parts = [traced("a-first")];
+        let later = [traced("b-second")];
+        for pending in [&[][..], &later[..]] {
+            let formats = Formats { hand: &[], folded: &[(2, &parts)], pending };
+            let mut file = serde_json::json!({"trace": []});
+            let original = file.clone();
+            let err = formats.upgrade(&mut file, 2, Some(&["experimental-card".into()])).unwrap_err();
+            assert!(err.to_string().contains("experimental-card") && err.to_string().contains("update SolidCraft"), "{err}");
+            assert_eq!(file, original, "refuse before applying even a known migration");
+        }
+    }
+
+    /// The same concept can land at a later number than an experimental producer used.
+    /// Recognize it anywhere in this reader's history and never apply its migration twice.
+    #[test]
+    fn pending_concepts_moved_to_later_formats_are_not_reapplied() {
+        let first = [traced("a-first")];
+        let later = [traced("b-second")];
+        let pending = Formats { hand: &[], folded: &[(2, &first)], pending: &later };
+        let folded = Formats { hand: &[], folded: &[(2, &first), (3, &later)], pending: &[] };
+        for formats in [pending, folded] {
+            let mut experimental = serde_json::json!({"trace": ["b"]});
+            formats.upgrade(&mut experimental, 2, Some(&["b-second".into()])).unwrap();
+            assert_eq!(trace_of(&experimental), ["b", "a"]);
+            let mut released = serde_json::json!({"trace": ["a"]});
+            formats.upgrade(&mut released, 2, None).unwrap();
+            assert_eq!(trace_of(&released), ["a", "b"], "ordinary released files still get later migrations");
+        }
+    }
+
     /// `format_pending` is read and checked: a damaged list is refused, a list of changes this
     /// build doesn't have is a newer build's, and saving writes this build's own list.
     #[test]
@@ -1259,7 +1296,7 @@ mod tests {
             assert!(read(&file.to_string()).is_err());
         }
         file["format_pending"] = serde_json::json!(["not-a-change-anyone-made"]);
-        assert_eq!(read(&file.to_string()).is_err(), !PENDING.is_empty(), "only a pending format's list names changes");
+        assert!(read(&file.to_string()).is_err(), "unknown pending concepts are refused even after folding");
         file["format_pending"] = Value::from(pending_names());
         let opened = read(&file.to_string()).unwrap();
         assert_eq!(opened.format_pending, pending_names());

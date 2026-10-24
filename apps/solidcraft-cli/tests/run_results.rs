@@ -59,6 +59,84 @@ fn cli_loads_both_design_encodings_by_contents() {
     }
 }
 
+/// #1369: a pending concept that did not land in the numbered release must not be silently
+/// dropped on open/resave, in either encoding or before replacing an existing destination.
+#[test]
+fn unknown_pending_concepts_preserve_the_open_design_and_output_files() {
+    use solidcraft_engine::{Session, doc, io};
+
+    let dir = Scratch::new();
+    for version in [33, doc::format::FORMAT] {
+        let mut experimental = doc::Document::new("Experimental");
+        experimental.format = doc::format::format_string(version);
+        experimental.format_pending.push("experimental-card".into());
+        for (extension, bytes) in [("json", io::write_design(&experimental)), ("solidcraft", io::write_design_container(&experimental).unwrap())] {
+            let source = dir.0.join(format!("experimental-{version}.{extension}"));
+            std::fs::write(&source, &bytes).unwrap();
+            let mut session = Session::default();
+            session.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+            let original = session.doc.clone();
+            let original_path = session.path.clone();
+            let undo = session.undo.len();
+            let dirty = session.is_dirty();
+            let err = session.execute("doc.open", &json!({"path": source})).unwrap_err().to_string();
+            assert!(err.contains("experimental-card") && err.contains("update SolidCraft"), "{err}");
+            assert_eq!(session.doc, original);
+            assert_eq!(session.path, original_path);
+            assert_eq!(session.undo.len(), undo);
+            assert_eq!(session.is_dirty(), dirty);
+
+            for existing in [false, true] {
+                let destination = dir.0.join(format!("output-{version}-{extension}-{existing}.{extension}"));
+                let backup = io::backup_path(&destination);
+                if existing {
+                    std::fs::write(&destination, b"existing design").unwrap();
+                    std::fs::write(&backup, b"existing backup").unwrap();
+                }
+                let output = cli().args(["run", "--in"]).arg(&source).arg("--save").arg(&destination).output().unwrap();
+                assert_eq!(output.status.code(), Some(1));
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(error.contains("experimental-card") && error.contains("update SolidCraft"), "{error}");
+                if existing {
+                    assert_eq!(std::fs::read(&destination).unwrap(), b"existing design");
+                    assert_eq!(std::fs::read(&backup).unwrap(), b"existing backup");
+                } else {
+                    assert!(!destination.exists() && !backup.exists());
+                }
+                assert_eq!(std::fs::read(&source).unwrap(), bytes);
+            }
+        }
+    }
+}
+
+#[test]
+fn known_pending_concepts_and_released_files_round_trip_with_inert_metadata() {
+    use solidcraft_engine::{doc, io};
+
+    let dir = Scratch::new();
+    let current = doc::Document::new("Supported");
+    let mut released = current.clone();
+    released.format = doc::format::format_string(33);
+    released.format_pending.clear();
+    let mut experimental = released.clone();
+    experimental.format_pending.push("reserved-body-names".into());
+    for (index, mut document) in [current, released, experimental].into_iter().enumerate() {
+        document.metadata.0.insert("com.example.tool".into(), json!({"format_pending": ["experimental-card"], "physical_card": {"density": 700}}));
+        for (extension, bytes) in [("json", io::write_design(&document)), ("solidcraft", io::write_design_container(&document).unwrap())] {
+            let source = dir.0.join(format!("supported-{index}.{extension}"));
+            let destination = dir.0.join(format!("resaved-{index}.{extension}"));
+            std::fs::write(&source, &bytes).unwrap();
+            let output = cli().args(["run", "--in"]).arg(&source).arg("--save").arg(&destination).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            let reopened = io::read_design(&std::fs::read(&destination).unwrap()).unwrap();
+            assert_eq!(reopened.metadata, document.metadata);
+            assert_eq!(reopened.name, document.name);
+            assert_eq!(reopened.features, document.features);
+            assert_eq!(std::fs::read(&source).unwrap(), bytes);
+        }
+    }
+}
+
 #[test]
 fn results_still_save_and_export_the_script_once() {
     let dir = Scratch::new();
