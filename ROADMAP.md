@@ -143,6 +143,8 @@ completed drawings publish atomically. The browser still exports synchronously.
 
 ## Render foundation
 
+- Definition-local visual mapping (#1214) supplies a bounded numerical frame, physical repeat coordinates and a deterministic one-time grain-axis suggestion. It adds no saved record or texture consumer; see [the mapping contract](docs/render-visual-mapping.md).
+
 - Explicit texture normalization (#1218) produces completed float RGBA with
   role-aware linear color/data semantics, bounded matrix/TRC ICC conversion and
   opt-in EXIF orientation. It retains high-precision raw samples and records lossy

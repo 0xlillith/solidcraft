@@ -13,6 +13,7 @@ mod curve_display;
 mod gif;
 pub mod job;
 pub mod lighting;
+pub mod mapping;
 mod product;
 mod raster;
 mod scene;
