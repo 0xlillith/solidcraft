@@ -1,5 +1,71 @@
 use super::*;
 
+#[cfg(feature = "raytrace-cpu")]
+mod camera_passes {
+    use super::primary::PrimaryFilm;
+    use super::*;
+    use crate::job::CpuProgressiveOptions;
+
+    fn primary() -> PrimaryFilm {
+        let options = CpuProgressiveOptions { samples_per_pixel: 4, seed: 7 };
+        let bytes = PrimaryFilm::required_bytes(2, 1, options, crate::job::CpuBudget::Compact).unwrap();
+        let mut film = PrimaryFilm::new(2, 1, options, bytes, &CancelToken::default(), crate::job::CpuBudget::Compact).unwrap();
+        assert!(!film.ready());
+        let mut charged = 0;
+        while !film.ready() {
+            film.initialize_one(&CancelToken::default(), &mut || {
+                charged += 1;
+                Ok(())
+            })
+            .unwrap();
+        }
+        assert_eq!(charged, 2);
+        film
+    }
+
+    #[test]
+    fn camera_film_keeps_linear_sums_coverage_and_uniform_absolute_passes() {
+        let mut film = primary();
+        let cancel = CancelToken::default();
+        assert!(film.pixel(0).is_err());
+        for ordinal in 0..4 {
+            film.add(0, ordinal, [2.0, 4.0, 8.0], true, &cancel, &mut || Ok(())).unwrap();
+            assert!(film.pixel(0).is_err(), "a partial pass cannot be resolved");
+            assert!(film.add(0, ordinal, [0.0; 3], false, &cancel, &mut || Ok(())).is_err(), "duplicate pixel must not consume a sample");
+            let covered = ordinal % 2 == 0;
+            film.add(1, ordinal, if covered { [6.0; 3] } else { [0.0; 3] }, covered, &cancel, &mut || Ok(())).unwrap();
+            assert_eq!(film.samples(), ordinal + 1);
+        }
+        assert_eq!(film.pixel(0).unwrap(), ([2.0, 4.0, 8.0], 4, 4));
+        assert_eq!(film.pixel(1).unwrap(), ([3.0; 3], 2, 4));
+        assert!(film.add(0, 4, [1.0; 3], true, &cancel, &mut || Ok(())).is_err());
+    }
+
+    #[test]
+    fn camera_film_cancellation_invalid_radiance_and_work_failure_are_atomic() {
+        let mut film = primary();
+        let cancel = CancelToken::default();
+        let observer = cancel.clone();
+        assert_eq!(
+            film.add(0, 0, [1.0; 3], true, &cancel, &mut || {
+                observer.cancel();
+                Ok(())
+            })
+            .unwrap_err()
+            .code,
+            ErrorCode::Cancelled
+        );
+        for (rgb, covered) in [([1.0; 3], false), ([f64::NAN; 3], true), ([-1.0; 3], true)] {
+            assert!(film.add(0, 0, rgb, covered, &CancelToken::default(), &mut || Ok(())).is_err());
+        }
+        assert!(film.add(0, 0, [1.0; 3], true, &CancelToken::default(), &mut || Err(limit("work exhausted"))).is_err());
+        film.add(0, 0, [4.0; 3], true, &CancelToken::default(), &mut || Ok(())).unwrap();
+        film.add(1, 0, [0.0; 3], false, &CancelToken::default(), &mut || Ok(())).unwrap();
+        assert_eq!(film.pixel(0).unwrap(), ([4.0; 3], 1, 1));
+        assert_eq!(film.pixel(1).unwrap(), ([0.0; 3], 0, 1));
+    }
+}
+
 fn film(width: u32, height: u32, limit: u32) -> FilmAccumulator {
     let bytes = FilmAccumulator::required_bytes(width, height, limit).unwrap();
     FilmAccumulator::new(width, height, limit, bytes, &CancelToken::default(), &mut |_| Ok(())).unwrap()
@@ -188,4 +254,24 @@ fn construction_stops_on_exhausted_caller_work() {
     });
     assert!(matches!(result, Err(JobError { code: ErrorCode::LimitExceeded, .. })));
     assert_eq!(charged, 3);
+}
+
+#[cfg(feature = "raytrace-cpu")]
+#[test]
+fn primary_film_large_profile_keeps_every_sample_and_cancels_before_mutation() {
+    use crate::film::primary::PrimaryFilm;
+    use crate::job::{CancelToken, CpuBudget, CpuProgressiveOptions};
+    let options = CpuProgressiveOptions { samples_per_pixel: 512, seed: 7 };
+    assert!(PrimaryFilm::required_bytes(1, 1, options, CpuBudget::Compact).is_err());
+    let bytes = PrimaryFilm::required_bytes(1, 1, options, CpuBudget::Studio).unwrap();
+    let cancel = CancelToken::default();
+    let mut film = PrimaryFilm::new(1, 1, options, bytes, &cancel, CpuBudget::Studio).unwrap();
+    film.initialize_one(&cancel, &mut || Ok(())).unwrap();
+    for ordinal in 0..512 {
+        film.add(0, ordinal, [1e12, 2.0, 0.0], true, &cancel, &mut || Ok(())).unwrap();
+    }
+    assert_eq!(film.pixel(0).unwrap(), ([1e12, 2.0, 0.0], 512, 512));
+    cancel.cancel();
+    assert!(film.add(0, 512, [0.0; 3], true, &cancel, &mut || Ok(())).is_err());
+    assert_eq!(film.samples(), 512);
 }

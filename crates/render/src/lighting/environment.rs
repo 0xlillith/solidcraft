@@ -76,8 +76,13 @@ impl std::fmt::Debug for EnvironmentSource {
 }
 impl EnvironmentSource {
     pub fn hdr(bytes: Vec<u8>, rotation_rad: f64, intensity: f64, assume_linear_srgb: bool) -> Result<Self> {
-        let retained_bytes = bytes.capacity() as u64;
         let source = HdrSource::new(bytes).map_err(|e| invalid(e.to_string()))?;
+        Self::from_hdr(source, rotation_rad, intensity, assume_linear_srgb)
+    }
+    /// Reuse a document's immutable source without copying its encoded buffer. Admission
+    /// still charges the full retained capacity, exactly as for a newly captured file.
+    pub fn from_hdr(source: HdrSource, rotation_rad: f64, intensity: f64, assume_linear_srgb: bool) -> Result<Self> {
+        let retained_bytes = source.retained_encoded_bytes();
         let primaries = [0.64, 0.33, 0.30, 0.60, 0.15, 0.06, 0.3127, 0.3290];
         let color_policy = match source.info().primaries {
             Some(actual) if actual.iter().zip(primaries).all(|(a, b)| (a - b).abs() < 1e-5) => "declared_linear_srgb_d65",

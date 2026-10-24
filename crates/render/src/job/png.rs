@@ -41,7 +41,13 @@ pub struct PngTask {
 impl PngTask {
     pub fn new(request: &ImageRequest, rgba: Vec<u8>, cancel: CancelToken) -> Result<Self> {
         let pixels = u64::from(request.width) * u64::from(request.height);
-        if !(1..=4096).contains(&request.width) || !(1..=4096).contains(&request.height) || pixels > 4_194_304 || rgba.len() as u64 != pixels * 4 {
+        if request.width == 0
+            || request.height == 0
+            || u64::from(request.width) > super::GPU_PATH_LIMITS.max_dimension
+            || u64::from(request.height) > super::GPU_PATH_LIMITS.max_dimension
+            || pixels > super::GPU_PATH_LIMITS.max_pixels
+            || rgba.len() as u64 != pixels * 4
+        {
             return Err(JobError::new(ErrorCode::InvalidRequest, "invalid PNG dimensions or RGBA length"));
         }
         cancel.check()?;

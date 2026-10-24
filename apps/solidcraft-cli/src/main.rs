@@ -83,7 +83,7 @@ const USAGE: &str = "usage:
   solidcraft-cli oracle <case-dir>... [--json]
   solidcraft-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]
   solidcraft-cli mcp [--headless] [--in design.solidcraft|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
-                     [--param-check off|warn|strict]
+                     [--param-check off|warn|strict] [--render-gpu]
   solidcraft-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]
   solidcraft-cli licences
   solidcraft-cli gpu [--policy auto|hardware|software|cpu]
@@ -557,6 +557,10 @@ fn cmd_exec(args: &[String]) -> Result<(), String> {
 /// a running app's control port. stdout carries only protocol messages. Files the agent's tool
 /// calls reach are confined to `solidcraft_mcp::agent_scope` unless `--allow-any-path` is given.
 fn cmd_mcp(args: &[String]) -> Result<(), String> {
+    let render_gpu = args.iter().any(|arg| arg == "--render-gpu");
+    if render_gpu && flag(args, "--connect").is_some() {
+        return Err("mcp: --render-gpu installs a headless image host; a connected application owns its own device".into());
+    }
     install_renderer();
     let scope = (!args.iter().any(|a| a == "--allow-any-path"))
         .then(|| solidcraft_mcp::agent_scope(flags(args, "--allow-path").into_iter().map(std::path::PathBuf::from)));
@@ -600,9 +604,13 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
             Box::new(remote)
         }
-        (None, Some(path)) => Box::new(solidcraft_mcp::Headless::new(load_checked(path, param_check)?)),
-        // No arguments: the running desktop app, found through the discovery file it wrote
-        // (docs/control-protocol.md); none running (or `--headless`): a session of its own.
+        (None, Some(path)) => {
+            let mut headless = solidcraft_mcp::Headless::new(load_checked(path, param_check)?);
+            if render_gpu {
+                headless.session.register_render_job_host(solidcraft_gpu::path::host().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            }
+            Box::new(headless)
+        }
         (None, None) => {
             if !args.iter().any(|a| a == "--headless")
                 && let Some(port) = discover_app()
@@ -612,6 +620,9 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
             let mut headless = solidcraft_mcp::Headless::default();
             headless.session.param_check = param_check;
+            if render_gpu {
+                headless.session.register_render_job_host(solidcraft_gpu::path::host().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            }
             Box::new(headless)
         }
     };

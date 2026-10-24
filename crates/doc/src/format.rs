@@ -1039,7 +1039,8 @@ const MAX_REAL: f64 = 1e9;
 
 /// Every number the design itself holds is in range ([`check_numbers`]). `metadata` is left
 /// alone: it is other tools' data, kept as it is and never read as a number (#1015); parsing
-/// already bounds its nesting.
+/// already bounds its nesting. Engineering SI constants have their own bounded admission
+/// (e.g. E in Pa): only the exact root user-material card field bypasses the coordinate bound.
 fn check_design_numbers(v: &Value) -> Result<()> {
     let Some(root) = v.as_object() else { return check_numbers(v, 0) };
     for (key, value) in root {
@@ -1083,7 +1084,7 @@ fn check_typed_numbers(d: &Document) -> Result<()> {
     check_design_numbers(&typed)
 }
 
-/// Every non-integer number in the file is finite and within ±`MAX_REAL` (a damaged or hostile
+/// Every non-integer number outside separately validated engineering cards is finite and within ±`MAX_REAL` (a damaged or hostile
 /// file is refused instead of overflowing the geometry later).
 fn check_numbers(v: &Value, depth: usize) -> Result<()> {
     if depth > 64 {

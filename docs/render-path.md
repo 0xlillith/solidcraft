@@ -25,12 +25,13 @@ equal per sample with DXC and about 55% slower with FXC, and it compiles the pat
 at every start (about 82 s with DXC, about 2 hours with FXC), where Vulkan's compiled
 pipelines persist between runs.
 
-In the Render workspace, enable **Progressive rendering** and select samples per
-pixel before checking or starting an image. These controls are transient image-job
-intent. Existing saved setup/camera/material formats are unchanged.
-The interactive canvas keeps its existing product preview; this first image-job
-integration reports sample progress and exports the completed PNG, without displaying
-partial accumulation buffers on the canvas.
+In the Render workspace, select **GPU path tracing** and samples per pixel before
+checking or starting an image. These controls are transient image-job
+intent that can also be retained in typed saved setups. Each new saved concept
+uses the pending-format mechanism, without manually changing a version number.
+The canvas switches between live product preview and a large completed-image result,
+with Fit and 100% framing. Jobs report sample progress and export the completed PNG;
+partial accumulation buffers are not displayed on the canvas.
 
 ```json
 {"command":"render.start","params":{"settings":{"width":800,"height":600,"exposure_ev":0},"progressive":true,"samples":64,"max_depth":8,"seed":0}}
@@ -76,8 +77,9 @@ separate scalar-alpha approximation. Opacity below one without an explicit
 transmission record is rejected by the path executor. Runtime
 [area lights](render-studio-lighting.md), [sun/HDR environment lighting](render-environment.md)
 and [opaque planar color/normal maps](render-runtime-textures.md) are available
-through explicit job inputs. They do not add saved document fields. Denoising,
-texture LOD/mipmap selection, EXR and Final mode remain unimplemented by this
+through explicit job inputs. They do not add saved document fields. An optional bounded edge-aware a-trous
+[denoiser](render-denoise.md) filters the final output while preserving raw accumulation.
+Texture LOD/mipmap selection, EXR and Final mode remain unimplemented by this
 executor; a path-traced preview does not declare those capabilities.
 
 Each job builds a BVH over its immutable captured meshes with a sixteen-bin

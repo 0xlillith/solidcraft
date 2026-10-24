@@ -483,6 +483,27 @@ mod tests {
     /// translate their label themselves (`row`, imported as `form_row`, and the rest of
     /// `KIT_CALLS`) are read at the same argument positions the kit translates.
     #[test]
+    fn english_only_render_aliases_do_not_hide_existing_label_translations() {
+        for language in ["de", "fr"] {
+            let locale = Locale::for_language(language);
+            for (label, stable_id) in [
+                ("Library", "Library"),
+                ("Favorites", "Favorites"),
+                ("Center X", "Center X"),
+                ("Move up", "Move up"),
+                ("Appearance", "cmd.appearance_assign"),
+                ("Checkpoint", "cmd.edit_checkpoint"),
+                ("Pitch", "coupling.pitch"),
+            ] {
+                assert_eq!(locale.label(label), locale.text(stable_id), "{language}: {label}");
+                assert_ne!(locale.label(label), label, "{language}: {label} must retain its existing translation");
+            }
+            assert_eq!(locale.label("render.camera_pitch"), locale.text("render.camera_pitch"));
+            assert_eq!(locale.label("a custom untranslated caption"), "a custom untranslated caption");
+        }
+    }
+
+    #[test]
     fn every_ui_label_literal_reaches_an_english_catalog_entry() {
         let english: Messages = serde_json::from_str(ENGLISH.source).unwrap();
         let ids: BTreeSet<&str> = english.keys().map(String::as_str).collect();

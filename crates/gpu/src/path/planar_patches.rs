@@ -220,8 +220,13 @@ mod tests {
         let upload = super::super::flatten(&scene, Vec3::ZERO, &CancelToken::default()).unwrap();
         let word = |index: usize| u32::from_le_bytes(upload.geometry[index * 4..index * 4 + 4].try_into().unwrap()) as usize;
         assert_eq!(word(0), 6);
-        assert_eq!(word(3), word(2) + 6 * 16);
-        assert_eq!(upload.geometry.len(), 16 + 6 * 84 + 12 * 32);
+        // Five packed vec4 blocks per material include the certified interior
+        // optics added before the aging work. Check the exact wire layout rather
+        // than the obsolete four-block size; patch IDs must still follow the BVH.
+        let material_words = 5 * 4;
+        assert_eq!(word(3), word(2) + 6 * material_words);
+        let triangle_bytes = 4 * 4 + material_words * 4 + 4;
+        assert_eq!(upload.geometry.len(), 16 + 6 * triangle_bytes + 12 * 32);
         let mut pairs = Vec::new();
         for index in 0..6 {
             let vertex = word(4 + index * 4);

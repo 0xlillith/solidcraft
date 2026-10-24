@@ -21,6 +21,15 @@
 
 use crate::job::{CancelToken, ErrorCode, JobError, Result};
 
+#[path = "film_png.rs"]
+pub mod png;
+
+// Camera passes additionally retain coverage. Their scanline protocol proves a
+// uniform complete pass incrementally, without borrowing a self-owned resolver.
+#[cfg(feature = "raytrace-cpu")]
+#[path = "film_primary.rs"]
+pub(crate) mod primary;
+
 pub const MAX_DIMENSION: u32 = 16_384;
 pub const MAX_PIXELS: usize = 16_777_216;
 pub const MAX_SAMPLES: u32 = 1_048_576;

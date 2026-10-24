@@ -1,5 +1,5 @@
 //! Physical materials defined in a design (`material.create`, `material.edit`,
-//! `material.delete`): a name, a density and, optionally, a look. They are assigned like the
+//! `material.delete`): a name, a density and optional visual and engineering records. They are assigned like the
 //! built-in library's (`material.assign`), set masses (`component.properties`) and fill
 //! configuration material cells. The design keeps them, so they are saved and undone like
 //! features.
@@ -16,10 +16,13 @@ use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("material.create", "New Physical Material", create).icon("material").params(
-        "name (not a built-in material's); density_g_cm3: (0, 1000]; appearance?: library name (appearance.library) | color?: \"#rrggbb\" or [r, g, b] (0–255), opacity? (0–1), pbr?: {metallic:0..1, roughness:0.045..1, dielectric_ior:1..3} (opaque only, needs color/appearance): the default look. Optical edits do not change density. physical_card?: validated SI candidate record (null/omitted means unknown); card density never changes assigned density. Assign it with material.assign",
+        "name (not a built-in material's); density_g_cm3: (0, 1000]; appearance?: library name (appearance.library) | color?: \"#rrggbb\" or [r, g, b] (0–255), opacity? (0–1), pbr?: {metallic:0..1, roughness:0.045..1, dielectric_ior:1..3} (opaque only, needs color/appearance): the default look. A named appearance keeps its preset response when pbr is omitted; pbr: null selects scalar shading. Optical edits do not change density. physical_card?: validated SI candidate record (null/omitted means unknown); card density never changes assigned density. Assign it with material.assign",
     ),
     CommandSpec::new("material.edit", "Edit Physical Material", edit).icon("material").enabled(has_user_materials).params(
         "material: a material defined in this design; name? (bodies and configuration cells follow); density_g_cm3?; appearance? | color?, opacity?, pbr? (as material.create; color: null clears the look). physical_card?: validated SI candidate record (omitted retains, null clears). Omitted appearance/color retains the entire current look",
+    ),
+    CommandSpec::new("material.inspect", "Inspect Physical Material", inspect).icon("material").noundo().doc_only().params(
+        "material: built-in or design-owned name. Returns assigned density, default appearance, optional physical_card, validation and density comparison. Read-only; missing engineering data remains unknown and card density does not change mass",
     ),
     CommandSpec::new("material.delete", "Delete Physical Material", delete).icon("delete").enabled(has_user_materials).params(
         "material: a material defined in this design; replace?: material for the bodies and configuration cells that use it (without it, a material in use is refused)",
@@ -116,6 +119,27 @@ fn physical_card(cmd: &str, p: &Value) -> Result<Option<Option<solidcraft_doc::p
             solidcraft_doc::physical_material::ValidatedCard::from_value(value).map(|card| Some(Some(card))).map_err(|e| bad(cmd, e.to_string()))
         }
     }
+}
+
+fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "material.inspect";
+    let name = str_(p, "material").ok_or_else(|| bad(cmd, "`material` must be a material name"))?;
+    let canonical = s.doc.material_name(name).ok_or_else(|| bad(cmd, format!("unknown material `{name}` (see material.list)")))?;
+    let mut out = if let Some(material) = s.doc.user_materials.iter().find(|m| m.name == canonical) {
+        material_json(material)?
+    } else {
+        let density = MATERIALS
+            .iter()
+            .find(|(n, _)| *n == canonical.as_str())
+            .map(|(_, density)| *density)
+            .ok_or_else(|| bad(cmd, "material is unavailable"))?;
+        json!({"name":canonical,"density_g_cm3":density,"user":false})
+    };
+    out["appearance"] = json!(s.doc.material_look(&canonical).as_ref().map(look_json));
+    if out.get("physical_card").is_none() {
+        out["physical_card"] = Value::Null;
+    }
+    Ok(out)
 }
 
 /// The index of the design material `material` names.
