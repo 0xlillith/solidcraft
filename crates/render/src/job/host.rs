@@ -354,10 +354,7 @@ pub struct JobStatus {
     pub job: JobId,
     pub scene_generation: u64,
     pub request: ImageRequest,
-    pub environment: Option<crate::lighting::environment::EnvironmentInfo>,
     pub resolved: crate::ResolvedRequest,
-    pub options: JobOptions,
-    pub textures: Option<super::textures::TextureSummary>,
     pub progress: Progress,
     pub error: Option<JobError>,
     pub frame: Option<FrameInfo>,
@@ -380,10 +377,8 @@ struct Record {
     id: JobId,
     scene_generation: u64,
     request: ImageRequest,
-    environment: Option<crate::lighting::environment::EnvironmentInfo>,
     resolved: crate::ResolvedRequest,
     cancel: CancelToken,
-    options: JobOptions,
     data: Mutex<Data>,
     #[cfg(not(target_arch = "wasm32"))]
     done: Condvar,
@@ -417,10 +412,7 @@ impl JobHandle {
             job: self.0.id,
             scene_generation: self.0.scene_generation,
             request: self.0.request.clone(),
-            environment: self.0.environment.clone(),
             resolved: self.0.resolved.clone(),
-            options: self.0.options,
-            textures: self.0.textures.clone(),
             progress: data.progress,
             error: data.error.clone(),
             frame: data.frame.as_ref().map(|f| f.info.clone()),
@@ -951,11 +943,6 @@ impl ImageHost {
     }
 
     pub fn cooperative() -> Self {
-        Self::cooperative_with(Arc::new(CpuExecutor))
-    }
-
-    /// A cooperative host over `executor` (pumped by its caller).
-    fn cooperative_with(executor: Arc<dyn ImageExecutor>) -> Self {
         Self(Arc::new(Owner {
             executor: None,
             shared: Self::shared(MEMORY_LIMIT),

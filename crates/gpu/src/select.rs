@@ -235,25 +235,6 @@ pub fn pick(policy: Policy) -> Option<(wgpu::Adapter, AdapterReport)> {
         .find(|(_, r)| policy.admits(r.tier))
 }
 
-/// Vulkan-only discovery for the path tracer, respecting the native backend filter.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn pick_vulkan(policy: Policy, keep: impl Fn(&wgpu::AdapterInfo) -> bool) -> Option<(wgpu::Adapter, AdapterReport)> {
-    if !native_backends().contains(wgpu::Backends::VULKAN) {
-        return None;
-    }
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-    desc.backends = wgpu::Backends::VULKAN;
-    let mut all = pollster::block_on(wgpu::Instance::new(desc).enumerate_adapters(wgpu::Backends::VULKAN));
-    all.sort_by_key(|a| std::cmp::Reverse(rank(a.get_info().device_type)));
-    all.into_iter()
-        .filter(|a| keep(&a.get_info()))
-        .map(|a| {
-            let r = report(&a.get_info());
-            (a, r)
-        })
-        .find(|(_, r)| policy.admits(r.tier))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

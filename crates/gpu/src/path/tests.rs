@@ -538,7 +538,7 @@ fn path_devices_are_vulkan_only() {
         assert_eq!(adapter.get_info().backend, wgpu::Backend::Vulkan);
         assert_eq!(report.backend, "Vulkan");
     }
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") || !crate::select::native_backends().contains(wgpu::Backends::VULKAN) {
         assert!(picked.is_none());
     }
 }
@@ -2620,18 +2620,6 @@ fn medium_failures_are_tolerated_only_when_rare() {
     assert!(medium_failures_tolerated(530, 1920 * 1080 * 256));
     assert!(!medium_failures_tolerated(531, 1920 * 1080 * 256));
     assert!(!medium_failures_tolerated(1_u64 << 32, 1_u64 << 32));
-}
-
-#[test]
-fn path_devices_are_vulkan_only() {
-    let picked = crate::select::pick_vulkan(crate::select::Policy::Auto, |_| true);
-    if let Some((adapter, report)) = &picked {
-        assert_eq!(adapter.get_info().backend, wgpu::Backend::Vulkan);
-        assert_eq!(report.backend, "Vulkan");
-    }
-    if !crate::select::native_backends().contains(wgpu::Backends::VULKAN) {
-        assert!(picked.is_none());
-    }
 }
 
 #[test]

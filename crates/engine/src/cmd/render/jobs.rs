@@ -25,16 +25,6 @@ struct Start {
     settings: Option<RenderSetup>,
     transparent_background: bool,
     replace: bool,
-    progressive: bool,
-    samples: Option<u32>,
-    max_depth: Option<u32>,
-    seed: Option<u32>,
-    raytrace: super::transmission::Raytrace,
-    lens: Option<solidcraft_render::job::ThinLens>,
-    lighting: Option<solidcraft_render::job::StudioLighting>,
-    tone_map: Option<solidcraft_render::job::ToneMap>,
-    environment: Option<super::environment::Input>,
-    denoise: bool,
 }
 
 #[derive(Deserialize)]
@@ -411,7 +401,6 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         height: settings.height,
         background: settings.background,
         transparent_background: input.transparent_background,
-        textures: super::textures::capture(&scene, &input.raytrace.textures, command)?,
     };
     let mut admission = solidcraft_render::job::admit(&scene, &request).map_err(job_error)?;
     let environment_bytes = environment.as_ref().map_or(Ok(0), |e| e.required_bytes()).map_err(|e| bad(command, e.to_string()))?;

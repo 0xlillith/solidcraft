@@ -1051,8 +1051,6 @@ pub struct ImageRequest {
     pub height: u32,
     pub background: [u8; 3],
     pub transparent_background: bool,
-    #[serde(skip)]
-    pub textures: Option<Arc<textures::RuntimeTextures>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
