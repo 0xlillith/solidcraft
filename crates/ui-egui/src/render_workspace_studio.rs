@@ -16,7 +16,7 @@ pub(super) enum Environment {
 
 #[derive(Clone, Debug)]
 pub(super) struct View {
-    pub aging: solidcraft_engine::render::job::aging::AgingStack,
+    pub aging: solidcraft_engine::doc::render_aging::SavedAgingStack,
     pub nested_media: bool,
     pub volume: Option<solidcraft_engine::render::job::volume::HomogeneousVolume>,
     pub adaptive: Option<solidcraft_engine::render::job::adaptive::AdaptiveSampling>,

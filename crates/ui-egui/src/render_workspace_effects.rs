@@ -3,7 +3,7 @@
 use super::{ImageMethod, materials, studio};
 use crate::{SolveApp, ui_kit};
 use solidcraft_engine::render::job::{
-    aging::{AgingKind, AgingLayer, BodyName, BodyTarget, SurfaceClass},
+    aging::{AgingKind, AgingLayer, SurfaceClass},
     looks::{LookKind, LookLayer},
 };
 
@@ -60,8 +60,8 @@ pub(super) fn aging_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     note(app, ui, "render.aging_help");
     let mut editor = std::mem::take(&mut app.render_workspace.view.inspector.effects);
-    let before = app.render_workspace.view.studio.aging;
-    let mut stack = before;
+    let before = app.render_workspace.view.studio.aging.clone();
+    let mut stack = before.clone();
     let add = ui_kit::dropdown_menu(ui, "render_aging_add", app.tr("render.aging_add"), |ui| {
         for kind in AgingKind::ALL {
             let id = format!("aging-add-{}", kind.code());
@@ -139,7 +139,15 @@ pub(super) fn aging_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             let search_label = app.tr("render.aging_target_search").to_string();
             ui_kit::bounded_cell_editor(ui, ui.id().with("aging_target_search"), &mut editor.search, &search_label, false, 128);
-            let selected = layer.target.map_or_else(|| app.tr("render.aging_all_bodies").to_string(), |target| target.body_name.as_str().to_string());
+            let selected = layer.target.as_ref().map_or_else(
+                || app.tr("render.aging_all_bodies").to_string(),
+                |identity| {
+                    editor.targets.iter().find(|target| target.stable_target.as_ref() == Some(identity)).map_or_else(
+                        || format!("{}: {}", identity.definition, app.tr("render.material_target_missing")),
+                        |target| target.name.clone(),
+                    )
+                },
+            );
             let target = ui_kit::dropdown_menu(ui, "render_aging_target", &selected, |ui| {
                 if ui_kit::list_picker(ui, "aging-target-all", app.tr("render.aging_all_bodies"), layer.target.is_none()).clicked() {
                     layer.target = None;
@@ -153,13 +161,14 @@ pub(super) fn aging_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                         ui,
                         &format!("aging-target-{}", target.ordinal),
                         &target.name,
-                        layer.target.is_some_and(|t| t.body_index as usize == target.ordinal && t.body_name.as_str() == target.name),
+                        layer.target.is_some() && layer.target == target.stable_target,
                     )
                     .clicked()
                     {
-                        match BodyName::new(&target.name) {
-                            Ok(name) => layer.target = Some(BodyTarget { body_index: target.ordinal as u32, body_name: name }),
-                            Err(error) => app.set_status(error.to_string(), true),
+                        if let Some(identity) = &target.stable_target {
+                            layer.target = Some(identity.clone());
+                        } else {
+                            app.set_status(app.tr("render.material_target_missing").to_string(), true);
                         }
                         ui.close();
                     }
