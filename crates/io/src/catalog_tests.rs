@@ -4,7 +4,7 @@ use serde_json::json;
 fn catalog() -> Catalog {
     let entry = Entry::new(
         "user.test",
-        Definition::Appearance(ScalarLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8 }),
+        Definition::Appearance(LibraryLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8, pbr: None }),
         Provenance::default(),
     )
     .unwrap();
@@ -34,7 +34,7 @@ fn strict_schema_rejects_unknown_kinds_fields_versions_and_bad_identity() {
     for changed in [
         {
             let mut v = value.clone();
-            v["format"] = json!("solidcraft-library/2");
+            v["format"] = json!("solidcraft-library/99");
             v
         },
         {
@@ -96,14 +96,17 @@ fn scalar_validation_refuses_nonfinite_density_opacity_counts_strings_and_oversi
         assert!(
             Entry::new(
                 "user.test",
-                Definition::Material(ScalarMaterial { name: "Timber".into(), density_g_cm3: density, appearance: None }),
+                Definition::Material(LibraryMaterial { name: "Timber".into(), density_g_cm3: density, appearance: None, physical_card: None }),
                 Provenance::default()
             )
             .is_err()
         );
     }
     for name in ["".into(), "x".repeat(129), "bad\nname".into(), " leading".into()] {
-        assert!(Entry::new("user.test", Definition::Appearance(ScalarLook { name, color: [1, 2, 3], opacity: 1.0 }), Provenance::default()).is_err());
+        assert!(
+            Entry::new("user.test", Definition::Appearance(LibraryLook { name, color: [1, 2, 3], opacity: 1.0, pbr: None }), Provenance::default())
+                .is_err()
+        );
     }
     assert!(Catalog::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
     let source = Provenance { source_url: Some("x".repeat(2049)), ..Default::default() };
@@ -112,10 +115,10 @@ fn scalar_validation_refuses_nonfinite_density_opacity_counts_strings_and_oversi
 #[test]
 fn design_export_deduplicates_exact_looks_and_keeps_physical_properties_distinct() {
     let mut doc = Document::default();
-    let look = ScalarLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8 }.to_look();
+    let look = LibraryLook { name: "Warm oak colour".into(), color: [180, 120, 70], opacity: 0.8, pbr: None }.to_look();
     doc.appearances.bodies.insert("Body1".into(), look.clone());
     doc.appearances.bodies.insert("Body2".into(), look.clone());
-    doc.user_materials.push(UserMaterial { name: "Timber density".into(), density: 0.7, appearance: Some(look) });
+    doc.user_materials.push(UserMaterial { name: "Timber density".into(), density: 0.7, appearance: Some(look), physical_card: None });
     let library = Catalog::from_document(&doc, "user.test", "Test", Provenance::default()).unwrap();
     assert_eq!(library.entries.len(), 2);
     assert!(library.entries.iter().any(|e| matches!(&e.definition,Definition::Material(m) if m.density_g_cm3==0.7)));
@@ -127,7 +130,7 @@ fn design_export_deduplicates_exact_looks_and_keeps_physical_properties_distinct
 #[test]
 fn scalar_export_refuses_pbr_in_every_design_owned_appearance_location() {
     use solidcraft_doc::{appearance::FaceLook, pbr_appearance::PbrParameters};
-    let mut look = ScalarLook { name: "Original PBR specimen".into(), color: [180, 120, 70], opacity: 1.0 }.to_look();
+    let mut look = LibraryLook { name: "Original PBR specimen".into(), color: [180, 120, 70], opacity: 1.0, pbr: None }.to_look();
     look.pbr = Some(PbrParameters::new(1.0, 0.3, 1.5).unwrap());
     for location in 0..4 {
         let mut doc = Document::default();
@@ -146,10 +149,16 @@ fn scalar_export_refuses_pbr_in_every_design_owned_appearance_location() {
                 strict_name: false,
                 certificate: None,
             }),
-            _ => doc.user_materials.push(UserMaterial { name: "Original material".into(), density: 1.2, appearance: Some(look.clone()) }),
+            _ => doc.user_materials.push(UserMaterial {
+                name: "Original material".into(),
+                density: 1.2,
+                appearance: Some(look.clone()),
+                physical_card: None,
+            }),
         }
         let before = doc.clone();
-        let error = Catalog::from_document(&doc, "user.test", "Test", Provenance::default()).unwrap_err();
+        let rich = Catalog::from_document(&doc, "user.test", "Test", Provenance::default()).unwrap();
+        let error = rich.in_format(V1_FORMAT).unwrap_err();
         assert!(error.to_string().contains("cannot preserve PBR"));
         assert_eq!(doc, before);
     }

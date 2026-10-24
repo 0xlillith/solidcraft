@@ -4,21 +4,32 @@ use solidcraft_engine::{Sel, Session};
 
 #[test]
 fn catalog_clicked_load_apply_export_and_ok_keep_one_design_undo_step() {
+    clicked_catalog(None, "solidcraft-library/1").unwrap();
+}
+
+#[test]
+fn catalog_clicked_pbr_load_apply_export_and_ok_retains_the_optical_response() {
+    clicked_catalog(Some(solidcraft_engine::doc::pbr_appearance::PbrParameters::new(1., 0.3, 1.5).unwrap()), "solidcraft-library/2").unwrap();
+}
+
+#[test]
+fn catalog_clicked_rich_entry_without_pbr_clears_the_old_optical_response() {
+    clicked_catalog(None, "solidcraft-library/2").unwrap();
+}
+
+fn clicked_catalog(pbr: Option<solidcraft_engine::doc::pbr_appearance::PbrParameters>, format: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut h = Harness::new();
     h.call("ui.resize", json!({"width":1600,"height":1400}));
     let path = h.dir.join("source-library.json").to_string_lossy().into_owned();
     let mut source = Session::default();
-    source.execute("solid.box", &json!({"length":10,"width":10,"height":10})).unwrap();
-    source.execute("appearance.assign", &json!({"bodies":["Body1"],"appearance":"Warm oak colour","color":[180,120,70],"opacity":0.8})).unwrap();
-    source.execute("library.export", &json!({"path":path})).unwrap();
-    h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
-    h.app
-        .run(
-            "appearance.assign",
-            json!({"bodies":["Body1"],"color":[20,20,20],
-        "pbr":{"metallic":1.0,"roughness":0.3,"dielectric_ior":1.5}}),
-        )
-        .unwrap();
+    source.execute("solid.box", &json!({"length":10,"width":10,"height":10}))?;
+    source.execute(
+        "appearance.assign",
+        &json!({"bodies":["Body1"],"appearance":"Warm oak colour","color":[180,120,70],"opacity":if pbr.is_some(){1.0}else{0.8},"pbr":pbr}),
+    )?;
+    source.execute("library.export", &json!({"path":path,"format":format}))?;
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":10}))?;
+    h.app.run("appearance.assign", json!({"bodies":["Body1"],"color":[20,20,20],"pbr":{"metallic":1.0,"roughness":0.6,"dielectric_ior":1.7}}))?;
     h.app.session.mark_saved();
     h.app.session.selection = vec![Sel::Body { name: "Body1".into() }];
     h.app.start("appearance.assign");
@@ -29,7 +40,7 @@ fn catalog_clicked_load_apply_export_and_ok_keep_one_design_undo_step() {
     }
     h.frames(3);
     let undo = h.app.session.undo.len();
-    h.step(&json!({"widget":"Load library"})).unwrap();
+    h.step(&json!({"widget":"Load library"}))?;
     for handle in [
         "library:path",
         "library:load",
@@ -49,26 +60,36 @@ fn catalog_clicked_load_apply_export_and_ok_keep_one_design_undo_step() {
     {
         assert!(h.widget(message).is_some(), "missing {message}");
     }
-    h.step(&json!({"click":{"handle":"library:search"}})).unwrap();
-    h.step(&json!({"text":"no such appearance"})).unwrap();
+    h.step(&json!({"click":{"handle":"library:search"}}))?;
+    h.step(&json!({"text":"no such appearance"}))?;
     assert!(h.widget("No matching appearance presets.").is_some());
-    h.step(&json!({"key":"A","cmd":true})).unwrap();
-    h.step(&json!({"key":"Backspace"})).unwrap();
-    h.step(&json!({"click":{"handle":"library:entry:0"}})).unwrap();
-    h.step(&json!({"widget":"Apply library appearance"})).unwrap();
+    h.step(&json!({"key":"A","cmd":true}))?;
+    h.step(&json!({"key":"Backspace"}))?;
+    h.step(&json!({"click":{"handle":"library:entry:0"}}))?;
+    h.step(&json!({"widget":"Apply library appearance"}))?;
     assert_eq!(h.app.session.doc.appearances.bodies["Body1"].name, "Warm oak colour");
-    assert!(h.app.session.doc.appearances.bodies["Body1"].pbr.is_none());
+    assert_eq!(h.app.session.doc.appearances.bodies["Body1"].pbr, pbr);
+    if let Some(dialog) = &h.app.dialog
+        && let Kind::Appearance(state) = &dialog.kind
+    {
+        assert_eq!(state.pbr, pbr);
+    }
+
     assert_eq!(h.app.session.undo.len(), undo + 1);
     let revision = h.app.session.revision;
-    h.step(&json!({"widget":"Export design library..."})).unwrap();
+    h.step(&json!({"widget":"Export design library..."}))?;
     let exported = h.dir.join("my-library.solidcraft-library.json");
-    let catalog = Catalog::read(&exported.to_string_lossy()).unwrap();
+    let catalog = Catalog::read(&exported.to_string_lossy())?;
     assert_eq!(catalog.entries.len(), 1);
     assert_eq!(catalog.entries[0].definition.name(), "Warm oak colour");
+    if let Definition::Appearance(look) = &catalog.entries[0].definition {
+        assert_eq!(look.pbr, pbr);
+    }
     assert_eq!(h.app.session.revision, revision);
-    h.step(&json!({"widget":"OK"})).unwrap();
+    h.step(&json!({"widget":"OK"}))?;
     assert!(h.app.dialog.is_none());
     assert_eq!(h.app.session.undo.len(), undo + 1);
+    Ok(())
 }
 
 fn appearance_fixture() -> Result<(Harness, Arc<()>), String> {

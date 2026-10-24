@@ -117,11 +117,30 @@ impl Locale {
     /// Translate source labels from engine/UI tables, preserving unknown labels.
     /// Also accepts stable IDs while table helpers migrate away from source text.
     pub fn label(self, label: &str) -> &str {
-        static LABEL_IDS: OnceLock<BTreeMap<&'static str, &'static str>> = OnceLock::new();
+        // Stable IDs are authoritative. An untranslated legacy ID identical to its
+        // English caption can still use another translated ID for that source label.
+        if ENGLISH.messages().get(label).is_some_and(|text| text != label || self.0.messages().contains_key(label)) {
+            return self.text(label);
+        }
+        static LABEL_IDS: OnceLock<BTreeMap<&'static str, Vec<&'static str>>> = OnceLock::new();
         let ids = LABEL_IDS.get_or_init(|| {
-            ENGLISH.messages().iter().filter(|(_, text)| !text.contains('{')).map(|(id, text)| (text.as_str(), id.as_str())).collect()
+            let mut ids: BTreeMap<_, Vec<_>> = BTreeMap::new();
+            for (id, text) in ENGLISH.messages().iter().filter(|(_, text)| !text.contains('{')) {
+                ids.entry(text.as_str()).or_default().push(id.as_str());
+            }
+            ids
         });
-        ids.get(label).map_or_else(|| self.text(label), |id| self.text(id))
+        if let Some(candidates) = ids.get(label) {
+            // Preserve the old last-ID preference among available translations. A new
+            // English-only alias must not hide a translation that already exists here.
+            if let Some(text) = candidates.iter().rev().find_map(|id| self.0.messages().get(*id)) {
+                return text;
+            }
+            if let Some(id) = candidates.last() {
+                return self.text(id);
+            }
+        }
+        self.text(label)
     }
 
     pub fn format(self, id: &str, args: &[(&str, &str)]) -> String {
@@ -247,6 +266,22 @@ pub fn tr_name(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+
+    fn alias_resolution_regression() {
+        static LEGACY: Catalog = Catalog::new("test-legacy", "Test", r#"{"Pitch":"legacy pitch"}"#);
+        static ALIAS: Catalog = Catalog::new("test-alias", "Test", r#"{"coupling.pitch":"mechanical pitch"}"#);
+        assert_eq!(ENGLISH.messages().get("Pitch").map(String::as_str), Some("Pitch"));
+        assert_eq!(ENGLISH.messages().get("coupling.pitch").map(String::as_str), Some("Pitch"));
+        let legacy = Locale(&LEGACY);
+        assert_eq!(legacy.label("Pitch"), "legacy pitch");
+        assert_eq!(legacy.label("coupling.pitch"), "Pitch");
+        let alias = Locale(&ALIAS);
+        assert_eq!(alias.label("Pitch"), "mechanical pitch");
+        assert_eq!(alias.label("coupling.pitch"), "mechanical pitch");
+        assert_eq!(alias.label("original unknown caption"), "original unknown caption");
+    }
 
     /// English first, then by id, so adding a locale edits only its own line.
     #[test]

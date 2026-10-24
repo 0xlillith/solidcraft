@@ -3,6 +3,249 @@ use crate::scenario::Harness;
 use solidcraft_engine::Session;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod async_path_host {
+    use super::*;
+    use solidcraft_engine::render::job;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    /// Advertise the path capability without opening a device or rendering anything.
+    struct TestExecutor;
+    impl job::ImageExecutor for TestExecutor {
+        fn descriptor(&self) -> job::Result<ExecutorDescriptor> {
+            let mut descriptor = job::CpuHost::cooperative().descriptor()?;
+            descriptor.id = ExecutorId::new("test-path").unwrap();
+            descriptor.profiles[0].features.push(solidcraft_engine::render::RenderFeature::Progressive);
+            Ok(descriptor)
+        }
+        fn admit(&self, _: &ProductScene, _: &job::ImageRequest, _: job::JobOptions) -> job::Result<job::Admission> {
+            panic!("setup tests must not render")
+        }
+        fn begin(&self, _: ProductScene, _: job::ImageRequest, _: job::JobOptions, _: job::CancelToken) -> job::Result<Box<dyn job::ImageWork>> {
+            panic!("setup tests must not render")
+        }
+    }
+
+    fn panel_fixture() -> Harness {
+        let mut h = Harness::new();
+        h.call("ui.resize", json!({"width":1600,"height":1600}));
+        enter(&mut h.app, true).unwrap();
+        h.frames(3);
+        h
+    }
+
+    fn finish_setup(h: &mut Harness) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while matches!(h.app.render_workspace.path_host, PathHost::Preparing(..)) {
+            assert!(Instant::now() < deadline, "test setup worker did not finish");
+            h.frames(1);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.frames(3);
+    }
+
+    #[test]
+    fn design_frames_and_document_reset_never_start_the_deferred_path_host() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        h.frames(5);
+        crate::documents::adopt(&mut h.app, Session::default());
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        assert!(h.app.render_workspace.pending_setup.is_some());
+        enter(&mut h.app, true).unwrap();
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn first_render_before_adapter_install_starts_once_when_the_adapter_arrives() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut h = panel_fixture();
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::NotStarted));
+        h.app.render_workspace.defer_path_host("late selected viewport".into(), move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err("deliberate device refusal".into())
+        });
+        sync_backend(&mut h.app);
+        finish_setup(&mut h);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Failed(_)));
+        h.app.render_workspace.defer_path_host("must not retry".into(), || panic!("failed setup retried"));
+        enter(&mut h.app, false).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(5);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_fallback_viewport_replaces_an_unstarted_factory_without_opening_the_old_device() {
+        let mut h = Harness::new();
+        h.app.render_workspace.defer_path_host("old hardware adapter".into(), || panic!("superseded device opened"));
+        h.app.render_workspace.defer_path_host("selected safe-mode adapter".into(), || Err("selected adapter unavailable".into()));
+        h.frames(5);
+        assert_eq!(h.app.render_workspace.setup_key.as_deref(), Some("selected safe-mode adapter"));
+        enter(&mut h.app, true).unwrap();
+        finish_setup(&mut h);
+        let PathHost::Failed(message) = &h.app.render_workspace.path_host else { panic!("expected selected adapter result") };
+        assert_eq!(message, "selected adapter unavailable");
+    }
+
+    #[test]
+    fn preparing_keeps_frames_responsive_then_registers_ready_host() {
+        let mut h = panel_fixture();
+        let cpu_host = h.app.session.render_job_host().unwrap().clone();
+        let (release, wait) = mpsc::channel();
+        let (started, thread) = mpsc::channel();
+        h.app.render_workspace.path_host.start(move || {
+            started.send(std::thread::current().id()).unwrap();
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        assert_ne!(thread.recv_timeout(Duration::from_secs(10)).unwrap(), std::thread::current().id());
+        // A second viewport installation cannot replace or duplicate setup.
+        h.app.render_workspace.path_host.start(|| panic!("setup started twice"));
+        h.frames(3);
+        assert!(h.widget("GPU path tracer: compiling shaders…").is_some());
+        assert!(h.widget("Progressive rendering").is_none());
+        assert!(!h.app.session.render_backend().executors.iter().any(|e| e.id.as_str() == "test-path"));
+        let transparent = h.app.tr("render.image_transparent").to_string();
+        h.step(&json!({"widget":transparent})).unwrap();
+        assert!(h.app.render_workspace.view.transparent);
+        // Replacing the current document must retain the receiver while setup waits.
+        crate::documents::adopt(&mut h.app, Session::default());
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Preparing(..)));
+        enter(&mut h.app, true).unwrap();
+        h.frames(3);
+        assert!(h.widget("GPU path tracer: compiling shaders…").is_some());
+        enter(&mut h.app, false).unwrap();
+        release.send(()).unwrap();
+        finish_setup(&mut h);
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
+        enter(&mut h.app, true).unwrap();
+        h.frames(3);
+        assert!(h.widget("GPU path tracer: compiling shaders…").is_none());
+        assert!(h.widget("Progressive rendering").is_some());
+        assert_eq!(h.app.session.render_backend().executors.iter().filter(|e| e.id.as_str() == "test-path").count(), 1);
+        assert!(h.app.session.render_job_host().unwrap().same_host(&cpu_host));
+        h.step(&json!({"widget":"Progressive rendering"})).unwrap();
+        assert!(h.app.render_workspace.view.progressive);
+        crate::documents::adopt(&mut h.app, Session::default());
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Ready(_)));
+        assert_eq!(h.app.session.render_backend().executors.iter().filter(|e| e.id.as_str() == "test-path").count(), 1);
+    }
+
+    /// The first setup on an adapter shows a spinner, the time so far and a note; a later one
+    /// a bar estimated from the time the first took, which the preferences keep.
+    #[test]
+    fn setup_progress_is_estimated_from_the_last_setup_on_the_adapter() {
+        let mut h = panel_fixture();
+        h.app.render_workspace.setup_key = Some("Test GPU | Vulkan | 1.0".into());
+        let (release, wait) = mpsc::channel::<()>();
+        h.app.render_workspace.path_host.start(move || {
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        h.frames(3);
+        let first = h.app.tr("render.gpu_path_first_setup").to_string();
+        assert!(h.widget("GPU path tracer: compiling shaders…").is_some());
+        assert!(h.widget(&first).is_some(), "the first setup explains the wait");
+        assert!(h.widget("0:00").is_some(), "and counts the time");
+        release.send(()).unwrap();
+        finish_setup(&mut h);
+        let took = h.app.render_workspace.setup_seconds.get("Test GPU | Vulkan | 1.0").copied();
+        assert!(took.is_some_and(|s| (0.0..10.0).contains(&s)), "{took:?}");
+
+        // The next start on the same adapter has an estimate, kept in the preferences.
+        let mut h = panel_fixture();
+        h.app.load_prefs(&json!({"gpu_path_setup_seconds": {"Test GPU | Vulkan | 1.0": 120.0}}).to_string());
+        h.app.render_workspace.setup_key = Some("Test GPU | Vulkan | 1.0".into());
+        let (release, wait) = mpsc::channel::<()>();
+        h.app.render_workspace.path_host.start(move || {
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            job::ImageHost::with_executor(Arc::new(TestExecutor)).map_err(|e| e.to_string())
+        });
+        h.frames(3);
+        assert!(h.widget(&first).is_none());
+        assert!(h.widget("0:00 / ~2:00").is_some(), "a bar with the estimate");
+        release.send(()).unwrap();
+        finish_setup(&mut h);
+        let prefs: serde_json::Value = serde_json::from_str(&h.app.prefs()).unwrap();
+        assert!(prefs["gpu_path_setup_seconds"]["Test GPU | Vulkan | 1.0"].as_f64().is_some_and(|s| s < 10.0));
+    }
+
+    #[test]
+    fn hostile_setup_times_are_ignored() {
+        let times = load_setup_seconds(&json!({"a": -1.0, "b": 1e300, "c": "slow", "d": 30.0}));
+        assert_eq!(times.into_iter().collect::<Vec<_>>(), [("d".to_string(), 30.0)]);
+        let many: serde_json::Map<String, serde_json::Value> = (0..100).map(|i| (format!("gpu {i}"), json!(1.0))).collect();
+        assert_eq!(load_setup_seconds(&serde_json::Value::Object(many)).len(), MAX_SETUP_TIMES);
+    }
+
+    #[test]
+    fn setup_error_is_visible_and_survives_document_reset() {
+        let mut h = panel_fixture();
+        h.app.render_workspace.path_host.start(|| Err("test driver refused the device".into()));
+        finish_setup(&mut h);
+        let message = "GPU path tracer unavailable: test driver refused the device";
+        assert!(h.widget(message).is_some());
+        assert!(h.widget("GPU path tracer: compiling shaders…").is_none());
+        assert!(h.widget("Progressive rendering").is_none());
+        assert!(h.app.session.render_job_host().is_some());
+        completed_preview(&mut h, [200, 210, 220]);
+        crate::documents::adopt(&mut h.app, Session::default());
+        enter(&mut h.app, true).unwrap();
+        h.frames(3);
+        assert!(h.widget(message).is_some());
+        h.app.render_workspace.path_host.start(|| panic!("failed setup retried on viewport install"));
+        assert!(matches!(h.app.render_workspace.path_host, PathHost::Failed(_)));
+    }
+
+    #[test]
+    fn disconnected_setup_is_reported_in_the_panel() {
+        let mut h = panel_fixture();
+        let (tx, rx) = mpsc::channel();
+        h.app.render_workspace.path_host = PathHost::Preparing(rx, Instant::now());
+        drop(tx);
+        h.frames(3);
+        assert!(h.widget("GPU path tracer unavailable: setup worker stopped without returning a host").is_some());
+    }
+
+    #[test]
+    fn panicking_setup_is_reported_in_the_panel() {
+        let mut h = panel_fixture();
+        h.app.render_workspace.path_host.start(|| panic!("simulated driver panic"));
+        finish_setup(&mut h);
+        assert!(h.widget("GPU path tracer unavailable: GPU path tracer setup panicked").is_some());
+    }
+
+    #[test]
+    fn registration_failure_is_reported_in_the_panel() {
+        let mut h = panel_fixture();
+        // A different host with the same CPU descriptor cannot be registered twice.
+        h.app.render_workspace.path_host.start(|| Ok(job::CpuHost::cooperative()));
+        finish_setup(&mut h);
+        let PathHost::Failed(message) = &h.app.render_workspace.path_host else { panic!("duplicate executor must fail") };
+        assert!(h.widget(&format!("GPU path tracer unavailable: {message}")).is_some());
+        assert!(h.widget("Progressive rendering").is_none());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn opaque_pbr_product_gpu_and_cpu_share_color_and_material_semantics() {
     use solidcraft_engine::render::{
@@ -32,7 +275,15 @@ fn opaque_pbr_product_gpu_and_cpu_share_color_and_material_semantics() {
         let eye = camera.eye().to_f32();
         let mut task = ImageTask::new(
             scene,
-            ImageRequest { camera, width: SIZE, height: SIZE, background: [255; 3], transparent_background: false },
+            ImageRequest {
+                textures: None,
+                environment: None,
+                camera,
+                width: SIZE,
+                height: SIZE,
+                background: [255; 3],
+                transparent_background: false,
+            },
             CancelToken::default(),
         )
         .unwrap();
@@ -211,6 +462,55 @@ fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
     assert_eq!(h.app.cam, design);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn progressive_image_controls_route_to_the_registered_host() {
+    let host = solidcraft_gpu::select::Policy::from_env()
+        .and_then(|policy| solidcraft_gpu::select::pick(policy).ok_or_else(|| "no qualifying adapter".to_string()))
+        .and_then(|(adapter, _)| solidcraft_gpu::path::host_on_adapter(&adapter).map_err(|e| e.to_string()));
+    let host = match host {
+        Ok(host) => host,
+        Err(e) => {
+            assert!(std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
+            eprintln!("skipping progressive UI device test: {e}");
+            return;
+        }
+    };
+    let mut h = Harness::new();
+    h.app.render_workspace.path_host = PathHost::Ready(host);
+    sync_backend(&mut h.app);
+    h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
+    h.app.session.mark_saved();
+    h.call("ui.resize", json!({"width":1600,"height":1600}));
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.draft.width = 16;
+    h.app.render_workspace.view.draft.height = 16;
+    h.app.render_workspace.view.samples = 4;
+    h.frames(3);
+    let doc = h.app.session.doc.clone();
+    let undo = h.app.session.undo.len();
+    h.step(&json!({"widget":"Progressive rendering"})).unwrap();
+    assert!(h.app.render_workspace.view.progressive);
+    let start = h.app.tr("render.image_start").to_string();
+    h.step(&json!({"widget":start})).unwrap();
+    let job = h.app.render_workspace.view.job.unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while h.app.render_workspace.view.completed.is_none() {
+        assert!(std::time::Instant::now() < deadline, "progressive UI job did not complete");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.frames(1);
+    }
+    let status = h.app.session.execute("render.status", &json!({"job":job})).unwrap();
+    assert_eq!(status["frame"]["executor"], "gpu-path", "{status}");
+    assert_eq!(status["options"]["samples"], 4);
+    let export = h.app.tr("render.image_export").to_string();
+    h.step(&json!({"widget":export})).unwrap();
+    assert!(h.dir.join("render.png").is_file());
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert_eq!(h.app.session.undo.len(), undo);
+    assert!(!h.app.session.is_dirty());
+}
+
 #[test]
 fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
     for language in ["en", "de", "ko", "ru"] {
@@ -292,6 +592,28 @@ fn product_gpu_buffers_preserve_opacity_and_never_contain_overlays() {
 }
 
 #[test]
+fn transmission_uses_legacy_preview_buffers_and_invalidates_the_opaque_cache() {
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length":10,"width":10,"height":10,"body_name":"Glass"})).unwrap();
+    let appearance = json!({"bodies":["Glass"],"color":"#336699",
+        "pbr":{"metallic":0,"roughness":0.1,"dielectric_ior":1.5}});
+    s.execute("appearance.assign", &appearance).unwrap();
+    let (opaque_key, opaque) = gpu_scene(&solidcraft_engine::product_scene::extract(&s).unwrap()).unwrap();
+    assert!(!opaque.pbr.is_empty());
+    let mut scene = solidcraft_engine::product_scene::extract(&s).unwrap();
+    scene.meshes[0].transmission =
+        Some(solidcraft_engine::render::transmission::Transmission::new(solidcraft_engine::geom::Vec3::ZERO, None).unwrap());
+    let (glass_key, glass) = gpu_scene(&scene).unwrap();
+    assert_ne!(opaque_key, glass_key);
+    assert!(glass.pbr.is_empty());
+    assert!(!glass.tris.is_empty());
+    scene.meshes[0].opacity = 0.4;
+    let (_, transparent) = gpu_scene(&scene).unwrap();
+    assert!(transparent.pbr.is_empty());
+    assert!(!transparent.glass.is_empty());
+}
+
+#[test]
 fn host_profiles_advertise_only_installed_opaque_pbr_not_hdri_refraction_or_final() {
     use solidcraft_engine::render::*;
     let host = host_executor(512, true, 4).unwrap();
@@ -339,6 +661,100 @@ fn completed_preview(h: &mut Harness, background: [u8; 3]) -> solidcraft_engine:
         }
     }
     panic!("small cooperative image did not complete within the work budget");
+}
+
+fn image_panel_frame(app: &mut SolveApp, ctx: &egui::Context) -> egui::FullOutput {
+    ctx.run_ui(
+        egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(285.0, 1200.0))), ..Default::default() },
+        |ui| image_controls(app, ui),
+    )
+}
+
+#[test]
+fn completed_image_is_painted_once_available_and_upload_is_cached() {
+    let mut h = Harness::new();
+    let ctx = egui::Context::default();
+    image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
+    assert!(h.app.render_workspace.image.is_none());
+    let doc = h.app.session.doc.clone();
+    let undo = h.app.session.undo.len();
+    let job = completed_preview(&mut h, [20, 40, 60]);
+    h.app.render_workspace.view.job = Some(job);
+    let mut output = image_panel_frame(&mut h.app, &ctx);
+    let (cached_job, texture) = h.app.render_workspace.image.as_ref().unwrap();
+    let texture = texture.as_ref().unwrap();
+    let id = texture.id();
+    assert_eq!(*cached_job, job);
+    assert_eq!(texture.size(), [16, 16]);
+    let uploaded = &output.textures_delta.set.get(&id).unwrap().first().unwrap().image;
+    let egui::ImageData::Color(pixels) = uploaded;
+    assert!(pixels.pixels.iter().all(|p| *p == Color32::from_rgb(20, 40, 60)));
+    // egui requires frame texture deltas to be applied or cleared.
+    output.textures_delta.clear();
+    assert!(
+        ctx.tessellate(output.shapes, output.pixels_per_point)
+            .iter()
+            .any(|shape| { matches!(&shape.primitive, egui::epaint::Primitive::Mesh(mesh) if mesh.texture_id == id && !mesh.indices.is_empty()) })
+    );
+    let mut output = image_panel_frame(&mut h.app, &ctx);
+    assert!(!output.textures_delta.set.contains_key(&id), "repaint must reuse the texture");
+    // egui requires frame texture deltas to be applied or cleared.
+    output.textures_delta.clear();
+    assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
+    assert_eq!(h.app.session.undo.len(), undo);
+    let path = h.dir.join("displayed.png");
+    h.app.run("render.export", json!({"job":job,"path":path})).unwrap();
+    let frame = h.app.session.render_job_handle(job).unwrap().frame().unwrap().unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), frame.png(), "displaying the image must not change export bytes");
+}
+
+#[test]
+fn completed_image_keeps_last_export_during_work_and_updates_for_the_next_job() {
+    let mut h = Harness::new();
+    let ctx = egui::Context::default();
+    let first = completed_preview(&mut h, [20, 40, 60]);
+    h.app.render_workspace.view.job = Some(first);
+    image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
+    let old_texture = h.app.render_workspace.image.as_ref().unwrap().1.as_ref().unwrap().id();
+    let reply = h.app.run("render.start", json!({"settings":{"width":16,"height":16}})).unwrap();
+    let pending = serde_json::from_value(reply["job"].clone()).unwrap();
+    h.app.render_workspace.view.job = Some(pending);
+    image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
+    assert_eq!(h.app.render_workspace.image.as_ref().unwrap().0, first);
+    h.app.run("render.cancel", json!({"job":pending})).unwrap();
+    image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
+    assert_eq!(h.app.render_workspace.image.as_ref().unwrap().0, first);
+    let second = completed_preview(&mut h, [80, 100, 120]);
+    h.app.render_workspace.view.job = Some(second);
+    let mut output = image_panel_frame(&mut h.app, &ctx);
+    let (cached_job, texture) = h.app.render_workspace.image.as_ref().unwrap();
+    assert_eq!(*cached_job, second);
+    assert_ne!(texture.as_ref().unwrap().id(), old_texture);
+    assert!(output.textures_delta.free.contains(&old_texture));
+    // egui requires frame texture deltas to be applied or cleared.
+    output.textures_delta.clear();
+    crate::documents::open_tab(&mut h.app, Session::default()).unwrap();
+    image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
+    assert!(h.app.render_workspace.image.is_none(), "another document must not show this image");
+    crate::documents::switch(&mut h.app, 0);
+    image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
+    assert_eq!(h.app.render_workspace.image.as_ref().unwrap().0, second);
+    reset_document(&mut h.app);
+    assert!(h.app.render_workspace.image.is_none());
+}
+
+#[test]
+fn completed_image_decoder_preserves_alpha_and_rejects_invalid_sizes_and_pngs() {
+    let mut png = std::io::Cursor::new(Vec::new());
+    let pixels = image::RgbaImage::from_pixel(2, 1, image::Rgba([80, 120, 160, 128]));
+    pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let decoded = decode_image(png.get_ref(), 2, 1).unwrap();
+    assert_eq!(decoded.size, [2, 1]);
+    assert_eq!(decoded.pixels, vec![Color32::from_rgba_unmultiplied(80, 120, 160, 128); 2]);
+    for (width, height) in [(0, 1), (u32::MAX, 1), (4096, 4096), (1, 1), (3, 1)] {
+        assert!(decode_image(png.get_ref(), width, height).is_err(), "{width}x{height}");
+    }
+    assert!(decode_image(b"invalid PNG", 2, 1).is_err());
 }
 
 fn async_export_fixture() -> (Harness, solidcraft_engine::render::job::JobId) {
@@ -671,4 +1087,48 @@ fn four_and_five_k_viewports_preview_downscaled_within_the_limits() {
         }
     }
     assert_eq!(preview_size(None, (5120, 2880)), (5120, 2880), "no executor: resolution reports it");
+}
+
+/// Backend failures must remain readable in the fixed-width Render panel, not
+/// disappear into an ellipsis before the reason and recovery guidance are shown.
+#[test]
+fn backend_diagnostics_and_preview_help_wrap_without_elision() {
+    fn collect<'a>(shape: &'a egui::Shape, texts: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => texts.push(text),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, texts)),
+            _ => {}
+        }
+    }
+    for mode in ["floating", "compact"] {
+        for dark in [false, true] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.ui.dark = dark;
+            h.call("ui.resize", json!({"width":1400,"height":1800}));
+            h.app.run("view.layout", json!({"mode":mode})).unwrap();
+            enter(&mut h.app, true).unwrap();
+            let reason = "The selected viewport adapter has no compatible Vulkan path device. Images remain available on the CPU; keep the original design and review the driver before retrying.";
+            h.app.render_workspace.path_host = PathHost::Failed(reason.into());
+            h.frames(3);
+            let expected = format!("{}: {reason}", h.app.tr("render.gpu_path_failed"));
+            let help = h.app.tr("render.opaque_preview_help").to_owned();
+            let mut out = h.ctx.run_ui(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 1800.0))), ..Default::default() },
+                |ui| {
+                    h.app.logic(ui.ctx());
+                    h.app.ui(ui);
+                },
+            );
+            out.textures_delta.clear();
+            let mut texts = Vec::new();
+            out.shapes.iter().for_each(|shape| collect(&shape.shape, &mut texts));
+            for message in [&expected, &help] {
+                let text = texts.iter().find(|text| text.galley.job.text == *message).expect("the complete diagnostic is painted");
+                assert!(!text.galley.elided, "{mode}, dark={dark}: {message}");
+                assert!(text.galley.rows.len() > 1, "long messages must wrap in the narrow panel");
+                assert!(text.galley.rect.width() <= 285.0, "the message must not expand the panel");
+            }
+        }
+    }
 }

@@ -3,8 +3,9 @@
 `material.properties.validate {card}` checks a caller-supplied candidate record,
 without assigning it, saving it in the design, reading files, fetching sources or
 changing history, selection, camera or live geometry. This is phase 1 of #923/#922,
-building towards #785. Existing `material.create/edit` and their density/appearance
-behavior are unchanged. The design format is unchanged.
+building towards #785. The initial validator remains read-only. The design-owned persistence
+section below extends `material.create/edit` without changing assigned density or
+optical appearance.
 
 Validation means numerical and structural consistency. It does not authenticate
 sources, approve redistribution, certify design values, provide a solver or enable
@@ -189,3 +190,31 @@ The card's test conditions still apply; changing direction does not extrapolate
 temperature, moisture, process, rate, damage or nonlinear behavior. Synthetic analytic
 tests cover principal axes, the isotropic limit and off-axis shear/coupling terms.
 No physical dataset or external implementation is included.
+
+## Design-owned persistence
+
+`material.create` accepts an optional `physical_card`; omission or null means
+unknown. `material.edit` retains an omitted card, validates and replaces a supplied
+card, and clears it only with explicit null. Density-only, appearance-only and
+rename edits retain the card. Assignment, configurations, undo/redo and Paste New
+keep using the same design-owned material definition.
+
+`material.list` reports the optional card, its validation report and a density
+comparison. Assigned density in g/cm3 and recorded density in kg/m3 stay separate:
+card data never silently changes the density used for mass. Source and condition
+claims are preserved, not certified, and this does not add an analysis solver.
+
+The single pending descriptor is `material-engineering-cards.rs`. The build
+assigns the pending format automatically; no released number, history or migration
+is edited. Older designs keep absent cards as unknown. Older readers refuse the
+newer saved format rather than silently losing engineering records.
+
+Only `user_materials[].physical_card` receives the typed SI admission needed for
+elastic moduli above coordinate limits. Other numeric/depth limits, including the
+second range check after integer-valued coordinates become typed floats, remain
+unchanged. Normal loading admits at most 1000 design-owned materials.
+
+Scalar catalog v1 refuses cards before creating or replacing an export file.
+Rich catalog transport is the separate #1086 contribution. The synthetic example
+`examples/material-card.json` uses an assigned density of 0.8 g/cm3, a recorded
+700 kg/m3 and invented isotropic constants; it is not a real material dataset.
