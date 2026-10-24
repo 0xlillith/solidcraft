@@ -10,6 +10,78 @@ use solidcraft_render::job::{
 };
 
 #[test]
+fn saved_targeted_aging_reaches_preflight_and_start_after_cold_reopen() {
+    let Some(executor) = executor() else { return };
+    assert!(executor.supports_aging());
+    let mut session = solidcraft_engine::Session::default();
+    session.execute("solid.box", &json!({"body_name":"Decoy","length":1,"width":1,"height":1})).unwrap();
+    session.execute("solid.box", &json!({"body_name":"Target panel","length":20,"width":15,"height":6})).unwrap();
+    let state = session.model.state();
+    let feature = state.bodies.iter().find(|body| body.name == "Target panel").unwrap().feature;
+    let target = json!({"definition":"Target panel","feature":feature,"component":0,"occurrence_path":[]});
+    session
+        .execute(
+            "render.settings.set",
+            &json!({"name":"Aging","set":{
+                "width":32,"height":24,"job":{"method":"gpu_path","options":{
+                    "samples":4,"seed":714,"max_depth":4,"linear_exr":true,
+                    "lighting":{"environment":[8,8,8]},
+                    "aging":[{"kind":"rust","strength":1,"coverage":1,"target":target}]
+                }}
+            }}),
+        )
+        .unwrap();
+    let native = solidcraft_io::write_design_container(&session.doc).unwrap();
+    session = solidcraft_engine::Session::new(solidcraft_io::read_design(&native).unwrap());
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    session.register_render_job_host(host.clone()).unwrap();
+    let document = session.doc.clone();
+    let revision = session.revision;
+    let original = session.execute("render.preflight", &json!({"setup":"Aging"})).unwrap();
+    assert_eq!(host.admitted_bytes(), 0, "Check must not reserve a job");
+
+    // Removing another captured body changes the ordinal, never the saved target.
+    session.visibility.hidden_bodies.push("Decoy".into());
+    let physical = session.execute("component.properties", &json!({})).unwrap();
+    let checked = session.execute("render.preflight", &json!({"setup":"Aging"})).unwrap();
+    let runtime_target = &checked["options"]["aging"][0]["target"];
+    assert_eq!(runtime_target["body_name"], "Target panel");
+    assert_ne!(runtime_target["body_index"], original["options"]["aging"][0]["target"]["body_index"]);
+    let saved = session.doc.render.setups["Aging"].clone();
+    assert_eq!(checked, session.execute("render.preflight", &json!({"settings":saved})).unwrap());
+    assert_eq!(host.admitted_bytes(), 0);
+
+    let started = session.execute("render.start", &json!({"setup":"Aging"})).unwrap();
+    let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
+    let handle = session.render_job_handle(id).unwrap();
+    let status = handle.wait_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Completed, "{status:?}");
+    assert_eq!(json!(status.options.aging), checked["options"]["aging"]);
+    let aged = handle.frame().unwrap().unwrap();
+
+    // Execute the same shot with the layer disabled: successful admission alone
+    // cannot prove that the producer actually evaluates aging in transport.
+    let mut disabled = serde_json::to_value(&session.doc.render.setups["Aging"]).unwrap();
+    disabled["job"]["options"]["aging"][0]["enabled"] = json!(false);
+    let started = session.execute("render.start", &json!({"settings":disabled})).unwrap();
+    let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
+    let handle = session.render_job_handle(id).unwrap();
+    let status = handle.wait_timeout(Duration::from_secs(60)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Completed, "{status:?}");
+    let unaged = handle.frame().unwrap().unwrap();
+    assert_ne!(aged.png(), unaged.png());
+    assert_ne!(aged.linear_exr().unwrap(), unaged.linear_exr().unwrap(), "aging must change transport, not only presentation");
+    assert!(Arc::ptr_eq(&document, &session.doc));
+    assert_eq!(revision, session.revision);
+    assert_eq!(physical, session.execute("component.properties", &json!({})).unwrap());
+
+    session.visibility.hidden_bodies.push("Target panel".into());
+    for command in ["render.preflight", "render.start"] {
+        assert!(session.execute(command, &json!({"setup":"Aging"})).unwrap_err().to_string().contains("hidden"));
+    }
+}
+
+#[test]
 fn opaque_aging_changes_transport_but_disabled_layers_and_passive_stage_are_exact_identities() {
     let Some(executor) = executor() else { return };
     let options = JobOptions { samples: 16, seed: 42, max_depth: 4, linear_exr: true, ..Default::default() };

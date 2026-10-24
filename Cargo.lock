@@ -4274,6 +4274,7 @@ dependencies = [
  "serde_json",
  "solidcraft-engine",
  "solidcraft-geom",
+ "solidcraft-io",
  "solidcraft-kernel",
  "solidcraft-render",
  "thiserror 2.0.21",
