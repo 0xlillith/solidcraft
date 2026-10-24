@@ -1621,7 +1621,8 @@ fn backend_diagnostics_wrap_without_elision_in_bounded_image_controls() {
             out.textures_delta.clear();
             let mut texts = Vec::new();
             out.shapes.iter().for_each(|shape| collect(&shape.shape, &mut texts));
-            for message in [&expected] {
+            {
+                let message = &expected;
                 let text = texts.iter().find(|text| text.galley.job.text == *message).expect("the complete diagnostic is painted");
                 assert!(!text.galley.elided, "{mode}, dark={dark}: {message}");
                 assert!(text.galley.rows.len() > 1, "long messages must wrap in the narrow panel");
