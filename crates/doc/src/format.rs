@@ -285,6 +285,21 @@ impl Formats<'_> {
         }
     }
 
+    /// A concept is implemented only when this reader registers its descriptor.
+    fn knows_part_name(&self, name: &str) -> bool {
+        self.folded.iter().flat_map(|(_, parts)| *parts).chain(self.pending).any(|part| part.name == name)
+    }
+
+    /// Read-only spelling from the personal format-29 renderer. Its card schema is
+    /// unchanged; recognizing the alias must never grant support to another reader.
+    fn canonical_applied_name<'name>(&self, version: u32, name: &'name str) -> &'name str {
+        if version == 29 && name == "physical-material-cards" && self.knows_part_name("material-engineering-cards") {
+            "material-engineering-cards"
+        } else {
+            name
+        }
+    }
+
     /// Bring a design of format `version` up to [`Formats::current`]. `applied` is the file's
     /// `format_pending`: the changes of its format it already has, when it was written while they
     /// were pending; the others' steps run first. Recognize changes across the entire history:
@@ -297,15 +312,15 @@ impl Formats<'_> {
         // A list beside a format that isn't made of changes means nothing (a tool or a test set
         // an older number on a newer file): it is ignored, like any field an upgrade drops.
         let applied = applied.filter(|_| self.parts(version).is_some());
+        let already_applied =
+            |part: &Part| applied.is_some_and(|names| names.iter().any(|name| self.canonical_applied_name(version, name) == part.name));
         if let Some(applied) = applied {
-            if let Some(unknown) =
-                applied.iter().find(|name| !self.folded.iter().flat_map(|(_, parts)| *parts).chain(self.pending).any(|p| p.name == name.as_str()))
-            {
+            if let Some(unknown) = applied.iter().find(|name| !self.knows_part_name(self.canonical_applied_name(version, name))) {
                 return Err(DocError::Invalid(format!(
                     "this design was saved by a newer SolidCraft (file format {version} with `{unknown}`, which this version doesn't know): update SolidCraft to open it"
                 )));
             }
-            for part in self.parts(version).unwrap_or_default().iter().filter(|p| !applied.iter().any(|name| name == p.name)) {
+            for part in self.parts(version).unwrap_or_default().iter().filter(|part| !already_applied(part)) {
                 part.step.map_or(Ok(()), |step| step(v))?;
             }
         }
@@ -313,7 +328,7 @@ impl Formats<'_> {
             match self.hand.get(from as usize - 1) {
                 Some(step) => step(v)?,
                 None => {
-                    for part in self.parts(from + 1).unwrap_or_default().iter().filter(|p| !applied.is_some_and(|a| a.iter().any(|n| n == p.name))) {
+                    for part in self.parts(from + 1).unwrap_or_default().iter().filter(|part| !already_applied(part)) {
                         part.step.map_or(Ok(()), |step| step(v))?;
                     }
                 }
@@ -1249,6 +1264,94 @@ mod tests {
         let mut released = serde_json::json!({});
         formats.upgrade(&mut released, next, None).unwrap();
         assert_eq!(trace_of(&released), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn personal_format29_card_alias_requires_actual_canonical_support() {
+        let hand: [JsonStep; 27] = [|_| Ok(()); 27];
+        let first = [traced("a-first")];
+        let cards = [traced("material-engineering-cards")];
+        let pending = Formats { hand: &hand, folded: &[(29, &first)], pending: &cards };
+        let folded = Formats { hand: &hand, folded: &[(29, &first), (30, &cards)], pending: &[] };
+        for formats in [pending, folded] {
+            let mut file = serde_json::json!({"trace": ["b"]});
+            formats.upgrade(&mut file, 29, Some(&["physical-material-cards".into()])).unwrap();
+            assert_eq!(trace_of(&file), ["b", "a"], "never replay existing card semantics");
+        }
+    }
+
+    #[test]
+    fn personal_card_alias_without_support_refuses_before_mutation() {
+        let hand: [JsonStep; 27] = [|_| Ok(()); 27];
+        let first = [traced("a-first")];
+        let formats = Formats { hand: &hand, folded: &[(29, &first)], pending: &[] };
+        let mut file = serde_json::json!({"trace": [], "sentinel": 7});
+        let original = file.clone();
+        let error = formats.upgrade(&mut file, 29, Some(&["physical-material-cards".into()])).unwrap_err();
+        assert!(error.to_string().contains("physical-material-cards"), "{error}");
+        assert_eq!(file, original);
+    }
+
+    #[test]
+    fn personal_card_alias_does_not_extend_to_other_format_numbers() {
+        let hand: [JsonStep; 26] = [|_| Ok(()); 26];
+        let first = [traced("a-first")];
+        let second = [traced("b-second")];
+        let cards = [traced("material-engineering-cards")];
+        let formats = Formats { hand: &hand, folded: &[(28, &first), (29, &second), (30, &cards)], pending: &[] };
+        for version in [28, 30] {
+            let mut file = serde_json::json!({"trace": []});
+            let original = file.clone();
+            let error = formats.upgrade(&mut file, version, Some(&["physical-material-cards".into()])).unwrap_err();
+            assert!(error.to_string().contains("physical-material-cards"), "{error}");
+            assert_eq!(file, original);
+        }
+    }
+
+    #[test]
+    fn personal_card_alias_never_hides_unknown_concepts() {
+        let hand: [JsonStep; 27] = [|_| Ok(()); 27];
+        let first = [traced("a-first")];
+        let cards = [traced("material-engineering-cards")];
+        let formats = Formats { hand: &hand, folded: &[(29, &first)], pending: &cards };
+        for names in
+            [["physical-material-cards".into(), "unknown-card-codec".into()], ["unknown-card-codec".into(), "physical-material-cards".into()]]
+        {
+            let mut file = serde_json::json!({"trace": ["b"]});
+            let original = file.clone();
+            let error = formats.upgrade(&mut file, 29, Some(&names)).unwrap_err();
+            assert!(error.to_string().contains("unknown-card-codec"), "{error}");
+            assert_eq!(file, original);
+        }
+    }
+
+    #[test]
+    fn alias_and_canonical_markers_never_reapply_the_card_migration() {
+        let hand: [JsonStep; 27] = [|_| Ok(()); 27];
+        let first = [traced("a-first"), traced("material-engineering-cards")];
+        let formats = Formats { hand: &hand, folded: &[(29, &first)], pending: &[] };
+        for names in [
+            vec!["physical-material-cards".into()],
+            vec!["physical-material-cards".into(), "material-engineering-cards".into()],
+            vec!["material-engineering-cards".into(), "physical-material-cards".into()],
+        ] {
+            let mut file = serde_json::json!({"trace": ["b"]});
+            formats.upgrade(&mut file, 29, Some(&names)).unwrap();
+            assert_eq!(trace_of(&file), ["b", "a"]);
+        }
+    }
+
+    #[test]
+    fn ordinary_releases_still_receive_cards_and_metadata_remains_inert() {
+        let hand: [JsonStep; 27] = [|_| Ok(()); 27];
+        let first = [traced("a-first")];
+        let cards = [traced("material-engineering-cards")];
+        let formats = Formats { hand: &hand, folded: &[(29, &first)], pending: &cards };
+        let mut file = serde_json::json!({"trace": ["a"], "metadata": {"format_pending": ["physical-material-cards"]}});
+        let metadata = file["metadata"].clone();
+        formats.upgrade(&mut file, 29, None).unwrap();
+        assert_eq!(trace_of(&file), ["a", "b"]);
+        assert_eq!(file["metadata"], metadata);
     }
 
     /// An experimental producer can use a number that a release later folds without its
