@@ -27,6 +27,7 @@ image = { workspace = true }
 solidcraft-kernel = { workspace = true }
 # Headless pictures of real designs (capture tests).
 solidcraft-engine = { workspace = true, features = ["bundled-render-library"] }
+solidcraft-io = { workspace = true }
 serde_json = { workspace = true }
 # The HLSL the D3D12 backend compiles (tests check it suits FXC).
 naga = { workspace = true, features = ["wgsl-in", "hlsl-out"] }
