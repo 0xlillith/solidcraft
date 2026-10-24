@@ -471,15 +471,16 @@ fn workstation_progressive_resolves_every_checkpoint_through_its_admitted_cap() 
 
 #[test]
 fn area_light_points_include_spatial_and_film_sample_identity() {
+    let light = super::super::area::RectangleLight::new(Vec3::Z * 10.0, Vec3::X * 4.0, -Vec3::Y * 4.0, Vec3::new(1.0, 1.0, 1.0), 1.0).unwrap();
     let mut keys = std::collections::BTreeSet::new();
     let mut points = std::collections::BTreeSet::new();
     for film in [0, 1, 1023, 2047, 4095] {
         for spatial in 0..16 {
             let key = area_sample_key(41, spatial, 16, film).unwrap();
             assert!(keys.insert(key));
-            let (u, v) = super::super::area::sample_uv(key, 2, 0, 4, 73).unwrap();
-            assert!(points.insert((u.to_bits(), v.to_bits())));
-            assert_eq!(super::super::area::sample_uv(key, 2, 0, 4, 73).unwrap(), (u, v));
+            let point = light.sample(Vec3::ZERO, key, 2, 0, 4, 73).unwrap().unwrap().position();
+            assert!(points.insert((point.x.to_bits(), point.y.to_bits())));
+            assert_eq!(light.sample(Vec3::ZERO, key, 2, 0, 4, 73).unwrap().unwrap().position(), point);
         }
     }
     assert_eq!(area_sample_key(41, 0, 1, 0).unwrap(), 41);
