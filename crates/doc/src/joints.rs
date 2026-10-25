@@ -351,11 +351,33 @@ impl JointExprs {
 /// Largest offset or value an expression may give a joint (mm, or radians for an angle).
 const MAX_EXPR_VALUE: f64 = 1e9;
 
+/// A design's parameter values, worked out the first time an expression names one and kept for
+/// the next: a pass over the joints works out every joint's expressions again, and each would
+/// otherwise evaluate every parameter of the design anew.
+pub struct Params<'a> {
+    doc: &'a Document,
+    vals: std::cell::OnceCell<BTreeMap<String, crate::expr::Value>>,
+}
+
+impl<'a> Params<'a> {
+    pub fn new(doc: &'a Document) -> Params<'a> {
+        Params { doc, vals: std::cell::OnceCell::new() }
+    }
+
+    /// What [`Document::eval`] gives for `e`.
+    pub fn eval(&self, e: &str, kind: crate::expr::Kind) -> Result<f64> {
+        crate::expr::eval_with(e, &|n| {
+            self.vals.get_or_init(|| self.doc.param_values().0).get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`")))
+        })?
+        .to_kind(kind)
+    }
+}
+
 /// A joint's offset, angle and values worked out from its expressions (those without one keep
 /// their numbers), or why one can't be: an unknown name, a wrong unit, or a number too large.
-pub fn expressed(doc: &Document, j: &Joint) -> Result<(f64, f64, Vec<f64>)> {
+pub fn expressed(params: &Params, j: &Joint) -> Result<(f64, f64, Vec<f64>)> {
     let eval = |e: &str, kind: crate::expr::Kind, what: &str| -> Result<f64> {
-        let v = doc.eval(e, kind).map_err(|err| DocError::Invalid(format!("joint {}: {what} `{e}`: {err}", j.name)))?;
+        let v = params.eval(e, kind).map_err(|err| DocError::Invalid(format!("joint {}: {what} `{e}`: {err}", j.name)))?;
         if v.is_finite() && v.abs() < MAX_EXPR_VALUE { Ok(v) } else { Err(DocError::Invalid(format!("joint {}: {what} `{e}` gives {v}", j.name))) }
     };
     let x = &j.exprs;
@@ -1878,11 +1900,12 @@ fn build<'a>(doc: &'a Document, st: &ModelState, vals: &Values, sol: &mut Soluti
             .clone()
             .map_err(DocError::Invalid)
     };
+    let params = Params::new(doc);
     for j in &joints {
         // A joint whose expressions can't be worked out (a parameter gone) is left out rather
         // than placed by numbers that no longer say what it was defined by.
         if !j.exprs.is_empty()
-            && let Err(e) = expressed(doc, j)
+            && let Err(e) = expressed(&params, j)
         {
             sol.errors.push((j.id, j.name.clone(), e.to_string()));
             continue;
@@ -2201,6 +2224,28 @@ mod tests {
             assert_eq!(PLACEMENT_STEPS.with(|steps| steps.get()), 6, "four tree placements and two closing-joint steps");
             assert_eq!(closure_gaps(&mut workspace, &[u64::MAX], &values, 37.0, &mut actual), None);
             assert_eq!(actual, expected, "an unresolved joint does not insert a zero residual");
+        }
+    }
+
+    /// The parameter values kept between expressions give what evaluating each expression on
+    /// its own gives, errors included.
+    #[test]
+    fn kept_parameters_evaluate_as_the_design_does() {
+        let mut doc = Document::new("p");
+        doc.set_param("W", "300 mm", None, None).unwrap();
+        doc.set_param("H", "W / 2", None, None).unwrap();
+        doc.set_param("A", "30 deg", None, None).unwrap();
+        let params = Params::new(&doc);
+        for (e, kind) in [
+            ("W / 4", crate::expr::Kind::Length),
+            ("H + 2 mm", crate::expr::Kind::Length),
+            ("A * 2", crate::expr::Kind::Angle),
+            ("12", crate::expr::Kind::Length),
+        ] {
+            assert_eq!(params.eval(e, kind).unwrap(), doc.eval(e, kind).unwrap(), "{e}");
+        }
+        for (e, kind) in [("Q + 1", crate::expr::Kind::Length), ("A", crate::expr::Kind::Length)] {
+            assert_eq!(params.eval(e, kind).unwrap_err().to_string(), doc.eval(e, kind).unwrap_err().to_string(), "{e}");
         }
     }
 

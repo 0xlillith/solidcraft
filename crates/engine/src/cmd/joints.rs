@@ -118,6 +118,7 @@ pub fn place(s: &mut Session) -> joints::Solution {
 /// may have changed). One that can't be worked out (its parameter gone) keeps its numbers; the
 /// solve leaves that joint out and says why.
 fn reexpress(s: &mut Session) {
+    let params = joints::Params::new(&s.doc);
     let changed: Vec<(usize, (f64, f64, Vec<f64>))> = s
         .doc
         .assembly
@@ -126,7 +127,7 @@ fn reexpress(s: &mut Session) {
         .enumerate()
         .filter(|(_, j)| !j.exprs.is_empty())
         .filter_map(|(i, j)| {
-            let (o, a, mut q) = joints::expressed(&s.doc, j).ok()?;
+            let (o, a, mut q) = joints::expressed(&params, j).ok()?;
             joints::clamp(j, &mut q);
             ((o, a) != (j.offset, j.angle) || q != j.values).then_some((i, (o, a, q)))
         })
