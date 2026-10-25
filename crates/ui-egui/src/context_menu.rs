@@ -1190,6 +1190,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                     crate::browser::reveal_feature(app, f, body);
                 }
                 let _ = app.run("select.set", json!({"items": [{"type": "feature", "id": f}]}));
+                app.tree.timeline_reveal = Some(f);
             }
         }
         "ui.tangentChain" => tangent_chain(app),
