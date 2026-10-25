@@ -327,6 +327,8 @@ pub struct Session {
     pub section: Option<(Vec3, Vec3)>,
     /// Whether the section's cut faces are hatched (`inspect.section`'s `hatch`; on by default).
     pub section_hatch: bool,
+    /// Component identification colours are enabled when present; view state only.
+    pub colored_components: Option<()>,
     /// Surface analysis shading the model (zebra, draft, curvature map).
     pub analysis: Option<SurfaceAnalysis>,
     /// The seams `inspect.continuity` last measured, for the viewport to shade. View state: not
@@ -491,6 +493,7 @@ impl Session {
             sketch_clipboard: None,
             section: None,
             section_hatch: true,
+            colored_components: None,
             analysis: None,
             continuity: Vec::new(),
             checkpoints: Vec::new(),
@@ -1152,6 +1155,7 @@ impl Session {
             sketch_clipboard: self.sketch_clipboard.clone(),
             section: None,
             section_hatch: true,
+            colored_components: None,
             analysis: None,
             continuity: Vec::new(),
             checkpoints: Vec::new(),
@@ -1458,6 +1462,7 @@ fn same_but_features(a: &Document, b: &Document) -> bool {
         browser_order,
         named_views,
         visibility,
+        next_component_color_index,
     } = a;
     *render == b.render
         && *format == b.format
@@ -1491,4 +1496,5 @@ fn same_but_features(a: &Document, b: &Document) -> bool {
         && *browser_order == b.browser_order
         && *named_views == b.named_views
         && *visibility == b.visibility
+        && *next_component_color_index == b.next_component_color_index
 }
