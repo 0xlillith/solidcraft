@@ -175,6 +175,7 @@ impl eframe::App for App {
             log::warn!("a picture was still being drawn as the app closed");
         }
         solidcraft_ui_egui::recovery_ui::close(&mut self.solve);
+        solidcraft_ui_egui::open_elsewhere::close(&mut self.solve);
         solidcraft_engine::crash::end_session();
         if let Some(lost_at) = self.gpu.as_ref().and_then(|g| g.lost_at) {
             device_lost::restart(self.gpu.as_ref().is_some_and(|g| g.restart_on_software), lost_at);
@@ -801,6 +802,9 @@ fn main() -> eframe::Result {
                 app.session.mark_saved();
                 app.session.undo.clear();
             }
+            // Lock files next to open designs: a design open on another computer says so (#5467),
+            // the files given at launch included.
+            solidcraft_ui_egui::open_elsewhere::start(&mut app);
             // A launch from Finder: its files arrived before the window.
             #[cfg(target_os = "macos")]
             let files = {
