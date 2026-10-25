@@ -724,10 +724,15 @@ fn main() -> eframe::Result {
             let mut app = SolveApp::new(Session::default(), services(cc));
             app.apply_off_thread = Some(solidcraft_ui_egui::dialogs::APPLY_AT_ONCE);
             app.custom_titlebar = CUSTOM_TITLEBAR;
-            // Windows: the OS hit test offers the resize border, at the window's DPI, from the
-            // first message (#1381).
             #[cfg(target_os = "windows")]
             {
+                // Windows: the taskbar button shows the mark even when slow first frames keep the
+                // taskbar waiting for the window's icon.
+                if !native_frame::set_class_icon(cc) {
+                    eprintln!("SolidCraft window: no class icon; the taskbar may show a generic one");
+                }
+                // The OS hit test offers the resize border, at the window's DPI, from the first
+                // message (#1381).
                 app.native_resize_border = CUSTOM_TITLEBAR && native_frame::install(cc);
                 if CUSTOM_TITLEBAR && !app.native_resize_border {
                     eprintln!("SolidCraft window: no native resize border; egui edge zones instead");
