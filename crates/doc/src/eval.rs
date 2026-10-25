@@ -1178,19 +1178,20 @@ pub struct Model {
 }
 
 /// Parameters a feature uses directly (inputs, sketch dimensions and the expressions of a
-/// sketch's texts), sorted.
+/// sketch's texts, the text parameters of their words included), sorted.
 fn param_names(f: &Feature) -> Vec<String> {
     let mut names: Vec<String> = f.kind.expressions().iter().flat_map(|e| expr::references(e)).collect();
     if let FeatureKind::Sketch { sketch, .. } = &f.kind {
         names.extend(sketch.constraints.iter().filter_map(|c| c.param.clone()));
         names.extend(sketch.text_exprs().into_iter().flat_map(|(_, e)| expr::references(e)));
+        names.extend(sketch.text_word_exprs().into_iter().flat_map(|e| crate::text_params::references(e)));
     }
     names.sort();
     names.dedup();
     names
 }
 
-fn fingerprint(prev: u64, f: &Feature, vals: &BTreeMap<String, Value>, rolled_back: bool, steps: &StepDigests) -> u64 {
+fn fingerprint(doc: &Document, prev: u64, f: &Feature, vals: &BTreeMap<String, Value>, rolled_back: bool, steps: &StepDigests) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     prev.hash(&mut h);
     rolled_back.hash(&mut h);
@@ -1198,13 +1199,14 @@ fn fingerprint(prev: u64, f: &Feature, vals: &BTreeMap<String, Value>, rolled_ba
     hash_feature_json(f, steps, &mut h);
     for n in param_names(f) {
         n.hash(&mut h);
-        match vals.get(&n) {
-            Some(v) => {
+        match (vals.get(&n), doc.text_param(&n)) {
+            (Some(v), _) => {
                 v.v.to_bits().hash(&mut h);
                 v.len.hash(&mut h);
                 v.ang.hash(&mut h);
             }
-            None => 0u8.hash(&mut h),
+            (None, Some(p)) => p.text.hash(&mut h),
+            (None, None) => 0u8.hash(&mut h),
         }
     }
     h.finish()
@@ -1381,7 +1383,7 @@ fn chain_fingerprint(
     steps: &StepDigests,
     st: Option<&ModelState>,
 ) -> u64 {
-    let mut fp = fingerprint(prev, f, vals, rolled_back, steps) ^ placement_digest(doc, f, st);
+    let mut fp = fingerprint(doc, prev, f, vals, rolled_back, steps) ^ placement_digest(doc, f, st);
     // Sheet metal features also depend on the rules (and the parameters they use).
     if f.kind.is_sheet() {
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1420,7 +1422,7 @@ fn context_digest(doc: &Document, vals: &BTreeMap<String, Value>) -> u64 {
     for f in doc.features.iter().filter(|f| {
         matches!(f.kind, FeatureKind::ConstructionPlane { .. } | FeatureKind::ConstructionAxis { .. } | FeatureKind::ConstructionPoint { .. })
     }) {
-        fingerprint(0, f, vals, false, &StepDigests::default()).hash(&mut h);
+        fingerprint(doc, 0, f, vals, false, &StepDigests::default()).hash(&mut h);
     }
     doc.units.hash(&mut h);
     serde_json::to_string(&doc.sheet).unwrap_or_default().hash(&mut h);
@@ -1989,7 +1991,8 @@ impl Model {
                 Arc::make_mut(&mut state).reserved_body_names.clone_from(&reserved);
             }
             // The same feature on the same inputs: its earlier result.
-            let key = cache_key(f, fp, fingerprint(0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f, Some(&state)), ctx, &state);
+            let key =
+                cache_key(f, fp, fingerprint(doc, 0, f, &vals, false, &self.step_digests) ^ placement_digest(doc, f, Some(&state)), ctx, &state);
             let kept = self.kept.0.as_ref().filter(|_| !self.no_cache);
             if !self.no_cache
                 && let Some(c) = self.cache.lock().ok().and_then(|mut m| m.get(key)).or_else(|| kept.and_then(|k| k.get(key)))

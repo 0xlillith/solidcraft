@@ -1432,6 +1432,7 @@ fn same_but_features(a: &Document, b: &Document) -> bool {
         units,
         metadata,
         params,
+        text_params,
         features: _,
         marker,
         next_id,
@@ -1465,6 +1466,7 @@ fn same_but_features(a: &Document, b: &Document) -> bool {
         && *units == b.units
         && *metadata == b.metadata
         && *params == b.params
+        && *text_params == b.text_params
         && *marker == b.marker
         && *next_id == b.next_id
         && *reserved_body_names == b.reserved_body_names
