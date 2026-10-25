@@ -902,7 +902,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     let mut picked: Vec<String> = Vec::new();
     for s in &app.session.selection {
         match s {
-            Sel::SketchCurve { id } => {
+            Sel::SketchCurve { id, .. } => {
                 picked.push(id.clone());
                 curves.push(id.clone());
                 match ss.sketch.curve_index(id).and_then(|i| ss.sketch.curves.get(i)).map(|c| &c.kind) {
@@ -1563,7 +1563,7 @@ pub(crate) fn commit_rename(app: &mut SolveApp, r: &Rename) {
 fn context_target_selected(selection: &[Sel], target: &Sel) -> bool {
     selection.iter().any(|selected| {
         crate::selection::same_item(selected, target)
-            || matches!((selected, target), (Sel::SketchCurve { id: a }, Sel::SketchMidpoint { id: b }) if a == b)
+            || matches!((selected, target), (Sel::SketchCurve { id: a, .. }, Sel::SketchMidpoint { id: b }) if a == b)
     })
 }
 
@@ -2091,7 +2091,7 @@ mod tests {
         // A non-dimension constraint, and a plain curve, get no toggle item.
         h.app.session.selection = vec![Sel::SketchConstraint { id: horiz }];
         assert!(!items(&h.app, &Target::Viewport).iter().any(|i| i.id == "sketch.toggle_driven"), "a horizontal constraint is not a dimension");
-        h.app.session.selection = vec![Sel::SketchCurve { id: l }];
+        h.app.session.selection = vec![Sel::SketchCurve { id: l, sketch: None }];
         assert!(!items(&h.app, &Target::Viewport).iter().any(|i| i.id == "sketch.toggle_driven"));
     }
 
@@ -2167,7 +2167,7 @@ mod tests {
         h.app.cam.distance = 60.0;
         h.settle();
         h.step(&json!({"click":{"world":[cut.x,cut.y,0]},"button":"right"})).unwrap();
-        assert_eq!(h.app.session.selection, vec![Sel::SketchCurve { id: output.clone() }]);
+        assert_eq!(h.app.session.selection, vec![Sel::SketchCurve { id: output.clone(), sketch: None }]);
         let menu = items(&h.app, &Target::Viewport);
         let item = menu.iter().find(|item| item.id == "sketch.offset.break").expect("offset line must offer Break Offset Association");
         assert_eq!(item.label, "Break Offset Association");
