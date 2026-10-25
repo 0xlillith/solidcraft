@@ -1002,3 +1002,21 @@ fn hem_handle_runs_along_the_hem_to_its_tip() {
         assert!((at.y + 5.0 - tip_y).abs() < 0.05, "flip={flipped}: start plus Length reaches the tip: {at:?} vs y={tip_y}");
     }
 }
+
+#[test]
+fn inch_sheet_rule_edit_preserves_stored_lengths_and_dimensionless_k_factor() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("sheet.manage_rules", json!({"name":"Test","thickness":"1.5","k_factor":"0.4","active":true})).unwrap();
+    h.app.run("document.units", json!({"units":"in"})).unwrap();
+    h.app.start("sheet.manage_rules");
+    h.frames(3);
+    let mut d = h.app.dialog.clone().unwrap();
+    let unchanged = apply_commands(&h.app, &d).unwrap().remove(0).1;
+    assert_eq!(unchanged["thickness"], json!("1.5 mm"));
+    assert_eq!(unchanged["k_factor"], json!("0.4"));
+    let Kind::Sheet(Sm::Rules { values, .. }) = &mut d.kind else { panic!("no rules") };
+    values[0] = "0.125".into();
+    let changed = apply_commands(&h.app, &d).unwrap().remove(0).1;
+    assert_eq!(changed["thickness"], json!("0.125 in"));
+    assert_eq!(changed["k_factor"], unchanged["k_factor"]);
+}
