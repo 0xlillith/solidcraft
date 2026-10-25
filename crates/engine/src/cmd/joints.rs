@@ -469,6 +469,7 @@ fn origin_by_name(s: &Session, v: &Value, what: &str, name: &str, cmd: &str) -> 
 /// there) set, and the end it takes named so it keeps it; refused when it doesn't resolve.
 fn settle(s: &Session, mut o: JointOrigin, v: &Value, cmd: &str) -> Result<JointOrigin> {
     let st = s.model.state();
+    let component = component_of(s, o.occurrence);
     if let Some(want) = v.get("end") {
         let want = want
             .as_str()
@@ -476,13 +477,13 @@ fn settle(s: &Session, mut o: JointOrigin, v: &Value, cmd: &str) -> Result<Joint
             .ok_or_else(|| bad(cmd, "`end` is the name of a face a round end lies on"))?;
         let Snap::CircleCenter { end, .. } = &mut o.snap else { return Err(bad(cmd, "`end` is for a round origin (`circle`)")) };
         *end = Some(want.to_string());
-        let names = joints::end_faces(&s.doc, &st, &o.snap);
+        let names = joints::end_faces(&s.doc, &st, component, &o.snap);
         if !names.iter().any(|n| n == want) {
             return Err(bad(cmd, format!("the round face doesn't end on face `{want}` (its ends lie on: {})", names.join(", "))));
         }
     }
     let m = joints::resolve_origin(&s.doc, &st, &o).map_err(|e| bad(cmd, e.to_string()))?;
-    joints::pin_end(&s.doc, &st, &mut o.snap);
+    joints::pin_end(&s.doc, &st, component, &mut o.snap);
     // A face or circle given no `x` keeps the x it has now, so its frame doesn't turn as the face
     // tilts.
     o.snap = o.snap.with_frame_x(Vec3::new(m[0][0], m[0][1], m[0][2]));
