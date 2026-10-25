@@ -1767,10 +1767,16 @@ impl Model {
     }
 
     /// The sketches the last evaluation solved for driving values other than the ones `doc`
-    /// stores them with (a value edit since they were stored).
+    /// stores them with (a value edit since they were stored), or with their linked points
+    /// elsewhere (a value edit upstream moved what they project: stored, the next evaluation
+    /// starts where this one ended instead of walking the links there again).
     pub fn edited_sketches<'a>(&'a self, doc: &'a Document) -> impl Iterator<Item = &'a SolvedSketch> + 'a {
         self.results.iter().filter(|r| !r.skipped && r.error.is_none()).filter_map(|r| r.state.sketch(r.id)).filter(|s| {
-            s.report.keeps_orientation() && doc.sketch(s.feature).is_ok_and(|stored| stored.driving_values() != s.sketch.driving_values())
+            s.report.keeps_orientation()
+                && doc.sketch(s.feature).is_ok_and(|stored| {
+                    stored.driving_values() != s.sketch.driving_values()
+                        || s.sketch.points.iter().zip(&stored.points).any(|(p, q)| p.link.is_some() && p.id == q.id && p.pos != q.pos)
+                })
         })
     }
 

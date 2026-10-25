@@ -3684,7 +3684,9 @@ impl Document {
     /// `moved_from`: the stored sketch, when `sk` is that sketch with its links refreshed. A
     /// link's points are where their source is now; the sides and turns the solve keeps are
     /// those of the stored state ([`Sketch::positions_in`]), not the ones read beside a line
-    /// that has moved past a point.
+    /// that has moved past a point. Where the links moved so far that the solve fails or turns
+    /// part of the sketch over, they are walked there in steps
+    /// ([`solidcraft_sketch::solve_after_link_move`]).
     pub fn solve_sketch(
         &self,
         vals: &std::collections::BTreeMap<String, expr::Value>,
@@ -3713,7 +3715,31 @@ impl Document {
         // Offsets always require another solve after refresh. Only that last report is
         // published; the first report only decides which state the second solve starts from.
         let first_analysis = if offsets { solidcraft_sketch::Analysis::StatusOnly } else { analysis };
+        // A linked or fixed point is not where the stored sketch has it.
+        let given_moved = moved_from
+            .is_some_and(|from| sk.points.iter().zip(&from.points).any(|(p, q)| (p.fixed || p.link.is_some()) && p.id == q.id && p.pos != q.pos));
         let mut report = solidcraft_sketch::solve_after_edit_with_analysis(sk, stored, was(sk).as_deref(), first_analysis);
+        // Links that moved far (a large change of a size upstream): when the jump fails, or
+        // lands on the mirror image of a side or turn the stored sketch has, walked there in
+        // steps; a turn the walk cannot avoid either is reported as one.
+        if let Some(from) = moved_from.filter(|_| given_moved) {
+            let flips = if report.ok() { solidcraft_sketch::flips_from_stored(sk, from) } else { Vec::new() };
+            if !report.keeps_orientation() || !flips.is_empty() {
+                match solidcraft_sketch::solve_after_link_move(sk, from, stored, first_analysis) {
+                    Some(walked) => report = walked,
+                    None => {
+                        for id in flips {
+                            if !report.failing.contains(&id) {
+                                report.failing.push(id.clone());
+                            }
+                            if !report.folded.contains(&id) {
+                                report.folded.push(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if offsets {
             // Source dimensions may have moved curves during the solve.
             sk.refresh_offsets()?;
