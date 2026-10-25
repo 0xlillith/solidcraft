@@ -4,9 +4,9 @@
 //! A round origin's end is kept by the name of the face across the rim at that end, so it is the
 //! same end after the design changes; an x reference keeps the origin's turn about its axis.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use solidcraft_geom::Vec3;
+use solidcraft_geom::{Loop2, Mesh, Plane, Ring, Vec2, Vec3};
 use solidcraft_kernel::CylinderFace;
 
 use super::{Snap, XRef, component_bodies};
@@ -62,11 +62,63 @@ impl NamedFace<'_> {
         self.own_cylinder().map(|c| placed(&self.offset, c))
     }
 
-    /// The face's centre and outward normal (the component's coordinates), when it is planar.
+    /// The face's centre (the middle of its outline, `outline_centre`) and outward normal (the
+    /// component's coordinates), when it is planar.
     pub fn plane(&self) -> Result<Option<(Vec3, Vec3)>> {
         let faces = self.body.joint_faces()?;
-        Ok(faces.get(self.face).and_then(|f| f.plane_normal.map(|n| (apply_point(&self.offset, f.centroid), apply_vector(&self.offset, n)))))
+        Ok(faces.get(self.face).and_then(|f| {
+            let n = f.plane_normal?;
+            let c = outline_centre(&self.body.mesh(), self.face, f.centroid, n).unwrap_or(f.centroid);
+            Some((apply_point(&self.offset, c), apply_vector(&self.offset, n)))
+        }))
     }
+}
+
+/// The middle of the area the outer boundary of planar face `face` encloses (the body's own
+/// coordinates; `centroid` and `n` are the face's), for a face with holes: a hole cut into the
+/// face, moved or suppressed changes the face's centroid but not its outline, so a joint at the
+/// face's centre stays where it is. `None` for a face without holes (its centroid is that middle
+/// already) and for one whose mesh gives no clean outline (the caller keeps the centroid).
+pub(super) fn outline_centre(mesh: &Mesh, face: usize, centroid: Vec3, n: Vec3) -> Option<Vec3> {
+    let plane = Plane::from_normal(centroid, n)?;
+    let tris: Vec<[Vec3; 3]> =
+        mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, f)| **f as usize == face).filter_map(|(t, _)| mesh.tri(t)).collect();
+    // The face's triangles need not share vertex indices: their corners are matched by place.
+    let size = tris.iter().flatten().fold(0.0_f64, |m, p| m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs()));
+    let q = (size * 1e-9).max(1e-12);
+    let key = |p: Vec3| ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64);
+    let sides: BTreeMap<_, Vec3> = tris.iter().flat_map(|[a, b, c]| [(a, b), (b, c), (c, a)]).map(|(a, b)| ((key(*a), key(*b)), *b)).collect();
+    // The outline: the sides no other triangle of the face runs back along, by the corner each
+    // starts at (a corner starting two is where loops touch: no clean outline).
+    let mut next = BTreeMap::new();
+    for ((a, b), p) in &sides {
+        if a != b && !sides.contains_key(&(*b, *a)) && next.insert(*a, (*b, *p)).is_some() {
+            return None;
+        }
+    }
+    // Chained into loops (the face's plane coordinates); one that doesn't close is no outline.
+    let (mut loops, mut seen): (Vec<Ring<Vec2>>, BTreeSet<_>) = (Vec::new(), BTreeSet::new());
+    for start in next.keys() {
+        let (mut at, mut ring) = (*start, Vec::new());
+        while seen.insert(at) {
+            let (to, p) = next.get(&at)?;
+            ring.push(plane.to_local(*p));
+            at = *to;
+        }
+        if ring.is_empty() {
+            continue;
+        }
+        if at != *start {
+            return None;
+        }
+        loops.push(Ring::new(ring));
+    }
+    if loops.len() < 2 {
+        return None;
+    }
+    // The outer boundary encloses the most area.
+    let outer = loops.iter().max_by(|a, b| a.signed_area().abs().total_cmp(&b.signed_area().abs()))?;
+    (outer.signed_area().abs() > q * q).then(|| plane.to_world(Loop2::polygon(outer).centroid()))
 }
 
 /// A cylinder of a body's own coordinates placed by the body's (rigid) offset.

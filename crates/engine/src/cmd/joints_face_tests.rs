@@ -363,3 +363,38 @@ fn a_round_origin_keeps_its_end_when_the_face_it_opens_onto_gets_other_neighbour
     let (z, dz) = top(&s).unwrap_or_default();
     assert!((z - 4.0).abs() < 1e-9 && (dz - 1.0).abs() < 1e-9, "{z} {dz}");
 }
+
+#[test]
+fn a_face_centre_stays_put_when_a_hole_in_its_face_moves_or_goes() {
+    // A 200 x 100 plate with a 20 mm hole at `HX` in its top face, and an origin at the top
+    // face's centre, by the face's name and by a point alone. Moving the hole or suppressing it
+    // changes the face's area, not its outline: the origin stays at the outline's middle.
+    let mut s = Session::default();
+    run(&mut s, "parameters.change", json!({"name": "HX", "expression": "60 mm"}));
+    run(&mut s, "component.create", json!({"name": "Plate"}));
+    run(&mut s, "solid.box", json!({"length": 200, "width": 100, "height": 2, "corner": [0, 0, 0]}));
+    run(&mut s, "solid.hole", json!({"position": ["HX", 50, 2], "diameter": 20, "name": "H"}));
+    let pick = Vec3::new(150.0, 80.0, 2.0);
+    let top = face_name(&mut s, "Plate", pick);
+    run(&mut s, "joint.origin", json!({"name": "Top", "face": top}));
+    let by_point = |s: &Session| {
+        let o = solidcraft_doc::joints::JointOrigin { occurrence: occ(s, "Plate"), snap: Snap::FaceCenter { pick, face: None, x: None } };
+        let m = solidcraft_doc::joints::resolve_origin(&s.doc, &s.model.state(), &o).ok()?;
+        Some((Vec3::new(m[3][0], m[3][1], m[3][2]), Vec3::new(m[2][0], m[2][1], m[2][2])))
+    };
+    let mut seen = vec![(origin_frame(&s, "Top"), by_point(&s))];
+    for (cmd, p) in [
+        ("parameters.change", json!({"name": "HX", "expression": "80 mm"})),
+        ("timeline.suppress", json!({"feature": "H", "suppressed": true})),
+        ("parameters.change", json!({"name": "HX", "expression": "40 mm"})),
+        ("timeline.suppress", json!({"feature": "H", "suppressed": false})),
+    ] {
+        run(&mut s, cmd, p);
+        seen.push((origin_frame(&s, "Top"), by_point(&s)));
+    }
+    for (i, f) in seen.iter().enumerate() {
+        for (o, z) in [f.0, f.1].map(|f| f.unwrap_or((Vec3::ZERO, Vec3::ZERO))) {
+            assert!(near(o, Vec3::new(100.0, 50.0, 2.0)) && near(z, Vec3::Z), "step {i}: {f:?}");
+        }
+    }
+}

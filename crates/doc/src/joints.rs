@@ -767,26 +767,33 @@ fn named_pick(doc: &Document, st: &ModelState, pick: Vec3, face: Option<&str>) -
     }
 }
 
-/// The centre and outward normal of the planar face nearest `pick` (component coordinates; a
-/// body moved in from another component placed by its offset, as a named face is).
+/// The centre (the middle of its outline, `face::outline_centre`) and outward normal of the
+/// planar face nearest `pick` (component coordinates; a body moved in from another component
+/// placed by its offset, as a named face is).
 fn nearest_plane(doc: &Document, st: &ModelState, o: &JointOrigin, pick: Vec3) -> Result<(Vec3, Vec3)> {
     let comp = component_of(doc, o.occurrence)?;
-    let mut best: Option<(f64, Vec3, Vec3)> = None;
+    let mut best: Option<(f64, &crate::ModelBody, solidcraft_kernel::FaceInfo, Vec3)> = None;
     for b in component_bodies(doc, st, comp) {
         let offset = doc.model_body_offset(b);
         for f in b.joint_faces()?.iter() {
-            let Some(n) = f.plane_normal else { continue };
+            let Some(own) = f.plane_normal else { continue };
             let (c, n) = match offset {
-                Some(m) => (apply_point(m, f.centroid), apply_vector(m, n)),
-                None => (f.centroid, n),
+                Some(m) => (apply_point(m, f.centroid), apply_vector(m, own)),
+                None => (f.centroid, own),
             };
             let d = (pick - c).dot(n).abs() + 1e-3 * (pick - c).len();
-            if best.as_ref().is_none_or(|(bd, _, _)| d < *bd) {
-                best = Some((d, c, n));
+            if best.as_ref().is_none_or(|(bd, ..)| d < *bd) {
+                best = Some((d, b, f.clone(), own));
             }
         }
     }
-    best.map(|(_, c, n)| (c, n)).ok_or_else(|| DocError::Invalid("joint origin: no planar face there".into()))
+    let (_, b, f, n) = best.ok_or_else(|| DocError::Invalid("joint origin: no planar face there".into()))?;
+    // The face's middle: its outline's on a face with holes.
+    let c = face::outline_centre(&b.mesh(), f.index, f.centroid, n).unwrap_or(f.centroid);
+    Ok(match doc.model_body_offset(b) {
+        Some(m) => (apply_point(m, c), apply_vector(m, n)),
+        None => (c, n),
+    })
 }
 
 /// Resolve a joint origin to a frame in its component's coordinates.
