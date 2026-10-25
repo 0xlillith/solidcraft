@@ -43,6 +43,7 @@ mod name_lookup;
 mod names;
 pub mod naming;
 mod params;
+pub mod persistent_name;
 pub mod physical_material;
 mod piece_names;
 pub mod pipe_thread_catalog;
