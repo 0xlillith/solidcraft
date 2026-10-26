@@ -279,6 +279,11 @@ use solidcraft_engine::render::{Camera, CameraAnim, StandardView};
 
 pub use control::{ControlRequest, ControlResponse};
 
+/// How close (radians) the camera must be to a standard axis view for the #2682 mode
+/// (`auto_ortho_faces`) to snap the projection to orthographic. One degree: exact axis views
+/// and Shift-snapped orbits land inside it, free orbiting does not linger in it.
+pub const ORTHO_FACE_TOLERANCE: f64 = 1.0_f64.to_radians();
+
 /// UI state that automation can read and set (`ui.set`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -298,6 +303,9 @@ pub struct UiState {
     pub show_timeline: bool,
     pub show_grid: bool,
     pub perspective: bool,
+    /// Perspective while orbiting, orthographic when the camera faces a standard axis view
+    /// (#2682). Off by default; when on it decides the projection instead of `perspective`.
+    pub auto_ortho_faces: bool,
     pub palette_open: bool,
     /// Dark theme (the default); a preference kept between runs.
     pub dark: bool,
@@ -329,6 +337,7 @@ impl Default for UiState {
             show_timeline: true,
             show_grid: true,
             perspective: false,
+            auto_ortho_faces: false,
             palette_open: false,
             dark: true,
             pick_off: Vec::new(),
@@ -782,6 +791,7 @@ impl SolveApp {
             "dark": self.ui.dark,
             "grid": self.ui.show_grid,
             "perspective": self.ui.perspective,
+            "auto_ortho_faces": self.ui.auto_ortho_faces,
             "pick_bodies": self.ui.pick_bodies,
             "auto_project": self.session.auto_project,
             "visual_style": self.ui.visual_style,
@@ -818,6 +828,9 @@ impl SolveApp {
         }
         if let Some(p) = flag("perspective") {
             self.ui.perspective = p;
+        }
+        if let Some(a) = flag("auto_ortho_faces") {
+            self.ui.auto_ortho_faces = a;
         }
         if let Some(b) = flag("pick_bodies") {
             self.ui.pick_bodies = b;
@@ -1474,9 +1487,16 @@ impl SolveApp {
     }
 
     /// Is the view drawn in perspective? The perspective preference, except while a sketch is
-    /// open: a sketch is drawn and measured on its plane, so the view is parallel (no foreshortening).
+    /// open (always orthographic) or when the #2682 mode is on: then the view is orthographic
+    /// exactly when the camera faces a standard axis view, and perspective otherwise.
     pub fn perspective_view(&self) -> bool {
-        self.ui.perspective && self.session.active_sketch.is_none()
+        if self.session.active_sketch.is_some() {
+            return false;
+        }
+        if self.ui.auto_ortho_faces {
+            return self.cam.aligned_standard_view(ORTHO_FACE_TOLERANCE).is_none();
+        }
+        self.ui.perspective
     }
 
     pub fn set_status(&mut self, s: impl Into<String>, error: bool) {
