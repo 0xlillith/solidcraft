@@ -2869,7 +2869,7 @@ impl Document {
     }
 
     /// Rename body `old` to `new` where the design keeps things by body name outside its
-    /// features: materials, appearances, configuration columns, offsets, components and the
+    /// features: materials, appearances, plastic rules, configuration columns, offsets, components and the
     /// browser's groups and order. (The features are the rename command's to change.)
     ///
     /// A name the design numbered (`Body1`) is not used again after the rename: the design's
@@ -2881,6 +2881,9 @@ impl Document {
         }
         if let Some(m) = self.materials.remove(old) {
             self.materials.insert(new.to_string(), m);
+        }
+        if let Some(rule) = self.plastic.assigned.remove(old) {
+            self.plastic.assigned.insert(new.to_string(), rule);
         }
         if let Some(c) = self.appearances.bodies.remove(old) {
             self.appearances.bodies.insert(new.to_string(), c);

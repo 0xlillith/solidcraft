@@ -367,7 +367,10 @@ fn visibility(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let v = &mut s.visibility;
     match str_(p, "folder") {
-        Some("bodies" | "all") if visible => v.hidden_occurrences.clear(),
+        Some("bodies" | "all") if visible => {
+            v.hidden_bodies.clear();
+            v.hidden_occurrences.clear();
+        }
         // Showing a whole folder shows the folder too.
         Some("origin") if visible => v.origin_hidden = Some(false),
         _ => {}
@@ -760,6 +763,7 @@ fn rename_body(s: &mut Session, p: &Value) -> Result<Value> {
     if name == old {
         return Ok(json!({"body": old, "name": name}));
     }
+    let previous = s.doc.clone();
     let st = s.model.state();
     let b = st.body(&old).ok_or_else(|| bad(cmd, format!("no body `{old}`")))?;
     if st.body(name).is_some() {
@@ -878,10 +882,10 @@ fn rename_body(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, e));
     }
     d.rename_body_keys(&old, name);
-    let v = &mut s.visibility;
-    for b in v.hidden_bodies.iter_mut().chain(v.locked_bodies.iter_mut()).filter(|b| **b == old) {
+    for b in s.visibility.locked_bodies.iter_mut().filter(|b| **b == old) {
         *b = name.to_string();
     }
+    s.remember_body_rename(&previous, &old, name);
     Ok(json!({"body": old, "name": name}))
 }
 
@@ -1009,6 +1013,88 @@ mod tests {
 
     fn names(s: &Session) -> Vec<String> {
         s.model.state().bodies.iter().map(|b| b.name.clone()).collect()
+    }
+
+    #[test]
+    fn body_rename_preserves_plastic_rules_and_current_visibility_through_history() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Plate"}));
+        run(&mut s, "plastic.manage_rules", json!({"name": "Housing", "draft": "3 deg"}));
+        run(&mut s, "plastic.assign_rule", json!({"bodies": ["Plate"], "rule": "Housing"}));
+        run(&mut s, "browser.visibility", json!({"items": ["Plate"], "visible": false}));
+        run(&mut s, "body.rename", json!({"body": "Plate", "name": "Base"}));
+        assert_eq!(run(&mut s, "plastic.rules", json!({}))["assigned"], json!({"Base": "Housing"}));
+        assert!(!s.body_visible("Base"));
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(run(&mut s, "plastic.rules", json!({}))["assigned"], json!({"Plate": "Housing"}));
+        assert!(!s.body_visible("Plate"), "undo must keep the body hidden");
+        run(&mut s, "edit.redo", json!({}));
+        assert!(!s.body_visible("Base"));
+        // Showing a body is its own undo step; the rename keeps the correct hidden name on
+        // either side of that step, and neither operation loses the assigned rule.
+        run(&mut s, "browser.visibility", json!({"items": ["Base"], "visible": true}));
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(names(&s), ["Base"]);
+        assert!(!s.body_visible("Base"));
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(names(&s), ["Plate"]);
+        assert!(!s.body_visible("Plate"));
+        run(&mut s, "edit.redo", json!({}));
+        assert!(!s.body_visible("Base"));
+        run(&mut s, "edit.redo", json!({}));
+        assert!(s.body_visible("Base"));
+        run(&mut s, "browser.visibility", json!({"items": ["Base"], "visible": false}));
+        let mut saved = (*s.doc).clone();
+        saved.visibility = s.visibility.clone();
+        let reopened = Session::new(serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap());
+        assert_eq!(reopened.doc.plastic.assigned.get("Base").map(String::as_str), Some("Housing"));
+        assert!(!reopened.body_visible("Base"));
+    }
+
+    #[test]
+    fn body_rename_undo_keeps_hidden_bodies_with_downstream_users_hidden() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Peg"}));
+        run(&mut s, "solid.move", json!({"bodies": ["Peg"], "translate": [0, 0, 5]}));
+        run(&mut s, "browser.visibility", json!({"items": ["Peg"], "visible": false}));
+        run(&mut s, "body.rename", json!({"body": "Peg", "name": "Stud"}));
+        run(&mut s, "edit.undo", json!({}));
+        assert!(!s.body_visible("Peg"));
+        assert_eq!(s.visibility.hidden_bodies, ["Peg"]);
+        run(&mut s, "edit.redo", json!({}));
+        assert!(!s.body_visible("Stud"));
+    }
+
+    #[test]
+    fn show_all_bodies_clears_stale_hidden_names() {
+        for folder in ["bodies", "all"] {
+            let mut s = Session::default();
+            s.visibility.hidden_bodies.push("Old body name".into());
+            run(&mut s, "browser.visibility", json!({"folder": folder, "visible": true}));
+            assert!(s.visibility.hidden_bodies.is_empty(), "{folder}");
+        }
+    }
+
+    #[test]
+    fn computed_body_rename_keeps_the_latest_visibility_and_undo_mapping() {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Peg"}));
+        run(&mut s, "solid.move", json!({"bodies": ["Peg"], "translate": [0, 0, 5]}));
+        let mut computed = s.scratch();
+        run(&mut computed, "body.rename", json!({"body": "Peg", "name": "Stud"}));
+        // The user hides the body while the rename is being evaluated.
+        run(&mut s, "browser.visibility", json!({"items": ["Peg"], "visible": false}));
+        s.accept_computed(computed);
+        assert!(!s.body_visible("Stud"));
+        assert_eq!(s.visibility.hidden_bodies, ["Stud"]);
+        run(&mut s, "edit.undo", json!({}));
+        assert!(!s.body_visible("Peg"));
+        run(&mut s, "edit.undo", json!({}));
+        assert!(s.body_visible("Peg"), "the concurrent hide remains its own undo step");
+        run(&mut s, "edit.redo", json!({}));
+        assert!(!s.body_visible("Peg"));
+        run(&mut s, "edit.redo", json!({}));
+        assert!(!s.body_visible("Stud"));
     }
 
     #[test]
