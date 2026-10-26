@@ -2486,6 +2486,12 @@ pub struct Document {
     /// a document in a session leaves this empty; the session puts it back when it saves.
     #[serde(default, skip_serializing_if = "Visibility::is_empty")]
     pub visibility: Visibility,
+    /// The design's drawings (#3890), by name, then id ([`crate::drawing::in_design`]), each behind
+    /// its own `Arc`, so an undo step shares every drawing it didn't change. Each is read by its own
+    /// family's rules ([`crate::format::read`]), never as a field of the design; a container keeps
+    /// each in its own entry.
+    #[serde(skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    pub drawings: Vec<std::sync::Arc<crate::drawing::Drawing>>,
 }
 
 /// Items hidden or shown one by one. Saved with the design, but not an undo step.
@@ -2686,6 +2692,7 @@ impl Document {
             browser_order: Default::default(),
             named_views: Vec::new(),
             visibility: Visibility::default(),
+            drawings: Vec::new(),
         }
     }
 
