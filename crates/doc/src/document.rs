@@ -2822,6 +2822,32 @@ impl Document {
         *self == normalized
     }
 
+    /// Only drawings changed: nothing to evaluate, as a drawing reads the model and never changes
+    /// it. The same whole-Document proof as [`Document::differs_only_in_render`]; a model edit
+    /// shares every drawing's `Arc`, so it costs nothing here.
+    pub fn differs_only_in_drawings(&self, previous: &Document) -> bool {
+        let shared =
+            self.drawings.len() == previous.drawings.len() && self.drawings.iter().zip(&previous.drawings).all(|(a, b)| std::sync::Arc::ptr_eq(a, b));
+        if shared || self.drawings == previous.drawings {
+            return false;
+        }
+        let mut normalized = previous.clone();
+        normalized.drawings = self.drawings.clone();
+        *self == normalized
+    }
+
+    /// The design's drawing `id`.
+    pub fn drawing(&self, id: u64) -> Option<&std::sync::Arc<crate::drawing::Drawing>> {
+        self.drawings.iter().find(|d| d.id == id)
+    }
+
+    /// Put `drawing` in, in place of the one with its id if there is one, in the drawings' order.
+    pub fn put_drawing(&mut self, drawing: std::sync::Arc<crate::drawing::Drawing>) {
+        self.drawings.retain(|d| d.id != drawing.id);
+        self.drawings.push(drawing);
+        crate::drawing::sort(&mut self.drawings);
+    }
+
     /// The colour a body is shown and exported in (sRGB as 0–1 fractions): its appearance,
     /// else its component's, else its material's look, else the colour it was imported with.
     /// (Faces may have their own: `face_looks`.)

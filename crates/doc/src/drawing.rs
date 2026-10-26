@@ -275,11 +275,17 @@ impl Drawing {
 
 /// A design's drawings as read, each checked on its own already: in their order (by name, then id)
 /// and keeping [`check_in_design`]'s rules.
-pub fn in_design(mut drawings: Vec<Drawing>) -> Result<Vec<Arc<Drawing>>> {
-    drawings.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
-    let drawings: Vec<_> = drawings.into_iter().map(Arc::new).collect();
+pub fn in_design(drawings: Vec<Drawing>) -> Result<Vec<Arc<Drawing>>> {
+    let mut drawings: Vec<_> = drawings.into_iter().map(Arc::new).collect();
+    sort(&mut drawings);
     check_in_design(&drawings)?;
     Ok(drawings)
+}
+
+/// Put a design's drawings in their order: by name, then id. Nothing stores the order, so two
+/// people adding drawings have nothing to merge.
+pub fn sort(drawings: &mut [Arc<Drawing>]) {
+    drawings.sort_by(|a, b| (&a.name, a.id).cmp(&(&b.name, b.id)));
 }
 
 /// The rules for a design's drawings: at most [`MAX_DRAWINGS`], and no two with one id.
