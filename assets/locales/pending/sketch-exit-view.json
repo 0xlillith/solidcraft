@@ -1,0 +1,23 @@
+{
+  "en": {
+    "prefs.sketch_exit_view": "When a sketch ends",
+    "prefs.sketch_exit_view_note": "Where the view goes after Finish Sketch, Cancel or a double Esc.",
+    "prefs.sketch_exit_view.keep": "Keep the current view",
+    "prefs.sketch_exit_view.previous": "Return to the previous view",
+    "prefs.sketch_exit_view.unless_rotated": "Return unless rotated"
+  },
+  "ja": {
+    "prefs.sketch_exit_view": "スケッチ終了時のビュー",
+    "prefs.sketch_exit_view_note": "「スケッチを終了」、キャンセル、Esc の 2 回押しの後にビューが移る先です。",
+    "prefs.sketch_exit_view.keep": "現在のビューを維持",
+    "prefs.sketch_exit_view.previous": "前のビューに戻る",
+    "prefs.sketch_exit_view.unless_rotated": "回転していなければ戻る"
+  },
+  "zh": {
+    "prefs.sketch_exit_view": "草图结束时的视图",
+    "prefs.sketch_exit_view_note": "“完成草图”、取消或连按两次 Esc 后视图的去向。",
+    "prefs.sketch_exit_view.keep": "保持当前视图",
+    "prefs.sketch_exit_view.previous": "返回之前的视图",
+    "prefs.sketch_exit_view.unless_rotated": "未旋转时返回"
+  }
+}
