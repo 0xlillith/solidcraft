@@ -1988,6 +1988,8 @@ enum Orient {
     /// Which side of line `l` the point `p` is on (`PointLineDistance`, `LinearDiameter`, a
     /// circle's centre for `LineCircleDistance`).
     OfLine(usize, usize, f64),
+    /// Which of two nested circles or arcs encloses the other.
+    RadiusOrder(usize, usize),
 }
 
 /// An orientation's signed offset in a state (a corner's distance from the opposite side, an
@@ -2013,6 +2015,13 @@ fn offset(s: &State, o: Orient) -> Option<(f64, f64, f64)> {
             let (a, b) = s.line(l);
             let pp = s.p(p);
             ((b - a).normalized()?.cross(pp - a), size, coords(&[pp, a, b]))
+        }
+        Orient::RadiusOrder(a, b) => {
+            let (ca, ra) = s.round(a);
+            let (cb, rb) = s.round(b);
+            // Even a thin wall has an inside and an outside. Use the radius difference as
+            // its size; rounding still accounts for the radii and the arc coordinates.
+            (ra - rb, (ra - rb).abs(), ra.max(rb).max(coords(&[ca, cb])))
         }
     })
 }
@@ -2155,6 +2164,11 @@ fn orients(s: &State, sub: &[(Block, Vec<usize>)]) -> Vec<(Orient, Vec<usize>)> 
             ConstraintKind::DistanceY { p, q, value } if free(p) || free(q) => out.push((Orient::SideY(p, q, value), vec![*ci])),
             ConstraintKind::PointLineDistance { p, l, value } => out.push((Orient::OfLine(p, l, value), vec![*ci])),
             ConstraintKind::LinearDiameter { p, l, value } => out.push((Orient::OfLine(p, l, value / 2.0), vec![*ci])),
+            // The unsigned gap has two solutions: a large diameter edit can otherwise
+            // exchange the inner and outer circle and turn an extruded tube into a disc.
+            ConstraintKind::CircleCircleDistance { a, b, circles: TwoCircles::Nested, .. } => {
+                out.push((Orient::RadiusOrder(a, b), vec![*ci]));
+            }
             // The circle stays on its side of the line: the distance is unsigned.
             ConstraintKind::LineCircleDistance { l, c, value, .. } => {
                 if let Some(CurveKind::Circle { c: centre, .. } | CurveKind::Arc { c: centre, .. }) = s.sk.curves.get(c).map(|x| &x.kind) {
