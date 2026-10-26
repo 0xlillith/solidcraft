@@ -2921,9 +2921,24 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
         }
         sk.constraints.retain(|c| !cons.contains(&c.id));
         let pids: Vec<String> = points.iter().filter_map(|q| sk.points.get(*q).map(|x| x.id.clone())).collect();
+        // Linked geometry from the model, by its entity count before the delete (#5098).
+        let size = |sk: &Sketch, id: &str| sk.link_curves(id).len() + sk.link_points(id).len();
+        let linked: Vec<(String, usize)> = sk
+            .links
+            .iter()
+            .filter(|l| !matches!(l.source, solidcraft_sketch::LinkSource::Text { .. }))
+            .map(|l| (l.id.clone(), size(sk, &l.id)))
+            .collect();
         sk.remove_curves(&curves);
         let pidx: Vec<usize> = pids.iter().filter_map(|id| sk.point_index(id)).collect();
         sk.remove_points(&pidx);
+        // Part of a link deleted: the rest is broken off where it is. Still linked, the next
+        // refresh would rebuild the whole link, deleted curves and all, as normal geometry.
+        for (id, before) in &linked {
+            if sk.link(id).is_some() && size(sk, id) < *before {
+                sk.break_link(id)?;
+            }
+        }
         doc.prune_model_params();
         Ok(ids.len())
     })?;
