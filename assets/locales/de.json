@@ -1104,6 +1104,7 @@
   "motion.key_here": "Schlüsselbild hier setzen",
   "motion.key_here_hint": "Ein Schlüsselbild bei diesem Schritt mit dem aktuellen Gelenkwert hinzufügen",
   "motion.no_collisions": "Keine Kollisionen in der Untersuchung",
+  "motion.plot_quantity": "Größe",
   "motion.step_back": "Schritt zurück",
   "motion.step_forward": "Schritt vor",
   "motion.to_end": "Zum Ende",
