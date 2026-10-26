@@ -287,6 +287,10 @@ fn batch(app: &mut SolveApp, p: &Value) -> Outcome {
     if let Some(why) = batch_refusal(steps) {
         return err(why);
     }
+    // A step the batch would refuse at its turn refuses it now, before anything runs (#5853).
+    if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
+        return ok(refusal.reply(steps.len()));
+    }
     let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
     let profile = p.get("profile").and_then(Value::as_bool).unwrap_or(false);
     let timed = profile || p.get("timings").and_then(Value::as_bool).unwrap_or(false);
@@ -1577,7 +1581,8 @@ mod tests {
         assert_eq!(rows[1]["index"], 1);
         assert!(rows[1]["profile"]["boolean_ms"].as_f64().is_some_and(|ms| ms > 0.0), "{v}");
         assert!(v["result"]["total_ms"].as_f64().is_some(), "{v}");
-        let v = batch(&mut h, json!({"timings": true, "commands": [{"command": "NoSuchCommand"}]}));
+        // A step that fails at its turn is timed too.
+        let v = batch(&mut h, json!({"timings": true, "commands": [{"command": "solid.extrude", "params": {"distance": "bogus +"}}]}));
         assert_eq!(v["result"]["timings"].as_array().map(Vec::len), Some(1), "{v}");
         assert!(v["result"]["timings"][0].get("profile").is_none(), "{v}");
         let v = batch(&mut h, json!({"commands": [{"command": "solid.box", "params": {"length": 1, "width": 1, "height": 1}}]}));
@@ -1614,7 +1619,8 @@ mod tests {
             &mut h,
             json!({"rollback": false, "commands": [
                 {"command": "solid.sphere", "params": {"radius": 3}},
-                {"command": "NoSuchCommand"},
+                // Fails at its turn (an unknown command would be refused before the first step, #5853).
+                {"command": "solid.extrude", "params": {"distance": "bogus +"}},
             ]}),
         );
         assert_eq!(v["result"]["failed"]["index"], 1, "{v}");
@@ -1628,6 +1634,45 @@ mod tests {
         let v = batch(&mut h, json!({"commands": [{"params": {}}]}));
         assert_eq!(v["result"]["failed"]["index"], 0, "{v}");
         assert!(v["result"]["failed"]["error"].as_str().is_some_and(|e| e.contains("missing `command`")), "{v}");
+    }
+
+    /// #5853: a step the batch would refuse at its turn (an unknown command; with strict
+    /// parameter checking, a call that breaks its command's contract) refuses the batch before
+    /// its first step runs, however late the step is.
+    #[test]
+    fn engine_batch_refuses_a_bad_step_before_the_first_runs() {
+        let mut h = crate::scenario::Harness::new();
+        let before = inspect(&mut h);
+        let v = batch(
+            &mut h,
+            json!({"commands": [
+                {"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}},
+                {"command": "solid.sphere", "params": {"radius": 3, "center": [50, 0, 0]}},
+                {"command": "solid.extrud", "params": {"distance": 5}},
+            ]}),
+        );
+        assert_eq!(v["ok"], true, "{v}");
+        let r = &v["result"];
+        assert_eq!((r["completed"].clone(), r["failed"]["index"].clone(), r["undone"].clone()), (json!(0), json!(2), json!(0)), "{v}");
+        assert!(r["failed"]["error"].as_str().is_some_and(|e| e.starts_with("unknown command `solid.extrud`") && e.contains("solid.extrude")), "{v}");
+        assert_eq!(r["not_run"], json!([0, 1, 2]), "{v}");
+        let after = inspect(&mut h);
+        assert_eq!((after["bodies"].clone(), after["undo"].clone()), (before["bodies"].clone(), before["undo"].clone()), "nothing ran: {after}");
+        // Strict checking refuses a broken contract up front too; off, the step runs (and the
+        // box command reads what it knows).
+        h.app.session.param_check = solidcraft_engine::schema::ParamCheck::Strict;
+        let steps = json!([
+            {"command": "solid.sphere", "params": {"radius": 3}},
+            {"command": "solid.box", "params": {"lenght": 10, "width": 10, "height": 10}},
+        ]);
+        let v = batch(&mut h, json!({"commands": steps}));
+        assert_eq!((v["result"]["completed"].clone(), v["result"]["failed"]["index"].clone()), (json!(0), json!(1)), "{v}");
+        assert!(v["result"]["failed"]["error"].as_str().is_some_and(|e| e.contains("lenght")), "{v}");
+        assert_eq!(inspect(&mut h)["bodies"], before["bodies"], "nothing ran");
+        // `view.pick` is answered by the app, outside the command registry: not refused.
+        h.app.session.param_check = solidcraft_engine::schema::ParamCheck::Off;
+        let v = batch(&mut h, json!({"commands": [{"command": "view.pick", "params": {"x": 1, "y": 1}}]}));
+        assert!(!v["result"]["failed"]["error"].as_str().is_some_and(|e| e.starts_with("unknown command")), "{v}");
     }
 
     #[test]
@@ -1660,7 +1705,7 @@ mod tests {
     #[test]
     fn engine_batch_reports_whether_it_rolled_back() {
         let mut h = crate::scenario::Harness::new();
-        let steps = json!([{"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}, {"command": "NoSuchCommand"}]);
+        let steps = json!([{"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}, {"command": "solid.extrude", "params": {"distance": "bogus +"}}]);
         let v = batch(&mut h, json!({"commands": steps.clone()}));
         assert_eq!((&v["result"]["rolled_back"], &v["result"]["undone"]), (&json!(true), &json!(1)), "{v}");
         let v = batch(&mut h, json!({"commands": steps, "rollback": false}));
