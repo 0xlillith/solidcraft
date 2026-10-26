@@ -709,9 +709,22 @@ pub(super) fn frame_reply(out: &mut Value, frame: Option<&str>, placement: &soli
     }
 }
 
-/// Does triangle set of face `fi` contain point `p` (within `tol` of the face plane)?
-pub(super) fn face_contains(m: &solidcraft_geom::Mesh, fi: usize, p: Vec3, tol: f64) -> bool {
-    m.triangles.iter().zip(&m.tri_face).filter(|(_, f)| **f as usize == fi).any(|(t, _)| {
+/// The indices of `m`'s triangles by face, for `faces` faces (triangles of a face past that
+/// are left out): one pass, so testing every face costs the triangle count once, not per face.
+pub(super) fn face_triangles(m: &solidcraft_geom::Mesh, faces: usize) -> Vec<Vec<usize>> {
+    let mut by_face = vec![Vec::new(); faces];
+    for (i, f) in m.tri_face.iter().enumerate().take(m.triangles.len()) {
+        if let Some(tris) = by_face.get_mut(*f as usize) {
+            tris.push(i);
+        }
+    }
+    by_face
+}
+
+/// Does a face, the triangles `tris` of `m` (from [`face_triangles`]), contain point `p` (within
+/// `tol` of the face plane)?
+pub(super) fn face_contains(m: &solidcraft_geom::Mesh, tris: &[usize], p: Vec3, tol: f64) -> bool {
+    tris.iter().filter_map(|i| m.triangles.get(*i)).any(|t| {
         let Some([a, b, c]) = m.tri(t) else { return false };
         let n = (b - a).cross(c - a);
         let Some(nn) = n.normalized() else { return false };
