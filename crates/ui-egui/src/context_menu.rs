@@ -1991,7 +1991,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             other_row |= row.hovered();
                         } else {
                             let row = kit_item(item, key_row == Some(k) || app.menu.submenu == Some(k)).show(ui);
-                            if item.enabled && ((row.hovered() && ctx.input(|i| i.pointer.delta() != Vec2::ZERO)) || row.clicked()) {
+                            // Appearance keeps its direct editor action as well as hover shortcuts.
+                            if item.enabled && row.clicked() && item.id == "ui.appearance" {
+                                picked = Some(item.clone());
+                            } else if item.enabled && ((row.hovered() && ctx.input(|i| i.pointer.delta() != Vec2::ZERO)) || row.clicked()) {
                                 if app.menu.submenu != Some(k) {
                                     app.menu.submenu_key = None;
                                 }
