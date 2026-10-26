@@ -1130,6 +1130,9 @@ impl SolveApp {
         dim_view::cancel();
         self.tool = None;
         self.home.open = false;
+        if dialogs_sheet::start_export(self, id) {
+            return;
+        }
         if let Some(ext) = id.strip_prefix("sketch.insert_").filter(|e| matches!(*e, "dxf" | "svg")) {
             self.pick_open_command(id, json!({}), &[ext]);
             return;
