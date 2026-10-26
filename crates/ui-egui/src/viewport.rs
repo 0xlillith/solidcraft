@@ -1779,10 +1779,13 @@ fn pick_hits(app: &SolveApp, proj: &Proj, pos: Pos2, other_sketch_points: bool, 
             }
             let straight = matches!(c.kind, CurveKind::Line { .. });
             let tier = tier(c.link.is_none() || ss.sketch.is_text_curve(i));
+            // Construction geometry lying on a regular curve yields to it (#6396); Select Other
+            // still offers both.
+            let helper = if c.construction || c.centerline { 0.5 } else { 0.0 };
             for part in &crate::sketch_display::curve_sample(app, sid, i, &ss.plane, proj).parts {
                 let pts: Vec<Pos2> = part.iter().filter_map(|q| proj.to_screen(*q)).collect();
                 for w in pts.windows(2) {
-                    let dd = seg_dist(pos, w[0], w[1]) - bonus;
+                    let dd = seg_dist(pos, w[0], w[1]) - bonus + helper;
                     if dd < 6.0 && bestc.wants((tier, dd)) {
                         bestc.offer((tier, dd), Hit::SketchCurve { sketch: sid, id: c.id.clone(), straight });
                     }

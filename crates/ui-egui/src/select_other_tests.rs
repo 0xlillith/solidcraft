@@ -125,6 +125,45 @@ fn holding_still_lists_both_coincident_lines_and_picks_the_one_underneath() {
     assert_eq!(got, ["l1", "l2"]);
 }
 
+/// #6396: a regular line drawn on part of a construction line is the one hovered and picked
+/// first, whichever was drawn first; clicking again (or Select Other) still reaches the
+/// construction line. A construction line clearly nearer the cursor still wins.
+#[test]
+fn a_regular_line_on_a_construction_line_is_picked_before_it() {
+    for construction_first in [true, false] {
+        let mut h = Harness::new();
+        h.app.set_origin_shown(false);
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        let cons = json!({"points":[[0,10],[20,10]],"infer":false,"connect":false,"construction":true,"ids":["c"]});
+        let line = json!({"points":[[5,10],[15,10]],"infer":false,"connect":false,"ids":["r"]});
+        for p in if construction_first { [cons, line] } else { [line, cons] } {
+            h.app.run("sketch.line", p).unwrap();
+        }
+        h.app.run("sketch.line", json!({"points":[[0,14],[20,14]],"infer":false,"connect":false,"construction":true,"ids":["near"]})).unwrap();
+        h.app.cam.distance = 60.0;
+        h.settle();
+        // Away from the shared midpoint (10, 10), which is a pick of its own.
+        let at = h.call("ui.at", json!({"sketch":[7,10]}))["result"].clone();
+        h.step(&json!({"move": at})).unwrap();
+        assert!(
+            matches!(&h.app.viewport.hover, Some(crate::viewport::Hit::SketchCurve { id, .. }) if id == "r"),
+            "construction first: {construction_first}: {:?}",
+            h.app.viewport.hover
+        );
+        h.step(&json!({"click": at})).unwrap();
+        assert_eq!(curves(&h), ["r"], "construction first: {construction_first}");
+        h.frames(30);
+        h.step(&json!({"click": at})).unwrap();
+        assert_eq!(curves(&h), ["c"], "the next click reaches the construction line");
+        // On the construction line alone, it is still the one picked.
+        h.app.session.selection.clear();
+        let on_near = h.call("ui.at", json!({"sketch":[7,14]}))["result"].clone();
+        h.frames(30);
+        h.step(&json!({"click": on_near})).unwrap();
+        assert_eq!(curves(&h), ["near"]);
+    }
+}
+
 #[test]
 fn esc_and_a_click_elsewhere_close_the_list_without_selecting() {
     let (mut h, at) = two_lines();
