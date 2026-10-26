@@ -1,10 +1,13 @@
-# Hatch patterns, PAT import and polygonal generation (W38d D1–D3)
+# Hatch patterns, PAT import and bounded generation (W38d D1–D5)
 
 D1 supplies a neutral hatch-pattern model and a bounded PAT reader for
 [W38d (#7062)][issue], following [the drawing-sketch handoff][handoff].
 D2 adds bounded line-and-dot generation inside polygonal regions with holes.
 D3 extends its phase arithmetic and clipping queries while retaining the D1
 model, public generation API, polygon-only scope and existing resource caps.
+D4 adds end-to-end PAT-to-polygon acceptance cases. D5 extends clipping to a
+canonical disk or an annulus with one concentric circular hole, retaining the
+polygon path, phase rules and caps.
 These are library foundations: they do not attach a fill to a sketch, save
 drawing records, change the paper scene or register a command. They do not
 complete W38d or implement section-derived hatching (W34).
@@ -55,8 +58,8 @@ These are transient geometric marks in the supplied region's paper XY frame,
 not paper-scene objects or saved fill records. A dot remains a point; it is not
 a zero-length line. Each explicit zero in a dash sequence produces its own
 eligible dot, even if another zero coincides with it. The call validates the
-pattern and supported region, leaves both inputs unchanged, and returns the complete result or an error. No partial
-output is returned after a failure.
+pattern and supported region, leaves both inputs unchanged, and returns the
+complete result or an error. No partial output is returned after a failure.
 
 ## Coordinates, units and dash phase
 
@@ -95,7 +98,7 @@ across clipped fragments and holes; clipping does not restart the dash sequence.
 The eventual paper adapter must keep, for example, a 3 mm hatch spacing at 3 mm
 on paper when a view scale changes. It must transform the region to paper
 coordinates without applying that view scale to the pattern a second time.
-D1–D3 have no view or placement API. A multi-family pattern also has no single
+D1–D5 have no view or placement API. A multi-family pattern also has no single
 intrinsic spacing: a future spacing control must define its relationship to
 pattern scale explicitly.
 
@@ -170,7 +173,9 @@ reports expected line 3. UTF-8 errors identify the physical line where possible.
 Option and total byte-limit errors start with `PAT import:`, without an
 invented line number.
 
-## Polygonal generation: D2 geometry retained by D3
+## Supported regions
+
+### Polygonal regions retained from D2
 
 The [clipper][clipper] accepts one `Region2`: an outer loop and zero or more
 holes, all made of `Seg2::Line`. Every loop must have at least three edges,
@@ -180,7 +185,42 @@ orientation is accepted; the outer/hole roles come from `Region2`, not winding.
 Holes must lie strictly inside the outer loop, without touching, crossing or
 nesting within one another. Unsupported or
 uncertain geometry returns `hatch::Invalid`; the input is not snapped, repaired
-or approximated. Arcs, conics and Bézier segments remain unsupported in D3.
+or approximated. D5 leaves this polygon admission unchanged; its separate
+circular path below does not admit mixed line-and-arc regions.
+
+### Canonical circles and one concentric hole (D5)
+
+The [circular clipper][circle-clipper] supports a disk, or an annulus whose only hole has
+exactly the same finite center and a radius strictly between zero and the outer
+radius. Each loop must contain exactly two `Seg2::Arc` records with identical
+center and radius and one of these ordered `(start, sweep)` signatures:
+
+| Encoding | First arc | Second arc |
+| --- | --- | --- |
+| Forward | `(0, PI)` | `(PI, PI)` |
+| Reversed | `(TAU, -PI)` | `(PI, -PI)` |
+
+Cyclic rotation of either pair is accepted. `PI` and `TAU` denote the stored
+Rust `f64` constants; matching uses exact numeric equality, including equivalence
+of signed zeros. The recognizer checks fields, not which constructor created
+them: `Loop2::circle_from` is accepted when it produces the same fields, but an
+arbitrary seam angle is not. Every segment must also pass `Seg2::check`, and the
+complete circle bounding box must satisfy the existing `+/-100000 mm` coordinate
+cap. Validating only its two seam endpoints would not establish that bound.
+
+This is an explicit interpretation of the complete-circle encoding documented
+by [`Loop2::circle`][profile]. It does not snap evaluated arc endpoints or infer
+closure from a tolerance. Evaluating the trigonometric endpoints may round;
+recognition does not change those records or claim bitwise endpoint closure.
+
+Other seams, a single full-turn arc, four quarter arcs, partial or mixed loops,
+eccentric holes, multiple circular holes, conics and Bézier curves remain
+unsupported. A one-ULP change to a required signature field is not repaired.
+The same applies to mismatched centers/radii and equal inner/outer radii.
+Passing `Seg2::check` alone does not establish this narrower circle contract.
+The numerical checks below can still refuse a structurally admitted circle.
+
+### Shared boundary and contact policy
 
 Clipping preserves positive-length interior spans and their boundary contacts.
 A span's endpoints may lie on the boundary; its interior must lie in material.
@@ -195,7 +235,7 @@ Unresolved signs, overlapping contact bounds or a dot whose membership cannot
 be distinguished from a contact return an error. Endpoints and frame
 reconstruction are rounded floating-point values, not an exact coordinate or
 universal geometric-tolerance certificate. In particular, some mathematically
-valid polygons or near-contact patterns can be refused without a fallback.
+valid supported regions or near-contact patterns can be refused without a fallback.
 
 The generator uses a normalized tangent and its left normal. In that frame,
 member `k` has normal offset `k * delta_y` and tangential dash phase
@@ -263,14 +303,15 @@ The private clipping adapter consumes complete parameter enclosures:
   adapter may refuse an exact positive dash whose endpoint enclosures overlap
   or touch. It does not weaken the pattern validator.
 - A selected exact dash endpoint uses `nearest()` once. A selected geometric
-  contact keeps the existing rounded D2 span endpoint. The resulting scalar
+  contact keeps the clipper's existing rounded span endpoint. The resulting scalar
   endpoints are terminal output for the existing frame reconstruction; they
   are never reused as containment certificates.
 
-Thus exact phase arithmetic does **not** make the polygon intersections,
+Thus exact phase arithmetic does **not** make geometric intersections, the
 normalized frame or final `Vec2` coordinates exact. The existing finite,
-distinct-endpoint and directional-progress checks still apply. The polygon,
-hole and boundary-contact rules described above are unchanged.
+distinct-endpoint and directional-progress checks still apply. D5 sends its
+circle-root enclosures through the same clipping queries; it does not change
+the phase arithmetic or the boundary-contact rules.
 
 ### Bounded arithmetic envelope
 
@@ -299,7 +340,59 @@ not raise that limit or bypass existing progress checks: cycle endpoints and
 nonzero token endpoints must still advance after nearest rounding, including
 gap-only visits.
 
-## Work and output limits (D2–D3)
+## D5 circle roots in the represented frame
+
+The stored normalized tangent `u` and its left normal `n` are floating-point
+vectors. Their squared length `S = u dot u` has a certified positive enclosure;
+normalizing a vector does not establish that its represented squared length is
+exactly one. Circle clipping uses this same `Frame`, including `S`.
+
+For a circle with center `C` and radius `r`, `Frame::project(C)` supplies
+bounded tangent/normal coordinates `(tc, hc)`. For a member at normal offset
+`offset = k * delta_y`, the equations on the represented frame are:
+
+```text
+radius_squared_in_frame = r * r / S
+Q = radius_squared_in_frame - (offset - hc)^2
+normal range = hc +/- sqrt(radius_squared_in_frame)
+tangent roots = tc +/- sqrt(Q)
+```
+
+All operations carry conservative enclosures. The normal range bounds candidate
+member enumeration. The root classification is:
+
+| Enclosure for Q | Result |
+| --- | --- |
+| `Q.hi < 0` | No intersection |
+| `Q.lo == Q.hi == 0` | One contact, without a parity toggle |
+| `Q.lo > 0` | Two crossing events |
+| Otherwise | Whole-result numeric refusal |
+
+A floating-point square root supplies a candidate, not a proof of its own error
+bound. At most four charged candidate checks per endpoint, moving to a neighbour
+when needed, must establish the lower/upper square inequalities with the existing
+conservative product bounds. Failure to establish those bounds is an error. There is no assumed ULP guarantee
+for `sqrt`, epsilon band, negative-radicand clamp, tessellation or open-ended
+root iteration.
+
+The resulting root enclosures enter the existing event sweep and remain attached
+to its spans. Unresolved event order refuses the whole result. Candidate windows
+and D3 dot/dash queries use those retained bounds, not their rounded output
+endpoints. This is particularly important for contacts:
+
+- An outer tangency produces no stroke or dot.
+- An inner tangency splits the material into two retained strokes at the
+  contact, without changing material parity. A dot at the contact is excluded;
+  the two strokes must not be joined across it.
+- A certified miss of the inner circle leaves one continuous material span;
+  a certified secant removes a positive-width hole interval. These
+  three cases are not merged by a geometric tolerance.
+
+The exact phase, candidate-index limits and numeric-progress rules from D3 are
+unchanged. Root certification is not a universal accuracy guarantee for final
+rounded XY marks or a promise to handle every finite circle/frame combination.
+
+## Work and output limits (D2–D5)
 
 One internal [budget][budget] spans preparation, every family, clipping, dash
 enumeration, dot membership queries and output. Its default cumulative caps are:
@@ -325,6 +418,12 @@ Production uses the same generator with the defaults. D3 charges its bounded
 dyadic operations and each clipping classification to the existing work
 counter, including failing queries and queries that produce no marks. It adds
 no counter or budget increase; the extra checks can exhaust the work cap sooner.
+D5 charges the original arc pieces before recognizing a complete circle: two
+pieces for a disk, four for an annulus. Support validation and candidate/root
+classification, including misses and tangencies, consume the existing work
+budget. Created events count before deduplication, and all root-certification
+attempts are bounded and charged. Compression into circle supports does not
+reset any counter.
 
 Budget or allocation failure, nonfinite arithmetic and unresolved numeric
 uncertainty fail the whole call. Member and cycle indices must fit the generator's safe integer range
@@ -339,15 +438,16 @@ later paper-scene record limit remain separate responsibilities.
 ## Later phases and acceptance
 
 The future paper adapter must choose a visible representation for `Mark::Dot`;
-the current scene's butt-cap strokes reject degenerate geometry. D1–D3 supply no
+the current scene's butt-cap strokes reject degenerate geometry. D1–D5 supply no
 paper adapter, stroke width, colour, export, command or interactive preview.
-Curved-region clipping remains outside this slice.
+General arc and curved-region clipping beyond the explicit D5 circle subset
+remains outside this slice.
 
 Connecting fills to sketches waits for W38a's drawing-owned sketch record.
 The later W38d integration owns persistent boundary identity, retained geometry
 and lost-reference reporting, commands and undo, embedded imported definitions,
 paper object kinds/layers and export acceptance. Section-derived hatching
-remains a separate feature. D1–D3 add no drawing-format field or new dependency.
+remains a separate feature. D1–D5 add no drawing-format field or new dependency.
 
 D1 acceptance covers model validation and serde, converted units and phase data,
 Unicode/BOM/line-ending handling, strict final blanks, malformed numeric/header
@@ -362,9 +462,48 @@ checks with the independent [phase tests][phase-tests]: signed floor division,
 exact represented-input expressions, nearest-even ties, subnormal values and
 arithmetic refusal, plus enclosure-aware dash/dot integration cases.
 
+D4 links import to generation in the existing [PAT tests][tests]. Its three
+cases compare every segment with an independent 45-degree rectangle oracle:
+eight segments in a 40 by 20 mm rectangle, eleven after adding the rectangular
+hole `[10, 20] x [5, 15]`, and the same construction after millimetre/inch scaling.
+Imported and directly constructed patterns must agree and leave inputs unchanged.
+This exercises conversion once in paper millimetres; it does not exercise a view
+scale or a paper-scene adapter.
+
+D5 acceptance extends the existing [clipping tests][clip-tests] and
+[generation tests][generate-tests] with independent circle equations. The main
+analytic fixtures use center `(2, -1)`, outer radius `5`, optional concentric
+hole radius `3`, and horizontal lines with origin at that center, spacing
+`delta_y = 3` and `delta_x = 0` unless specified. All coordinates and lengths below
+are in millimetres:
+
+| Fixture | Expected complete output |
+| --- | --- |
+| Disk, continuous | 3 strokes, total length 26 |
+| Disk, `[0, -1]` | 23 strict-interior dots |
+| Annulus, continuous | 6 strokes, total length 20; inner tangencies split strokes |
+| Annulus, `[0, -1]` | 14 dots, excluding boundary contacts |
+| Annulus, `delta_x = 1/2`, `[2, -1]` | 10 strokes, total length 13.5, with signed global phase |
+| Annulus, `delta_x = 1/2`, `[0, 0, -2, 0]` | 30 dots; distinct zero tokens keep their multiplicity |
+
+At a single line's signed normal distance `q = 3 - 2^-30`, `3`, or
+`3 + 2^-30` from the same center, the annulus has respectively 2, 2, or 1
+continuous spans, and 8, 6, or 7 dots for `[0, -1]`. Their expectations follow
+from the independent roots `sqrt(25 - q*q)` and, when present,
+`sqrt(9 - q*q)`; an implementation-produced golden is not the oracle.
+Counts alone are insufficient: endpoints, hole gaps, split contacts, total
+lengths, signed phase and zero-token multiplicities must also agree.
+
+Additional D5 cases cover exact translation, admitted reverse/cyclic encodings,
+the represented oblique frame, hostile signatures and unsupported shapes,
+unchanged inputs, and whole-result refusal under lowered existing caps.
+Required success cases must succeed; allowing either an error or a result would
+not establish acceptance. An unresolved numeric refusal is reported as an
+unmet success case, never as an approximate substitute pass.
+
 The actual test commands and results belong to the PR's validation record,
-bound to the tested source revision. D1/D2 test results do not validate a later
-D3 source change, and source review or written tests do not establish execution.
+bound to the tested source revision. Earlier-phase results do not validate a
+later source change, and source review or written tests do not establish execution.
 Library checks do not establish paper output, persistence or interactive
 acceptance.
 
@@ -388,6 +527,8 @@ protected tables or illustrations. See the repository's
 [reader]: ../crates/io/src/pat.rs
 [generator]: ../crates/geom/src/hatch/generate.rs
 [clipper]: ../crates/geom/src/hatch/clip.rs
+[circle-clipper]: ../crates/geom/src/hatch/clip/circle.rs
+[profile]: ../crates/geom/src/profile.rs
 [budget]: ../crates/geom/src/hatch/budget.rs
 [phase]: ../crates/geom/src/hatch/phase.rs
 [phase-tests]: ../crates/geom/src/hatch/phase_tests.rs

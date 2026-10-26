@@ -1,4 +1,4 @@
-use std::f64::consts::{FRAC_PI_4, PI, SQRT_2};
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2, TAU};
 
 use crate::hatch::budget::{Budget, Limits};
 use crate::hatch::clip::{ClippedLine, Frame, PreparedRegion};
@@ -668,4 +668,400 @@ fn interval_adapter_queries_charge_entry_before_invalid_or_empty_span_access() {
             assert_eq!(clipped.dash_in_span(i, a, b, &mut exhausted), Err(expected));
         }
     }
+}
+
+fn circular_region(center: Vec2, radius: f64, inner: Option<f64>) -> Region2 {
+    Region2 { outer: Loop2::circle(center, radius), holes: inner.into_iter().map(|r| Loop2::circle(center, r)).collect() }
+}
+
+fn exact_circle_spans(line: &ClippedLine, expected: &[(f64, f64)]) {
+    let actual: Vec<_> = line.spans().iter().map(|s| (s.start, s.end)).collect();
+    assert_eq!(actual, expected);
+    assert!(line.spans().iter().all(|s| s.start < s.end));
+}
+
+fn circle_integer_dots(line: &ClippedLine, budget: &mut Budget) -> Vec<f64> {
+    let mut dots = Vec::new();
+    for coordinate in -6..=6 {
+        let t = phase_parameter(coordinate, 0, budget);
+        for i in 0..line.spans().len() {
+            if let Some(at) = line.dot_in_span(i, t, budget).unwrap() {
+                dots.push(at);
+            }
+        }
+    }
+    dots
+}
+
+#[test]
+fn canonical_disk_has_exact_secants_outer_tangencies_and_misses() {
+    let center = p(2.0, -1.0);
+    let region = circular_region(center, 5.0, None);
+    let before = region.clone();
+    let mut budget = Budget::default();
+    let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+    let frame = Frame::new(center, Vec2::X).unwrap();
+    let (lo, hi) = prepared.normal_bounds(&frame, &mut budget).unwrap();
+    assert!(lo.is_finite() && hi.is_finite() && lo <= -5.0 && hi >= 5.0);
+    // x^2+q^2=25 in the center's frame: the secants use 3-4-5 triangles.
+    for (q, expected, dots) in [
+        (0.0, vec![(-5.0, 5.0)], vec![-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0]),
+        (3.0, vec![(-4.0, 4.0)], vec![-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]),
+        (-3.0, vec![(-4.0, 4.0)], vec![-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]),
+        (5.0, vec![], vec![]),
+        (-5.0, vec![], vec![]),
+        (6.0, vec![], vec![]),
+        (-6.0, vec![], vec![]),
+    ] {
+        let line = prepared.clip(&frame, q, &mut budget).unwrap();
+        exact_circle_spans(&line, &expected);
+        assert_eq!(circle_integer_dots(&line, &mut budget), dots);
+        for (span, &(a, b)) in line.spans().iter().zip(&expected) {
+            assert_eq!(frame.point(q, span.start).unwrap(), center + p(a, q));
+            assert_eq!(frame.point(q, span.end).unwrap(), center + p(b, q));
+        }
+        if q.abs() >= 5.0 {
+            assert!(!line.contains_strict(0.0, &mut budget).unwrap());
+        }
+    }
+    assert_eq!(region, before);
+}
+
+#[test]
+fn canonical_annulus_inner_tangencies_split_strokes_without_a_material_gap() {
+    let center = p(2.0, -1.0);
+    let region = circular_region(center, 5.0, Some(3.0));
+    let before = region.clone();
+    let mut budget = Budget::default();
+    let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+    let frame = Frame::new(center, Vec2::X).unwrap();
+    for (q, expected, dots) in [
+        (0.0, vec![(-5.0, -3.0), (3.0, 5.0)], vec![-4.0, 4.0]),
+        (3.0, vec![(-4.0, 0.0), (0.0, 4.0)], vec![-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]),
+        (-3.0, vec![(-4.0, 0.0), (0.0, 4.0)], vec![-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]),
+        (4.0, vec![(-3.0, 3.0)], vec![-2.0, -1.0, 0.0, 1.0, 2.0]),
+        (-4.0, vec![(-3.0, 3.0)], vec![-2.0, -1.0, 0.0, 1.0, 2.0]),
+        (5.0, vec![], vec![]),
+        (-5.0, vec![], vec![]),
+    ] {
+        let line = prepared.clip(&frame, q, &mut budget).unwrap();
+        exact_circle_spans(&line, &expected);
+        assert_eq!(circle_integer_dots(&line, &mut budget), dots);
+        if q.abs() == 3.0 {
+            let a = phase_parameter(-1, 0, &mut budget);
+            let b = phase_parameter(1, 0, &mut budget);
+            let zero = phase_parameter(0, 0, &mut budget);
+            for (i, endpoints) in [(0, (-1.0, 0.0)), (1, (0.0, 1.0))] {
+                let stroke = line.dash_in_span(i, a, b, &mut budget).unwrap().unwrap();
+                assert_eq!((stroke.start, stroke.end), endpoints);
+                assert_eq!(line.dot_in_span(i, zero, &mut budget).unwrap(), None);
+            }
+        }
+    }
+    assert_eq!(region, before);
+}
+
+#[test]
+fn canonical_circle_reversal_cyclic_order_and_translation_preserve_all_contacts() {
+    for translation in [Vec2::ZERO, p(11.0, -7.0)] {
+        let center = p(2.0, -1.0) + translation;
+        for outer_reversed in [false, true] {
+            for hole_reversed in [false, true] {
+                for outer_shift in 0..2 {
+                    for hole_shift in 0..2 {
+                        let mut outer = Loop2::circle(center, 5.0);
+                        let mut hole = Loop2::circle(center, 3.0);
+                        if outer_reversed {
+                            outer = outer.reversed();
+                        }
+                        if hole_reversed {
+                            hole = hole.reversed();
+                        }
+                        outer.segs.rotate_left(outer_shift);
+                        hole.segs.rotate_left(hole_shift);
+                        let region = Region2 { outer, holes: vec![hole] };
+                        let before = region.clone();
+                        let mut budget = Budget::default();
+                        let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+                        let frame = Frame::new(center, Vec2::X).unwrap();
+                        for (q, expected) in
+                            [(0.0, vec![(-5.0, -3.0), (3.0, 5.0)]), (3.0, vec![(-4.0, 0.0), (0.0, 4.0)]), (4.0, vec![(-3.0, 3.0)]), (5.0, vec![])]
+                        {
+                            let line = prepared.clip(&frame, q, &mut budget).unwrap();
+                            exact_circle_spans(&line, &expected);
+                            for (span, &(a, b)) in line.spans().iter().zip(&expected) {
+                                assert_eq!(frame.point(q, span.start).unwrap(), p(2.0 + a, -1.0 + q) + translation);
+                                assert_eq!(frame.point(q, span.end).unwrap(), p(2.0 + b, -1.0 + q) + translation);
+                            }
+                        }
+                        assert_eq!(region, before);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn canonical_circle_admission_depends_on_fields_and_equates_signed_zero() {
+    // circle_from has the admitted fields at this seam, regardless of which
+    // constructor made them. Signed zero is numeric equality, not a new seam.
+    let region = Region2 { outer: Loop2::circle_from(p(0.0, -0.0), 5.0, -0.0), holes: vec![Loop2::circle_from(p(-0.0, 0.0), 3.0, 0.0)] };
+    let (line, _budget) = horizontal(&region, 0.0);
+    exact_circle_spans(&line, &[(-5.0, -3.0), (3.0, 5.0)]);
+}
+
+#[test]
+fn canonical_annulus_near_tangencies_keep_the_gap_contact_and_integer_dots_distinct() {
+    let center = p(2.0, -1.0);
+    let region = circular_region(center, 5.0, Some(3.0));
+    let before = region.clone();
+    let delta = 1.0 / 1_073_741_824.0; // Exact 2^-30, not a geometry tolerance.
+    let below_outer = (16.0_f64 + 6.0 * delta - delta * delta).sqrt();
+    let below_inner = (6.0_f64 * delta - delta * delta).sqrt();
+    let above_outer = (16.0_f64 - 6.0 * delta - delta * delta).sqrt();
+    let mut budget = Budget::default();
+    let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+    let frame = Frame::new(center, Vec2::X).unwrap();
+    for sign in [-1.0, 1.0] {
+        let below = prepared.clip(&frame, sign * (3.0 - delta), &mut budget).unwrap();
+        assert_spans(&below, &[(-below_outer, -below_inner), (below_inner, below_outer)]);
+        assert!(below.spans()[0].end < 0.0 && below.spans()[1].start > 0.0);
+        assert!(below.spans()[0].start < -4.0 && below.spans()[1].end > 4.0);
+        assert_eq!(circle_integer_dots(&below, &mut budget), vec![-4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0]);
+        let tangent = prepared.clip(&frame, sign * 3.0, &mut budget).unwrap();
+        exact_circle_spans(&tangent, &[(-4.0, 0.0), (0.0, 4.0)]);
+        assert_eq!(circle_integer_dots(&tangent, &mut budget), vec![-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]);
+        let above = prepared.clip(&frame, sign * (3.0 + delta), &mut budget).unwrap();
+        assert_spans(&above, &[(-above_outer, above_outer)]);
+        assert!(above.spans()[0].start > -4.0 && above.spans()[0].end < 4.0);
+        assert_eq!(circle_integer_dots(&above, &mut budget), vec![-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]);
+    }
+    assert_eq!(region, before);
+}
+
+#[test]
+fn canonical_annulus_adapter_preserves_signed_global_dash_phase_and_zero_tokens() {
+    let center = p(2.0, -1.0);
+    let region = circular_region(center, 5.0, Some(3.0));
+    let mut budget = Budget::default();
+    let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+    let frame = Frame::new(center, Vec2::X).unwrap();
+    let mut total_strokes = 0;
+    let mut total_length = 0.0;
+    let mut total_dots = 0;
+    for (k, q, expected, dot_sites) in [
+        (-1, -3.0, vec![(-3.5, -1.5), (-0.5, 0.0), (0.0, 1.5), (2.5, 4.0)], vec![-2.5, -0.5, 1.5, 3.5]),
+        (0, 0.0, vec![(-5.0, -4.0), (3.0, 5.0)], vec![-4.0, 4.0]),
+        (1, 3.0, vec![(-4.0, -3.5), (-2.5, -0.5), (0.5, 2.5), (3.5, 4.0)], vec![-3.5, -1.5, 0.5, 2.5]),
+    ] {
+        let line = prepared.clip(&frame, q, &mut budget).unwrap();
+        let mut actual = Vec::new();
+        let mut dots = Vec::new();
+        for i in 0..line.spans().len() {
+            for j in -4..=4 {
+                // [2,-1]: H=k/2, P=3, so a=(k+6j)/2 and b=a+2.
+                let a = phase_parameter(k + 6 * j, -1, &mut budget);
+                let b = phase_parameter(k + 6 * j + 4, -1, &mut budget);
+                if let Some(span) = line.dash_in_span(i, a, b, &mut budget).unwrap() {
+                    actual.push((span.start, span.end));
+                }
+                // [0,0,-2,0]: keep each zero token, including the preceding
+                // cycle's trailing zero. P=2, t=H+2j+prefix.
+                for prefix in [0, 0, 2] {
+                    let t = phase_parameter(k + 4 * j + 2 * prefix, -1, &mut budget);
+                    if let Some(at) = line.dot_in_span(i, t, &mut budget).unwrap() {
+                        dots.push(at);
+                    }
+                }
+            }
+        }
+        assert_eq!(actual, expected);
+        dots.sort_by(f64::total_cmp);
+        let expected_dots: Vec<_> = dot_sites.into_iter().flat_map(|t| [t, t, t]).collect();
+        assert_eq!(dots, expected_dots);
+        total_strokes += actual.len();
+        total_length += actual.iter().map(|(a, b)| b - a).sum::<f64>();
+        total_dots += dots.len();
+    }
+    assert_eq!(total_strokes, 10);
+    assert_eq!(total_length, 13.5);
+    assert_eq!(total_dots, 30);
+}
+
+#[test]
+fn canonical_annulus_uses_the_actual_oblique_frame_and_its_represented_norm() {
+    let center = p(2.0, -1.0);
+    let origin = p(-3.0, 4.0);
+    let region = circular_region(center, 5.0, Some(3.0));
+    let mut budget = Budget::default();
+    let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+    let frame = Frame::new(origin, p(3.0, 4.0)).unwrap();
+    assert_eq!(frame.tangent(), p(0.6, 0.8));
+    // Exact binary64 significands over 2^53. Their squared norm is GREATER
+    // than one, even though an ordinary f64 sum may round it to one.
+    let ux_n = 5_404_319_552_844_595_i128;
+    let uy_n = 7_205_759_403_792_794_i128;
+    let norm_n = ux_n * ux_n + uy_n * uy_n;
+    assert!(norm_n > (1_i128 << 106));
+    // These independent circle equations are evaluated approximately only for
+    // the existing endpoint-comparison tolerance; they are not certificates.
+    let norm = norm_n as f64 / (1_i128 << 106) as f64;
+    let tc = (5.0 * 0.6 - 5.0 * 0.8) / norm;
+    let hc = (-5.0 * 0.8 - 5.0 * 0.6) / norm;
+    let offset = -5.0;
+    let distance = offset - hc;
+    let outer = (25.0 / norm - distance * distance).sqrt();
+    let inner = (9.0 / norm - distance * distance).sqrt();
+    let expected = [(tc - outer, tc - inner), (tc + inner, tc + outer)];
+    let line = prepared.clip(&frame, offset, &mut budget).unwrap();
+    assert_spans(&line, &expected);
+    for (span, &(a, b)) in line.spans().iter().zip(&expected) {
+        let world = |t: f64| origin + p(-0.8, 0.6) * offset + p(0.6, 0.8) * t;
+        assert_point(frame.point(offset, span.start).unwrap(), world(a));
+        assert_point(frame.point(offset, span.end).unwrap(), world(b));
+    }
+    let (lo, hi) = prepared.normal_bounds(&frame, &mut budget).unwrap();
+    let radius_in_frame = 5.0 / norm.sqrt();
+    assert!(lo <= hc - radius_in_frame + TOL && hi >= hc + radius_in_frame - TOL);
+}
+
+#[test]
+fn noncanonical_circle_encodings_and_one_ulp_signature_changes_are_refused() {
+    let center = p(2.0, -1.0);
+    let canonical = Loop2::circle(center, 5.0);
+    let mut rejected = vec![
+        Loop2 { segs: vec![Seg2::Arc { center, radius: 5.0, start: 0.0, sweep: TAU }] },
+        Loop2 { segs: vec![Seg2::Arc { center, radius: 5.0, start: 0.0, sweep: TAU.next_up() }] },
+        Loop2 { segs: vec![canonical.segs[0]] },
+        Loop2::circle_from(center, 5.0, 0.5),
+        Loop2::circle_from(center, 5.0, PI),
+        Loop2 {
+            segs: [0.0, FRAC_PI_2, PI, 3.0 * FRAC_PI_2].into_iter().map(|start| Seg2::Arc { center, radius: 5.0, start, sweep: FRAC_PI_2 }).collect(),
+        },
+        Loop2 { segs: vec![canonical.segs[0], canonical.segs[0]] },
+        Loop2 { segs: vec![canonical.segs[0], Seg2::Line { a: p(-3.0, -1.0), b: p(7.0, -1.0) }] },
+    ];
+    // Every change below is finite and tiny; none authorizes tolerant seam or
+    // support repair. Recognition requires exact fields of the chosen encoding.
+    for (index, replacement) in [
+        (0, Seg2::Arc { center: p(2.0_f64.next_up(), -1.0), radius: 5.0, start: 0.0, sweep: PI }),
+        (1, Seg2::Arc { center: p(2.0, (-1.0_f64).next_down()), radius: 5.0, start: PI, sweep: PI }),
+        (1, Seg2::Arc { center, radius: 5.0_f64.next_up(), start: PI, sweep: PI }),
+        (0, Seg2::Arc { center, radius: 5.0, start: 0.0_f64.next_up(), sweep: PI }),
+        (1, Seg2::Arc { center, radius: 5.0, start: PI.next_down(), sweep: PI }),
+        (0, Seg2::Arc { center, radius: 5.0, start: 0.0, sweep: PI.next_up() }),
+        (1, Seg2::Arc { center, radius: 5.0, start: PI, sweep: PI.next_down() }),
+        (1, Seg2::Arc { center, radius: 5.0, start: PI, sweep: FRAC_PI_2 }),
+    ] {
+        let mut changed = canonical.clone();
+        changed.segs[index] = replacement;
+        rejected.push(changed);
+    }
+    let mut reversed = canonical.reversed();
+    reversed.segs[0] = Seg2::Arc { center, radius: 5.0, start: TAU.next_down(), sweep: -PI };
+    rejected.push(reversed);
+    for outer in rejected {
+        let region = Region2 { outer, holes: vec![] };
+        let before = region.clone();
+        assert!(PreparedRegion::new(&region, &mut Budget::default()).is_err());
+        assert_eq!(region, before);
+    }
+}
+
+#[test]
+fn circular_regions_reject_eccentric_multiple_and_mixed_holes_without_radius_snapping() {
+    let center = p(2.0, -1.0);
+    let outer = Loop2::circle(center, 5.0);
+    for holes in [
+        vec![Loop2::circle(center, 5.0)],
+        vec![Loop2::circle(center, 5.0_f64.next_up())],
+        vec![Loop2::circle(p(2.0_f64.next_up(), -1.0), 3.0)],
+        vec![Loop2::circle(p(3.0, -1.0), 1.0)], // Strictly inside, but eccentric is deferred.
+        vec![Loop2::circle(p(6.0, -1.0), 1.0)], // Region boundaries touch.
+        vec![Loop2::circle(p(6.5, -1.0), 1.0)], // Region boundaries cross.
+        vec![Loop2::circle(p(9.0, -1.0), 1.0)], // Hole outside outer circle.
+        vec![Loop2::circle(center, 3.0), Loop2::circle(center, 1.0)],
+        vec![Loop2::circle(center, 3.0), Loop2::circle(center, 3.0)],
+        vec![rectangle(1.0, -2.0, 3.0, 0.0)],
+    ] {
+        let region = Region2 { outer: outer.clone(), holes };
+        let before = region.clone();
+        assert!(PreparedRegion::new(&region, &mut Budget::default()).is_err());
+        assert_eq!(region, before);
+    }
+    // A distinct concentric radius is not malformed merely because its gap is
+    // below a geometry epsilon. Later unresolved root ordering may still refuse.
+    let thin = circular_region(center, 5.0, Some(5.0_f64.next_down()));
+    assert!(PreparedRegion::new(&thin, &mut Budget::default()).is_ok());
+}
+
+#[test]
+fn canonical_circles_reject_hostile_fields_and_enforce_the_complete_coordinate_box() {
+    let center = p(2.0, -1.0);
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::MAX, -f64::MAX] {
+        for region in [
+            circular_region(p(value, -1.0), 5.0, None),
+            circular_region(p(2.0, value), 5.0, None),
+            circular_region(center, value, None),
+            circular_region(center, 5.0, Some(value)),
+        ] {
+            assert!(PreparedRegion::new(&region, &mut Budget::default()).is_err());
+        }
+        for replacement in [Seg2::Arc { center, radius: 5.0, start: value, sweep: PI }, Seg2::Arc { center, radius: 5.0, start: 0.0, sweep: value }] {
+            let mut region = circular_region(center, 5.0, None);
+            region.outer.segs[0] = replacement;
+            assert!(PreparedRegion::new(&region, &mut Budget::default()).is_err());
+        }
+    }
+    for radius in [0.0, -0.0, -1.0, f64::MIN_POSITIVE, 1e-12_f64.next_down()] {
+        assert!(PreparedRegion::new(&circular_region(center, radius, None), &mut Budget::default()).is_err());
+    }
+    let limit = hatch::MAX_LENGTH_MM;
+    let edge_center = p(limit - 5.0, -limit + 5.0);
+    let region = circular_region(edge_center, 5.0, None);
+    let mut budget = Budget::default();
+    let prepared = PreparedRegion::new(&region, &mut budget).unwrap();
+    let frame = Frame::new(edge_center, Vec2::X).unwrap();
+    exact_circle_spans(&prepared.clip(&frame, 0.0, &mut budget).unwrap(), &[(-5.0, 5.0)]);
+    for center in [p(edge_center.x.next_up(), edge_center.y), p(edge_center.x, edge_center.y.next_down())] {
+        assert!(PreparedRegion::new(&circular_region(center, 5.0, None), &mut Budget::default()).is_err());
+    }
+}
+
+#[test]
+fn circular_clipping_charges_original_pieces_contacts_and_empty_queries_without_prefix_success() {
+    let center = p(2.0, -1.0);
+    let disk = circular_region(center, 5.0, None);
+    let annulus = circular_region(center, 5.0, Some(3.0));
+    for (region, required) in [(&disk, 2), (&annulus, 4)] {
+        let mut too_few = Budget::new(Limits { input_pieces: required - 1, ..Limits::default() });
+        assert!(PreparedRegion::new(region, &mut too_few).is_err());
+        let mut enough = Budget::new(Limits { input_pieces: required, ..Limits::default() });
+        assert!(PreparedRegion::new(region, &mut enough).is_ok());
+        let mut no_work = Budget::new(Limits { work: 0, ..Limits::default() });
+        assert!(PreparedRegion::new(region, &mut no_work).is_err());
+    }
+    let mut preparation = Budget::default();
+    let prepared = PreparedRegion::new(&disk, &mut preparation).unwrap();
+    let frame = Frame::new(center, Vec2::X).unwrap();
+    // Isolate query-entry costs; even an exterior query with no root is work.
+    for offset in [0.0, 5.0, 6.0] {
+        let mut exhausted = Budget::new(Limits { work: 0, ..Limits::default() });
+        assert!(prepared.clip(&frame, offset, &mut exhausted).is_err());
+    }
+    // A tangent emits no stroke but still creates a charged contact event.
+    for offset in [0.0, 5.0] {
+        let mut no_events = Budget::new(Limits { events: 0, ..Limits::default() });
+        assert!(prepared.clip(&frame, offset, &mut no_events).is_err());
+    }
+    let before = annulus.clone();
+    let mut events = Budget::new(Limits { events: 3, ..Limits::default() });
+    let prepared = PreparedRegion::new(&annulus, &mut events).unwrap();
+    // Four distinct crossings are necessary. A budget failure must not return
+    // the first material interval as a successful prefix.
+    assert!(prepared.clip(&frame, 0.0, &mut events).is_err());
+    let complete = prepared.clip(&frame, 0.0, &mut Budget::default()).unwrap();
+    exact_circle_spans(&complete, &[(-5.0, -3.0), (3.0, 5.0)]);
+    assert_eq!(annulus, before);
 }

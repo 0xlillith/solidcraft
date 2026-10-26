@@ -1,4 +1,4 @@
-//! Bounded expansion of stored paper-millimetre patterns over prepared line regions.
+//! Bounded hatch expansion over polygons and canonical circular regions.
 
 use crate::{Region2, Vec2};
 
@@ -20,7 +20,9 @@ pub enum Mark {
     Dot { at: Vec2 },
 }
 
-/// Expand a validated pattern over a supported simple region with straight boundaries.
+/// Expand a validated pattern over a supported polygon, disk or concentric annulus.
+/// Circular regions use the canonical two-semicircle encoding, with at most one
+/// concentric circular hole; general arc boundaries remain unsupported.
 /// The result is complete or an error; inputs are never changed. Stored lengths already
 /// use paper millimetres, so this function applies no unit conversion or view scale.
 ///

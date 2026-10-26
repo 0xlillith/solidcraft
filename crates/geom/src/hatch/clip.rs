@@ -1,4 +1,5 @@
-//! Analytic Line-only clipping. Uncertain predicates refuse the whole operation.
+//! Analytic polygon and canonical-circle clipping. Uncertain predicates refuse
+//! the whole operation.
 //!
 //! Preparation proves simple, exactly closed loops and disjoint interior holes.
 //! Consequently even-odd crossings equal outer minus the union of holes. Boundary
@@ -9,6 +10,8 @@ use crate::{Region2, Seg2, Vec2};
 use super::budget::{Budget, Limits};
 use super::phase::Param;
 use super::{Invalid, MAX_LENGTH_MM};
+
+mod circle;
 
 type Result<T> = std::result::Result<T, Invalid>;
 const UNCERTAIN: Invalid = Invalid("unresolved clipping arithmetic");
@@ -237,11 +240,20 @@ fn inside(points: &[Vec2], p: Vec2, budget: &mut Budget) -> Result<bool> {
 /// Owned and immutable after complete, bounded topology validation.
 #[derive(Debug)]
 pub(super) struct PreparedRegion {
-    loops: Vec<Vec<Vec2>>,
+    shape: PreparedShape,
+}
+
+#[derive(Debug)]
+enum PreparedShape {
+    Polygon(Vec<Vec<Vec2>>),
+    Circular(circle::CircularRegion),
 }
 
 impl PreparedRegion {
     pub fn new(region: &Region2, budget: &mut Budget) -> Result<Self> {
+        if matches!(region.outer.segs.first(), Some(Seg2::Arc { .. })) {
+            return Ok(Self { shape: PreparedShape::Circular(circle::CircularRegion::new(region, budget)?) });
+        }
         if region.holes.len() > Limits::default().input_pieces / 3 {
             return Err(Invalid("too many region holes"));
         }
@@ -282,14 +294,18 @@ impl PreparedRegion {
                 }
             }
         }
-        Ok(Self { loops })
+        Ok(Self { shape: PreparedShape::Polygon(loops) })
     }
 
-    /// Encloses all vertex projections, including possible extremal candidates.
+    /// Encloses the complete boundary's normal range, including extremal candidates.
     pub fn normal_bounds(&self, frame: &Frame, budget: &mut Budget) -> Result<(f64, f64)> {
+        let loops = match &self.shape {
+            PreparedShape::Polygon(loops) => loops,
+            PreparedShape::Circular(region) => return region.normal_bounds(frame, budget),
+        };
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
-        for points in &self.loops {
+        for points in loops {
             for &p in points {
                 budget.work(1)?;
                 let (_, h) = frame.project(p)?;
@@ -302,10 +318,14 @@ impl PreparedRegion {
     }
 
     pub fn clip(&self, frame: &Frame, offset: f64, budget: &mut Budget) -> Result<ClippedLine> {
+        let loops = match &self.shape {
+            PreparedShape::Polygon(loops) => loops,
+            PreparedShape::Circular(region) => return region.clip(frame, offset, budget),
+        };
         let offset = Bound::point(offset)?;
         let mut events = Vec::new();
         let mut base = 0usize;
-        for points in &self.loops {
+        for points in loops {
             let mut projected = Vec::new();
             for (i, &p) in points.iter().enumerate() {
                 budget.work(1)?;
@@ -558,6 +578,7 @@ struct Projected {
 enum Key {
     Vertex(usize),
     Edge(usize),
+    Circle(usize, u8),
 }
 
 #[derive(Clone, Copy)]

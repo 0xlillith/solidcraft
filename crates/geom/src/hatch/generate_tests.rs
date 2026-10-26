@@ -237,7 +237,9 @@ fn all_negative_cycles_paint_nothing_instead_of_continuous_lines() {
 fn painting_nothing_does_not_bypass_pattern_or_region_validation() {
     let gap = family([0.0, 0.0], 0.0, 10.0, &[-1.0]);
     let p = pattern(vec![gap.clone()]);
-    let curved = Region2 { outer: Loop2::circle(Vec2::ZERO, 1.0), holes: vec![] };
+    // Canonical full circles are supported; a different seam remains outside
+    // the admitted two-semicircle encoding, even for a gap-only pattern.
+    let curved = Region2 { outer: Loop2::circle_from(Vec2::ZERO, 1.0, FRAC_PI_2), holes: vec![] };
     assert!(generate(&p, &curved).is_err());
     assert!(generate(&p, &Region2::default()).is_err());
     let mut open = region(-1.0, -0.5, 1.0, 0.5);
@@ -439,4 +441,326 @@ fn a_dot_enclosure_overlapping_a_boundary_refuses_the_entire_result() {
     assert_marks(&generate(&pattern(vec![first.clone()]), &r).unwrap(), &[[1.0, 3.0, 2.0, 3.0]], &[], 0.0);
     assert!(generate(&pattern(vec![ambiguous.clone()]), &r).is_err());
     assert!(generate(&pattern(vec![first, ambiguous]), &r).is_err());
+}
+
+fn circular_region(with_hole: bool) -> Region2 {
+    let center = Vec2::new(2.0, -1.0);
+    Region2 { outer: Loop2::circle(center, 5.0), holes: if with_hole { vec![Loop2::circle(center, 3.0)] } else { vec![] } }
+}
+
+fn circle_lines(intervals: &[[f64; 3]]) -> Vec<Mark> {
+    // Independent world map of the analytic (left t, right t, relative y)
+    // tables for center (2,-1), horizontal tangent and vertical normal.
+    intervals.iter().map(|&[left, right, q]| Mark::Line { a: Vec2::new(2.0 + left, -1.0 + q), b: Vec2::new(2.0 + right, -1.0 + q) }).collect()
+}
+
+fn circle_dots(q: f64, positions: &[f64]) -> Vec<Mark> {
+    positions.iter().map(|&t| Mark::Dot { at: Vec2::new(2.0 + t, -1.0 + q) }).collect()
+}
+
+fn circle_output(p: &Pattern, r: &Region2, limits: Option<Limits>) -> Result<Vec<Mark>, super::Invalid> {
+    let pattern_before = p.clone();
+    let region_before = r.clone();
+    let result = match limits {
+        Some(limits) => generate_with_limits(p, r, limits),
+        None => generate(p, r),
+    };
+    assert_eq!(p, &pattern_before);
+    assert_eq!(r, &region_before);
+    result
+}
+
+fn assert_exact_circle_output(p: &Pattern, r: &Region2, expected: &[Mark], total_length: f64) {
+    let marks = circle_output(p, r, None).unwrap();
+    // Full equality checks member/span/cycle order and each repeated zero token.
+    assert_eq!(marks, expected);
+    let length: f64 = marks
+        .iter()
+        .map(|mark| match *mark {
+            Mark::Line { a, b } => {
+                assert!(a.is_finite() && b.is_finite() && a.x < b.x);
+                assert_eq!(a.y, b.y);
+                b.x - a.x
+            }
+            Mark::Dot { at } => {
+                assert!(at.is_finite());
+                0.0
+            }
+        })
+        .sum();
+    assert_eq!(length, total_length);
+    let exact = Limits { marks: expected.len(), ..Limits::default() };
+    assert_eq!(circle_output(p, r, Some(exact)).unwrap(), expected);
+    if !expected.is_empty() {
+        let short = Limits { marks: expected.len() - 1, ..Limits::default() };
+        assert!(circle_output(p, r, Some(short)).is_err());
+    }
+}
+
+#[test]
+fn a_disk_generates_three_ordered_secants_with_total_length_twenty_six() {
+    let r = circular_region(false);
+    let p = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[])]);
+    // x^2 + q^2 = 25 in centered coordinates: q=-3,0,3 gives A=4,5,4.
+    let expected = circle_lines(&[[-4.0, 4.0, -3.0], [-5.0, 5.0, 0.0], [-4.0, 4.0, 3.0]]);
+    assert_exact_circle_output(&p, &r, &expected, 26.0);
+}
+
+#[test]
+fn a_disk_keeps_twenty_three_strict_integer_dots_and_excludes_its_boundary() {
+    let r = circular_region(false);
+    let p = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[0.0, -1.0])]);
+    let mut expected = circle_dots(-3.0, &[-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]);
+    expected.extend(circle_dots(0.0, &[-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0]));
+    expected.extend(circle_dots(3.0, &[-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0]));
+    assert_eq!(expected.len(), 23);
+    assert_exact_circle_output(&p, &r, &expected, 0.0);
+}
+
+#[test]
+fn outer_circle_tangencies_and_exterior_members_emit_neither_lines_nor_dots() {
+    for with_hole in [false, true] {
+        let r = circular_region(with_hole);
+        for q in [-6.0, -5.0, 5.0, 6.0] {
+            for dashes in [&[][..], &[0.0, -1.0][..]] {
+                // Only k=0 can meet the circle; q=+/-5 is an isolated contact,
+                // whereas q=+/-6 has no roots. Both must return empty success.
+                let p = pattern(vec![family([2.0, -1.0 + q], 0.0, 32.0, dashes)]);
+                assert_exact_circle_output(&p, &r, &[], 0.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn an_annulus_keeps_six_ordered_spans_and_splits_both_inner_tangencies() {
+    let r = circular_region(true);
+    let p = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[])]);
+    let expected = circle_lines(&[[-4.0, 0.0, -3.0], [0.0, 4.0, -3.0], [-5.0, -3.0, 0.0], [3.0, 5.0, 0.0], [-4.0, 0.0, 3.0], [0.0, 4.0, 3.0]]);
+    assert_exact_circle_output(&p, &r, &expected, 20.0);
+}
+
+#[test]
+fn an_annulus_keeps_fourteen_strict_dots_without_a_dot_at_inner_tangency() {
+    let r = circular_region(true);
+    let p = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[0.0, -1.0])]);
+    let mut expected = circle_dots(-3.0, &[-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]);
+    expected.extend(circle_dots(0.0, &[-4.0, 4.0]));
+    expected.extend(circle_dots(3.0, &[-3.0, -2.0, -1.0, 1.0, 2.0, 3.0]));
+    assert_eq!(expected.len(), 14);
+    assert_exact_circle_output(&p, &r, &expected, 0.0);
+}
+
+#[test]
+fn annular_secants_beyond_the_hole_keep_the_middle_line_and_dot() {
+    let r = circular_region(true);
+    for q in [-4.0, 4.0] {
+        let continuous = pattern(vec![family([2.0, -1.0 + q], 0.0, 32.0, &[])]);
+        assert_exact_circle_output(&continuous, &r, &circle_lines(&[[-3.0, 3.0, q]]), 6.0);
+        let dotted = pattern(vec![family([2.0, -1.0 + q], 0.0, 32.0, &[0.0, -1.0])]);
+        assert_exact_circle_output(&dotted, &r, &circle_dots(q, &[-2.0, -1.0, 0.0, 1.0, 2.0]), 0.0);
+    }
+}
+
+fn phased_annulus_lines() -> Vec<Mark> {
+    // Exact period 3, phase k/2: clipping neither restarts a cycle nor joins
+    // the two pieces of the k=-1, j=0 dash across its tangent contact.
+    circle_lines(&[
+        [-3.5, -1.5, -3.0],
+        [-0.5, 0.0, -3.0],
+        [0.0, 1.5, -3.0],
+        [2.5, 4.0, -3.0],
+        [-5.0, -4.0, 0.0],
+        [3.0, 5.0, 0.0],
+        [-4.0, -3.5, 3.0],
+        [-2.5, -0.5, 3.0],
+        [0.5, 2.5, 3.0],
+        [3.5, 4.0, 3.0],
+    ])
+}
+
+#[test]
+fn signed_annular_dash_phase_preserves_ten_pieces_and_thirteen_and_a_half_length() {
+    let p = pattern(vec![family([2.0, -1.0], 0.5, 3.0, &[2.0, -1.0])]);
+    assert_exact_circle_output(&p, &circular_region(true), &phased_annulus_lines(), 13.5);
+}
+
+#[test]
+fn annular_zero_tokens_keep_thirty_ordered_instances_across_span_windows() {
+    let p = pattern(vec![family([2.0, -1.0], 0.5, 3.0, &[0.0, 0.0, -2.0, 0.0])]);
+    let mut positions = circle_dots(-3.0, &[-2.5, -0.5, 1.5, 3.5]);
+    positions.extend(circle_dots(0.0, &[-4.0, 4.0]));
+    positions.extend(circle_dots(3.0, &[-3.5, -1.5, 0.5, 2.5]));
+    // At H+2*j: previous cycle's trailing zero, then this cycle's two zeros.
+    let expected: Vec<_> = positions.into_iter().flat_map(|mark| [mark; 3]).collect();
+    assert_eq!(expected.len(), 30);
+    assert_exact_circle_output(&p, &circular_region(true), &expected, 0.0);
+}
+
+#[test]
+fn accepted_circle_reversals_cyclic_starts_and_translation_preserve_ordered_phase() {
+    for reversed in [false, true] {
+        for start in 0..2 {
+            for shift in [Vec2::ZERO, Vec2::new(11.0, -7.0)] {
+                let center = Vec2::new(2.0, -1.0) + shift;
+                let mut outer = Loop2::circle(center, 5.0);
+                let mut hole = Loop2::circle(center, 3.0);
+                if reversed {
+                    outer = outer.reversed();
+                    hole = hole.reversed();
+                }
+                outer.segs.rotate_left(start);
+                hole.segs.rotate_left(1 - start);
+                let r = Region2 { outer, holes: vec![hole] };
+                let p = pattern(vec![family([center.x, center.y], 0.5, 3.0, &[2.0, -1.0])]);
+                let expected: Vec<_> = phased_annulus_lines()
+                    .into_iter()
+                    .map(|mark| match mark {
+                        Mark::Line { a, b } => Mark::Line { a: a + shift, b: b + shift },
+                        Mark::Dot { .. } => panic!("the analytic phased fixture has only lines"),
+                    })
+                    .collect();
+                assert_exact_circle_output(&p, &r, &expected, 13.5);
+            }
+        }
+    }
+}
+
+fn near_tangent_root_bracket(numerator: u128) -> [f64; 2] {
+    // The analytic squared root is numerator/2^60. Integer square root of
+    // numerator*2^40 brackets the root on a 2^-50 lattice, independently of
+    // the clipper's floating products, sqrt candidate and contact midpoint.
+    assert!(numerator < (17_u128 << 60));
+    let square = numerator << 40;
+    let lower = square.isqrt();
+    let upper = if lower * lower == square { lower } else { lower + 1 };
+    assert!(lower * lower <= square && upper * upper >= square);
+    assert!(upper <= (1_u128 << 53));
+    let unit = 2.0_f64.powi(-50);
+    [lower as f64 * unit, upper as f64 * unit]
+}
+
+// Reuse the clipping acceptance's 1e-9 mm output comparison for this fixture.
+// A geometric contact is the midpoint of a certified Bound, not a correctly
+// rounded analytic root. Near q=3-2^-30, the square enclosure near 9 can have
+// width 2^-49; propagating it through the small inner root gives about 1e-11
+// mm of contact uncertainty. This comparison includes that effect and final
+// coordinate rounding; it never chooses topology or relaxes the older tests.
+const CIRCLE_CONTACT_COMPARISON_MM: f64 = 1e-9;
+
+fn assert_circle_line_enclosures(marks: &[Mark], y: f64, intervals: &[([f64; 2], [f64; 2])], length: [f64; 2]) {
+    assert_eq!(marks.len(), intervals.len());
+    let mut total = 0.0;
+    for (mark, &(left, right)) in marks.iter().zip(intervals) {
+        let Mark::Line { a, b } = *mark else { panic!("continuous circle pattern produced a dot") };
+        assert!(a.is_finite() && b.is_finite() && a.x < b.x);
+        assert_eq!(a.y, y);
+        assert_eq!(b.y, y);
+        for (actual, bounds) in [(a.x, left), (b.x, right)] {
+            // These reference lattice endpoints and their translation by 2
+            // are exactly representable. Only the public contact output gets
+            // the documented comparison allowance around the exact-root bracket.
+            let low = 2.0 + bounds[0];
+            let high = 2.0 + bounds[1];
+            assert!(actual >= low - CIRCLE_CONTACT_COMPARISON_MM && actual <= high + CIRCLE_CONTACT_COMPARISON_MM);
+        }
+        total += b.x - a.x;
+    }
+    // Each positive horizontal span contributes two endpoint uncertainties.
+    let allowance = 2.0 * intervals.len() as f64 * CIRCLE_CONTACT_COMPARISON_MM;
+    assert!(total >= length[0] - allowance && total <= length[1] + allowance);
+}
+
+#[test]
+fn near_inner_tangency_keeps_distinct_gaps_contacts_and_strict_dot_counts() {
+    let r = circular_region(true);
+    let delta = 2.0_f64.powi(-30);
+    let denominator = 1_u128 << 60;
+    let six_delta = 6_u128 << 30;
+    // Analytic radicands over 2^60 avoid the cancellation of delta^2 in a
+    // floating computation of 25-q*q or 9-q*q. Counts are exact: 2/2/1
+    // spans and 8/6/7 dots; no success-or-error alternative is accepted.
+    for (side, outer_square, inner_square, dot_positions) in [
+        (-1, 16 * denominator + six_delta - 1, Some(six_delta - 1), &[-4.0, -3.0, -2.0, -1.0, 1.0, 2.0, 3.0, 4.0][..]),
+        (0, 16 * denominator, Some(0), &[-3.0, -2.0, -1.0, 1.0, 2.0, 3.0][..]),
+        (1, 16 * denominator - six_delta - 1, None, &[-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0][..]),
+    ] {
+        let a = near_tangent_root_bracket(outer_square);
+        let (intervals, length) = match inner_square {
+            Some(square) => {
+                let b = near_tangent_root_bracket(square);
+                (vec![([-a[1], -a[0]], [-b[1], -b[0]]), (b, a)], [2.0 * (a[0] - b[1]), 2.0 * (a[1] - b[0])])
+            }
+            None => (vec![([-a[1], -a[0]], a)], [2.0 * a[0], 2.0 * a[1]]),
+        };
+        for sign in [-1.0, 1.0] {
+            let q = sign * (3.0 + f64::from(side) * delta);
+            let continuous = pattern(vec![family([2.0, -1.0 + q], 0.0, 32.0, &[])]);
+            let marks = circle_output(&continuous, &r, None).unwrap();
+            assert_circle_line_enclosures(&marks, -1.0 + q, &intervals, length);
+            let Mark::Line { a: first, .. } = marks[0] else { panic!("missing first line") };
+            let Mark::Line { b: last, .. } = marks[marks.len() - 1] else { panic!("missing last line") };
+            if side < 0 {
+                // A>4 and B>0: the comparison allowance cannot conceal an
+                // outer endpoint snapped to 4 or a collapsed positive hole gap.
+                assert!(first.x < -2.0 && last.x > 6.0);
+                let Mark::Line { b: left, .. } = marks[0] else { panic!("missing left span") };
+                let Mark::Line { a: right, .. } = marks[1] else { panic!("missing right span") };
+                assert!(left.x < 2.0 && right.x > 2.0);
+            } else if side == 0 {
+                assert_eq!(marks, circle_lines(&[[-4.0, 0.0, q], [0.0, 4.0, q]]));
+            } else {
+                // A<4 and no hole contact: one span crosses the center.
+                assert!(first.x > -2.0 && last.x < 6.0 && first.x < 2.0 && last.x > 2.0);
+            }
+            assert_eq!(circle_output(&continuous, &r, Some(Limits { marks: intervals.len(), ..Limits::default() })).unwrap(), marks);
+            assert!(circle_output(&continuous, &r, Some(Limits { marks: intervals.len() - 1, ..Limits::default() })).is_err());
+            let dotted = pattern(vec![family([2.0, -1.0 + q], 0.0, 32.0, &[0.0, -1.0])]);
+            assert_exact_circle_output(&dotted, &r, &circle_dots(q, dot_positions), 0.0);
+        }
+    }
+}
+
+#[test]
+fn circular_generation_charges_original_pieces_candidates_roots_and_tokens() {
+    let continuous = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[])]);
+    for (r, pieces) in [(circular_region(false), 1), (circular_region(true), 3)] {
+        let expected = circle_output(&continuous, &r, None).unwrap();
+        assert!(!expected.is_empty());
+        assert_eq!(circle_output(&continuous, &r, Some(Limits { input_pieces: pieces + 1, ..Limits::default() })).unwrap(), expected);
+        for limits in [
+            Limits { input_pieces: pieces, ..Limits::default() },
+            Limits { candidate_lines: 0, ..Limits::default() },
+            // At least k=-3..3 are charged, including exterior candidates.
+            // Wider certified bounds may legitimately visit more than seven.
+            Limits { candidate_lines: 6, ..Limits::default() },
+            Limits { work: 0, ..Limits::default() },
+            Limits { events: 0, ..Limits::default() },
+        ] {
+            assert!(circle_output(&continuous, &r, Some(limits)).is_err());
+        }
+        let dotted = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[0.0, -1.0])]);
+        assert!(circle_output(&dotted, &r, Some(Limits { dash_steps: 0, ..Limits::default() })).is_err());
+    }
+}
+
+#[test]
+fn empty_circular_output_still_charges_geometric_and_gap_work() {
+    let r = circular_region(true);
+    let gap = pattern(vec![family([2.0, -1.0], 0.0, 3.0, &[-1.0])]);
+    assert_exact_circle_output(&gap, &r, &[], 0.0);
+    for limits in [
+        Limits { input_pieces: 3, ..Limits::default() },
+        Limits { candidate_lines: 0, ..Limits::default() },
+        Limits { candidate_lines: 6, ..Limits::default() },
+        Limits { work: 0, ..Limits::default() },
+        Limits { events: 0, ..Limits::default() },
+        Limits { dash_steps: 0, ..Limits::default() },
+    ] {
+        assert!(circle_output(&gap, &r, Some(limits)).is_err());
+    }
+    let exterior = pattern(vec![family([2.0, 5.0], 0.0, 32.0, &[0.0, -1.0])]);
+    assert_exact_circle_output(&exterior, &r, &[], 0.0);
+    assert!(circle_output(&exterior, &r, Some(Limits { candidate_lines: 0, ..Limits::default() })).is_err());
+    assert!(circle_output(&exterior, &r, Some(Limits { work: 0, ..Limits::default() })).is_err());
 }
