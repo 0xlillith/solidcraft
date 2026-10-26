@@ -16,11 +16,17 @@
 //! drawing records and paper-scene construction are separate from this model. Readers
 //! must also bound encoded bytes and allocations before constructing the records.
 
+mod budget;
+mod clip;
+mod generate;
+
 use std::f64::consts::FRAC_PI_4;
 
 use serde::{Deserialize, Serialize};
 
 use crate::Vec2;
+
+pub use generate::{Mark, generate};
 
 /// The most parallel-line families in one pattern.
 pub const MAX_FAMILIES: usize = 64;
@@ -131,6 +137,10 @@ impl Pattern {
     }
 }
 
+#[cfg(test)]
+mod clip_tests;
+#[cfg(test)]
+mod generate_tests;
 #[cfg(test)]
 #[path = "hatch_tests.rs"]
 mod tests;
