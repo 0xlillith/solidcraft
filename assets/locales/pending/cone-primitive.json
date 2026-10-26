@@ -1,0 +1,98 @@
+{
+  "en": {
+    "ui.cone": "Cone",
+    "ui.heading_cone": "CONE"
+  },
+  "ja": {
+    "ui.cone": "円錐",
+    "ui.heading_cone": "円錐"
+  },
+  "zh": {
+    "ui.cone": "圆锥体",
+    "ui.heading_cone": "圆锥体"
+  },
+  "cs": {
+    "ui.cone": "Kužel",
+    "ui.heading_cone": "KUŽEL"
+  },
+  "da": {
+    "ui.cone": "Kegle",
+    "ui.heading_cone": "KEGLE"
+  },
+  "de": {
+    "ui.cone": "Kegel",
+    "ui.heading_cone": "KEGEL"
+  },
+  "es": {
+    "ui.cone": "Cono",
+    "ui.heading_cone": "CONO"
+  },
+  "fr": {
+    "ui.cone": "Cône",
+    "ui.heading_cone": "CÔNE"
+  },
+  "gl": {
+    "ui.cone": "Cono",
+    "ui.heading_cone": "CONO"
+  },
+  "hu": {
+    "ui.cone": "Kúp",
+    "ui.heading_cone": "KÚP"
+  },
+  "id": {
+    "ui.cone": "Kerucut",
+    "ui.heading_cone": "KERUCUT"
+  },
+  "it": {
+    "ui.cone": "Cono",
+    "ui.heading_cone": "CONO"
+  },
+  "ko": {
+    "ui.cone": "원뿔",
+    "ui.heading_cone": "원뿔"
+  },
+  "ms": {
+    "ui.cone": "Kon",
+    "ui.heading_cone": "KON"
+  },
+  "nl": {
+    "ui.cone": "Kegel",
+    "ui.heading_cone": "KEGEL"
+  },
+  "pl": {
+    "ui.cone": "Stożek",
+    "ui.heading_cone": "STOŻEK"
+  },
+  "pt-BR": {
+    "ui.cone": "Cone",
+    "ui.heading_cone": "CONE"
+  },
+  "ro": {
+    "ui.cone": "Con",
+    "ui.heading_cone": "CON"
+  },
+  "ru": {
+    "ui.cone": "Конус",
+    "ui.heading_cone": "КОНУС"
+  },
+  "sv": {
+    "ui.cone": "Kon",
+    "ui.heading_cone": "KON"
+  },
+  "tr": {
+    "ui.cone": "Koni",
+    "ui.heading_cone": "KONİ"
+  },
+  "uk": {
+    "ui.cone": "Конус",
+    "ui.heading_cone": "КОНУС"
+  },
+  "vi": {
+    "ui.cone": "Hình nón",
+    "ui.heading_cone": "HÌNH NÓN"
+  },
+  "zh-TW": {
+    "ui.cone": "圓錐體",
+    "ui.heading_cone": "圓錐體"
+  }
+}

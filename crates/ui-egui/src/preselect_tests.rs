@@ -2192,6 +2192,21 @@ fn a_box_stands_out_of_a_face_that_faces_down_an_axis() {
     assert!(near(c, Vec3::new(-10.0, 12.0, 8.0)), "{c:?}");
 }
 
+/// A cone (#5641) stands on the picked face like the cylinder: its base on the face, its axis
+/// out of it. The default is a full cone, whose centroid is a quarter of its height up.
+#[test]
+fn a_cone_stands_on_the_picked_face() {
+    let mut app = boxed();
+    let top = picked(&app, Vec3::new(20.0, 15.0, 20.0), Vec3::new(8.0, 10.0, 20.0));
+    let (p, c) = primitive_on(&mut app, vec![top], "solid.cone", |_| {});
+    assert_eq!((&p["base"], &p["axis"]), (&json!([8.0, 10.0, 20.0]), &json!([0.0, 0.0, 1.0])), "{p}");
+    assert!(near(c, Vec3::new(8.0, 10.0, 25.0)), "{c:?}");
+    let side = picked(&app, Vec3::new(0.0, 15.0, 10.0), Vec3::new(0.0, 12.0, 8.0));
+    let (p, c) = primitive_on(&mut app, vec![side], "solid.cone", |_| {});
+    assert_eq!(p["axis"], json!([-1.0, 0.0, 0.0]), "{p}");
+    assert!(near(c, Vec3::new(-5.0, 12.0, 8.0)), "{c:?}");
+}
+
 #[test]
 fn a_primitive_without_a_pick_or_with_its_position_cleared_stays_at_the_origin() {
     let mut app = boxed();

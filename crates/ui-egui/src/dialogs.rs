@@ -72,6 +72,7 @@ pub const MODIFIERS: &[ToolModifiers] = &[
     ToolModifiers { tool: "solid.cylinder", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.sphere", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.torus", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
+    ToolModifiers { tool: "solid.cone", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.coil", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
     ToolModifiers { tool: "solid.combine", scopes: SELECT_ONLY, bindings: &[], audit: Audit::VerifiedNoOp },
 ];
@@ -914,6 +915,19 @@ impl Dialog {
                 Kind::Primitive {
                     cmd: "solid.torus",
                     fields: vec![("major", length_default(s, "20")), ("minor", length_default(s, "5"))],
+                    operation: 0,
+                    at: None,
+                },
+                vec![],
+            ),
+            "solid.cone" => Dialog::new(
+                Kind::Primitive {
+                    cmd: "solid.cone",
+                    fields: vec![
+                        ("diameter", length_default(s, "20")),
+                        ("top_diameter", length_default(s, "0")),
+                        ("height", length_default(s, "20")),
+                    ],
                     operation: 0,
                     at: None,
                 },
@@ -1996,6 +2010,7 @@ fn title(k: &Kind) -> &'static str {
             "solid.cylinder" => "CYLINDER",
             "solid.sphere" => "SPHERE",
             "solid.coil" => "COIL",
+            "solid.cone" => "CONE",
             _ => "TORUS",
         },
         Kind::Combine { .. } => "COMBINE",
@@ -4378,7 +4393,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     "solid.box" => {
                         p.insert("corner".into(), box_corner(s, fields, point, normal));
                     }
-                    "solid.cylinder" | "solid.coil" => {
+                    "solid.cylinder" | "solid.coil" | "solid.cone" => {
                         p.insert("base".into(), pt(point));
                         if let Some(n) = normal {
                             p.insert("axis".into(), pt(n));
@@ -5437,6 +5452,22 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             if !targets.is_empty() {
                 d.extra.insert("targets".into(), json!(targets));
             }
+            d
+        }
+        FeatureKind::Cone { base, axis, radius, top_radius, height, operation } => {
+            let mut d = start("solid.cone")?;
+            d.kind = Kind::Primitive {
+                cmd: "solid.cone",
+                fields: vec![
+                    ("radius", stored_length(s, radius)),
+                    ("top_radius", stored_length(s, top_radius)),
+                    ("height", stored_length(s, height)),
+                ],
+                operation: op_index(operation),
+                at: None,
+            };
+            d.extra.insert("base".into(), pt_expr(base));
+            d.extra.insert("axis".into(), pt3(axis.0));
             d
         }
         FeatureKind::BoundaryFill { tools, cells, operation, remove_tools } => {
