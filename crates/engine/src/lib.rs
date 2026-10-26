@@ -38,7 +38,7 @@ use serde_json::Value;
 use solidcraft_doc::{Document, Model, ModelState};
 use solidcraft_geom::Vec3;
 
-pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command, standard_view};
+pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command, resolve_design_links, standard_view};
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
 pub use solidcraft_geom as geom;
@@ -444,12 +444,15 @@ impl Default for Session {
 }
 
 impl Session {
+    /// A session on an in-memory document. For a document read from a file, use
+    /// [`Self::opened_at`] so relative component links are resolved against that file.
     pub fn new(doc: Document) -> Self {
         Self::opened(doc, None)
     }
 
     /// A session on `doc` whose evaluation is the model its file kept (`saved`), when that is
     /// `doc`'s evaluation ([`Model::adopt`]); otherwise the timeline is evaluated.
+    /// Use [`Self::opened_at`] when the document's file location is known.
     /// `SOLIDCRAFT_NO_MODEL_CACHE` set always evaluates.
     pub fn opened(mut doc: Document, saved: Option<&solidcraft_doc::SavedModel>) -> Self {
         // The session keeps what is hidden (an undo step of its own); the design file carries it.
@@ -608,14 +611,9 @@ impl Session {
         Ok(())
     }
 
-    /// The design as a file holds it: the document with what is hidden in it.
+    /// The design as its current file holds it, including visibility and relative link paths.
     pub fn design(&self) -> std::borrow::Cow<'_, Document> {
-        if self.visibility.is_empty() {
-            return std::borrow::Cow::Borrowed(&*self.doc);
-        }
-        let mut doc = (*self.doc).clone();
-        doc.visibility = self.visibility.clone();
-        std::borrow::Cow::Owned(doc)
+        self.design_at(self.path.as_deref())
     }
     /// The design has changes not in its file (a recovered design).
     pub fn mark_unsaved(&mut self) {
