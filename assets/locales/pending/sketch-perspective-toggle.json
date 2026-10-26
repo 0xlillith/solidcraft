@@ -1,0 +1,17 @@
+{
+  "en": {
+    "nav.perspective.sketch": "Sketch editing uses orthographic view. Finish the sketch to switch perspective."
+  },
+  "de": {
+    "nav.perspective.sketch": "Beim Bearbeiten einer Skizze wird die orthografische Ansicht verwendet. Beenden Sie die Skizze, um die Perspektive umzuschalten."
+  },
+  "ja": {
+    "nav.perspective.sketch": "スケッチ編集中は平行投影で表示されます。透視投影に切り替えるにはスケッチを終了してください。"
+  },
+  "ko": {
+    "nav.perspective.sketch": "스케치 편집 중에는 직교 뷰를 사용합니다. 원근 뷰를 전환하려면 스케치를 마치세요."
+  },
+  "zh": {
+    "nav.perspective.sketch": "编辑草图时使用正交视图。完成草图后才能切换透视。"
+  }
+}
