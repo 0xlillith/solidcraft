@@ -3193,6 +3193,7 @@
   "update.up_to_date": "SolidCraft は最新です。",
   "update.update_now": "今すぐ更新",
   "update.you_have": "現在のバージョンは {version} です。",
+  "view.auto_ortho_faces": "回転中は透視投影、面を正面に見ると平行投影",
   "web.files.insert_drawings_hint": "CADファイル、メッシュ、DXF、SVGを開いているデザインに挿入",
   "web.files.insert_stored_drawings_hint": "開いているデザインに挿入（CADファイル、メッシュ、DXF、SVG）",
   "web.open_full": "SolidCraft で開く",

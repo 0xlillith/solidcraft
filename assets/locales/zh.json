@@ -3193,6 +3193,7 @@
   "update.up_to_date": "SolidCraft 已是最新版本。",
   "update.update_now": "立即更新",
   "update.you_have": "当前版本为 {version}。",
+  "view.auto_ortho_faces": "旋转时透视，正对表面时正交",
   "web.files.insert_drawings_hint": "将 CAD 文件、网格、DXF 或 SVG 插入当前设计",
   "web.files.insert_stored_drawings_hint": "插入当前设计（CAD 文件、网格、DXF、SVG）",
   "web.open_full": "在 SolidCraft 中打开",
