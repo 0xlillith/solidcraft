@@ -2,6 +2,8 @@ use std::f64::consts::{FRAC_PI_4, PI, SQRT_2};
 
 use crate::hatch::budget::{Budget, Limits};
 use crate::hatch::clip::{ClippedLine, Frame, PreparedRegion};
+use crate::hatch::generate::generate_with_limits;
+use crate::hatch::phase::{Dyadic, Param};
 use crate::hatch::{self, Family, Invalid, Mark, Pattern};
 use crate::{Loop2, MAX_BEZIER_CTRL, Region2, Seg2, Vec2};
 
@@ -474,4 +476,196 @@ fn exhausted_input_work_and_event_budgets_refuse_instead_of_returning_a_prefix()
     let (line, _budget) = horizontal(&region, 10.0);
     assert_spans(&line, &[(0.0, 40.0)]);
     assert_eq!(region, plate());
+}
+
+fn phase_parameter(coefficient: i128, exponent: i32, budget: &mut Budget) -> Param {
+    Dyadic::from_parts(coefficient, exponent, budget).unwrap().param(budget).unwrap()
+}
+
+fn interval_contact_region() -> Region2 {
+    Region2 { outer: rectangle(0.0, -1.0, 12.0, 1.0), holes: vec![rectangle(4.0, -0.5, 6.0, 0.5)] }
+}
+
+#[test]
+fn tight_dyadic_dot_enclosures_have_one_owner_only_when_wholly_inside() {
+    let (line, mut budget) = horizontal(&interval_contact_region(), 0.0);
+    assert_spans(&line, &[(0.0, 4.0), (6.0, 12.0)]);
+    // Each value is halfway between adjacent floats; no arbitrary interval
+    // constructor is needed. Enclosures and tie-to-even results are hand-derived.
+    for (coefficient, exponent, lo, hi, nearest, owner) in [
+        ((1_i128 << 53) + 1, -53, 1.0, 1.0_f64.next_up(), 1.0, Some(0)),
+        ((7_i128 << 51) + 1, -51, 7.0, 7.0_f64.next_up(), 7.0, Some(1)),
+        ((5_i128 << 51) + 1, -51, 5.0, 5.0_f64.next_up(), 5.0, None),
+        (-((1_i128 << 53) + 1), -53, (-1.0_f64).next_down(), -1.0, -1.0, None),
+    ] {
+        let t = phase_parameter(coefficient, exponent, &mut budget);
+        assert_eq!((t.lo(), t.hi(), t.nearest()), (lo, hi, nearest));
+        for i in 0..line.spans().len() {
+            let expected = if owner == Some(i) { Some(nearest) } else { None };
+            assert_eq!(line.dot_in_span(i, t, &mut budget).unwrap(), expected);
+        }
+    }
+}
+
+#[test]
+fn singleton_dyadic_dots_on_outer_and_hole_contacts_are_excluded() {
+    let (line, mut budget) = horizontal(&interval_contact_region(), 0.0);
+    for coordinate in [0, 4, 6, 12] {
+        let t = phase_parameter(coordinate, 0, &mut budget);
+        assert_eq!(t.lo(), t.hi());
+        for i in 0..line.spans().len() {
+            assert_eq!(line.dot_in_span(i, t, &mut budget).unwrap(), None);
+        }
+    }
+}
+
+#[test]
+fn tight_dot_enclosures_touching_material_and_a_contact_refuse_membership() {
+    let region = Region2 { outer: rectangle(1.0, -1.0, 12.0, 1.0), holes: vec![rectangle(4.0, -0.5, 6.0, 0.5)] };
+    let (line, mut budget) = horizontal(&region, 0.0);
+    assert_spans(&line, &[(1.0, 4.0), (6.0, 12.0)]);
+    // Exact points lie just inside material, but their tight enclosures reach
+    // a contact. Their nearest values equal that contact: neither silently
+    // dropping the dot nor classifying only the rounded value is permitted.
+    for (coefficient, exponent, i, lo, hi, nearest) in [
+        ((1_i128 << 53) + 1, -53, 0, 1.0, 1.0_f64.next_up(), 1.0),
+        ((4_i128 << 52) - 1, -52, 0, 4.0_f64.next_down(), 4.0, 4.0),
+        ((6_i128 << 51) + 1, -51, 1, 6.0, 6.0_f64.next_up(), 6.0),
+        ((12_i128 << 50) - 1, -50, 1, 12.0_f64.next_down(), 12.0, 12.0),
+    ] {
+        let t = phase_parameter(coefficient, exponent, &mut budget);
+        assert_eq!((t.lo(), t.hi(), t.nearest()), (lo, hi, nearest));
+        assert!(line.dot_in_span(i, t, &mut budget).is_err());
+        assert_eq!(line.dot_in_span(1 - i, t, &mut budget).unwrap(), None);
+    }
+}
+
+#[test]
+fn fractional_contacts_keep_their_enclosure_for_dot_dash_and_candidate_queries() {
+    let region = Region2 { outer: polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 3.0), (1.0, 3.0)]), holes: vec![] };
+    let (line, mut budget) = horizontal(&region, 1.0);
+    assert_eq!(line.spans().len(), 1);
+    // The left edge is y=3*x, so its contact at y=1 is exactly 1/3.
+    let below_third = f64::from_bits(0x3fd5_5555_5555_5555);
+    let window = line.span_window(0, &mut budget).unwrap();
+    assert!(window.0 <= below_third && window.1 >= 2.0);
+    // This midpoint rounds up to the even neighbour. Its tight enclosure
+    // straddles 1/3, regardless of the rounded geometric endpoint.
+    let contact = phase_parameter(12_009_599_006_321_323, -55, &mut budget);
+    assert_eq!(contact.lo(), below_third);
+    assert_eq!(contact.hi(), below_third.next_up());
+    assert_eq!(contact.nearest(), below_third.next_up());
+    assert!(line.dot_in_span(0, contact, &mut budget).is_err());
+    let inside = phase_parameter(1, 0, &mut budget);
+    assert_eq!(line.dot_in_span(0, inside, &mut budget).unwrap(), Some(1.0));
+    assert!(line.dash_in_span(0, contact, inside, &mut budget).is_err());
+
+    // A covering dash can dominate both contacts without treating their
+    // rounded output coordinates as exact membership certificates.
+    let a = phase_parameter(-1, 0, &mut budget);
+    let b = phase_parameter(3, 0, &mut budget);
+    let clipped = line.dash_in_span(0, a, b, &mut budget).unwrap().unwrap();
+    assert_eq!(clipped, line.spans()[0]);
+}
+
+#[test]
+fn positive_dashes_touch_boundaries_without_zero_length_marks_or_hole_bridges() {
+    let (line, mut budget) = horizontal(&interval_contact_region(), 0.0);
+    for (start, end, expected) in
+        [(-2, 0, vec![]), (4, 6, vec![]), (12, 14, vec![]), (2, 4, vec![(2.0, 4.0)]), (6, 8, vec![(6.0, 8.0)]), (3, 7, vec![(3.0, 4.0), (6.0, 7.0)])]
+    {
+        let a = phase_parameter(start, 0, &mut budget);
+        let b = phase_parameter(end, 0, &mut budget);
+        let mut actual = Vec::new();
+        for i in 0..line.spans().len() {
+            if let Some(span) = line.dash_in_span(i, a, b, &mut budget).unwrap() {
+                assert!(span.start < span.end);
+                actual.push((span.start, span.end));
+            }
+        }
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn a_positive_exact_dash_with_overlapping_endpoint_enclosures_is_refused() {
+    let (line, mut budget) = horizontal(&interval_contact_region(), 0.0);
+    let a = phase_parameter(1, 0, &mut budget);
+    let b = phase_parameter((1_i128 << 53) + 1, -53, &mut budget);
+    // Exact length is 2^-53, but a.hi == b.lo. The adapter's stated
+    // conservative admission requires separated endpoint enclosures.
+    assert_eq!(a.hi(), b.lo());
+    assert!(line.dash_in_span(0, a, b, &mut budget).is_err());
+}
+
+#[test]
+fn interval_adapter_preserves_reflex_contact_splits_and_unique_dot_ownership() {
+    let region = Region2 { outer: polygon(&[(0.0, 0.0), (2.0, 0.0), (4.0, 4.0), (6.0, 0.0), (8.0, 0.0), (8.0, 6.0), (0.0, 6.0)]), holes: vec![] };
+    let (line, mut budget) = horizontal(&region, 4.0);
+    assert_spans(&line, &[(0.0, 4.0), (4.0, 8.0)]);
+    let a = phase_parameter(3, 0, &mut budget);
+    let b = phase_parameter(5, 0, &mut budget);
+    let contact = phase_parameter(4, 0, &mut budget);
+    for (i, expected) in [(0, (3.0, 4.0)), (1, (4.0, 5.0))] {
+        let span = line.dash_in_span(i, a, b, &mut budget).unwrap().unwrap();
+        assert_eq!((span.start, span.end), expected);
+        assert_eq!(line.dot_in_span(i, contact, &mut budget).unwrap(), None);
+        assert_eq!(line.dot_in_span(i, a, &mut budget).unwrap(), if i == 0 { Some(3.0) } else { None });
+        assert_eq!(line.dot_in_span(i, b, &mut budget).unwrap(), if i == 1 { Some(5.0) } else { None });
+    }
+}
+
+#[test]
+fn public_dash_crossing_a_hole_keeps_the_member_phase_after_the_gap() {
+    let region = interval_contact_region();
+    let pattern = Pattern {
+        name: "HOLE_PHASE".into(),
+        description: "Original global-phase split across a hole".into(),
+        families: vec![Family { angle: 0.0, origin: p(-1.0, -4.0), delta_x: 2.0, delta_y: 4.0, dashes: vec![8.0, -4.0] }],
+    };
+    let before = (region.clone(), pattern.clone());
+    // Only k=1 meets the region: its stroke is x=1..9, cut by the hole 4..6.
+    assert_eq!(
+        hatch::generate(&pattern, &region).unwrap(),
+        vec![Mark::Line { a: p(1.0, 0.0), b: p(4.0, 0.0) }, Mark::Line { a: p(6.0, 0.0), b: p(9.0, 0.0) }]
+    );
+    assert_eq!((region, pattern), before);
+}
+
+#[test]
+fn distinct_zero_tokens_survive_hole_traversal_and_every_repeated_visit_is_charged() {
+    let region = Region2 { outer: rectangle(-1.0, -1.0, 13.0, 1.0), holes: vec![rectangle(3.0, -0.5, 5.0, 0.5)] };
+    let pattern = Pattern {
+        name: "ZERO_IDENTITIES".into(),
+        description: "Distinct zeros across cycles and separated material spans".into(),
+        families: vec![Family { angle: 0.0, origin: Vec2::ZERO, delta_x: 0.0, delta_y: 10.0, dashes: vec![0.0, 0.0, -4.0, 0.0] }],
+    };
+    let before = (region.clone(), pattern.clone());
+    // At each x, two leading tokens and the preceding cycle's trailing token
+    // survive. x=4 lies in the hole. A repeated span visit adds no extra dot.
+    let expected: Vec<_> = [0.0, 0.0, 0.0, 8.0, 8.0, 8.0, 12.0, 12.0, 12.0].into_iter().map(|x| Mark::Dot { at: p(x, 0.0) }).collect();
+    // Windows (-1,3) and (5,13), period 4: j=-2..1 and j=0..4.
+    // Nine cycle visits times four tokens = 36; repeated candidates still cost.
+    let admitted = Limits { dash_steps: 36, ..Limits::default() };
+    assert_eq!(generate_with_limits(&pattern, &region, admitted).unwrap(), expected);
+    let exhausted = Limits { dash_steps: 35, ..Limits::default() };
+    assert_eq!(generate_with_limits(&pattern, &region, exhausted), Err(Invalid("dash step budget exhausted")));
+    assert_eq!((region, pattern), before);
+}
+
+#[test]
+fn interval_adapter_queries_charge_entry_before_invalid_or_empty_span_access() {
+    let (line, mut budget) = horizontal(&interval_contact_region(), 0.0);
+    let (empty, _empty_budget) = horizontal(&interval_contact_region(), 2.0);
+    let a = phase_parameter(1, 0, &mut budget);
+    let b = phase_parameter(2, 0, &mut budget);
+    for clipped in [&line, &empty] {
+        for i in [0, usize::MAX] {
+            let mut exhausted = Budget::new(Limits { work: 0, ..Limits::default() });
+            let expected = Invalid("geometry work budget exhausted");
+            assert_eq!(clipped.span_window(i, &mut exhausted), Err(expected.clone()));
+            assert_eq!(clipped.dot_in_span(i, a, &mut exhausted), Err(expected.clone()));
+            assert_eq!(clipped.dash_in_span(i, a, b, &mut exhausted), Err(expected));
+        }
+    }
 }

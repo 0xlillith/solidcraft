@@ -357,12 +357,10 @@ fn collapsed_or_nonfinite_line_boundaries_return_an_error() {
 }
 
 #[test]
-fn an_uncertified_large_member_phase_product_is_refused_explicitly() {
+fn a_large_member_phase_cancels_before_its_single_output_rounding() {
     // Independent integer oracle: k*dx = 99_999_000_000_099_999.
     // With period 100 and cycle -999_990_000_001_000, the visible stroke
-    // would be exactly [-1,0]. Rounding k*dx first instead shifts it to [0,1].
-    // D2 deliberately refuses this uncertified product instead of returning
-    // shifted geometry. An unrelated topology/budget error must not pass.
+    // is exactly [-1,0]. Rounding k*dx first instead shifts it to [0,1].
     let k: i64 = 1_000_000_000_001;
     let dx: i64 = 99_999;
     let cycle: i128 = -999_990_000_001_000;
@@ -376,17 +374,69 @@ fn an_uncertified_large_member_phase_product_is_refused_explicitly() {
     let p = pattern(vec![family([0.0, 0.0], dx as f64, dy, &[1.0, -99.0])]);
     let r = region(-2.0, (k as f64 - 0.25) * dy, 2.0, (k as f64 + 0.25) * dy);
     assert!(p.validate().is_ok());
-    assert_eq!(generate(&p, &r), Err(super::Invalid("uncertified hatch phase product")));
+    let y = k as f64 * dy;
+    assert_marks(&generate(&p, &r).unwrap(), &[[-1.0, y, 0.0, y]], &[], 0.0);
 }
 
 #[test]
-fn advancing_dash_entries_with_an_inexact_cycle_sum_are_refused_explicitly() {
+fn decimal_dash_cycles_round_complete_endpoints_once() {
     // The exact sum of the stored binary64 values 0.1 and 0.2 is
     // 10_808_639_105_689_191 / 2^55: it lies between representable f64 values.
-    // Both tokens advance, so this is loss of cycle precision, not stalled
-    // progress. Repeating the rounded period would accumulate a phase error.
+    // With n=3_602_879_701_896_397, the exact endpoints for j=-2..2 are
+    // [-6n,-5n], [-3n,-2n], [0,n], [3n,4n], [6n,7n], all divided by 2^55.
+    // In particular -5n/2^55 rounds to -0.5; adding a rounded cycle base
+    // to the first dash would instead round that endpoint twice.
     let p = pattern(vec![family([0.0, 0.0], 0.0, 10.0, &[0.1, -0.2])]);
-    let r = region(-0.25, -0.5, 1.25, 0.5);
+    let r = region(-0.75, -0.5, 0.75, 0.5);
     assert!(p.validate().is_ok());
-    assert_eq!(generate(&p, &r), Err(super::Invalid("uncertified hatch dash cycle sum")));
+    assert_marks(
+        &generate(&p, &r).unwrap(),
+        &[
+            [-0.6000000000000001, 0.0, -0.5, 0.0],
+            [-0.30000000000000004, 0.0, -0.2, 0.0],
+            [0.0, 0.0, 0.1, 0.0],
+            [0.30000000000000004, 0.0, 0.4, 0.0],
+            [0.6000000000000001, 0.0, 0.7000000000000001, 0.0],
+        ],
+        &[],
+        0.0,
+    );
+}
+
+#[test]
+fn a_large_decimal_cycle_preserves_the_stored_period_residual() {
+    // Let n=3_602_879_701_896_397, D=2^55 and K=J=2^50.
+    // The stored dx is -(3n+1)/D, whereas the exact dash period is 3n/D.
+    // K*dx + J*period = -1/32; adding the first dash gives
+    // (n-2^50)/D = 2_476_979_795_053_773/D, exactly the stored 0.06875.
+    // Repeating the rounded period would wrongly yield [0,0.1].
+    let dy = 2.0_f64.powi(-50);
+    let p = pattern(vec![family([0.0, 0.0], -0.30000000000000004, dy, &[0.1, -0.2])]);
+    let half_height = 2.0_f64.powi(-52);
+    let r = region(-0.0625, 1.0 - half_height, 0.1875, 1.0 + half_height);
+    assert!(p.validate().is_ok());
+    assert_marks(&generate(&p, &r).unwrap(), &[[-0.03125, 1.0, 0.06875, 1.0]], &[], 0.0);
+}
+
+#[test]
+fn a_nonrepresentable_dot_phase_rounds_only_after_interior_classification() {
+    // Stored dx=3_002_399_751_580_331/2^53; member k=3 gives the exact
+    // phase 1+2^-53, enclosed by [1,1+2^-52] and rounded nearest-even to 1.
+    // That enclosure is strictly inside (0,2), so its single dot is retained.
+    let p = pattern(vec![family([0.0, 0.0], 0.33333333333333337, 1.0, &[0.0, -4.0])]);
+    let r = region(0.0, 2.5, 2.0, 3.5);
+    assert_marks(&generate(&p, &r).unwrap(), &[], &[[1.0, 3.0]], 0.0);
+}
+
+#[test]
+fn a_dot_enclosure_overlapping_a_boundary_refuses_the_entire_result() {
+    // The same exact phase lies above 1, but its f64 enclosure touches the
+    // boundary at 1. Neither dropping its rounded point nor accepting its
+    // midpoint certifies membership. A preceding family must not leak output.
+    let first = family([0.0, 3.0], 0.0, 10.0, &[]);
+    let ambiguous = family([0.0, 0.0], 0.33333333333333337, 1.0, &[0.0, -4.0]);
+    let r = region(1.0, 2.5, 2.0, 3.5);
+    assert_marks(&generate(&pattern(vec![first.clone()]), &r).unwrap(), &[[1.0, 3.0, 2.0, 3.0]], &[], 0.0);
+    assert!(generate(&pattern(vec![ambiguous.clone()]), &r).is_err());
+    assert!(generate(&pattern(vec![first, ambiguous]), &r).is_err());
 }

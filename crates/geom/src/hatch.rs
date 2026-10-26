@@ -19,6 +19,7 @@
 mod budget;
 mod clip;
 mod generate;
+mod phase;
 
 use std::f64::consts::FRAC_PI_4;
 
@@ -141,6 +142,8 @@ impl Pattern {
 mod clip_tests;
 #[cfg(test)]
 mod generate_tests;
+#[cfg(test)]
+mod phase_tests;
 #[cfg(test)]
 #[path = "hatch_tests.rs"]
 mod tests;

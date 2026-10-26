@@ -7,6 +7,7 @@
 use crate::{Region2, Seg2, Vec2};
 
 use super::budget::{Budget, Limits};
+use super::phase::Param;
 use super::{Invalid, MAX_LENGTH_MM};
 
 type Result<T> = std::result::Result<T, Invalid>;
@@ -27,6 +28,12 @@ impl Bound {
 
     fn new(lo: f64, hi: f64) -> Result<Self> {
         if lo.is_finite() && hi.is_finite() && lo <= hi { Ok(Self { lo, hi }) } else { Err(UNCERTAIN) }
+    }
+
+    fn parameter(value: Param) -> Result<Self> {
+        let bound = Self::new(value.lo(), value.hi())?;
+        let nearest = value.nearest();
+        if nearest.is_finite() && nearest >= bound.lo && nearest <= bound.hi { Ok(bound) } else { Err(UNCERTAIN) }
     }
 
     fn add(self, other: Self) -> Result<Self> {
@@ -421,8 +428,100 @@ impl ClippedLine {
         &self.spans
     }
 
+    // Each endpoint visit and the ordering classification consume work. The
+    // query's entry charge covers checked access and bounded value validation.
+    fn span_ends(&self, i: usize, budget: &mut Budget) -> Result<(Bound, Bound)> {
+        let &(start, end) = self.ends.get(i).ok_or(Invalid("invalid clipped span index"))?;
+        budget.work(1)?;
+        let start = Bound::new(start.lo, start.hi)?;
+        budget.work(1)?;
+        let end = Bound::new(end.lo, end.hi)?;
+        budget.work(1)?;
+        if start.hi < end.lo { Ok((start, end)) } else { Err(UNCERTAIN) }
+    }
+
+    /// Conservative cycle-search window from the retained contact enclosures.
+    /// Rounded output endpoints must not determine which cycles are visited.
+    pub fn span_window(&self, i: usize, budget: &mut Budget) -> Result<(f64, f64)> {
+        budget.work(1)?;
+        let (start, end) = self.span_ends(i, budget)?;
+        Ok((start.lo, end.hi))
+    }
+
+    /// Only a certified strict interior owns a dot. Distinct zero tokens still
+    /// produce distinct marks; querying another span cannot own this token too.
+    pub fn dot_in_span(&self, i: usize, t: Param, budget: &mut Budget) -> Result<Option<f64>> {
+        budget.work(1)?;
+        let t_bound = Bound::parameter(t)?;
+        let (start, end) = self.span_ends(i, budget)?;
+        budget.work(1)?;
+        let after_start = t_bound.lo > start.hi;
+        budget.work(1)?;
+        let before_end = t_bound.hi < end.lo;
+        if after_start && before_end {
+            return Ok(Some(t.nearest()));
+        }
+        budget.work(1)?;
+        let before_start = t_bound.hi <= start.lo;
+        budget.work(1)?;
+        let after_end = t_bound.lo >= end.hi;
+        if before_start || after_end { Ok(None) } else { Err(UNCERTAIN) }
+    }
+
+    /// Clip an exact positive dash using enclosure dominance, retaining the
+    /// selected endpoints' bounds until positive length has been certified.
+    pub fn dash_in_span(&self, i: usize, a: Param, b: Param, budget: &mut Budget) -> Result<Option<Span>> {
+        budget.work(1)?;
+        let a_bound = Bound::parameter(a)?;
+        let b_bound = Bound::parameter(b)?;
+        budget.work(1)?;
+        if a_bound.hi >= b_bound.lo {
+            return Err(UNCERTAIN);
+        }
+        let (start, end) = self.span_ends(i, budget)?;
+        budget.work(1)?;
+        if b_bound.hi <= start.lo {
+            return Ok(None);
+        }
+        budget.work(1)?;
+        if a_bound.lo >= end.hi {
+            return Ok(None);
+        }
+        let span = self.spans.get(i).ok_or(Invalid("invalid clipped span index"))?;
+        // Keep the existing geometric output value beside its actual bound;
+        // never promote that rounded value to a singleton certificate.
+        budget.work(1)?;
+        let (left, output_start) = if a_bound.hi <= start.lo {
+            (start, span.start)
+        } else {
+            budget.work(1)?;
+            if a_bound.lo >= start.hi { (a_bound, a.nearest()) } else { return Err(UNCERTAIN) }
+        };
+        budget.work(1)?;
+        let (right, output_end) = if end.hi <= b_bound.lo {
+            (end, span.end)
+        } else {
+            budget.work(1)?;
+            if b_bound.hi <= end.lo { (b_bound, b.nearest()) } else { return Err(UNCERTAIN) }
+        };
+        budget.work(1)?;
+        if left.hi >= right.lo {
+            budget.work(1)?;
+            if left.lo == left.hi && right.lo == right.hi && left.lo == right.lo {
+                return Ok(None);
+            }
+            return Err(UNCERTAIN);
+        }
+        budget.work(1)?;
+        if !output_start.is_finite() || !output_end.is_finite() || output_start >= output_end {
+            return Err(UNCERTAIN);
+        }
+        Ok(Some(Span { start: output_start, end: output_end }))
+    }
+
     /// Boundary contacts are excluded, including a zero-parity reflex vertex.
     /// A parameter inside an uncertain contact enclosure is refused, not guessed.
+    #[cfg(test)]
     pub fn contains_strict(&self, t: f64, budget: &mut Budget) -> Result<bool> {
         // A query costs work even when there are no spans or its input is invalid.
         budget.work(1)?;

@@ -3,13 +3,15 @@
 use crate::{Region2, Vec2};
 
 use super::budget::{Budget, Limits};
-use super::clip::{ClippedLine, Frame, PreparedRegion, Span};
+use super::clip::{ClippedLine, Frame, PreparedRegion};
+use super::phase::{Dyadic, Param};
 use super::{Invalid, Pattern};
 
 type Result<T> = std::result::Result<T, Invalid>;
 
 // Leave representable integer neighbours for conservative range padding and cycle ends.
 const MAX_INDEX: f64 = 4_503_599_627_370_496.0;
+const MAX_EXACT_INDEX: i128 = 1i128 << 52;
 
 /// One generated mark in paper millimetres. Dots remain points, not degenerate lines.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,8 +32,13 @@ pub enum Mark {
 /// Preparation, candidate lines, clipping, dash visits and marks share cumulative limits.
 /// Unsupported boundaries, exhausted limits, nonfinite arithmetic, unsafe indices or
 /// lost numeric progress return an error rather than truncated or repaired geometry.
-/// Line/phase products and dash-prefix sums must be exactly representable; some valid
-/// stored patterns therefore refuse expansion. Final coordinates remain rounded f64 values.
+/// Every candidate's normal spacing product must still be exactly representable as f64.
+/// Dash phase, prefixes and periods use exact stored-binary64 values within a checked
+/// i128 envelope. Excessive exponent alignment or arithmetic overflow is refused.
+/// Parameters round once to nearest-even after the complete exact phase expression;
+/// clipping uses their enclosures. Ambiguous contacts, collapsed rounded steps and
+/// unsupported spacing can still refuse valid patterns. Final frame coordinates are
+/// rounded f64 values, not an exact geometry or universal accuracy certificate.
 pub fn generate(pattern: &Pattern, region: &Region2) -> Result<Vec<Mark>> {
     generate_with_limits(pattern, region, Limits::default())
 }
@@ -67,9 +74,10 @@ pub(super) fn generate_with_limits(pattern: &Pattern, region: &Region2, limits: 
             if clipped.spans().is_empty() {
                 continue;
             }
-            let phase = if cycle.entries.is_empty() { 0.0 } else { certified_index_product(k, family.delta_x, "uncertified hatch phase product")? };
+            let phase =
+                if cycle.entries.is_empty() { Dyadic::ZERO } else { Dyadic::from_f64(family.delta_x, &mut budget)?.mul_index(k, &mut budget)? };
             let member = Member { clipped: &clipped, frame: &frame, offset, phase };
-            for span in clipped.spans() {
+            for (i, span) in clipped.spans().iter().enumerate() {
                 budget.work(1)?;
                 if !span.start.is_finite() || !span.end.is_finite() || span.start >= span.end {
                     return Err(Invalid("invalid clipped span"));
@@ -77,7 +85,7 @@ pub(super) fn generate_with_limits(pattern: &Pattern, region: &Region2, limits: 
                 if cycle.entries.is_empty() {
                     push_line(&frame, offset, span.start, span.end, &mut budget, &mut marks)?;
                 } else {
-                    cycle.expand(&member, span, &mut budget, &mut marks)?;
+                    cycle.expand(&member, i, &mut budget, &mut marks)?;
                 }
             }
         }
@@ -103,73 +111,85 @@ impl IndexRange {
         let count = self.end.checked_sub(self.start).and_then(|n| n.checked_add(1)).ok_or(Invalid("hatch index count overflow"))?;
         usize::try_from(count).map_err(|_| Invalid("hatch index count exceeds the platform limit"))
     }
+
+    fn from_exact(start: i128, end: i128) -> Result<Self> {
+        let error = Invalid("hatch line or cycle index is not safely representable");
+        if !(-MAX_EXACT_INDEX..=MAX_EXACT_INDEX).contains(&start) || !(-MAX_EXACT_INDEX..=MAX_EXACT_INDEX).contains(&end) || start > end {
+            return Err(error);
+        }
+        Ok(Self { start: i64::try_from(start).map_err(|_| error.clone())?, end: i64::try_from(end).map_err(|_| error)? })
+    }
 }
 
 struct Entry {
-    start: f64,
-    end: f64,
+    start: Dyadic,
+    end: Dyadic,
     value: f64,
 }
 
 struct Cycle {
     entries: Vec<Entry>,
-    period: f64,
+    period: Dyadic,
 }
 
 struct Member<'a> {
     clipped: &'a ClippedLine,
     frame: &'a Frame,
     offset: f64,
-    phase: f64,
+    phase: Dyadic,
 }
 
 impl Cycle {
     fn new(dashes: &[f64], budget: &mut Budget) -> Result<Self> {
         let mut entries = Vec::new();
         entries.try_reserve_exact(dashes.len()).map_err(|_| Invalid("cannot allocate hatch dash entries"))?;
-        let mut period = 0.0;
+        let mut period = Dyadic::from_parts(0, 0, budget)?;
         // Pattern::validate has already bounded this list to six entries.
         for &value in dashes {
             budget.work(1)?;
-            let end = certified_cycle_sum(period, value.abs())?;
-            if value != 0.0 && end <= period {
+            let end = period.add(Dyadic::from_f64(value.abs(), budget)?, budget)?;
+            if value != 0.0 && end == period {
                 return Err(Invalid("dash length loses numeric progress within its cycle"));
             }
             entries.push(Entry { start: period, end, value });
             period = end;
         }
-        if !entries.is_empty() && period <= 0.0 {
+        if !entries.is_empty() && !period.is_positive() {
             return Err(Invalid("dash cycle must have a positive period"));
         }
         Ok(Self { entries, period })
     }
 
-    fn expand(&self, member: &Member<'_>, span: &Span, budget: &mut Budget, marks: &mut Vec<Mark>) -> Result<()> {
-        let first = finite(finite(span.start - member.phase)? / self.period)?.floor() - 1.0;
-        let last = finite(finite(span.end - member.phase)? / self.period)?.floor() + 1.0;
-        let cycles = IndexRange::new(first, last)?;
+    fn expand(&self, member: &Member<'_>, span_index: usize, budget: &mut Budget, marks: &mut Vec<Mark>) -> Result<()> {
+        let (low, high) = member.clipped.span_window(span_index, budget)?;
+        let first = Dyadic::from_f64(low, budget)?.sub(member.phase, budget)?.floor_ratio(self.period, budget)?;
+        let last = Dyadic::from_f64(high, budget)?.sub(member.phase, budget)?.floor_ratio(self.period, budget)?;
+        // Floor acts on exact dyadics, before separately checked padding and index
+        // admission. The window uses retained contact bounds, never rounded spans.
+        let first = first.checked_sub(1).ok_or(Invalid("hatch cycle index padding overflow"))?;
+        let last = last.checked_add(1).ok_or(Invalid("hatch cycle index padding overflow"))?;
+        let cycles = IndexRange::from_exact(first, last)?;
         let visits = cycles.count()?.checked_mul(self.entries.len()).ok_or(Invalid("dash visit count overflow"))?;
         // Reserve all visits before iteration, including gaps and cycles outside the span.
         // The previous cycle also owns any trailing zero coincident with this cycle's start.
         budget.dash_steps(visits)?;
         for j in cycles.start..=cycles.end {
             budget.work(1)?;
-            let base = finite((j as f64).mul_add(self.period, member.phase))?;
+            let base = member.phase.add(self.period.mul_index(j, budget)?, budget)?;
             let next_j = j.checked_add(1).ok_or(Invalid("dash cycle index overflow"))?;
-            let next_base = finite((next_j as f64).mul_add(self.period, member.phase))?;
-            if next_base <= base {
+            // This checked successor is an endpoint, not another enumerated cycle.
+            let next_base = member.phase.add(self.period.mul_index(next_j, budget)?, budget)?;
+            if next_base.param(budget)?.nearest() <= base.param(budget)?.nearest() {
                 return Err(Invalid("dash cycle loses numeric progress"));
             }
             for entry in &self.entries {
                 budget.work(1)?;
-                let start = self.position(entry.start, base, next_base)?;
-                let end = self.position(entry.end, base, next_base)?;
+                let start = self.position(entry.start, base, next_base, budget)?;
                 if entry.value == 0.0 {
-                    // Query before the local-span filter: a rounded endpoint must not
-                    // silently discard a dot inside an uncertain contact enclosure.
-                    let inside = member.clipped.contains_strict(start, budget)?;
-                    if inside && start > span.start && start < span.end {
-                        let at = member.frame.point(member.offset, start)?;
+                    // The full enclosure establishes unique strict span membership
+                    // before its one rounded parameter becomes an output coordinate.
+                    if let Some(t) = member.clipped.dot_in_span(span_index, start, budget)? {
+                        let at = member.frame.point(member.offset, t)?;
                         if !at.is_finite() {
                             return Err(Invalid("dot position is not finite"));
                         }
@@ -178,15 +198,14 @@ impl Cycle {
                         marks.push(Mark::Dot { at });
                     }
                 } else {
-                    if end <= start {
+                    let end = self.position(entry.end, base, next_base, budget)?;
+                    if end.nearest() <= start.nearest() {
                         return Err(Invalid("dash or gap loses numeric progress on its line"));
                     }
-                    if entry.value > 0.0 {
-                        let a = start.max(span.start);
-                        let b = end.min(span.end);
-                        if a < b {
-                            push_line(member.frame, member.offset, a, b, budget, marks)?;
-                        }
+                    if entry.value > 0.0
+                        && let Some(span) = member.clipped.dash_in_span(span_index, start, end, budget)?
+                    {
+                        push_line(member.frame, member.offset, span.start, span.end, budget, marks)?;
                     }
                 }
             }
@@ -194,13 +213,10 @@ impl Cycle {
         Ok(())
     }
 
-    fn position(&self, prefix: f64, base: f64, next_base: f64) -> Result<f64> {
+    fn position(&self, prefix: Dyadic, base: Dyadic, next_base: Dyadic, budget: &mut Budget) -> Result<Param> {
         // Canonical cycle endpoints keep final and initial zeros exactly coincident.
-        let t = if prefix == self.period { next_base } else { finite(base + prefix)? };
-        if t < base || t > next_base {
-            return Err(Invalid("dash phase is not representable within its cycle"));
-        }
-        Ok(t)
+        let t = if prefix == self.period { next_base } else { base.add(prefix, budget)? };
+        t.param(budget)
     }
 }
 
@@ -227,21 +243,9 @@ fn certified_index_product(index: i64, factor: f64, reason: &'static str) -> Res
     // k is an exactly represented integer from IndexRange. Its exact product
     // with a finite f64 is a multiple of the minimum subnormal, so a nonzero
     // residual cannot disappear below that value. This is not a certificate
-    // for arbitrary f64 multiplication. A later FMA cannot recover a lost phase.
+    // for arbitrary f64 multiplication. The offset passed to clip must be exact.
     if k.mul_add(factor, -product) != 0.0 {
         return Err(Invalid(reason));
     }
     Ok(product)
-}
-
-fn certified_cycle_sum(prefix: f64, length: f64) -> Result<f64> {
-    let value = finite(prefix + length)?;
-    // TwoSum on finite bounded positive inputs, with gradual underflow. Reject
-    // loss before repeating the period: many cycles could amplify a tiny residue.
-    let part = value - prefix;
-    let residual = (prefix - (value - part)) + (length - part);
-    if residual != 0.0 {
-        return Err(Invalid("uncertified hatch dash cycle sum"));
-    }
-    Ok(value)
 }
