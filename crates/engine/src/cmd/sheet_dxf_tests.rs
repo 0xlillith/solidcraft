@@ -346,7 +346,10 @@ fn the_flat_pattern_is_on_layers_by_role_and_inner_contours_come_first() {
     let regions = s.model.state().sheets[0].flat_regions().unwrap_or_default();
     let plate =
         regions.iter().max_by(|a, b| a.area().total_cmp(&b.area())).map(|r| r.outer.clone()).unwrap_or(solidcraft_geom::Loop2 { segs: Vec::new() });
-    assert_eq!(on("OUTLINE").len(), solidcraft_io::loop_shapes(&plate).len());
+    assert_eq!(
+        on("OUTLINE").len(),
+        solidcraft_io::path_shapes(solidcraft_io::DxfPath::Closed(&plate), solidcraft_io::DxfPathStyle::Exact).unwrap().len(),
+    );
     assert!(on("OUTLINE").iter().all(|e| e.0 == "LINE" || e.0 == "ARC"), "{:?}", on("OUTLINE").iter().map(|e| &e.0).collect::<Vec<_>>());
     // CUT: what is cut out inside it that is no text: the Ø5 hole as one CIRCLE, the slot's four lines.
     let cut = on("CUT");
