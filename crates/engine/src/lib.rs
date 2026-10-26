@@ -538,7 +538,11 @@ impl Session {
         let render_jobs = self.render_jobs.scratch();
         let checkpoints = std::mem::take(&mut self.checkpoints);
         let next_checkpoint = self.next_checkpoint;
+        // The design on screen stays journaled for crash reports at once, not from the app's
+        // next frame, so commands sent right after `doc.open` or `file.new` are kept.
+        let crash_journal = self.crash_journal;
         *self = fresh;
+        self.crash_journal = crash_journal;
         self.auto_project = auto_project;
         self.param_check = param_check;
         self.render_viewport = render_viewport;

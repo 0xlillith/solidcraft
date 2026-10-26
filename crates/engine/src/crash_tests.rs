@@ -88,6 +88,12 @@ fn child() {
             s.execute("solid.box", &json!({"length": 4, "width": 4, "height": 4})).unwrap();
             let _ = s.execute("diagnostics.crash_test", &json!({"mode": "abort"}));
         }
+        // A new design and commands on it before the app's next frame (a control-channel batch).
+        "new" => {
+            s.execute("file.new", &json!({})).unwrap();
+            s.execute("solid.sphere", &json!({"diameter": 8})).unwrap();
+            let _ = s.execute("diagnostics.crash_test", &json!({"mode": "abort"}));
+        }
         _ => {}
     }
     end_session();
@@ -251,6 +257,30 @@ fn activating_a_component_is_journaled_so_the_replay_builds_in_the_same_componen
     }
     let bracket = recovered.doc.components.iter().find(|c| c.name == "Bracket").unwrap();
     assert_eq!(bracket.parent, 0, "the Bracket was made under the root");
+    let _ = fs::remove_dir_all(&d);
+}
+
+/// A new design is journaled at once, not from the app's next frame: commands sent right after
+/// `file.new` are in the replay, and the report names the command in flight, not `file.new`.
+#[test]
+fn commands_right_after_a_new_design_are_journaled() {
+    let d = fresh_dir("new");
+    assert!(!run_child(&d, "new").1);
+    assert!(run_child(&d, "none").1);
+    let (s, report) = only_report(&d);
+    assert!(s.message.contains("while running `diagnostics.crash_test`"), "{}", s.message);
+    let replay: Value = serde_json::from_slice(&fs::read(report["replay_path"].as_str().unwrap()).unwrap()).unwrap();
+    let commands = replay["commands"].as_array().unwrap();
+    let ids: Vec<&str> = commands.iter().map(|c| c["command"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["solid.box", "file.new", "solid.sphere", "diagnostics.crash_test"]);
+    let mut recovered = Session::default();
+    for command in commands {
+        let id = command["command"].as_str().unwrap();
+        if id != "diagnostics.crash_test" {
+            recovered.execute(id, &command["params"]).unwrap();
+        }
+    }
+    assert_eq!(recovered.doc.features.len(), 1, "the sphere, on the new design");
     let _ = fs::remove_dir_all(&d);
 }
 
