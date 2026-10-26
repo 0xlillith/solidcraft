@@ -26,11 +26,17 @@ fn failure(app: &mut SolveApp, result: Result<(), String>) {
         app.set_status(error, true);
     }
 }
-fn gpu(app: &SolveApp, ui: &mut egui::Ui) -> bool {
+fn gpu(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
         note(app, ui, "render.effects_gpu_only");
+        let action = ui_kit::button(ui, app.tr("render.effects_switch_gpu"), ui_kit::Button::Normal);
+        crate::scenario::publish_target("render:effects-switch-gpu", action.rect);
+        if action.clicked() {
+            super::select_image_method(app, ImageMethod::GpuRaytrace);
+        }
         return false;
     }
+    super::inspector::gpu_status(app, ui);
     true
 }
 fn layer_actions(app: &SolveApp, ui: &mut egui::Ui, prefix: &str, selected: usize, length: usize) -> (i32, bool) {

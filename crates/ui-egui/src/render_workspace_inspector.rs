@@ -1099,7 +1099,7 @@ fn reveal_section(app: &mut SolveApp, ui: &mut egui::Ui, section: &'static str) 
     }
 }
 
-fn gpu_status(app: &SolveApp, ui: &mut egui::Ui) {
+pub(super) fn gpu_status(app: &SolveApp, ui: &mut egui::Ui) {
     if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
         return;
     }

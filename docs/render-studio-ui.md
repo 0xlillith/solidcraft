@@ -10,6 +10,12 @@ The right inspector has eleven local sections: Scene, Appearance, Aging, Lightin
 
 Check, Render, Cancel and Export remain outside the scrolling inspector body. They use the existing immutable job protocol. A later draft edit does not substitute a different image for a retained completed export. PNG export copies the completed native frame, not the reduced UI display texture. Check and Start use the same request builder; inspection does not silently start a renderer or open a GPU.
 
+## GPU-only pages and explicit method recovery
+
+With Raster or CPU ray tracing selected, Aging and Effects explain why their GPU-only controls are unavailable and offer an explicit **Switch to GPU path tracing** action on the same page. Opening either page is read-only. Only activating the action changes the staged image method; it does not save, start a job, reset the camera, discard numerical drafts, change the selected page or replace the retained completed result.
+
+GPU preparation and failure messages use the existing shared GPU-host status presenter in these contexts. Selecting the method remains possible without an available GPU so that users can prepare and save settings; Check/Start still enforce the host's real capabilities and budgets. No transparent fallback or new executor is introduced.
+
 ## Resource library
 
 The native library includes original surface maps, SELENE appearances, HDR environments, authored rigs, physical-reference profiles, advanced scene/material/light/environment concepts, quality specifications, capability requirements and the twelve authored SELENE shot specifications. Twenty-five separate `NATIVE-STUDIO-*` entries cover all twenty-four original authored HDR resources as executable compositions; they do not relabel the unbound `SCENE-*` concepts as finished.

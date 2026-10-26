@@ -1,0 +1,11 @@
+{
+  "en": {
+    "render.effects_switch_gpu": "Switch to GPU path tracing"
+  },
+  "de": {
+    "render.effects_switch_gpu": "Zu GPU-Pfadverfolgung wechseln"
+  },
+  "es": {
+    "render.effects_switch_gpu": "Cambiar al trazado de rayos por GPU"
+  }
+}

@@ -51,6 +51,42 @@ fn icon_page_navigation_is_local_and_never_switches_executor_or_overwrites_draft
     }
 }
 #[test]
+fn aging_and_effects_offer_explicit_gpu_recovery_without_mutating_the_document() {
+    let mut h = fixture();
+    let document = h.app.session.doc.to_json();
+    let revision = h.app.session.revision;
+    let camera = h.app.cam;
+    let original_job = h.app.render_workspace.view.job;
+    let original_completed = h.app.render_workspace.view.completed;
+    for (command, page, initial) in [
+        ("render.effects.describe", Page::Effects, ImageMethod::Raster),
+        ("render.aging.describe", Page::Aging, ImageMethod::CpuRaytrace),
+    ] {
+        super::super::select_image_method(&mut h.app, initial);
+        h.app.render_workspace.view.draft.width = 777;
+        h.app.render_workspace.view.samples = 37;
+        h.app.start(command);
+        h.frames(3);
+        assert_eq!(h.app.render_workspace.view.inspector.page, page);
+        assert_eq!(h.app.render_workspace.view.method, initial);
+        assert!(crate::scenario::rect_of("render:effects-switch-gpu").is_some());
+        assert_eq!(h.app.session.doc.to_json(), document);
+        assert_eq!(h.app.session.revision, revision);
+
+        h.step(&json!({"click":{"handle":"render:effects-switch-gpu"}})).unwrap();
+        assert_eq!(h.app.render_workspace.view.method, ImageMethod::GpuRaytrace);
+        assert_eq!(h.app.render_workspace.view.inspector.page, page);
+        assert_eq!(h.app.render_workspace.view.draft.width, 777);
+        assert_eq!(h.app.render_workspace.view.samples, 37);
+        assert_eq!(h.app.cam, camera);
+        assert_eq!(h.app.render_workspace.view.job, original_job);
+        assert_eq!(h.app.render_workspace.view.completed, original_completed);
+        assert_eq!(h.app.session.doc.to_json(), document);
+        assert_eq!(h.app.session.revision, revision);
+        assert!(h.app.render_workspace.view.dirty);
+    }
+}
+#[test]
 fn dirty_shot_switch_keep_discard_and_save_are_explicit_and_lossless() {
     let mut h = fixture();
     h.app.render_workspace.view.name = "A".into();
