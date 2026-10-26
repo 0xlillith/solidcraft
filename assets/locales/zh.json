@@ -2400,6 +2400,7 @@
   "ui.agent_chat_no_control": "智能体聊天的端点未能启动，因此智能体无法访问设计。",
   "ui.agent_chat_no_images": "该智能体不接收图片",
   "ui.agent_chat_no_picture": "剪贴板上没有图片",
+  "ui.agent_chat_no_tool_call": "模型没有使用 SolidCraft 的工具，因此设计没有更改。请选择支持工具调用的模型；参见智能体聊天指南中的“本地模型”。",
   "ui.agent_chat_none_found": "未找到编程智能体。请安装以下之一，然后点击刷新：",
   "ui.agent_chat_none_found_short": "未找到智能体",
   "ui.agent_chat_not_installed": "未安装",
