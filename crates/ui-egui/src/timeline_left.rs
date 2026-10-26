@@ -1082,7 +1082,7 @@ fn vertical_features(app: &mut SolveApp, ui: &mut egui::Ui, names: bool) {
         });
         if response.clicked() && on_fold {
             crate::browser::toggle(app, &pattern_key, true);
-        } else if response.clicked() {
+        } else if response.clicked() && !crate::timeline::pick_feature_into_dialog(app, *id, ui.input(|i| i.modifiers)) {
             select_item(app, ui, TimelineItem::Feature(*id), &order);
         }
         if response.double_clicked() && !on_fold {

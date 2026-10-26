@@ -291,7 +291,15 @@ fn mirror_object_type_switch_back_restores_preselected_feature() {
 
 #[test]
 fn mirror_timeline_click_keeps_picked_feature() {
+    for dock in ["bottom", "left", "under_browser"] {
+        mirror_history_click_keeps_picked_feature(dock);
+    }
+}
+
+fn mirror_history_click_keeps_picked_feature(dock: &str) {
     let (mut h, picked) = mirror_preselection();
+    h.app.run("view.history_layout", json!({"dock": dock})).unwrap();
+    h.frames(4);
     // Mirror moves on to the plane; the objects input takes timeline clicks once it is active.
     h.step(&json!({"click":{"handle":"dialog:Features"}})).unwrap();
     assert_eq!(h.app.dialog.as_ref().unwrap().active, 0);
@@ -303,6 +311,30 @@ fn mirror_timeline_click_keeps_picked_feature() {
     let d = h.app.dialog.as_ref().unwrap();
     assert!(matches!(d.kind, Kind::Mirror));
     assert!(d.inputs[0].items.is_empty());
+}
+
+#[test]
+fn rectangular_pattern_takes_features_from_every_history_layout() {
+    for dock in ["bottom", "left", "under_browser"] {
+        let mut h = Harness::new();
+        h.app.run("view.history_layout", json!({"dock": dock})).unwrap();
+        h.app.run("solid.box", json!({"length": 80, "width": 60, "height": 20})).unwrap();
+        h.app.run("solid.cylinder", json!({"base": [20, 20, 20], "radius": 5, "height": 10, "operation": "join"})).unwrap();
+        let id = h.app.session.doc.find_feature("Cylinder1").unwrap().id;
+        h.app.run("select.clear", json!({})).unwrap();
+        h.app.start("solid.pattern.rectangular");
+        h.frames(4);
+        mirror_object_type(&mut h, "Features");
+        h.step(&json!({"click": {"handle": "timeline:Cylinder1"}})).unwrap();
+
+        let d = h.app.dialog.as_ref().unwrap();
+        assert_eq!(d.inputs[0].items, vec![Sel::Feature { id }], "{dock}: the dialog receives the History feature");
+        assert_eq!(d.active, 0, "{dock}: Features stays active so more features can be picked");
+        assert!(h.app.session.selection.is_empty(), "{dock}: a dialog pick does not replace the ordinary selection");
+        h.app.dialog.as_mut().unwrap().inputs[1].items = vec![Sel::Axis { name: "X".into() }];
+        let commands = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
+        assert_eq!(commands[0].1["features"], json!(["Cylinder1"]), "{dock}: the command receives the chosen feature");
+    }
 }
 
 form_case!(loft, "solid.loft", ["Operation"]);
