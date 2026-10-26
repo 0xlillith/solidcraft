@@ -2,8 +2,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use crate::{IoError, PatImportOptions, PatUnits, read_pat};
-use solidcraft_geom::hatch::{Family, Pattern};
-use std::f64::consts::FRAC_PI_2;
+use solidcraft_geom::hatch::{self, Family, Mark, Pattern};
+use solidcraft_geom::{Loop2, Region2, Vec2};
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, SQRT_2};
 
 const UNIT: &str = "*UNIT,Original unit probe\n90,1,-2,0.5,4,2,-1,0\n\n";
 const CONTINUOUS: &str = "*LINES\n0,0,0,0,1\n\n";
@@ -425,5 +426,121 @@ fn bounded_byte_mutations_return_errors_or_complete_valid_patterns() {
                 }
             }
         }
+    }
+}
+
+const DIAGONAL_PAT: &str = "*R45,Original 45 degree lines\n45,0,0,0,5\n\n";
+// Same analytic fixture and comparison tolerance as geom's hatch/clip_tests.rs;
+// this is not a clipping, snapping or import-admission tolerance.
+const DIAGONAL_TOL_MM: f64 = 1e-9;
+
+fn paper_rectangle(width: f64, height: f64) -> Region2 {
+    let outer = Loop2::polygon(&[Vec2::ZERO, Vec2::new(width, 0.0), Vec2::new(width, height), Vec2::new(0.0, height)]);
+    Region2 { outer, holes: vec![] }
+}
+
+fn imported_diagonal_output(region: &Region2, options: PatImportOptions, spacing: f64) -> Vec<Mark> {
+    let direct = Pattern {
+        name: "R45".into(),
+        description: "Original 45 degree lines".into(),
+        families: vec![Family { angle: FRAC_PI_4, origin: Vec2::ZERO, delta_x: 0.0, delta_y: spacing, dashes: vec![] }],
+    };
+    let imported = read_pat(DIAGONAL_PAT.as_bytes(), options).unwrap();
+    assert_eq!(imported, vec![direct.clone()]);
+    let patterns_before = imported.clone();
+    let region_before = region.clone();
+    let marks = hatch::generate(&imported[0], region).unwrap();
+    assert_eq!(marks, hatch::generate(&direct, region).unwrap());
+    assert_eq!(imported, patterns_before);
+    assert_eq!(region, &region_before);
+    marks
+}
+
+fn diagonal_oracle(with_hole: bool) -> Vec<[f64; 4]> {
+    let r = SQRT_2;
+    // Original 40x20 mm oracle: y-x=5*sqrt(2)*k, k=-5..2.
+    // The hole [10,20] x [5,15] splits only members -2, -1 and 0.
+    if with_hole {
+        vec![
+            [25.0 * r, 0.0, 40.0, 40.0 - 25.0 * r],
+            [20.0 * r, 0.0, 40.0, 40.0 - 20.0 * r],
+            [15.0 * r, 0.0, 40.0, 40.0 - 15.0 * r],
+            [10.0 * r, 0.0, 5.0 + 10.0 * r, 5.0],
+            [20.0, 20.0 - 10.0 * r, 20.0 + 10.0 * r, 20.0],
+            [5.0 * r, 0.0, 5.0 + 5.0 * r, 5.0],
+            [20.0, 20.0 - 5.0 * r, 20.0 + 5.0 * r, 20.0],
+            [0.0, 0.0, 10.0, 10.0],
+            [15.0, 15.0, 20.0, 20.0],
+            [0.0, 5.0 * r, 20.0 - 5.0 * r, 20.0],
+            [0.0, 10.0 * r, 20.0 - 10.0 * r, 20.0],
+        ]
+    } else {
+        vec![
+            [25.0 * r, 0.0, 40.0, 40.0 - 25.0 * r],
+            [20.0 * r, 0.0, 40.0, 40.0 - 20.0 * r],
+            [15.0 * r, 0.0, 40.0, 40.0 - 15.0 * r],
+            [10.0 * r, 0.0, 20.0 + 10.0 * r, 20.0],
+            [5.0 * r, 0.0, 20.0 + 5.0 * r, 20.0],
+            [0.0, 0.0, 20.0, 20.0],
+            [0.0, 5.0 * r, 20.0 - 5.0 * r, 20.0],
+            [0.0, 10.0 * r, 20.0 - 10.0 * r, 20.0],
+        ]
+    }
+}
+
+fn assert_diagonal_marks(marks: &[Mark], expected: &[[f64; 4]], total_length: f64) {
+    assert_eq!(marks.len(), expected.len());
+    let mut total = 0.0;
+    for mark in marks {
+        let Mark::Line { a, b } = *mark else { panic!("continuous PAT produced a dot") };
+        assert!(a.is_finite() && b.is_finite() && a != b);
+        total += a.dist(b);
+    }
+    // Consume the full multiset; order and endpoint direction are immaterial.
+    let mut unmatched = marks.to_vec();
+    for &[ax, ay, bx, by] in expected {
+        let c = Vec2::new(ax, ay);
+        let d = Vec2::new(bx, by);
+        let found = unmatched.iter().position(|mark| match *mark {
+            Mark::Line { a, b } => {
+                (a.dist(c) <= DIAGONAL_TOL_MM && b.dist(d) <= DIAGONAL_TOL_MM) || (a.dist(d) <= DIAGONAL_TOL_MM && b.dist(c) <= DIAGONAL_TOL_MM)
+            }
+            Mark::Dot { .. } => false,
+        });
+        let Some(index) = found else { panic!("missing segment {c:?} -> {d:?}; remaining {unmatched:?}") };
+        unmatched.swap_remove(index);
+    }
+    assert!(unmatched.is_empty());
+    assert!((total - total_length).abs() <= DIAGONAL_TOL_MM, "actual length {total}, expected {total_length}");
+}
+
+#[test]
+fn imported_diagonal_generates_all_eight_analytic_rectangle_segments() {
+    let region = paper_rectangle(40.0, 20.0);
+    let marks = imported_diagonal_output(&region, PatImportOptions::default(), 5.0);
+    assert_diagonal_marks(&marks, &diagonal_oracle(false), 220.0 * SQRT_2 - 150.0);
+}
+
+#[test]
+fn imported_diagonal_keeps_all_eleven_segments_and_leaves_the_hole_unchanged() {
+    let mut region = paper_rectangle(40.0, 20.0);
+    region.holes.push(Loop2::polygon(&[Vec2::new(10.0, 5.0), Vec2::new(10.0, 15.0), Vec2::new(20.0, 15.0), Vec2::new(20.0, 5.0)]));
+    let marks = imported_diagonal_output(&region, PatImportOptions::default(), 5.0);
+    assert_diagonal_marks(&marks, &diagonal_oracle(true), 185.0 * SQRT_2 - 120.0);
+}
+
+#[test]
+fn imported_units_and_scale_reach_generation_once_in_paper_millimetres() {
+    // Similarity of the same original rectangle oracle, not expected geometry
+    // calculated from the imported Pattern or generated marks. Fixed paper
+    // regions expose missing/repeated conversion. There is no view-scale API.
+    for (options, width, height, spacing, factor) in [
+        (PatImportOptions { units: PatUnits::Millimetres, scale: 2.0 }, 80.0, 40.0, 10.0, 2.0),
+        (PatImportOptions { units: PatUnits::Inches, scale: 0.5 }, 508.0, 254.0, 63.5, 12.7),
+    ] {
+        let region = paper_rectangle(width, height);
+        let marks = imported_diagonal_output(&region, options, spacing);
+        let expected: Vec<_> = diagonal_oracle(false).into_iter().map(|line| line.map(|coordinate| coordinate * factor)).collect();
+        assert_diagonal_marks(&marks, &expected, (220.0 * SQRT_2 - 150.0) * factor);
     }
 }
