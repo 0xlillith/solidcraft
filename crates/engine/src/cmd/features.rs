@@ -198,14 +198,21 @@ fn auto_operation_in(s: &Session, p: &Value, world_faces: bool) -> Option<&'stat
     // Probe in the same coordinate frame as the face picks.
     let grouped = p.get("faces").and_then(Value::as_array).and_then(|faces| faces.first()).and_then(vec3);
     let st = if grouped.is_some() && world_faces { s.world_state() } else { s.model.state() };
+    // The body the extrude starts on, when it is in a component inside the active one: it takes
+    // part as the active component's own bodies do (#5679).
+    let mut started_on = None;
     let (base, n) = if let Some(point) = grouped {
         let (mesh, index, distance, name) = super::face::face_at_state(&st, point, str_(p, "face_body")).ok().flatten()?;
         if distance > (mesh.bounds().diagonal() * 1e-3).max(1e-3) * 10.0 {
             return None;
         }
         let normal = st.body(&name)?.body.planar_face(index as usize)?.normal();
+        started_on = Some(name);
         (point, normal)
     } else {
+        if p.get("face").is_none() {
+            started_on = feature_sketch(s, p, "Extrude").ok().and_then(|sketch| face_body_reached(s, sketch).ok().flatten());
+        }
         extrude_base(s, p)?
     };
     // The extrude starts at its From Object or start offset, not at the profile: probe from
@@ -232,17 +239,27 @@ fn auto_operation_in(s: &Session, p: &Value, world_faces: bool) -> Option<&'stat
     // A component with no body of its own works on those of the components inside it (#3223).
     let parts = string_list(p, "participants");
     let implicit_all = grouped.is_some() && !st.bodies.iter().any(|body| s.doc.model_body_component(body) == s.active_component);
-    let bodies: Vec<_> = if !parts.is_empty() {
+    let mut bodies: Vec<_> = if !parts.is_empty() {
         st.bodies.iter().filter(|b| parts.contains(&b.name)).collect()
     } else if implicit_all {
         st.bodies.iter().collect()
     } else {
         active_scope(s, &st)
     };
+    if parts.is_empty()
+        && let Some(body) = started_on.as_deref().and_then(|name| st.body(name))
+        && !bodies.iter().any(|b| b.name == body.name)
+        && s.doc.component_within(s.doc.model_body_component(body), s.active_component)
+    {
+        bodies.push(body);
+    }
     if bodies.is_empty() {
         return Some("new");
     }
-    let inside = |q: Vec3| bodies.iter().any(|b| b.mesh().contains(q));
+    // A profile's points are in the active component's frame; a body placed differently (in a
+    // moved or turned component) is probed where it is shown. Face picks are in `st`'s frame.
+    let frames: Vec<Option<solidcraft_doc::Mat>> = bodies.iter().map(|b| if grouped.is_some() { None } else { into_body_frame(s, b) }).collect();
+    let inside = |q: Vec3| bodies.iter().zip(&frames).any(|(b, m)| b.mesh().contains(m.as_ref().map_or(q, |m| solidcraft_doc::apply_point(m, q))));
     // A step into whatever is right in front of the profile, short of the far end.
     let near = |d: f64| d.signum() * (d.abs() * 0.5).min(START_PROBE_MM);
     let into = |d: f64| inside(base + n * near(d)) || inside(base + n * (d * 0.5));
@@ -780,14 +797,20 @@ fn extrude(s: &mut Session, p: &Value) -> Result<Value> {
         _ => operation(p, cmd)?,
     };
     let mut targets = string_list(p, "targets");
-    if operation == Operation::Join && targets.is_empty() && string_list(p, "participants").is_empty() {
+    let mut p = std::borrow::Cow::Borrowed(p);
+    if operation == Operation::Join && targets.is_empty() && string_list(&p, "participants").is_empty() {
         // A face's outward extension joins that body, and so does a profile sketched on a body's
         // face. Assembly neighbours can touch only an edge of the tool: trying to join them
         // first fails, or absorbs unrelated parts (#226). A profile drawn past the face can lie
         // on a neighbour's face too: a rib on a bracket's side welded in the motor the bracket
         // holds, a join that ran for minutes and failed (#1349).
         // Store the resolved target so recomputes and reopening keep the same scope.
-        targets.extend(face_body.or_else(|| sketch_face_body(s, sketch)));
+        targets.extend(match face_body {
+            Some(body) => Some(body),
+            None => face_body_reached(s, sketch)?,
+        });
+    } else if let Some(parts) = cut_scope(s, &p, operation, sketch, face_body)? {
+        p.to_mut()["participants"] = json!(parts);
     }
     let kind = FeatureKind::Extrude {
         sketch: SketchId(sketch),
@@ -795,14 +818,39 @@ fn extrude(s: &mut Session, p: &Value) -> Result<Value> {
             Some(f) => f,
             None if thin.is_some() => ProfileSel::All,
             None if p.get("profiles").is_none() => default_extrude_profiles(s, sketch),
-            None => profiles(p, cmd)?,
+            None => profiles(&p, cmd)?,
         },
         extent,
         operation,
         targets: targets.into_iter().map(BodyName).collect(),
         thin,
     };
-    add_feature(s, p, kind)
+    add_feature(s, &p, kind)
+}
+
+/// The bodies a cut or intersect from a profile on a body's face takes part in when it names
+/// none and that body is in a component inside the active one (#5679): the active component's
+/// own bodies, as by default, and that body. `None` when the default already reaches it: it is
+/// one of the active component's, or a component with no body of its own cuts every body.
+fn cut_scope(s: &Session, p: &Value, operation: Operation, sketch: u64, face_body: Option<String>) -> Result<Option<Vec<String>>> {
+    if !matches!(operation, Operation::Cut | Operation::Intersect)
+        || !string_list(p, "targets").is_empty()
+        || !string_list(p, "participants").is_empty()
+    {
+        return Ok(None);
+    }
+    let Some(body) = face_body_reached(s, sketch)?.or(face_body) else { return Ok(None) };
+    let st = s.model.state();
+    if s.cut_takes_every_body(&st) {
+        return Ok(None);
+    }
+    let mut parts: Vec<String> = active_scope(s, &st).into_iter().map(|b| b.name.clone()).collect();
+    let within = st.body(&body).is_some_and(|b| s.doc.component_within(s.doc.model_body_component(b), s.active_component));
+    if parts.contains(&body) || !within {
+        return Ok(None);
+    }
+    parts.push(body);
+    Ok(Some(parts))
 }
 
 /// The profiles an extrude takes when `profiles` is omitted: even-odd nesting over what was drawn,
@@ -846,6 +894,68 @@ fn default_extrude_profiles(s: &Session, sketch: u64) -> ProfileSel {
     }
 }
 
+/// The matrix taking a point of the active component's frame into the frame `b`'s geometry is
+/// kept in, as the evaluator moves a tool into it; `None` when the two are the same.
+fn into_body_frame(s: &Session, b: &solidcraft_doc::ModelBody) -> Option<solidcraft_doc::Mat> {
+    let frame = s.doc.component_transform(s.doc.model_body_component(b));
+    let world = s.doc.model_body_offset(b).map_or(frame, |offset| solidcraft_doc::mat_mul(&frame, offset));
+    let active = s.doc.component_transform(s.active_component);
+    if world == active {
+        return None;
+    }
+    solidcraft_doc::mat_inverse(&world).map(|into| solidcraft_doc::mat_mul(&into, &active))
+}
+
+/// The body whose face `sketch` is attached to, when a join or cut made in the active component
+/// can change it: one of the active component's own ([`active_scope`]), or one in a component
+/// inside it, moved or turned, which is changed in its own component, so every placement of that
+/// component shows the change (#5679). `Ok(None)` when the sketch is not on a face, or the body is
+/// outside the active component. Refused where the change can't be made in the body's component:
+/// its bodies come from a linked design file, or the face was picked on a further placement of a
+/// component placed more than once (the change is drawn at the first).
+fn face_body_reached(s: &Session, sketch: u64) -> Result<Option<String>> {
+    let Some(FeatureKind::Sketch { plane: solidcraft_doc::PlaneRef::Face { anchor: Some(anchor), .. }, .. }) = s.doc.feature(sketch).map(|f| &f.kind)
+    else {
+        return Ok(None);
+    };
+    let st = s.model.state();
+    if let Some(own) = active_scope(s, &st).into_iter().find(|b| b.name == anchor.target.body) {
+        return Ok(Some(own.name.clone()));
+    }
+    let Some(body) = st.body(&anchor.target.body) else { return Ok(None) };
+    let component = s.doc.model_body_component(body);
+    if !s.doc.component_within(component, s.active_component) {
+        return Ok(None);
+    }
+    let name = |c: u64| s.doc.components.iter().find(|x| x.id == c).map_or_else(|| format!("component {c}"), |x| x.name.clone());
+    let mut c = component;
+    for _ in 0..1000 {
+        if c == s.active_component || c == 0 {
+            break;
+        }
+        if s.doc.links.contains_key(&c) {
+            return Err(EngineError::Other(format!(
+                "`{}` is in {}, which is linked to a design file: open that design to change it, or break the link first",
+                body.name,
+                name(c)
+            )));
+        }
+        match s.doc.components.iter().find(|x| x.id == c) {
+            Some(x) => c = x.parent,
+            None => break,
+        }
+    }
+    if !anchor.path.is_empty() && anchor.path != s.doc.first_path(component) {
+        return Err(EngineError::Other(format!(
+            "`{}` is in {}, which is placed more than once, and the sketch is on another placement than the first: activate that placement of {} to cut or join it there",
+            body.name,
+            name(component),
+            name(component)
+        )));
+    }
+    Ok(Some(body.name.clone()))
+}
+
 /// The body whose face `sketch` is attached to (on the face itself, not offset from it), when
 /// it is one the active component works on ([`active_scope`]).
 fn sketch_face_body(s: &Session, sketch: u64) -> Option<String> {
@@ -857,13 +967,20 @@ fn sketch_face_body(s: &Session, sketch: u64) -> Option<String> {
 }
 
 /// The bodies a Join named none for: the body whose face a profile sketch is on (the first
-/// sketch that is on one), as for an extrude. Explicit `targets` or `participants` keep theirs.
-fn face_join_targets(s: &Session, p: &Value, operation: Operation, sketches: &[u64]) -> Vec<BodyName> {
+/// sketch that is on one), as for an extrude, also in a component inside the active one, moved
+/// or turned (#5679; refused as [`face_body_reached`] says). Explicit `targets` or
+/// `participants` keep theirs.
+fn face_join_targets(s: &Session, p: &Value, operation: Operation, sketches: &[u64]) -> Result<Vec<BodyName>> {
     let mut targets = string_list(p, "targets");
     if operation == Operation::Join && targets.is_empty() && string_list(p, "participants").is_empty() {
-        targets.extend(sketches.iter().find_map(|sk| sketch_face_body(s, *sk)));
+        for sketch in sketches {
+            if let Some(body) = face_body_reached(s, *sketch)? {
+                targets.push(body);
+                break;
+            }
+        }
     }
-    targets.into_iter().map(BodyName).collect()
+    Ok(targets.into_iter().map(BodyName).collect())
 }
 
 /// The bodies a feature of the active component works on when it names none: the component's
@@ -1031,19 +1148,26 @@ fn revolve(s: &mut Session, p: &Value) -> Result<Value> {
         Some(value) => serde_json::from_value(value.clone()).map_err(|_| bad(cmd, "`convention` must be sketch_normal or legacy_axis_start"))?,
     };
     let operation = operation(p, cmd)?;
+    let targets = face_join_targets(s, p, operation, &[sketch])?;
+    // From a profile on a body's face in a component inside the active one, a cut changes that
+    // body too, as an extrude's does (#5679).
+    let mut p = std::borrow::Cow::Borrowed(p);
+    if let Some(parts) = cut_scope(s, &p, operation, sketch, None)? {
+        p.to_mut()["participants"] = json!(parts);
+    }
     let kind = FeatureKind::Revolve {
         sketch: SketchId(sketch),
         profiles,
         axis,
         angle,
         operation,
-        targets: face_join_targets(s, p, operation, &[sketch]),
+        targets,
         angle2,
         symmetric,
         convention,
         to: to.map(FacePick),
     };
-    add_feature(s, p, kind)
+    add_feature(s, &p, kind)
 }
 
 /// A revolve axis of `sketch` from its parameter: a sketch line id, the sketch's x or y axis, a
@@ -2501,7 +2625,7 @@ fn sweep(s: &mut Session, p: &Value) -> Result<Value> {
     let (orientation, twist, scale) = sweep_options(s, p, cmd)?;
     let (rails, rail_fit) = sweep_rails(s, p, cmd, path_sketch)?;
     let operation = operation(p, cmd)?;
-    let targets = face_join_targets(s, p, operation, &[sketch]);
+    let targets = face_join_targets(s, p, operation, &[sketch])?;
     add_feature(
         s,
         p,
@@ -2639,7 +2763,7 @@ fn loft(s: &mut Session, p: &Value) -> Result<Value> {
     let (rails, rail_fit) = guide_rails(s, p, cmd, "loft", None)?;
     let operation = operation(p, cmd)?;
     let sketches: Vec<u64> = sections.iter().map(|sec| sec.sketch.0).collect();
-    let targets = face_join_targets(s, p, operation, &sketches);
+    let targets = face_join_targets(s, p, operation, &sketches)?;
     add_feature(s, p, FeatureKind::Loft { sections, operation, targets, rails, rail_fit })
 }
 
