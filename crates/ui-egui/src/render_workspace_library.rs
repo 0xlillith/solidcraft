@@ -147,6 +147,70 @@ fn refresh_targets(app: &mut SolveApp, view: &mut View) -> Result<(), String> {
     }
     Ok(())
 }
+
+/* A uniform appearance edit changes the document revision but not a body's
+ * identity. Use the authoritative full scene (not the lower GPU-path body cap)
+ * to prove that the chosen body survives the edit. A failed inspection never
+ * prevents a valid scalar appearance from being applied. */
+fn authoritative_uniform_target(
+    app: &mut SolveApp,
+    original: &materials::Target,
+    expected: Option<&solidcraft_engine::doc::render_surface::RenderBodyTarget>,
+) -> Option<materials::Target> {
+    let scene = app.run("render.scene", json!({})).ok()?;
+    let bodies = scene.get("bodies")?.as_array()?;
+    let mut found = None;
+    for value in bodies {
+        if value["name"].as_str() != Some(original.name.as_str()) {
+            continue;
+        }
+        let target: materials::Target = serde_json::from_value(value.clone()).ok()?;
+        let same = expected.map_or_else(
+            || target.ordinal == original.ordinal && target.stable_target.is_some(),
+            |identity| target.stable_target.as_ref() == Some(identity),
+        );
+        if same {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(target);
+        }
+    }
+    found
+}
+
+/// Only a successful uniform Apply may attempt a refresh, and only for an
+/// identity proven before and after the change. Other edit paths stay strict.
+fn recapture_after_uniform_apply(app: &mut SolveApp, view: &mut View, before: Option<materials::Target>) {
+    view.target_revision = None;
+    let Some(before) = before else { return };
+    let Some(identity) = before.stable_target.as_ref() else { return };
+    let Some(current) = authoritative_uniform_target(app, &before, Some(identity)) else { return };
+    if app.session.model.is_stale() {
+        return;
+    }
+
+    // Re-read every row before attaching the new revision; stamping the old
+    // picker list would make unrelated, stale rows look current.
+    let Ok(reply) = app.run("render.library.targets", json!({"query":view.target_query,"limit":128})) else { return };
+    let Ok(mut fresh) = serde_json::from_value::<Vec<materials::Target>>(reply["items"].clone()) else { return };
+    let index = {
+        let mut matches = fresh.iter().enumerate().filter(|(_, target)| target.name == current.name && target.ordinal == current.ordinal);
+        let Some((index, _)) = matches.next() else { return };
+        if matches.next().is_some() {
+            return;
+        }
+        index
+    };
+    let Some(selected) = fresh.get_mut(index) else { return };
+    selected.stable_target = Some(identity.clone());
+    let verified = selected.clone();
+    view.targets = fresh;
+    view.target = Some(verified);
+    view.target_revision = Some(app.session.revision);
+    view.target_document = Some(Arc::downgrade(&app.session.doc));
+}
+
 fn target_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View) {
     ui.label(app.tr("render.library_target"));
     ui_kit::bounded_cell_editor(
@@ -613,9 +677,10 @@ fn resource_controls(app: &mut SolveApp, ui: &mut egui::Ui, view: &mut View, id:
             .clicked()
                 && let Some(target) = view.target.clone()
             {
+                let before = authoritative_uniform_target(app, &target, target.stable_target.as_ref());
                 match app.run("render.library.appearance.apply", json!({"id":id,"variant":"uniform_opaque","bodies":[target.name]})) {
                     Ok(_) => {
-                        view.target_revision = None;
+                        recapture_after_uniform_apply(app, view, before);
                         app.set_status(app.tr("render.library_applied").to_string(), false);
                     }
                     Err(e) => app.set_status(e, true),
@@ -890,6 +955,38 @@ mod studio_browser_tests {
         assert_eq!(view.statuses.get(&native).map(String::as_str), Some("native_composition"));
         assert_eq!(h.app.session.doc.to_json(), before);
         assert!(h.app.session.undo.is_empty());
+    }
+    #[test]
+    fn successful_uniform_appearance_apply_revalidates_only_the_same_unique_body() {
+        let mut h = Harness::new();
+        h.app.run("solid.box", json!({"length":15,"width":12,"height":9,"body_name":"ScopedTarget"})).unwrap();
+        let mut view = View::default();
+        refresh_targets(&mut h.app, &mut view).unwrap();
+        let target = view.targets.iter().find(|target| target.name == "ScopedTarget").cloned().unwrap();
+        assert!(target.stable_target.is_none(), "the limited library picker does not certify stable identity");
+        view.target = Some(target);
+        let before_document: Value = serde_json::from_str(&h.app.session.doc.to_json()).unwrap();
+
+        for id in ["SURF-001", "SURF-009"] {
+            assert!(current_target(&h.app, &view));
+            let old = view.target.clone().unwrap();
+            let before = authoritative_uniform_target(&mut h.app, &old, old.stable_target.as_ref());
+            assert!(before.as_ref().is_some_and(|target| target.stable_target.is_some()));
+            h.app.run("render.library.appearance.apply", json!({"id":id,"variant":"uniform_opaque","bodies":[old.name]})).unwrap();
+            recapture_after_uniform_apply(&mut h.app, &mut view, before);
+            assert!(current_target(&h.app, &view), "a verified uniform apply must preserve the selected target");
+            assert_eq!(view.target.as_ref().map(|target| target.name.as_str()), Some("ScopedTarget"));
+        }
+
+        let after_document: Value = serde_json::from_str(&h.app.session.doc.to_json()).unwrap();
+        assert_eq!(before_document["materials"], after_document["materials"], "an appearance must not change physical assignments");
+        let revision = view.target_revision;
+        assert!(h.app.run("render.library.appearance.apply", json!({"id":"UNKNOWN-SURF","variant":"uniform_opaque","bodies":["ScopedTarget"]})).is_err());
+        assert_eq!(view.target_revision, revision, "failed apply cannot renew target authority");
+        h.app.run("solid.box", json!({"length":1,"width":1,"height":1,"body_name":"UnrelatedEdit"})).unwrap();
+        assert!(!current_target(&h.app, &view), "other document edits still invalidate the selected body");
+        recapture_after_uniform_apply(&mut h.app, &mut view, None);
+        assert!(!current_target(&h.app, &view), "a missing pre-edit identity cannot be refreshed by name alone");
     }
     #[test]
     fn physical_reference_navigation_uses_the_same_category_history() {
