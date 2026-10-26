@@ -3689,8 +3689,12 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         Kind::Draft { .. } => {
             need(0, "faces")?;
             need(1, "the neutral plane")?;
+            let Some(Sel::Face { body, .. }) = sels(d, 0).first() else { return Err("select faces first".into()) };
+            if sels(d, 0).iter().any(|pick| !matches!(pick, Sel::Face { body: other, .. } if other == body)) {
+                return Err("pick faces of one body".into());
+            }
             let neutral = plane_value(s, sels(d, 1).first()).ok_or("the neutral plane must be a plane or a planar face")?;
-            ("solid.draft", json!({"faces": face_points(0), "neutral": neutral}))
+            ("solid.draft", json!({"body": body, "faces": face_points(0), "neutral": neutral}))
         }
         Kind::Mirror => {
             need(0, "objects")?;
