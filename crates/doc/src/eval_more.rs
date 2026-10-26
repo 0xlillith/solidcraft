@@ -933,13 +933,61 @@ pub(super) fn sheet_cut(
     constructor: Option<&ExtrudeConstructor>,
     warning: &mut Option<String>,
 ) -> Result<Vec<String>> {
-    let FeatureKind::Extrude { sketch, profiles, operation, extent, .. } = &f.kind else { return Ok(Vec::new()) };
-    if extent.taper.is_some() || !any_eligible_sheet(f, st, targets) {
+    if !any_eligible_sheet(f, st, targets) {
         return Ok(Vec::new());
     }
-    let Some(ss) = st.sketch(sketch.0).cloned() else { return Ok(Vec::new()) };
-    let regions = solidcraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
-    // The outlines of the sketch's text: the sheet remembers where its letters went.
+    let Some(cut) = extrude_cut(st, f)? else { return Ok(Vec::new()) };
+    sheet_prism_cut(f, st, &cut.plane, &cut.regions, cut.operation, tools, targets, constructor, cut.bound, &cut.text, warning)
+}
+
+/// A copy of the extrude cut `src` that the pattern `f` makes, moved by `m`: machined into the
+/// sheets as the cut itself is, in the moved sketch plane (#6841). `tools` are the copy's. Only
+/// for a cut moved without turning over: a mirrored copy, and any other feature, comes back
+/// unhandled (no sheets) for the caller to apply as before.
+pub(super) fn sheet_cut_copy(
+    f: &Feature,
+    src: &Feature,
+    m: &Mat,
+    st: &mut ModelState,
+    tools: &[Body],
+    targets: &[String],
+    warning: &mut Option<String>,
+) -> Result<Vec<String>> {
+    if !any_eligible_sheet(f, st, targets) {
+        return Ok(Vec::new());
+    }
+    let Some(cut) = extrude_cut(st, src)? else { return Ok(Vec::new()) };
+    if cut.operation != Operation::Cut {
+        return Ok(Vec::new());
+    }
+    let (x, y) = (crate::apply_vector(m, cut.plane.x), crate::apply_vector(m, cut.plane.y));
+    if x.cross(y).dot(crate::apply_vector(m, cut.plane.normal())) <= 0.0 {
+        return Ok(Vec::new());
+    }
+    let Some(plane) = Plane::new(apply_point(m, cut.plane.origin), x, y) else { return Ok(Vec::new()) };
+    sheet_prism_cut(f, st, &plane, &cut.regions, cut.operation, tools, targets, None, cut.bound, &cut.text, warning)
+}
+
+/// What an untapered extrude cut (or intersect) machines into a sheet.
+struct ExtrudeCut {
+    plane: Plane,
+    regions: Vec<Region2>,
+    /// The outlines of the sketch's text: the sheet remembers where its letters went.
+    text: Vec<Seg2>,
+    operation: Operation,
+    /// Up to a face: the tools' own footprints bound it.
+    bound: bool,
+}
+
+/// The sketch plane, regions and text of `f`'s extrude; None for any other feature, a tapered
+/// extrude or a missing sketch.
+fn extrude_cut(st: &ModelState, f: &Feature) -> Result<Option<ExtrudeCut>> {
+    let FeatureKind::Extrude { sketch, profiles, operation, extent, .. } = &f.kind else { return Ok(None) };
+    if extent.taper.is_some() {
+        return Ok(None);
+    }
+    let Some(ss) = st.sketch(sketch.0) else { return Ok(None) };
+    let regions = solidcraft_sketch::merge_regions(&select_profiles(ss, profiles)?);
     let text: Vec<Seg2> = ss
         .sketch
         .links
@@ -948,7 +996,7 @@ pub(super) fn sheet_cut(
         .flat_map(|l| ss.sketch.link_curves(&l.id))
         .flat_map(|ci| ss.sketch.exact_segs(ci).unwrap_or_else(|| ss.sketch.segs(ci)))
         .collect();
-    sheet_prism_cut(f, st, &ss.plane, &regions, *operation, tools, targets, constructor, extent.to.is_some(), &text, warning)
+    Ok(Some(ExtrudeCut { plane: ss.plane, regions, text, operation: *operation, bound: extent.to.is_some() }))
 }
 
 /// Whether a cut of `f` with these targets (else its participants, else its component's

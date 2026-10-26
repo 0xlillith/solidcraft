@@ -6421,11 +6421,36 @@ fn replay(
             }
         }
         if op == Operation::Cut {
-            for instance in instances {
-                if let Some(tools) = copies.get(instance) {
+            for instance in &instances {
+                if let Some(tools) = copies.get(instance.clone()) {
                     total += 1;
                     missed += usize::from(copy_misses(st, f, &targets, tools));
                 }
+            }
+        }
+        // Copies of a cut through sheet metal are cut-outs of its flat pattern, as the cut is
+        // (#6841): each machined into the sheets in turn, then cut from the other targets.
+        if op == Operation::Cut && matches!(src.kind, FeatureKind::Extrude { .. }) && !st.sheets.is_empty() && instances.len() == mats.len() {
+            let mut handled = Vec::with_capacity(mats.len());
+            for (m, instance) in mats.iter().zip(&instances) {
+                let bodies: Vec<Body> = copies.get(instance.clone()).unwrap_or_default().iter().map(|t| t.body.clone()).collect();
+                handled.push(more::sheet_cut_copy(f, src, m, st, &bodies, &targets, warning)?);
+            }
+            if handled.iter().any(|h| !h.is_empty()) {
+                // Copies the same sheets took are cut from the rest at once.
+                let mut groups: Vec<(Vec<String>, Vec<Traced>)> = Vec::new();
+                let mut rest = copies.into_iter();
+                for (done, instance) in handled.into_iter().zip(&instances) {
+                    let tools: Vec<Traced> = rest.by_ref().take(instance.len()).collect();
+                    match groups.iter_mut().find(|(d, _)| *d == done) {
+                        Some((_, all)) => all.extend(tools),
+                        None => groups.push((done, tools)),
+                    }
+                }
+                for (done, tools) in groups {
+                    apply_beside_sheet_cut(doc, st, f, tools, op, &targets, &done)?;
+                }
+                continue;
             }
         }
         // New bodies from a pattern join their source when they touch it (as one feature would).
