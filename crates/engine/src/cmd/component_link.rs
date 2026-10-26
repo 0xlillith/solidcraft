@@ -27,7 +27,7 @@ mod relink_tests;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("component.insert_design", "Insert Design", insert_design).at("SOLID", "ASSEMBLE").icon("component").params(
-        "path: a .solidcraft design → a new component linked to it, holding its solid bodies as placed in that design; \
+        "path: a .solidcraft design → a new component linked to it, holding its solid bodies as placed in that design and a copy of its design properties; \
          name? (default: the design's name); parent?: component id or name (default: the active one); translate?: [x,y,z]; \
          reuse?: bool (default false): insert a free occurrence, reusing an existing link to the same file when available",
     ),
@@ -133,8 +133,8 @@ pub fn resolve_design_links(doc: &mut Document, from: Option<&str>) {
 }
 
 /// The bodies of a linked design: its name, the Import feature that holds them and the names
-/// the design gives their faces (`Feature::link_faces`).
-type Linked = (String, solidcraft_io::StepFeature, Vec<Vec<String>>);
+/// the design gives their faces (`Feature::link_faces`), with the source's design properties.
+type Linked = (String, solidcraft_io::StepFeature, Vec<Vec<String>>, solidcraft_doc::Metadata);
 
 /// The solid bodies of the design at `file`, evaluated, as an Import feature.
 fn linked_bodies(file: &Path, own: Option<&str>) -> Result<Linked> {
@@ -167,7 +167,7 @@ fn session_bodies(part: &Session, shown: &str) -> Result<Linked> {
     // The STEP text keeps no face names: carry the design's own, so references into the linked
     // bodies follow them as they do inside the design (#3330).
     let faces = solidcraft_doc::naming::carried_face_names(&world, &feature.import.bodies);
-    Ok((name, feature, faces))
+    Ok((name, feature, faces, part.doc.metadata.clone()))
 }
 
 fn component_key(s: &Session, p: &Value, key: &str, cmd: &str) -> Result<u64> {
@@ -197,7 +197,7 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
             return super::component::copy_occurrence(s, &json!({"component": component, "parent": parent, "translate": translate}));
         }
     }
-    let (design_name, sf, faces) = linked_bodies(&file, s.path.as_deref())?;
+    let (design_name, sf, faces, metadata) = linked_bodies(&file, s.path.as_deref())?;
     let name = str_(p, "name").filter(|n| !n.trim().is_empty()).map(str::to_string).unwrap_or(design_name);
     let mut create = json!({"name": name, "activate": false});
     // Clipboard insertion uses reuse even for the first paste, which must stay movable.
@@ -210,6 +210,10 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
     let made = super::component::new_component(s, &create)?;
     let comp = made["component"].as_u64().ok_or_else(|| bad(cmd, "the component was not created"))?;
     let occ = made["occurrence"].as_u64();
+    // Seed only a new definition: reused links keep any locally edited part properties.
+    if let Some(c) = s.doc_mut().components.iter_mut().find(|c| c.id == comp) {
+        c.metadata = metadata;
+    }
     let id = s.doc_mut().add_feature(sf.kind, Some(&name))?;
     if let Some(f) = s.doc_mut().feature_mut(id) {
         f.component = comp;
@@ -260,7 +264,7 @@ fn update_links(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let old = old.clone();
         let file = resolve(s.path.as_deref(), &link.path);
-        let (_, sf, faces) = linked_bodies(&file, s.path.as_deref()).map_err(|e| bad(cmd, format!("{cname}: {e}")))?;
+        let (_, sf, faces, _) = linked_bodies(&file, s.path.as_deref()).map_err(|e| bad(cmd, format!("{cname}: {e}")))?;
         warnings.extend(sf.warnings.iter().cloned());
         let same = matches!(&sf.kind, FeatureKind::Import { step, .. } if *step == old);
         let kept = s.doc.feature(link.feature).map(|f| &f.link_faces);
@@ -339,7 +343,7 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     }
     // Read/evaluate the candidate before changing anything. Session::execute owns the single
     // undo step and restores both the document and evaluated state on any later failure.
-    let (_, sf, faces) = linked_bodies(&file, s.path.as_deref()).map_err(|e| bad(cmd, e.to_string()))?;
+    let (_, sf, faces, _) = linked_bodies(&file, s.path.as_deref()).map_err(|e| bad(cmd, e.to_string()))?;
     let geometry_changed = match (s.doc.feature(link.feature).map(|f| &f.kind), &sf.kind) {
         (Some(FeatureKind::Import { step: old, .. }), FeatureKind::Import { step, .. }) => old != step,
         _ => true,
