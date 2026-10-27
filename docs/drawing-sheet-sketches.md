@@ -309,3 +309,27 @@ this older receiver. Likewise, when main's #3938 reaches it, retain **one**
 when a drawing is open, keeping main's complete model-cancel branch. This
 increment neither copies that model-entry implementation partially nor claims
 that the outstanding main-to-drawings composition has happened.
+
+
+## R7: bounded polygon and slot tool admission
+
+The existing inscribed, circumscribed and edge-defined polygon commands, together
+with centre-to-centre and overall-length slot commands, use the same drawing-owned
+sketch receiver and drawing-local undo as R4/R6. There is no new polygon, tangent,
+arc, construction-circle or constraint algorithm. The built-in polygon side cap
+(3–200) and the commands' positive-length/width checks remain unchanged. Invalid
+or cross-owner requests publish neither the sketch nor a model mutation.
+
+The tools use their existing numeric point and radius/width contracts; values are
+physical paper millimetres, not model display units or a view's scale. An
+inscribed/circumscribed polygon retains its construction support circle and local
+constraints. Slots retain their tangent semicircular caps. Neither tool creates
+a model parameter. The retained R5 validation and Session publication paths
+remain the only commit boundary.
+
+The existing engine Drawing test module checks original analytic square vertices,
+centres and radii, exact cap radii and positions, construction status, owner and
+model isolation, undo/redo, a polygon save/reopen cycle, and atomic refusals of
+invalid geometry and a model sketch as target. These are tests, not a claim that
+the native or browser editor is connected. Text/geometry sheet-scene tools and
+view-aware sketching still require the owners' shared-scene and UI integration.

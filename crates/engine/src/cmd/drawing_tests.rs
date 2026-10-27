@@ -1098,3 +1098,143 @@ fn sheet_next_curved_point_expressions_use_paper_defaults_and_keep_source_read_o
     let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
     assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, record.sketch);
 }
+
+// W38a R7: reuse the existing polygon and slot constructors as paper-sketch tools.
+#[test]
+fn sheet_next_polygon_commands_keep_analytic_paper_geometry_and_history() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::CurveKind;
+    // Hand-derived vertices. A circumscribed square with apothem 10 has
+    // vertices at (+/-10, +/-10); the edge-defined square has centre (40,30).
+    let cases = [
+        (
+            "sketch.polygon.inscribed",
+            json!({"center":[60,45],"radius":20,"sides":4,"angle":0}),
+            Vec2::new(60.0, 45.0),
+            20.0,
+            [[80.0, 45.0], [60.0, 65.0], [40.0, 45.0], [60.0, 25.0]],
+        ),
+        (
+            "sketch.polygon.circumscribed",
+            json!({"center":[60,45],"radius":10,"sides":4,"angle":0}),
+            Vec2::new(60.0, 45.0),
+            10.0,
+            [[70.0, 55.0], [50.0, 55.0], [50.0, 35.0], [70.0, 35.0]],
+        ),
+        (
+            "sketch.polygon.edge",
+            json!({"p0":[30,20],"p1":[50,20],"sides":4}),
+            Vec2::new(40.0, 30.0),
+            10.0_f64 * 2.0_f64.sqrt(),
+            [[30.0, 20.0], [50.0, 20.0], [50.0, 40.0], [30.0, 40.0]],
+        ),
+    ];
+    for (command, params, centre, radius, vertices) in cases {
+        let (mut s, d, sk, made) = sheet_editor();
+        let before = s.doc.clone();
+        let model = s.model.state();
+        let (undo, evaluated) = (s.undo.len(), s.evaluations);
+        let out = run(&mut s, command, params);
+        let record = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap();
+        let support = out["support_circle"].as_str().unwrap();
+        assert_eq!(record.sketch.curves.len(), 5, "{command}");
+        let created = out["created"]["curves"].as_array().unwrap();
+        assert_eq!(created.len(), 5, "{command}: four sides plus construction guide");
+        assert!(created.iter().any(|id| id.as_str() == Some(support)), "{command}: construction circle is reported");
+        let lines = record.sketch.curves.iter().filter(|c| matches!(c.kind, CurveKind::Line { .. })).count();
+        assert_eq!(lines, 4, "{command}");
+        let circle = record.sketch.curves.iter().find(|c| c.id == support).unwrap();
+        assert!(circle.construction, "{command}: the radius guide is construction");
+        let CurveKind::Circle { c, r } = circle.kind else { panic!("{command}: missing support circle") };
+        assert!(record.sketch.points[c].pos.dist(centre) < 1e-7, "{command}: centre");
+        assert!((r - radius).abs() < 1e-7, "{command}: radius");
+        for at in vertices {
+            assert!(record.sketch.points.iter().any(|p| p.pos.dist(Vec2::new(at[0], at[1])) < 1e-7), "{command}: {at:?}");
+        }
+        assert_eq!((&s.doc.features, &s.doc.params), (&before.features, &before.params));
+        assert_eq!(s.evaluations, evaluated);
+        assert!(Arc::ptr_eq(&model, &s.model.state()));
+        assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (undo + 1, Some(d)));
+        run(&mut s, "edit.undo", json!({}));
+        assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.is_empty());
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 5);
+        run(&mut s, "sketch.finish", json!({}));
+        let saved = s.doc.to_json();
+        let mut reopened = Session::new(solidcraft_doc::Document::from_json(&saved).unwrap());
+        run(&mut reopened, "drawing.open", json!({"drawing":made["drawing"]}));
+        run(&mut reopened, "drawing.sketch.edit", json!({"sketch":made["sketch"]}));
+        assert_eq!(run(&mut reopened, "drawing.sketch.inspect", json!({}))["curves"].as_array().unwrap().len(), 5);
+        assert_eq!(reopened.doc.to_json(), saved);
+    }
+}
+
+#[test]
+fn sheet_next_slots_keep_tangent_caps_and_drawing_local_undo() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::CurveKind;
+    for (command, params, centres) in [
+        ("sketch.slot.center_to_center", json!({"p0":[30,30],"p1":[70,30],"width":10}), [Vec2::new(30.0, 30.0), Vec2::new(70.0, 30.0)]),
+        ("sketch.slot.overall", json!({"p0":[30,30],"p1":[90,30],"width":10}), [Vec2::new(35.0, 30.0), Vec2::new(85.0, 30.0)]),
+    ] {
+        let (mut s, d, sk, _) = sheet_editor();
+        let before = s.doc.clone();
+        let model = s.model.state();
+        let (undo, evaluated) = (s.undo.len(), s.evaluations);
+        let result = run(&mut s, command, params);
+        let sketch = &s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch;
+        assert_eq!(result["created"]["curves"].as_array().unwrap().len(), 4);
+        assert_eq!(sketch.curves.len(), 4, "{command}");
+        assert_eq!(sketch.curves.iter().filter(|c| matches!(c.kind, CurveKind::Line { .. })).count(), 2);
+        let arcs: Vec<_> = sketch
+            .curves
+            .iter()
+            .filter_map(|c| match c.kind {
+                CurveKind::Arc { c: centre, a, b } => Some((sketch.points[centre].pos, sketch.points[a].pos, sketch.points[b].pos)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arcs.len(), 2);
+        for centre in centres {
+            let (_, a, b) = arcs.iter().find(|(c, _, _)| c.dist(centre) < 1e-7).expect("expected cap centre");
+            assert!((a.dist(centre) - 5.0).abs() < 1e-7);
+            assert!((b.dist(centre) - 5.0).abs() < 1e-7);
+        }
+        assert_eq!((&s.doc.params, &s.doc.features), (&before.params, &before.features));
+        assert!(Arc::ptr_eq(&model, &s.model.state()));
+        assert_eq!(s.evaluations, evaluated);
+        assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (undo + 1, Some(d)));
+        run(&mut s, "edit.undo", json!({}));
+        assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.is_empty());
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 4);
+    }
+}
+
+#[test]
+fn sheet_next_polygon_and_slot_rejections_leave_the_source_and_history_untouched() {
+    let (mut s, d, sk, made) = sheet_editor();
+    let model_id = s.doc.features[0].id;
+    let base = s.doc.clone();
+    let original = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (command, params) in [
+        ("sketch.polygon.inscribed", json!({"center":[50,50],"radius":0,"sides":4})),
+        ("sketch.polygon.circumscribed", json!({"center":[50,50],"radius":10,"sides":2})),
+        ("sketch.polygon.edge", json!({"p0":[30,30],"p1":[30,30],"sides":4})),
+        ("sketch.polygon.edge", json!({"p0":[30,30],"p1":[50,30],"sides":201})),
+        ("sketch.slot.center_to_center", json!({"p0":[30,30],"p1":[70,30],"width":0})),
+        ("sketch.slot.overall", json!({"p0":[30,30],"p1":[50,30],"width":20})),
+        ("sketch.slot.overall", json!({"p0":[30,30],"p1":[70,30],"width":-1})),
+        ("sketch.polygon.inscribed", json!({"sketch":model_id,"center":[50,50],"radius":10,"sides":4})),
+        ("sketch.slot.center_to_center", json!({"sketch":model_id,"p0":[30,30],"p1":[70,30],"width":10})),
+    ] {
+        refused(&mut s, command, params);
+        assert!(Arc::ptr_eq(&s.doc, &base), "{command}");
+        assert_eq!(s.active_sheet_sketch, original, "{command}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}");
+    }
+    assert_eq!(s.open_drawing, Some(d));
+    assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 0);
+    assert_eq!(run(&mut s, "drawing.sketch.inspect", json!({}))["sketch"], made["sketch"]);
+}

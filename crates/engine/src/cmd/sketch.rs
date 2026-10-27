@@ -102,26 +102,31 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params(concat!("center, start, end (counter-clockwise from start) | center, start, sweep: signed degrees", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.polygon.inscribed", "Inscribed Polygon", polygon_inscribed)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("polygon")
         .enabled(in_sketch)
         .params(concat!("center, radius (to vertices), sides, angle?: deg", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.polygon.circumscribed", "Circumscribed Polygon", polygon_circumscribed)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("polygon_circumscribed")
         .enabled(in_sketch)
         .params(concat!("center, radius (to edge midpoints), sides, angle?: deg", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.polygon.edge", "Edge Polygon", polygon_edge)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("polygon_edge")
         .enabled(in_sketch)
         .params(concat!("p0, p1: one edge, sides", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.slot.center_to_center", "Center to Center Slot", slot_c2c)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("slot")
         .enabled(in_sketch)
         .params(concat!("p0, p1: arc centres, width", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.slot.overall", "Overall Slot", slot_overall)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("slot_overall")
         .enabled(in_sketch)
