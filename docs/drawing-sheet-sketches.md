@@ -265,3 +265,47 @@ For future shared-scene integration, sheet sketches use the same lower-left
 frame and the proposed paint band after views and before tables/title blocks.
 The paper ObjectKind/scene implementation remains with the shared-scene owner;
 this review change adds neither a second scene nor an exporter.
+
+
+## R6: more shared geometry tools and sheet-safe snap input
+
+The sheet command receiver additionally admits the existing centre/two-point/
+three-point circles, centre-point/three-point arcs, and centre/three-point
+rectangles. Only their command part is extended; their model constructors,
+constraint rules and solver implementation are reused unchanged. The same R5
+Session publication boundary validates the drawing and owns its undo step.
+This is command coverage, not interactive GUI or all-tools acceptance.
+
+Numeric positions and radii remain paper millimetres. Centre and arc point
+arguments retain the existing exact local-point-id and source-expression forms;
+numeric-only parameters keep the existing command contracts. This increment
+does not add radius expressions, drawing dimension definitions or source-edge
+projection. Ordinary modelling commands retain their existing behaviour.
+
+A design may retain an active model sketch while a drawing is open. Shared point
+preprocessing must not turn a model `mid:`, `on:`, `vertex:` or `on_edge` snap into
+a newly allocated model-local point id and then interpret that id on the sheet.
+The sheet route now has no model target and explicitly refuses these automatic
+snap/projection forms before it reads or changes a model sketch. This includes
+malformed marker objects that also contain an `at` fallback. Plain 2D points,
+expressions and exact existing local point ids remain available. The model snap
+path is unchanged. Dedicated sheet/view projection remains later work.
+
+Original synthetic tests use a deliberate model/sheet local-id collision,
+independently calculated circle centres/radii and signed arc endpoints,
+rectangular corners and construction diagonals, undo/cancel/reopen, invalid
+geometry and exact targeting. A separate acceptance test calls
+`Session::accept_computed` from a scratch session that opens a different drawing;
+it checks the adopted owner and entry, cancellation and undo, closing, the
+original checkpoint and host file state. Results are recorded against the exact
+source in the PR, not inferred from compiling these tests.
+
+The pending locale file uses the existing underscore-normalised command keys
+(`cmd.drawing_sketch_create`, `cmd.drawing_sketch_edit`,
+`cmd.drawing_sketch_inspect`). It no longer duplicates main's
+`cmd.sketch_cancel`. The actual #6448 loader/catalog sync is still required by
+this older receiver. Likewise, when main's #3938 reaches it, retain **one**
+`sketch.cancel` specification/label/icon and dispatch to the sheet cancel path
+when a drawing is open, keeping main's complete model-cancel branch. This
+increment neither copies that model-entry implementation partially nor claims
+that the outstanding main-to-drawings composition has happened.

@@ -1,8 +1,7 @@
 {
   "en": {
-    "cmd.drawing.sketch.create": "Create Sheet Sketch",
-    "cmd.drawing.sketch.edit": "Edit Sheet Sketch",
-    "cmd.drawing.sketch.inspect": "Inspect Sheet Sketch",
-    "cmd.sketch.cancel": "Cancel Sketch"
+    "cmd.drawing_sketch_create": "Create Sheet Sketch",
+    "cmd.drawing_sketch_edit": "Edit Sheet Sketch",
+    "cmd.drawing_sketch_inspect": "Inspect Sheet Sketch"
   }
 }

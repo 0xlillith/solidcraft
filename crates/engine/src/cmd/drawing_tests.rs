@@ -852,3 +852,249 @@ fn sheet_review_shared_store_noop_keeps_the_document_and_record_arcs() {
     assert!(Arc::ptr_eq(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap(), &record));
     assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
 }
+
+// W38a R6: existing 2D constructors use the sheet receiver and never its model's snaps.
+#[test]
+fn sheet_next_snap_directives_cannot_modify_an_active_model_sketch() {
+    use solidcraft_geom::Vec2;
+    let mut s = design();
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    let model_id = s.active_sketch.unwrap();
+    let line = run(&mut s, "sketch.line", json!({"points":[[0,0],[20,0]]}))["curves"][0].as_str().unwrap().to_string();
+    // Deliberately collide with the point id a model midpoint snap would allocate.
+    let mut model_copy = s.doc.sketch(model_id).unwrap().clone();
+    let at = model_copy.add_point(Vec2::new(10.0, 0.0), None).unwrap();
+    let same_local_id = model_copy.points[at].id.clone();
+    let drawing = run(&mut s, "drawing.create", json!({"name":"Sheet with an active model sketch"}));
+    run(&mut s, "drawing.sketch.create", json!({"owner":drawing["sheets"][0]["id"]}));
+    run(&mut s, "sketch.point", json!({"point":[31,43], "id":same_local_id}));
+    let before = s.doc.clone();
+    let state = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for marker in [
+        json!(format!("mid:{line}")),
+        json!(format!("on:{line}:10,0")),
+        json!("vertex:0,0,0"),
+        json!({"vertex":[0,0,0]}),
+        json!({"on_edge":[10,0,0]}),
+        json!({"vertex":false,"at":[31,43]}),
+    ] {
+        for (command, params) in [
+            ("sketch.line", json!({"points":[marker.clone(),[55,43]]})),
+            ("sketch.circle.center", json!({"center":marker.clone(),"radius":5})),
+            ("sketch.arc.center_point", json!({"center":marker.clone(),"start":[36,43],"sweep":90})),
+            ("sketch.arc.three_point", json!({"start":marker.clone(),"end":[41,43],"through":[36,48]})),
+        ] {
+            let error = refused(&mut s, command, params);
+            assert!(error.contains("not supported yet"), "{command}: {error}");
+            assert!(Arc::ptr_eq(&s.doc, &before));
+            assert!(Arc::ptr_eq(&s.model.state(), &state));
+            assert_eq!(s.active_sheet_sketch, entry);
+            assert_eq!(s.active_sketch, Some(model_id));
+            assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+        }
+    }
+}
+
+#[test]
+fn sheet_next_circles_keep_analytic_centres_radii_and_paper_units() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::CurveKind;
+    for (command, params) in [
+        ("sketch.circle.center", json!({"center":[30,40],"radius":5})),
+        ("sketch.circle.center", json!({"center":[30,40],"diameter":10})),
+        ("sketch.circle.two_point", json!({"p0":[25,40],"p1":[35,40]})),
+        ("sketch.circle.three_point", json!({"p0":[35,40],"p1":[30,45],"p2":[25,40]})),
+    ] {
+        let (mut s, d, sk, _) = sheet_editor();
+        let before = s.doc.clone();
+        let state = s.model.state();
+        let history = (s.undo.len(), s.evaluations);
+        let made = run(&mut s, command, params);
+        let record = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap();
+        assert_eq!(record.sketch.curves.len(), 1);
+        let CurveKind::Circle { c, r } = record.sketch.curves[0].kind else { panic!("{command}: not a circle") };
+        assert!(record.sketch.points[c].pos.dist(Vec2::new(30.0, 40.0)) < 1e-9, "{command}");
+        assert!((r - 5.0).abs() < 1e-9, "{command}");
+        assert_eq!(made["created"]["curves"].as_array().unwrap().len(), 1);
+        assert_eq!((&s.doc.features, &s.doc.params, s.evaluations), (&before.features, &before.params, history.1));
+        assert!(Arc::ptr_eq(&state, &s.model.state()));
+        assert_eq!(s.undo.len(), history.0 + 1);
+        assert_eq!(s.undo.last().unwrap().part, Some(d));
+        run(&mut s, "edit.undo", json!({}));
+        assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.is_empty());
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 1);
+    }
+}
+
+#[test]
+fn sheet_next_arcs_keep_signed_direction_and_analytic_endpoints() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::CurveKind;
+    for (command, params, end, reversed) in [
+        ("sketch.arc.center_point", json!({"center":[30,40],"start":[35,40],"sweep":90}), [30.0, 45.0], false),
+        ("sketch.arc.center_point", json!({"center":[30,40],"start":[35,40],"sweep":-90}), [30.0, 35.0], true),
+        ("sketch.arc.center_point", json!({"center":[30,40],"start":[35,40],"end":[30,45]}), [30.0, 45.0], false),
+        ("sketch.arc.three_point", json!({"start":[35,40],"end":[25,40],"through":[30,45]}), [25.0, 40.0], false),
+        ("sketch.arc.three_point", json!({"start":[35,40],"end":[25,40],"through":[30,35]}), [25.0, 40.0], true),
+    ] {
+        let (mut s, d, sk, _) = sheet_editor();
+        let before = s.doc.clone();
+        let evaluations = s.evaluations;
+        run(&mut s, command, params);
+        let record = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap();
+        let curve = &record.sketch.curves[0];
+        let CurveKind::Arc { c, a, b } = curve.kind else { panic!("{command}: not an arc") };
+        let point = |index: usize| record.sketch.points[index].pos;
+        let (start, finish) = if curve.reversed { (point(b), point(a)) } else { (point(a), point(b)) };
+        assert_eq!(curve.reversed, reversed, "{command}");
+        assert!(point(c).dist(Vec2::new(30.0, 40.0)) < 1e-8);
+        assert!(start.dist(Vec2::new(35.0, 40.0)) < 1e-8);
+        assert!(finish.dist(Vec2::new(end[0], end[1])) < 1e-8);
+        assert!((start.dist(point(c)) - 5.0).abs() < 1e-8 && (finish.dist(point(c)) - 5.0).abs() < 1e-8);
+        assert_eq!((&s.doc.features, &s.doc.params, s.evaluations), (&before.features, &before.params, evaluations));
+        let saved = s.doc.to_json();
+        let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
+        assert_eq!(reopened.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch, record.sketch);
+    }
+}
+
+#[test]
+fn sheet_next_rectangle_variants_keep_their_constraints_and_construction_geometry() {
+    use solidcraft_geom::Vec2;
+    for (command, params, corners, construction) in [
+        ("sketch.rectangle.center", json!({"center":[35,20],"corner":[55,30]}), [[15.0, 10.0], [55.0, 10.0], [55.0, 30.0], [15.0, 30.0]], 2),
+        (
+            "sketch.rectangle.three_point",
+            json!({"p0":[10,10],"p1":[40,50],"p2":[-6,22]}),
+            [[10.0, 10.0], [40.0, 50.0], [24.0, 62.0], [-6.0, 22.0]],
+            0,
+        ),
+    ] {
+        let (mut s, d, sk, _) = sheet_editor();
+        let count = s.evaluations;
+        let model = s.model.state();
+        run(&mut s, command, params);
+        let record = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap();
+        assert_eq!(record.sketch.curves.iter().filter(|c| !c.construction).count(), 4);
+        assert_eq!(record.sketch.curves.iter().filter(|c| c.construction).count(), construction);
+        for p in corners {
+            assert!(record.sketch.points.iter().any(|q| q.pos.dist(Vec2::new(p[0], p[1])) < 1e-7), "{command}: {p:?}");
+        }
+        assert!(s.doc.solve_sheet_sketch(d, sk).unwrap().report.keeps_orientation());
+        assert!(Arc::ptr_eq(&model, &s.model.state()));
+        assert_eq!(count, s.evaluations);
+        run(&mut s, "sketch.cancel", json!({}));
+        assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).is_none());
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 4 + construction);
+    }
+}
+
+#[test]
+fn sheet_next_invalid_round_geometry_is_atomic_and_exact_targeted() {
+    let (mut s, _, _, made) = sheet_editor();
+    let before = s.doc.clone();
+    let entry = s.active_sheet_sketch.clone();
+    let model = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (cmd, params) in [
+        ("sketch.circle.center", json!({"center":[10,10],"radius":-2})),
+        ("sketch.circle.center", json!({"center":[10,10],"radius":1e100})),
+        ("sketch.circle.center", json!({"center":["Absent + 5",10],"radius":2})),
+        ("sketch.circle.center", json!({"center":[10,10],"radius":2,"sketch":made["sheet"]})),
+        ("sketch.circle.two_point", json!({"p0":[10,10],"p1":[10,10]})),
+        ("sketch.circle.three_point", json!({"p0":[10,10],"p1":[20,10],"p2":[30,10]})),
+        ("sketch.arc.center_point", json!({"center":[30,40],"start":[35,40],"sweep":360})),
+        ("sketch.arc.center_point", json!({"center":[30,40],"start":[35,40],"sweep":0})),
+        ("sketch.arc.three_point", json!({"start":[10,10],"end":[30,10],"through":[20,10]})),
+        ("sketch.rectangle.center", json!({"center":[10,10],"corner":[10,20]})),
+        ("sketch.rectangle.three_point", json!({"p0":[10,10],"p1":[20,10],"p2":[30,10]})),
+    ] {
+        refused(&mut s, cmd, params);
+        assert!(Arc::ptr_eq(&s.doc, &before) && Arc::ptr_eq(&s.model.state(), &model), "{cmd}");
+        assert_eq!(s.active_sheet_sketch, entry);
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    }
+}
+
+#[test]
+fn sheet_next_accept_computed_adopts_the_open_owner_entry_and_cancel_boundary() {
+    let mut s = design();
+    let a = run(&mut s, "drawing.create", json!({"name":"A"}));
+    run(&mut s, "drawing.close", json!({}));
+    let b = run(&mut s, "drawing.create", json!({"name":"B"}));
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "drawing.open", json!({"drawing":a["id"]}));
+    let checkpoint = run(&mut s, "edit.checkpoint", json!({}))["checkpoint"].clone();
+    s.path = Some("computed-sheet.synthetic.solidcraft".into());
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let steps = s.undo.len();
+    let evaluations = s.evaluations;
+    let mut computed = s.scratch();
+    run(&mut computed, "drawing.open", json!({"drawing":b["id"]}));
+    let made = run(&mut computed, "drawing.sketch.create", json!({"owner":b["sheets"][0]["id"]}));
+    run(&mut computed, "sketch.rectangle.two_point", json!({"p0":[15,10],"p1":[55,30]}));
+    let drawing = ids::decode(b["id"].as_str().unwrap()).unwrap();
+    let sketch = ids::decode(made["sketch"].as_str().unwrap()).unwrap();
+    assert!(Arc::ptr_eq(&before, &s.doc));
+    assert_ne!(s.open_drawing, computed.open_drawing);
+    let entry = computed.active_sheet_sketch.clone();
+    let additional_steps = computed.undo.len();
+    s.accept_computed(computed);
+    assert_eq!(s.open_drawing, Some(drawing));
+    assert_eq!(s.active_sheet_sketch, entry);
+    assert_eq!(s.path.as_deref(), Some("computed-sheet.synthetic.solidcraft"));
+    assert_eq!(s.undo.len(), steps + additional_steps);
+    assert!(s.undo[steps..].iter().all(|step| step.part == Some(drawing)));
+    assert_eq!(s.evaluations, evaluations);
+    assert!(Arc::ptr_eq(&model, &s.model.state()));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 4);
+    run(&mut s, "sketch.cancel", json!({}));
+    assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).is_none());
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.active_sheet_sketch, entry);
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 4);
+    let mut closed = s.scratch();
+    run(&mut closed, "sketch.finish", json!({}));
+    run(&mut closed, "drawing.close", json!({}));
+    s.accept_computed(closed);
+    assert!(s.open_drawing.is_none() && s.active_sheet_sketch.is_none());
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint":checkpoint}));
+    assert_eq!(s.open_drawing, Some(ids::decode(a["id"].as_str().unwrap()).unwrap()));
+    assert!(s.active_sheet_sketch.is_none());
+    assert_eq!(s.doc.to_json(), before.to_json());
+}
+
+#[test]
+fn sheet_next_curved_point_expressions_use_paper_defaults_and_keep_source_read_only() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::CurveKind;
+    let mut s = design();
+    s.doc_mut().units = "in".into();
+    s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+    let d = run(&mut s, "drawing.create", json!({"units":"in"}));
+    let made = run(&mut s, "drawing.sketch.create", json!({"owner":d["sheets"][0]["id"]}));
+    let drawing = ids::decode(made["drawing"].as_str().unwrap()).unwrap();
+    let sketch = ids::decode(made["sketch"].as_str().unwrap()).unwrap();
+    let source = s.doc.clone();
+    let count = s.evaluations;
+    run(&mut s, "sketch.circle.center", json!({"center":["Inset + 5","10"],"radius":5,"id":"circle"}));
+    run(&mut s, "sketch.arc.center_point", json!({"center":"circle.center","start":["Inset + 10","10"],"sweep":90,"id":"arc"}));
+    let record = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap();
+    let CurveKind::Circle { c, r } = record.sketch.curves[0].kind else { panic!("missing circle") };
+    assert!(record.sketch.points[c].pos.dist(Vec2::new(30.4, 10.0)) < 1e-8);
+    assert!((r - 5.0).abs() < 1e-8);
+    assert_eq!(record.sketch.points[c].exprs.as_ref().unwrap().x.as_deref(), Some("Inset + 5"));
+    let CurveKind::Arc { c: arc_center, a, b } = record.sketch.curves[1].kind else { panic!("missing arc") };
+    assert_eq!(c, arc_center, "the exact local centre id remains shared");
+    assert!(record.sketch.points[a].pos.dist(Vec2::new(35.4, 10.0)) < 1e-8);
+    assert!(record.sketch.points[b].pos.dist(Vec2::new(30.4, 15.0)) < 1e-8);
+    assert_eq!((&s.doc.features, &s.doc.params, s.evaluations), (&source.features, &source.params, count));
+    let saved = s.doc.to_json();
+    let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, record.sketch);
+}

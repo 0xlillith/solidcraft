@@ -55,6 +55,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params(concat!("p0, p1: opposite corners [x,y]; construction?. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.rectangle.three_point", "3-Point Rectangle", rect_three_point)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("rect3")
         .enabled(in_sketch)
@@ -65,11 +66,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params(concat!("p0, p1: opposite corners [x,y]; radius: expr (the corner radius, less than half the shorter side); construction?. A 2-point rectangle whose four corners are filleted alike: one radius dimension (`param`), the other arcs equal to it. Returns sides {bottom, right, top, left} (line ids) and arcs (the corner arcs: bottom-left, bottom-right, top-right, top-left)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.rectangle.center", "Center Rectangle", rect_center)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("rect_center")
         .enabled(in_sketch)
         .params(concat!("center, corner. Returns sides {bottom, right, top, left} (line ids) and corners {bottom_left, bottom_right, top_right, top_left} (point ids)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.circle.center", "Center Diameter Circle", circle_center)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("circle")
         .key("C")
@@ -80,17 +83,20 @@ pub static COMMANDS: &[CommandSpec] = &[
             created_doc!()
         )),
     CommandSpec::new("sketch.circle.two_point", "2-Point Circle", circle_two)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("circle2")
         .enabled(in_sketch)
         .params(concat!("p0, p1: diameter ends", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.circle.three_point", "3-Point Circle", circle_three)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("circle3")
         .enabled(in_sketch)
         .params(concat!("p0, p1, p2", connect_doc!(), created_doc!())),
-    CommandSpec::new("sketch.arc.three_point", "3-Point Arc", arc_three).at("SKETCH", "CREATE").icon("arc3").enabled(in_sketch).params(concat!("start, end, through: [x,y] or point ref (a referenced through point stays on the arc)", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.arc.three_point", "3-Point Arc", arc_three).in_sketch_part().at("SKETCH", "CREATE").icon("arc3").enabled(in_sketch).params(concat!("start, end, through: [x,y] or point ref (a referenced through point stays on the arc)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.arc.center_point", "Center Point Arc", arc_center)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("arc_center")
         .enabled(in_sketch)
@@ -465,7 +471,11 @@ fn parg_in(sk: &mut Sketch, doc: &solidcraft_doc::Document, v: &Value, cmd: &str
 }
 
 pub(super) fn req_parg(sk: &mut Sketch, doc: &solidcraft_doc::Document, p: &Value, k: &str, cmd: &str) -> Result<PArg> {
-    parg(sk, doc, p.get(k).ok_or_else(|| bad(cmd, format!("missing `{k}`")))?, cmd)
+    req_parg_in(sk, doc, p, k, cmd, false)
+}
+
+fn req_parg_in(sk: &mut Sketch, doc: &solidcraft_doc::Document, p: &Value, k: &str, cmd: &str, paper: bool) -> Result<PArg> {
+    parg_in(sk, doc, p.get(k).ok_or_else(|| bad(cmd, format!("missing `{k}`")))?, cmd, paper)
 }
 
 const POINT_MUST: &str = "a point's coordinates must be numbers or expressions over the design's parameters";
@@ -803,10 +813,8 @@ fn finish_sketch(s: &mut Session, _p: &Value) -> Result<Value> {
 fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.line";
     let paper = s.open_drawing.is_some();
-    // Model projections and automatic model-reference snaps are not sheet tools.
-    // Plain coordinates/local ids still use the existing parser below; unsupported
-    // reference forms fail there without creating a link or falling back to a model.
-    let p = &if paper { p.clone() } else { super::sketch_project::snap_points(s, p, cmd)? };
+    // The shared preprocessor refuses model snaps before a sheet tool reads them.
+    let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let list = p.get("points").and_then(Value::as_array).cloned().ok_or_else(|| bad(cmd, "`points` must be a list"))?;
     if list.len() < 2 || list.len() > 10_000 {
         return Err(bad(cmd, "a line needs 2 or more points"));
@@ -1144,18 +1152,19 @@ pub(super) fn radius_arg(p: &Value, cmd: &str) -> Result<f64> {
 
 fn circle_center(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.circle.center";
+    let paper = s.open_drawing.is_some();
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let r = radius_arg(p, cmd)?;
     let id = str_(p, "id").map(str::to_string);
     let (out, info) = draw(s, p, cmd, |sk, doc| {
-        let c = req_parg(sk, doc, p, "center", cmd)?;
+        let c = req_parg_in(sk, doc, p, "center", cmd, paper)?;
         let ci = sk.add_circle(c.pos(), r, c.idx(), id.as_deref())?;
         mark_construction(sk, &[ci], p);
         // A point the circle was drawn through stays on it (#3099): with a placed centre, that
         // sets the radius.
         let mut cons = Vec::new();
         if let Some(v) = p.get("through")
-            && let PArg::Ref(q, _) = parg(sk, doc, v, cmd)?
+            && let PArg::Ref(q, _) = parg_in(sk, doc, v, cmd, paper)?
         {
             cons.push(add_c(sk, ConstraintKind::PointOnCurve { p: q, c: ci })?);
         }
@@ -1205,11 +1214,12 @@ fn circle_three(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn arc_three(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.arc.three_point";
+    let paper = s.open_drawing.is_some();
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let id = str_(p, "id").map(str::to_string);
     let (out, info) = draw(s, p, cmd, |sk, doc| {
-        let (a, b) = (req_parg(sk, doc, p, "start", cmd)?, req_parg(sk, doc, p, "end", cmd)?);
-        let t = req_parg(sk, doc, p, "through", cmd)?;
+        let (a, b) = (req_parg_in(sk, doc, p, "start", cmd, paper)?, req_parg_in(sk, doc, p, "end", cmd, paper)?);
+        let t = req_parg_in(sk, doc, p, "through", cmd, paper)?;
         let (o, _) = circumcircle(a.pos(), t.pos(), b.pos()).ok_or_else(|| bad(cmd, "the points are collinear"))?;
         // Counter-clockwise from start to end must pass the through point; otherwise swap.
         let ang = |q: Vec2| (q - o).angle();
@@ -1231,12 +1241,13 @@ fn arc_three(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn arc_center(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.arc.center_point";
+    let paper = s.open_drawing.is_some();
     let p = &super::sketch_project::snap_points(s, p, cmd)?;
     let id = str_(p, "id").map(str::to_string);
     let sweep = num(p, "sweep");
     let (out, info) = draw(s, p, cmd, |sk, doc| {
-        let c = req_parg(sk, doc, p, "center", cmd)?;
-        let a = req_parg(sk, doc, p, "start", cmd)?;
+        let c = req_parg_in(sk, doc, p, "center", cmd, paper)?;
+        let a = req_parg_in(sk, doc, p, "start", cmd, paper)?;
         if let Some(sw) = sweep {
             // Start point and signed sweep (degrees); clockwise arcs keep `<id>.start` at the start.
             if !(sw.abs() > 1e-9 && sw.abs() < 360.0) {
@@ -1263,7 +1274,7 @@ fn arc_center(s: &mut Session, p: &Value) -> Result<Value> {
             };
             return Ok((ids_of(sk, &[ci]), Vec::new()));
         }
-        let b = req_parg(sk, doc, p, "end", cmd)?;
+        let b = req_parg_in(sk, doc, p, "end", cmd, paper)?;
         let ci = sk.add_arc(c.pos(), a.pos(), b.pos(), [c.idx(), a.idx(), b.idx()], id.as_deref())?;
         Ok((ids_of(sk, &[ci]), Vec::new()))
     })?;
