@@ -1,0 +1,20 @@
+{
+  "de": {
+    "cmd.sketch_transform": "Transformieren"
+  },
+  "en": {
+    "cmd.sketch_transform": "Transform"
+  },
+  "ja": {
+    "cmd.sketch_transform": "変形"
+  },
+  "ko": {
+    "cmd.sketch_transform": "변환"
+  },
+  "zh-TW": {
+    "cmd.sketch_transform": "變換"
+  },
+  "zh": {
+    "cmd.sketch_transform": "变换"
+  }
+}

@@ -52,6 +52,8 @@ pub enum NavMode {
 pub struct ViewportState {
     /// A drag on the handles of the drawing being placed (Insert SVG / DXF).
     pub(crate) insert_drag: Option<crate::insert_handles::Drag>,
+    /// A drag on the handles of the Transform window's box.
+    pub(crate) transform_drag: Option<crate::sketch_transform_ui::Drag>,
     /// The arrow turning the view that is still down (`navigation::step_key_hold`).
     pub(crate) key_hold: Option<crate::navigation::KeyHold>,
     /// A two-point drawing tool's first point was placed by a press (here) that became a drag:
@@ -4340,6 +4342,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::inference::show(app, &painter, &proj);
     crate::drag_snap::show(app, &painter, &proj);
     crate::insert_handles::show(app, ui, &proj);
+    crate::sketch_transform_ui::refresh(app);
+    crate::sketch_transform_ui::show(app, ui, &proj);
     hover_highlight(app, &painter, &proj);
     crate::drag_extrude::tick(app);
     crate::drag_extrude::show(app, &painter);
