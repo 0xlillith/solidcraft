@@ -2320,10 +2320,13 @@ impl SolveApp {
         }
         let rx = self.control_rx.take();
         for _ in 0..PER_FRAME {
-            // A file loading, an agent's design change computing, or the agent cursor acting one
-            // out: commands that change the design wait their turn (the window, inspection and
-            // screenshots still answer, #1989).
-            let waits = self.file_load.busy() || self.file_picker.is_some() || self.control_job.is_some() || self.agent.busy();
+            // A file loading, a save being written, an agent's design change computing, or the
+            // agent cursor acting one out: commands that change the design wait their turn (the
+            // window, inspection and screenshots still answer, #1989). `engine.script` runs
+            // directly, past `SolveApp::run`'s guard, so without the save here it changed the
+            // design the save was taken up for (#6003).
+            let waits =
+                self.file_load.busy() || self.file_picker.is_some() || self.saving.is_some() || self.control_job.is_some() || self.agent.busy();
             // A screenshot waiting for an opened design to be meshed holds what came after it.
             let shot_waits = open_meshing::active(self) && self.control_held.front().is_some_and(|r| r.method == "ui.screenshot");
             // Held requests go first, in order, once nothing makes them wait.
