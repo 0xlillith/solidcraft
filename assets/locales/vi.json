@@ -1406,6 +1406,8 @@
   "nav.free_orbit.help": "Chuột và chuột 3D xoay tự do qua cả hai cực và giữ nguyên độ lăn nghiêng (Roll). Bắt dính trục bằng phím Shift sẽ bị tắt.",
   "nav.free_orbit.label": "Xoay góc nhìn tự do",
   "nav.free_orbit.snap_help": "Chuột và chuột 3D xoay qua cả hai cực và giữ nguyên góc nghiêng cuộn. Giữ Shift trong khi kéo xoay quỹ đạo để bắt dính hướng nhìn và góc nghiêng cuộn.",
+  "nav.free_orbit_upright.help": "Kéo chuột sang ngang sẽ xoay mô hình quanh trục thẳng đứng của không gian; kéo lên và xuống sẽ nghiêng qua đỉnh mà không bị giới hạn.",
+  "nav.free_orbit_upright.label": "Xoay quanh trục thẳng đứng",
   "nav.fusion.help": "Kéo chuột giữa để trượt, Shift + chuột giữa để xoay, kéo chuột phải để xoay",
   "nav.inventor.help": "Kéo chuột giữa để trượt, Shift + chuột giữa để xoay, Ctrl + chuột giữa để thu phóng, kéo chuột phải để xoay",
   "nav.openscad.help": "Kéo chuột trái trên vùng trống để xoay, Shift + chuột trái để quét chọn vùng, kéo hình học phác thảo để chỉnh sửa; kéo chuột phải hoặc chuột giữa để trượt, Shift + kéo chuột phải hoặc chuột giữa để thu phóng",
