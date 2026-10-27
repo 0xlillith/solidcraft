@@ -1,0 +1,34 @@
+{
+  "en": {
+    "prefs.origin_plane_names": "Origin plane names",
+    "prefs.origin_plane_names_note": "Names shown in the browser, dialogs and lists. {top} is XY, {front} is XZ and {right} is YZ, with Z up. Commands, scripts and saved designs keep XY, XZ and YZ."
+  },
+  "ja": {
+    "prefs.origin_plane_names": "原点平面の名前",
+    "prefs.origin_plane_names_note": "ブラウザー、ダイアログ、一覧に表示される名前です。{top} は XY、{front} は XZ、{right} は YZ です (Z が上)。コマンド、スクリプト、保存されたデザインでは XY、XZ、YZ のままです。"
+  },
+  "zh": {
+    "prefs.origin_plane_names": "原点平面名称",
+    "prefs.origin_plane_names_note": "浏览器、对话框和列表中显示的名称。{top} 即 XY，{front} 即 XZ，{right} 即 YZ（Z 轴朝上）。命令、脚本和已保存的设计仍使用 XY、XZ 和 YZ。"
+  },
+  "ar": {
+    "prefs.origin_plane_names": "أسماء مستويات الأصل",
+    "prefs.origin_plane_names_note": "الأسماء المعروضة في المستعرض والحوارات والقوائم. {top} هو XY و{front} هو XZ و{right} هو YZ، والمحور Z للأعلى. تحتفظ الأوامر والسكربتات والتصاميم المحفوظة بـ XY وXZ وYZ."
+  },
+  "he": {
+    "prefs.origin_plane_names": "שמות מישורי הראשית",
+    "prefs.origin_plane_names_note": "השמות המוצגים בדפדפן, בתיבות הדו־שיח וברשימות. {top} הוא XY, {front} הוא XZ ו־{right} הוא YZ, כש־Z למעלה. פקודות, סקריפטים ותכנונים שמורים שומרים על XY, XZ ו־YZ."
+  },
+  "de": {
+    "prefs.origin_plane_names": "Namen der Ursprungsebenen",
+    "prefs.origin_plane_names_note": "Namen in Browser, Dialogen und Listen. {top} ist XY, {front} ist XZ und {right} ist YZ, mit Z nach oben. Befehle, Skripte und gespeicherte Konstruktionen behalten XY, XZ und YZ."
+  },
+  "ko": {
+    "prefs.origin_plane_names": "원점 평면 이름",
+    "prefs.origin_plane_names_note": "브라우저, 대화 상자, 목록에 표시되는 이름입니다. {top}은 XY, {front}는 XZ, {right}는 YZ이며 Z가 위쪽입니다. 명령, 스크립트, 저장된 디자인은 XY, XZ, YZ를 유지합니다."
+  },
+  "vi": {
+    "prefs.origin_plane_names": "Tên các mặt phẳng gốc",
+    "prefs.origin_plane_names_note": "Tên hiển thị trong trình duyệt, hộp thoại và danh sách. {top} là XY, {front} là XZ và {right} là YZ, với Z hướng lên. Lệnh, script và thiết kế đã lưu vẫn dùng XY, XZ và YZ."
+  }
+}
