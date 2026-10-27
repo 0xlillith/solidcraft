@@ -83,17 +83,24 @@ active sketch, source state, external font, dependency or CI setting is added.
 
 ## Acceptance and remaining work
 
-The tests live in the existing `crates/doc/src/drawing_tests.rs`. Original
+The record tests live in the existing `crates/doc/src/drawing_tests.rs`. Original
 fixtures cover a paper rectangle and stored expressions; deterministic ordering;
 drawing/local identity separation; unknown owners; absent/empty sketches; size
 limits before typed allocation; finite/index/constraint rejection; unsupported
 auxiliary data; inline-design round trips without model changes; and bounded
-JSON mutations. Actual executed results belong in the PR, not this design note.
+JSON mutations. The existing `crates/io/src/design/drawing_tests.rs` also exercises
+these records through real design-container and plain-JSON writers/readers:
+round trips retain the paper-mm geometry, expressions and drawing-local ownership;
+changing one sketch changes only its drawing entry, not the model/container metadata
+or a second drawing; damaged sketch records refuse the whole input without falling
+back to another drawing's sheet. These checks do not run an editor or evaluate a model.
+Actual executed results belong in the PR, not this design note.
 
 The command/store increment still depends on W38.0 #6336 and the real K session
 interfaces. It must supply read-only expression bindings and evaluation, solved
 state, create/edit/finish/cancel, drawing-local undo/redo and checkpoints, hostile
-command handling, container reopening and UI/native/browser parity. W38d's later
+command handling, reopening after live edits and UI/native/browser parity. The
+record-only container checks above are not that end-to-end acceptance. W38d's later
 saved-fill integration must retain outer-plus-holes identity after edits. W38b/c/e
 and source-edge projection remain with their existing owners.
 
