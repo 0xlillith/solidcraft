@@ -5,6 +5,8 @@
 - **Requested destination:** 0xlillith's personal SolidCraft repository.
 - **Scope:** reusable materials, appearances, finishes, lights, environments, backgrounds, studios, setups, mechanical parts and other declarative assets.
 
+**Follow-up decision, 27 October 2026:** the companion [Persistent libraries, package organization, Drawings and themes](asset-pack-lifecycle-and-organization-2026-10-27.md) extends this spike and supersedes the original assumption that every temporary development ZIP layout needs preservation or a runtime importer. Rebuild development content into useful independent packs; preserve provenance and actual saved-document meaning. The companion also specifies user-data storage across application updates and distinguishes design edits, drawing edits and UI-theme preference activation. Neither report declares these features implemented.
+
 ## Contents
 
 - [Recommendation and decisions](#1-recommendation)
@@ -60,6 +62,7 @@ An asset pack supplies **data**. It does not install Python scripts, native libr
 | First dependency policy | Self-contained packs where practical; exact, source-bound external pins when needed. |
 | Existing projects | Copy the selected definitions and permitted resource closure into the design; preserve exact receipts. |
 | Updates | Install versions side by side. Updating a library does not update existing projects. |
+| Application updates | Retain installed packs in durable per-user data outside the application installation; see the companion lifecycle spike for profiles, migration and packaging limits. |
 | Compatibility | Separate package/schema versions from host features, importers and actual renderer capabilities. |
 | Fasteners | Extend existing standard-part insertion and resizing with bounded families and variants. |
 | Trust | Distinguish source identity, integrity, publisher claims and runtime validation. |
@@ -195,7 +198,7 @@ These names are illustrative and **do not currently exist**:
 | `library.pack.rollback` / `library.pack.remove` | Change availability for future use, respecting pins and known dependents. |
 | `library.source.list` / `add` / `remove` | Manage explicitly configured catalogs. |
 | `library.asset.inspect` | Inspect a resolved typed asset and backend support. |
-| `library.asset.apply` | Apply a resolved asset through its supported adapter in one document transaction. |
+| `library.asset.apply` | Apply a resolved asset through its supported adapter in the correct transaction scope: design, drawing or user preference. |
 
 Preserve existing `library.inspect/export/apply` behavior for scalar libraries. New commands should not reinterpret old JSON or silently widen its permissions. Programmatic calls take explicit arguments and never open dialogs; the UI owns pickers. Final command naming should be reviewed with the existing library and plugin owners. [R6] [R17]
 
@@ -609,7 +612,7 @@ An OS drag-and-drop action should distinguish a pack installation from importing
 - **Part family:** filter valid sizes, choose a representation, then place using the existing insertion tools.
 - **Setup:** review camera/environment/lights/render/post scopes before applying.
 
-A preview is disposable. **Apply** is one document edit, **Cancel** is none, and an additional **OK** must not create duplicate undo steps.
+A preview is disposable. For the design assets listed here, **Apply** is one document edit, **Cancel** is none, and an additional **OK** must not create duplicate undo steps. The companion spike adds Drawings assets through drawing transactions and UI themes through preference activation; theme changes do not enter CAD undo or alter drawing output.
 
 ### 10.7 Useful failures
 
@@ -652,7 +655,7 @@ Initially accept an explicit catalog URL. A `.well-known` discovery document can
 | Candidate | Recommended initial treatment |
 |---|---|
 | Small project-maintained starter catalog | Curated native packs, shipped source identity/trust root, explicit quality/capability status. The endpoint would need to be created. |
-| `0xlillith/solidcraft-render-catalog` | Pilot content source through a deliberate adapter/new pack releases; preserve existing publication artifacts. |
+| `0xlillith/solidcraft-render-catalog` | Pilot source rebuilt into coherent native runtime packs; preserve provenance and actual user-document meaning, not temporary archive grouping. See the companion spike. |
 | Poly Haven | Candidate optional texture/HDRI provider adapter or reviewed repackaging of selected assets. Its published asset license is CC0; current API documentation asks for clear provider credit. [S15] [S16] |
 | ambientCG | Candidate optional source/adapter for selected CC0 assets, preserving original metadata and notices. [S17] |
 | User/company static source | Explicit URL, private credentials where needed, source-bound identities. |
@@ -673,6 +676,8 @@ Explicitly configured intranet sources may be allowed by policy. A public pack/c
 In the browser, validate the actual deployed-origin CORS, authentication and download behavior. A working native request, a source's documentation or a wasm compile does not establish that a web importer works. Do not invent a proxy service or weaken browser security as a workaround.
 
 ## 12. Reliable installation, updates and cleanup
+
+Installed content belongs in durable per-user application data, independent of executable replacement and disposable caches. Application updates, pack updates and document migrations are separate operations. The companion spike defines storage options, channel profiles, rollback, relocation, backup, uninstall qualifications and browser-specific behavior.
 
 ### 12.1 Lifecycle
 
@@ -839,19 +844,19 @@ Its HDR-resource capture/digest/atomic-edit pattern is useful. Its stated limits
 
 ### 15.3 Published render catalog
 
-Preserve:
+The follow-up scope explicitly permits replacing the development archive structure. Rebuild runtime packs around coherent families, capability/rights boundaries and explicit quality tiers; keep sources, masters, previews and authoring tools separate from normal installation. Preserve:
 
-- Existing IDs and links between appearance and physical profiles.
+- Useful existing identifiers as explicit aliases/origin mappings, and links between appearance and physical profiles.
 - Source quantities/units/conditions and unknown values.
 - Per-map roles, color handling, physical extent and finite-patch semantics.
 - Existing source commits, release artifact digests and file inventories.
 - Distinctions among authored, published, validated, native-tested and visually qualified.
 
-Do not rewrite already published ZIPs to insert `pack.json`. For historical imports, use a compiled explicit adapter for a known layout/version and expected artifact digest. It selects supported inert resources, records omissions and preserves unsupported references as unavailable; it does not execute included authoring scripts or install them as plugins.
+Do not require a permanent runtime importer for every early authoring ZIP. First identify actual installed users and saved documents that depend on a historical format. Where a migration is necessary, use a bounded explicit conversion for that known input, retaining its source hashes and importer version; never execute included authoring scripts.
 
-The original archive remains a historical artifact. The normalized receipt records the importer version and original archive/file hashes. Call the result **Legacy catalog import**, not a conforming historical v1 pack.
+Repackaging may create new filenames, grouping, layout and development-format versions. It must not silently reinterpret already applied document data or replace bytes behind an advertised immutable identity. A historical archive is evidence of its original content, not retroactively a conforming native pack. A one-time mapping report can record splits such as one former material record becoming a physical card plus an independent appearance.
 
-New releases can publish native packs alongside existing source/master deliverables. Keep runtime packs compact and self-contained initially; do not silently reclassify source ZIPs, generators, preview HTML galleries or full datasheets as application assets.
+Publish new runtime products under new release identities. Source/master artifacts can remain separately available where useful. The companion spike gives the proposed authoring/catalog organization, migration sequence and package-boundary criteria; this documentation change does not itself alter any release archive.
 
 ### 15.4 A concrete pilot
 
