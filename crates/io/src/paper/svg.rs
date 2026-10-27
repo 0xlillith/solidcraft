@@ -66,18 +66,9 @@ pub fn paper_svg(scene: &Prepared) -> Result<(Vec<u8>, SvgReport)> {
     Ok((w.out.into_bytes(), on.report))
 }
 
-/// Nanometres written as millimetres onto `out`: the integer part, then up to six decimals
-/// without trailing zeros.
+/// Nanometres written as millimetres onto `out`, with up to six decimals.
 fn push_number(out: &mut String, n: i64) {
-    let (sign, n) = if n < 0 { ("-", n.unsigned_abs()) } else { ("", n.unsigned_abs()) };
-    let (whole, mut part, mut digits) = (n / 1_000_000, n % 1_000_000, 6);
-    let _ = write!(out, "{sign}{whole}");
-    if part != 0 {
-        while part % 10 == 0 {
-            (part, digits) = (part / 10, digits - 1);
-        }
-        let _ = write!(out, ".{part:0digits$}");
-    }
+    super::push_mm(out, n, 6);
 }
 
 /// [`push_number`] as its own text, for the numbers written once per document.
