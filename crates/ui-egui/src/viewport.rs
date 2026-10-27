@@ -5369,16 +5369,14 @@ pub(crate) fn refresh_layout(app: &mut SolveApp, scale: f32) {
         }
         // OK and Cancel in the view's corner (#6709) take the top right; the axis view goes below.
         let corner = crate::view_confirm::size(app);
-        let content = if app.ui.layout == crate::shell::LayoutMode::Docked { rect } else { content };
-        app.viewport.layout = Some(crate::viewport_layout::Layout::with_content(
-            rect,
-            content,
-            &docks,
-            scale,
-            app.preferences.navigator_style,
-            corner,
-            app.ui.show_navigation_bar,
-        ));
+        let style = app.preferences.navigator_style;
+        let show_bar = app.ui.show_navigation_bar;
+        app.viewport.layout = Some(if crate::render_workspace::active(app) {
+            crate::viewport_layout::Layout::product(rect, content, &docks, scale, style, corner, show_bar)
+        } else {
+            let content = if app.ui.layout == crate::shell::LayoutMode::Docked { rect } else { content };
+            crate::viewport_layout::Layout::with_content(rect, content, &docks, scale, style, corner, show_bar)
+        });
     }
 }
 
@@ -5560,7 +5558,7 @@ pub fn look_at_selection(app: &mut SolveApp) {
     }
 }
 
-fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
+pub(crate) fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     if !app.ui.show_navigation_bar || app.viewport.layout.as_ref().is_some_and(|l| !l.navigation.is_positive()) {
         return;
     }
