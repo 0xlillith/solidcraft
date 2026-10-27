@@ -160,3 +160,34 @@ and source-edge projection remain with their existing owners.
 
 [issue]: https://github.com/tangency-labs/solidcraft/issues/7082
 [storage]: https://github.com/tangency-labs/solidcraft/pull/3891
+
+## Shared command-store receiver (R3)
+
+The existing W38.0 store from CamWight's #6336, revision `07984653`, is now
+composed with this embedded K receiver. This is a source-compatible port of the
+same `cmd::sketch_store`, not another store or a replacement main-target PR.
+Its original module, including its routing scan and null/exact-number tests,
+is unchanged. The calls present on this receiver go through `target`, `active`,
+`read`, `write`, `update` and `checked` as in the original work.
+
+The receiver predates several unrelated main changes. This adaptation does not
+import pattern-expression refresh, live-link caching, Cancel Sketch, newer
+projection de-duplication, coincident-circle tools, motion traces, or later
+MidPoint/standard-part behavior just to make a cherry-pick apply. In particular,
+`run_links` retains this receiver's original projection behavior inside the
+shared update transaction. Model-only joint/plane lookups stay explicitly
+marked. Original author/source references remain in the commit and PR.
+
+This step is deliberately **still model-store routing**, not the sheet receiver.
+The drawing part gate remains unchanged; no drawing id is put into
+`Session::active_sketch`. Two receiver-specific engine tests exercise model/sheet
+id collisions, refusal of model sketch commands with a drawing open, successful
+model editing after closing it, and callback failure without publishing a clone.
+Their executed results, if available, belong in the PR.
+
+The next change must give an active sketch an explicit owner, route sheet edits
+to R2, and preserve model-only command refusals before enabling existing tools.
+Drawing-owned dimension definitions, create/edit/finish/cancel, live presentation,
+undo/checkpoint restoration and UI acceptance remain incomplete. Integrating this
+port is not evidence that #6336 landed on main or that its independent full gate
+qualifies the combined receiver.

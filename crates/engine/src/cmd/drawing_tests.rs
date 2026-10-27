@@ -452,3 +452,84 @@ fn drawing_steps_in_any_order_keep_the_rules() {
         }
     }
 }
+
+/// The shared model-store port must not make a saved sheet sketch a model feature,
+/// even when their numeric ids coincide. Drawing tools are not enabled by this port.
+#[test]
+fn sheet_records_do_not_redirect_the_shared_model_sketch_store() {
+    use crate::cmd::sketch_store;
+    use solidcraft_doc::drawing::SheetSketch;
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::Sketch;
+
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Model sketch"}));
+    let model_id = s.active_sketch.unwrap();
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [40, 0]]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "drawing.create", json!({"name": "Drawing", "units": "in"}));
+    let mut ids = IdSource::seeded(6336);
+    let separate = s.drawing("test").unwrap().allocate_id(&mut ids).unwrap();
+    assert!(s.doc.feature(separate).is_none());
+    s.edit_drawing("test", |drawing| {
+        let mut sheet_sketch = Sketch::new();
+        sheet_sketch.add_point(Vec2::new(15.0, 10.0), Some("sheet_point"))?;
+        for id in [model_id, separate] {
+            drawing.sketches.push(Arc::new(SheetSketch {
+                id,
+                sheet: drawing.sheets[0].id,
+                name: "Sheet sketch".into(),
+                sketch: sheet_sketch.clone(),
+            }));
+        }
+        Ok(())
+    })
+    .unwrap();
+    let drawing = open_one(&s);
+    let before = s.doc.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let model = sketch_store::read(&s.doc, model_id).unwrap();
+    assert_eq!(model.curves.len(), 1);
+    assert!(model.resolve_point("sheet_point").is_none());
+    assert!(sketch_store::read(&s.doc, separate).is_err());
+    assert!(sketch_store::target(&s, &json!({"sketch": separate}), "test").is_err());
+    for command in ["sketch.edit", "sketch.line", "sketch.export_dxf", "sketch.solve"] {
+        let error = refused(&mut s, command, json!({"sketch": model_id, "points": [[0, 0], [10, 0]]}));
+        assert!(error.contains("a drawing is open"), "{command}: {error}");
+        assert!(Arc::ptr_eq(&s.doc, &before));
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    }
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "sketch.edit", json!({"sketch": model_id.to_string()}));
+    run(&mut s, "sketch.point", json!({"point": [60, 5], "id": "model_point"}));
+    assert!(sketch_store::read(&s.doc, model_id).unwrap().resolve_point("model_point").is_some());
+    assert!(Arc::ptr_eq(s.doc.drawing(drawing.id).unwrap(), &drawing));
+    assert!(drawing.sheet_sketch(model_id).unwrap().sketch.resolve_point("model_point").is_none());
+}
+
+/// Callback refusal inside the existing store never publishes its private clone.
+#[test]
+fn receiver_store_callback_failure_preserves_model_drawings_and_history() {
+    use crate::cmd::sketch_store;
+    use solidcraft_geom::Vec2;
+
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    let id = s.active_sketch.unwrap();
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [40, 0]]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "drawing.create", json!({}));
+    run(&mut s, "drawing.close", json!({}));
+    let before = s.doc.clone();
+    let state = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let result: Result<()> = sketch_store::update(&mut s, id, |_, _, sketch| {
+        sketch.add_point(Vec2::new(15.0, 10.0), Some("not_committed"))?;
+        Err(bad("test", "refuse after changing the private sketch"))
+    });
+    assert!(result.unwrap_err().to_string().contains("private sketch"));
+    assert!(Arc::ptr_eq(&s.doc, &before));
+    assert!(Arc::ptr_eq(&s.model.state(), &state));
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    assert!(sketch_store::read(&s.doc, id).unwrap().resolve_point("not_committed").is_none());
+}
