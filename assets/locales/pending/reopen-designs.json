@@ -1,0 +1,14 @@
+{
+  "en": {
+    "Reopen designs": "Reopen designs",
+    "Reopen the designs that were open when SolidCraft was last closed": "Reopen the designs that were open when SolidCraft was last closed"
+  },
+  "ja": {
+    "Reopen designs": "デザインを再度開く",
+    "Reopen the designs that were open when SolidCraft was last closed": "前回 SolidCraft を閉じたときに開いていたデザインを再度開く"
+  },
+  "zh": {
+    "Reopen designs": "重新打开设计",
+    "Reopen the designs that were open when SolidCraft was last closed": "重新打开上次关闭 SolidCraft 时打开的设计"
+  }
+}
