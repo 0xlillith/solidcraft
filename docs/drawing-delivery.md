@@ -20,6 +20,31 @@ certification. The [updated study, attachment 33742361][study-current], linked f
 Where they differ, §18.10 supersedes the earlier study choices; later owner
 agreements take precedence in turn, as recorded below.
 
+## 27 October 2026 — current decisions overlay
+
+This update reconciles only the changed contracts and delivered slices. The
+[live RFC checklist](https://github.com/tangency-labs/solidcraft/issues/860)
+remains authoritative for the remaining packages. All the 24–25 October
+evidence below is dated; a draft is not an implemented product feature.
+
+- **G3 has changed:** [the maintainer's embedded storage decision][g3]
+  replaces separate `.scdwg` files. Drawings now belong inside the parent
+  design's `.solidcraft` container, as separate `drawings/<id>.json` entries,
+  or inline in plain JSON. Model and drawing have distinct undo histories.
+  K3 [#7098](https://github.com/tangency-labs/solidcraft/pull/7098) merged;
+  K3b [#7490](https://github.com/tangency-labs/solidcraft/pull/7490)
+  is a draft; the K4-prime in-file session follows in [#3891][storage-pr].
+- **W17a** [#4817][view-pr] merged into `drawings` on 27 October
+  as `de7bf4fc`. This delivers frame and scale data, not saved views.
+- **W06a** [#2457][hlr-pr] merged into `drawings` on 27 October
+  as `ebafe074`. The parallel-work and work-budget [#3013][hlr-parallel]
+  follow-up remains open; HLR-to-paper is not complete.
+- **X1** [#6184][dxf-claim] remains draft at `3fb2eef9`.
+  Six of its seven prior sheet regressions pass, and the 53 original DXF
+  byte pins are unchanged. The remaining curved-to-object trim case requires
+  source-proven circular identity; there is no passing full CI or wasm
+  evidence for this revised source.
+
 ## What the evidence means
 
 | Status | Meaning in this snapshot |
@@ -109,18 +134,20 @@ and their qualification remain separate work.
   [kernel/SolidCore tracking PR #4012][kernel-tracking] is separate work, not
   proof that a portable extraction or Drawing HLR API has landed. Coordinate
   W02–W06 with their current authors; do not start another truck-specific backend.
-- **G3 is decided:** [separate linked Drawing files][g3], with per-file undo.
-  The [JSON amendment][g3-json] requires JSON from the start, deterministic
-  save/open/save and preserved file encoding. This supersedes the open
-  embedded-versus-separate question in the bootstrap ledger.
-- **Storage contract:** [#3890][storage] owns versioned Drawing records and
-  migrations, relative source paths, missing-source behavior, caches, recovery
-  and file-kind-aware commands. Drawing containers distinguish their content
-  and use `drawing.json`, not a misleading empty `document.json`. Authored
-  source identity follows relative paths and a coherent repository version;
-  [short random string IDs][ids] use shared allocation. Derived results stay
-  in caches, outside authored JSON. These are agreed plans, not implemented
-  Drawing persistence in the pinned tree.
+- **G3 — drawings are embedded:** the [new in-design contract][g3]
+  supersedes the earlier linked Drawing-file option. Each authored drawing
+  lives in a separate entry in the design's container, or inline in plain
+  JSON. Undo and revision history are per drawing, without separate files.
+  The [older JSON amendment][g3-json] is still relevant to stable and
+  lossless save/reopen, but not to the old file split.
+- **Storage and sessions:** [#3890][storage] owns the drawing record,
+  versioning, in-file commands and recovery. K3 merged in
+  [#7098](https://github.com/tangency-labs/solidcraft/pull/7098);
+  K3b [#7490](https://github.com/tangency-labs/solidcraft/pull/7490)
+  updates persistence, and K4-prime follows in [#3891][storage-pr].
+  A drawing's source model is the same design file, not a relative external
+  link. Paper scenes and render results remain disposable caches. These
+  changes are staged; the complete workflow is not delivered here.
 - **Reference work can start earlier:** [#4892's revised slices][refs-plan]
   first handle planar faces, curved faces, edges/vertices and source keys without
   saving anything. Publication, automatic/deferred updates and background hosts
@@ -401,7 +428,7 @@ parent claims remain relevant even when a particular child is integrated.
 | W03 shared sections | Open shared-crossing code [#6272][section-crossings], then [#2068][section-pr], NOWN-DEV, base `main` | W02 | Shared crossing provider first; classified cut outcomes, winding/nesting and analytic accuracy evidence remain acceptance requirements. |
 | W04 section command/output | Open JSON-only [#2068][section-pr] at `d2a9e485` (2026-10-25) | W03; #6272 first; W10 geometry subset for later output | Explicit plane/occurrence input; read-only JSON and complete-or-error output; Cam's neutral adapter follows both merges. Physical SVG/DXF is a separate later export requirement. |
 | W05 HLR investigation | Open draft code [#2106][investigation-pr], SychPL; [findings][hlr-findings] | W01, W02 as needed | Review supported surfaces, analytic intervals, uncertainty and native/web cost before promotion. |
-| W06 HLR subset | Open code [#2457][hlr-pr]; draft extension [#3013][hlr-parallel], SychPL | Reviewed W05, W02 | Scene-wide visibility and provenance; shared bounded work and cancellation. Neither is integrated here. |
+| W06 HLR subset | [#2457][hlr-pr] merged into drawings on 27 Oct as ebafe074; [#3013][hlr-parallel] open — SychPL | Reviewed W05; W02 integration remains a separate provider | Analytic HLR core is integrated. Parallel work/aggregate budgets and full scene-to-paper acceptance remain subsequent pieces. |
 | W07 snapshot command | Parent claim [#5867][snapshot-pr], CamWight; V1 claim [#6482][mesh-lines-pr] into `main` (2026-10-25); [current plan][snapshot] | W17a; preview adapter or W06; W09b; W10 | V1 shared projection first; V3 on `drawings` adds source/owner identity under the [revised split][mesh-lines-split]. Frame/scale, occurrences, references, labels, scene, exact lines and shading remain later slices. |
 | W08 snapshot preview/output | Plan; coordinate W07, W10 and W16 owners | W07, W10 text/dimension subset; W04 reuse | SVG/DXF/PNG and preview with snapshot/accuracy status, physical size and command parity. |
 
@@ -416,14 +443,14 @@ adaptation to an existing producer's schema.
 | --- | --- | --- | --- |
 | W09 formats | W09a integrated; W09b claim [#5315][number-pr], armin0411; broader claim [#4897][dimensions-pr], CamWight | W00 | Shared numbers below UI, then typed tolerances/profiles; retain raw values and locale-independent meaning. |
 | W10 paper/layout | A1 integrated; parent claim [#4891][export-pr], CamWight | W01; W09/font contract for text | SVG/shared prepared traversal and earlier clipping, then text, dimensions/tables and pictures. |
-| W11 storage decision | G3 decided; claim [#3891][storage-pr], CamWight | W00 | Keep relocation, missing sources, browser access, resources, recovery and undo in one contract. |
-| W12 saved records | Parent claim [#3891][storage-pr]; K1 shared versioning is open code [#6196][k1-pr], CamWight; [K2 follows][k1-published] | W11, W01, W09 | Review K1, then bounded records/container; shared IDs, old-reader refusal and deterministic JSON round-trip. K1 does not supply saved Drawing records. |
+| W11 storage decision | Embedded-in-design G3 [#3890][storage]; K3 [#7098](https://github.com/tangency-labs/solidcraft/pull/7098) merged, K3b [#7490](https://github.com/tangency-labs/solidcraft/pull/7490) draft | W00 | Per-drawing undo/revisions within one design, no independent .scdwg file. Old linked-source acceptance rows are historical and require new in-file fixtures. |
+| W12 saved records | CamWight [#3891][storage-pr] at 36cf48a3; [K3b](https://github.com/tangency-labs/solidcraft/pull/7490) remains draft | W11, W01, W09 | Bounded in-design records, versioned drawing entries and old-reader refusal. Complete saved/reopen acceptance is pending. |
 | W13 references | Claim [#4893][refs-pr], CamWight | W01; first read-only slices can precede W12 | Full placement/name/intent; explicit ambiguous/lost/unverified states; bounded repair candidates. |
 | W14 invalidation/update | Same claim [#4893][refs-pr] | W12/W13; W06 for projected results | Source/layout/display keys; coherent publication and late-result rejection across edit/undo/close/cancel. |
-| W15 commands/undo | Claim [#3891][storage-pr], CamWight | W12–W14, staged by [storage plan][storage-plan] | Explicit IDs, file-kind routing, atomic bulk edits; drawing-only edits do not evaluate source geometry. |
+| W15 commands/undo | CamWight [#3891][storage-pr] (K4-prime in-file sessions) | W12–W14; [revised storage plan][storage-plan] | One drawing's edits and undo are isolated from its siblings and model; unchanged drawing data cannot trigger source evaluation. |
 | W16 workspace | Parent claim [#4895][workspace-pr], CamWight; open scaffold [#5349][ui-pr], Nathan-Dane | W15, W10 basic scene | Connect real providers to the shared UI kit/navigation; empty preview canvas is not an editor. |
 | W17 views | Parent package, split below | W06, W12–W16 for persistent views | Multiple aligned/derived views with independent style and visibility; reject graph cycles. |
-| W17a view data | Claim [#4817][view-pr], CamWight | Independent L0 slice using W01a | Exact frames, model-to-paper transform, scale and derivation/alignment data with analytic tests. |
+| W17a view data | Integrated [#4817][view-pr] on 27 Oct in drawings at de7bf4fc | Independent L0 data slice using W01a | Frame/scale definitions delivered; persisting, displaying and editing views are later work. |
 | W17b shaded views | Claim [#5626][shade-pr], CamWight | W17a, W10 picture; W06 for vector overlays | Tile CPU renderer → picture/grid → snapshot → outputs/canvas → cache; sheet DPI and honest pending/failure state. |
 | W17c view editing | [Plan inside existing claims][view-edit], CamWight | W12/W17a; W16-6 for the sheet side | Inspect/edit, inheritance, model-derived extents and boundary/content picking; source, undo and printed bytes remain coherent. |
 | W18 sheets/resources | Sheet children integrated; parent [#3877][sheets-parent], CamWight, now zero-file diff | W09/W10/W12/W15 for full objects | Typed title fields and anchored furniture; integrated border geometry is only the first slice. |
@@ -477,11 +504,11 @@ Neither this map nor a UI scaffold declares either milestone complete.
 | Boundary | Current owner / prerequisite | Small next delivery and evidence |
 | --- | --- | --- |
 | Shared paths → Drawing sources | CarelT [#5420][paths-pr] (open code targeting `main`) → [#5449][link-state-pr] (open draft); [Cam's agreement][path-handoff] | Reuse the path move and common loader/status contract. Do not duplicate K5 helpers or confuse file availability with Drawing result freshness. |
-| Versioning → storage → commands | CamWight [#3890][storage], open K1 [#6196][k1-pr], [K1–K12 order][storage-plan] | Review K1 shared versioning → K2 records → K3 container → K4 sessions/file kind/undo → K5 open/save → K6 relink → K7 cache → K8 source edits → K9 recovery → K10 tabs → K11 browser → K12 pack. Each child has its own gate. |
+| Versioning → storage → commands | CamWight [#3890][storage] and [#3891][storage-pr]; embedded plan [G3][g3] | K3 #7098 merged; K3b #7490 draft; K4-prime in-file sessions and subsequent view/source/cache integration follow. Separate file linking/packaging slices described in earlier comments are superseded; keep the new in-file undo and versioning acceptance explicit. |
 | Source versions → acceptance | amolinari-autotex [#5430][version-pr], open draft with 11 files | Bind minimal deterministic fixtures to the accepted storage API before executable integration claims. |
 | Shared numbers/text → labels | armin0411 [#5315][number-pr] (claim); CamWight [#4815][text-pr] merged as `d557c09c`, main only under the 2026-10-25 ancestry check above | Number formatting and measured text are separate dependencies; Drawing consumers still need integration. A metric API alone does not deliver shaping, fonts or Drawing layout. |
 | Paper A1 → canvas/SVG | CamWight [#4890][export], Nathan-Dane [#5349][ui-pr] | Shared prepared traversal/clipping and content token before picking/output. Distinguish valid empty results from unavailable, pending, failed and stale results; source freshness remains separate. |
-| Main DXF → Drawing adapter | [#5281][degree-pr] main only → [#5318][dxf-paths] → [#5319][dxf-file] → [#5320][dxf-read] → [#5321][dxf-one] | [Cam accepted the chain and `main` base][dxf-decision] for `0xlillith`; #5318 has the zero-file draft claim [#6184][dxf-claim]. On 2026-10-25, [#6130][sheet-dxf-options] is merged into `main` and [#5709][dxf-text-refusal] remains open; overlapping work still waits for #5709 and byte pins covering both outputs. A2 waits for #5321; SVG need not wait for this chain. |
+| Main DXF → Drawing adapter | [#5318][dxf-paths] / draft [#6184][dxf-claim] → [#5319][dxf-file] → [#5320][dxf-read] → [#5321][dxf-one] | Original 53 byte pins remain unchanged. X1 head 3fb2eef9 has 6/7 sheet failures fixed, one source-provenance blocker, and is not merge-ready; X2–X4 and paper A2 follow only after its qualified integration. [Accepted main-base agreement][dxf-decision]. |
 | HLR → frame → snapshot | SychPL [#2457][hlr-pr]/[#3013][hlr-parallel], CamWight [#4816][view-data]/[#5866][snapshot-issue] | [Accepted scale × accuracy × occurrence matrix][accuracy-contract] beside W07 snapshot tests, using neutral HLR fixtures. Bind to the actual `max_error_mm` check and separate `chord_mm` sampling API; no silent clamping or Sampled certification. |
 | Shading → paper picture | CamWight [#5624][shade-issue], [picture plan][writers-plan] | [Registration/colour/alpha conventions and acceptance child agreed][shade-acceptance]. Bind runnable checks to S1 and S3 when their PRs exist; no second renderer or claim of a shipped provider. |
 | View editing → canvas | CamWight [W17c][view-edit], Nathan-Dane [#5349][ui-pr] | [Behaviour/undo matrix accepted][ux-acceptance]; bind to the actual inspect/edit commands and window host. Real providers precede enabled editing; scaffold validation is not persisted-editor acceptance. |
@@ -564,10 +591,10 @@ study traceability from completion of this documentation child.
 [shepherd]: https://github.com/tangency-labs/solidcraft/issues/860#issuecomment-6352192270
 [kernel-pause]: https://github.com/tangency-labs/solidcraft/issues/3992
 [kernel-tracking]: https://github.com/tangency-labs/solidcraft/pull/4012
-[g3]: https://github.com/tangency-labs/solidcraft/issues/3890#issuecomment-6351030613
+[g3]: https://github.com/tangency-labs/solidcraft/issues/3890#issuecomment-6427665746
 [g3-json]: https://github.com/tangency-labs/solidcraft/issues/3890#issuecomment-6352154058
 [storage]: https://github.com/tangency-labs/solidcraft/issues/3890
-[storage-plan]: https://github.com/tangency-labs/solidcraft/issues/3890#issuecomment-6351904331
+[storage-plan]: https://github.com/tangency-labs/solidcraft/issues/3890#issuecomment-6427665746
 [ids]: https://github.com/tangency-labs/solidcraft/issues/3890#issuecomment-6375022562
 [refs-plan]: https://github.com/tangency-labs/solidcraft/issues/4892#issuecomment-6344611677
 [svg-first]: https://github.com/tangency-labs/solidcraft/issues/4890#issuecomment-6360998195
