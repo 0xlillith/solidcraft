@@ -622,3 +622,210 @@ fn mutate(v: &mut Value, pick: &mut usize, lie: &Value, how: u64) -> bool {
         _ => false,
     }
 }
+
+// W38a: original paper-mm payload, independent of any Drawing UI or model solver.
+fn paper_sketch_file() -> Value {
+    let mut d = file(&plate());
+    let mut sketch = solidcraft_sketch::Sketch::new();
+    let pts = [(15.0, 10.0), (55.0, 10.0), (55.0, 30.0), (15.0, 30.0)];
+    for (i, (x, y)) in pts.into_iter().enumerate() {
+        sketch.add_point(solidcraft_geom::Vec2::new(x, y), Some(&format!("p{i}"))).unwrap();
+    }
+    for i in 0..4 {
+        sketch.add_line_pts(i + 1, (i + 1) % 4 + 1, Some(&format!("l{i}"))).unwrap();
+    }
+    sketch.add_constraint(solidcraft_sketch::ConstraintKind::Length { l: 0, value: 40.0 }, Some("Width".into())).unwrap();
+    sketch.points[1].exprs = Some(Box::new(solidcraft_sketch::PointExprs { x: Some("Inset + 5 mm".into()), y: None }));
+    d["sketches"] = json!([{"id": ids::encode(41), "sheet": d["sheets"][0]["id"], "name":"Detail outline", "sketch": sketch}]);
+    d
+}
+
+#[test]
+fn sheet_sketch_records_round_trip_in_paper_millimetres() {
+    let input = paper_sketch_file();
+    let loaded = read(&input).unwrap();
+    let saved = file(&loaded);
+    assert_eq!(saved["sketches"], input["sketches"]);
+    assert_eq!(saved["units"], json!({"fixed":{"unit":"in"}}));
+    assert_eq!(saved["sketches"][0]["sketch"]["points"][2]["pos"], json!([55.0, 10.0]));
+    assert_eq!(saved["sketches"][0]["sketch"]["constraints"][0]["value"], json!(40.0));
+    assert_eq!(saved["sketches"][0]["sketch"]["constraints"][0]["param"], json!("Width"));
+    assert_eq!(read(&saved).unwrap().to_json().unwrap(), loaded.to_json().unwrap());
+}
+
+#[test]
+fn sheet_sketch_records_are_ordered_by_id_without_reordering_sheets_or_geometry() {
+    let mut input = paper_sketch_file();
+    let mut second = input["sketches"][0].clone();
+    second["id"] = json!(ids::encode(40));
+    second["sheet"] = input["sheets"][1]["id"].clone();
+    input["sketches"].as_array_mut().unwrap().push(second);
+    let d = read(&input).unwrap();
+    assert_eq!(d.sketches.iter().map(|s| s.id).collect::<Vec<_>>(), [40, 41]);
+    assert_eq!(file(&d)["sheets"], input["sheets"]);
+    let mut reverse = d.clone();
+    reverse.sketches.reverse();
+    assert_eq!(reverse.to_json().unwrap(), d.to_json().unwrap());
+    assert_eq!(reverse.sketches[0].id, 41, "saving must not mutate the live record");
+    assert_eq!(d.sheet_sketch(41).unwrap().sheet, d.sheets[0].id);
+    assert!(bare().sheet_sketch(41).is_none(), "lookup must not fall back to another drawing");
+}
+
+#[test]
+fn sheet_sketch_ids_share_the_drawing_namespace_and_owners_must_resolve() {
+    let good = paper_sketch_file();
+    for duplicate in [good["id"].clone(), good["sources"][0]["id"].clone(), good["sheets"][0]["id"].clone(), json!(ids::encode(0))] {
+        let mut v = good.clone();
+        v["sketches"][0]["id"] = duplicate;
+        assert!(read(&v).is_err());
+    }
+    let mut v = good.clone();
+    v["sketches"][0]["sheet"] = good["sources"][0]["id"].clone();
+    assert!(refusal(&v).contains("owner does not exist"));
+    v["sketches"][0]["sheet"] = json!(ids::encode(999));
+    assert!(read(&v).is_err());
+    let mut duplicate = good;
+    let record = duplicate["sketches"][0].clone();
+    duplicate["sketches"].as_array_mut().unwrap().push(record);
+    assert!(read(&duplicate).is_err());
+
+    let mut d = read(&paper_sketch_file()).unwrap();
+    let mut generator = IdSource::seeded(777);
+    let taken = generator.next(&BTreeSet::new()).unwrap();
+    Arc::make_mut(&mut d.sketches[0]).id = taken;
+    assert_ne!(d.allocate_id(&mut IdSource::seeded(777)).unwrap(), taken);
+}
+
+#[test]
+fn drawings_without_sketches_keep_their_old_shape_and_gain_only_the_pending_format() {
+    let old = plate();
+    let v = file(&old);
+    assert!(v.get("sketches").is_none());
+    assert!(read(&v).unwrap().sketches.is_empty());
+    assert!(DRAWING.pending_names().iter().any(|n| n == "sheet-sketches"));
+    let mut explicit_empty = v;
+    explicit_empty["sketches"] = json!([]);
+    assert!(file(&read(&explicit_empty).unwrap()).get("sketches").is_none());
+}
+
+#[test]
+fn sheet_sketch_record_caps_run_before_typed_payload_decoding() {
+    let base = paper_sketch_file();
+    for (field, cap) in
+        [("points", solidcraft_sketch::MAX_POINTS), ("curves", solidcraft_sketch::MAX_CURVES), ("constraints", solidcraft_sketch::MAX_CONSTRAINTS)]
+    {
+        let mut v = base.clone();
+        // Null would fail typed SPoint/Curve/Constraint decoding; the size guard must run first.
+        v["sketches"][0]["sketch"][field] = Value::Array(vec![Value::Null; cap + 1]);
+        let why = refusal(&v);
+        assert!(why.contains(&format!("{field} limit exceeded")), "{why}");
+    }
+    let mut too_many = base.clone();
+    too_many["sketches"] = Value::Array(vec![Value::Null; MAX_SHEET_SKETCHES + 1]);
+    assert!(refusal(&too_many).contains("too many sheet sketches"));
+    for malformed in [Value::Null, json!({}), json!(true)] {
+        let mut v = base.clone();
+        v["sketches"] = malformed;
+        assert!(read(&v).is_err());
+    }
+    let mut spline = base;
+    spline["sketches"][0]["sketch"]["curves"][0] = json!({"type":"spline", "id":"s1", "pts":vec![0; solidcraft_sketch::MAX_SPLINE_POINTS + 1]});
+    assert!(refusal(&spline).contains("spline point limit exceeded"));
+}
+
+#[test]
+fn sheet_sketch_count_limit_is_inclusive_and_entity_budget_is_shared() {
+    let mut v = paper_sketch_file();
+    let template = v["sketches"][0].clone();
+    let records: Vec<_> = (0..MAX_SHEET_SKETCHES)
+        .map(|i| {
+            let mut record = template.clone();
+            record["id"] = json!(ids::encode(100 + i as u64));
+            record["sketch"] = serde_json::to_value(solidcraft_sketch::Sketch::new()).unwrap();
+            record
+        })
+        .collect();
+    v["sketches"] = json!(records);
+    assert_eq!(read(&v).unwrap().sketches.len(), MAX_SHEET_SKETCHES);
+    // Individually allowed arrays must not multiply the drawing-wide budget.
+    let payload = json!({"points":vec![Value::Null; solidcraft_sketch::MAX_POINTS]});
+    let many: Vec<_> = (0..5).map(|i| json!({"id":ids::encode(100+i),"sketch":payload})).collect();
+    v["sketches"] = json!(many);
+    assert!(refusal(&v).contains("drawing sketch entity limit exceeded"));
+}
+
+#[test]
+fn sheet_sketch_payload_refuses_bad_geometry_identity_and_constraints_without_repair() {
+    let original = paper_sketch_file();
+    let edits: Vec<(&str, Value)> = vec![
+        ("/sketches/0/sketch/points/1/id", json!("origin")),
+        ("/sketches/0/sketch/curves/0/id", json!("p0")),
+        ("/sketches/0/sketch/points/0/fixed", json!(false)),
+        ("/sketches/0/sketch/points/0/pos", json!([1.0, 0.0])),
+        ("/sketches/0/sketch/curves/0/a", json!(9999)),
+        ("/sketches/0/sketch/constraints/0/l", json!(9999)),
+        ("/sketches/0/sketch/constraints/0/value", json!(-1.0)),
+        ("/sketches/0/name", json!(" ")),
+        ("/sketches/0/sketch/points/1/exprs/x", json!("x".repeat(4097))),
+        ("/sketches/0/sketch/constraints/0/param", json!("\n")),
+    ];
+    for (pointer, bad) in edits {
+        let mut v = original.clone();
+        *v.pointer_mut(pointer).unwrap() = bad;
+        assert!(read(&v).is_err(), "accepted {pointer}");
+    }
+    let mut d = read(&original).unwrap();
+    Arc::make_mut(&mut d.sketches[0]).sketch.points[1].pos.x = f64::NAN;
+    assert!(d.validate().is_err());
+    assert!(d.to_json().is_err(), "NaN must not silently serialize as null");
+    assert_eq!(original, paper_sketch_file(), "the oracle was not modified");
+}
+
+#[test]
+fn sheet_sketch_records_refuse_unconnected_auxiliary_and_model_only_state_explicitly() {
+    let original = paper_sketch_file();
+    for field in ["links", "patterns", "offsets", "freeform_offsets", "wires"] {
+        let mut v = original.clone();
+        v["sketches"][0]["sketch"][field] = json!([null]);
+        assert!(refusal(&v).contains("not supported yet"), "{field}");
+    }
+    for flag in ["slice", "three_d"] {
+        let mut v = original.clone();
+        v["sketches"][0]["sketch"]["view"] = json!({flag:true});
+        assert!(refusal(&v).contains("model-only"));
+    }
+    let mut unknown = original;
+    unknown["sketches"][0]["source_path"] = json!("another-design.solidcraft");
+    assert!(refusal(&unknown).contains("unknown field"));
+}
+
+#[test]
+fn inline_design_roundtrip_preserves_sketch_payload_without_model_parameter_creation() {
+    let d = read(&paper_sketch_file()).unwrap();
+    let mut doc = crate::Document::new("Source");
+    let before = doc.to_json();
+    doc.drawings.push(Arc::new(d));
+    let reopened = crate::Document::from_json(&doc.to_json()).unwrap();
+    assert_eq!(file(&reopened.drawings[0])["sketches"], paper_sketch_file()["sketches"]);
+    let mut only_model = reopened;
+    only_model.drawings.clear();
+    assert_eq!(only_model.to_json(), before, "record IO must not create source parameters or features");
+}
+
+#[test]
+fn sheet_sketch_json_mutations_are_errors_or_complete_reopenable_records() {
+    let base = paper_sketch_file();
+    let count = count(&base);
+    for index in 0..count {
+        for lie in [Value::Null, json!(true), json!("hostile"), json!(-1), json!(1e100)] {
+            let mut v = base.clone();
+            let mut pick = index;
+            mutate(&mut v, &mut pick, &lie, 0);
+            if let Ok(d) = read(&v) {
+                d.validate().unwrap();
+                let saved = d.to_json().unwrap();
+                assert_eq!(Drawing::from_json(&saved).unwrap(), d);
+            }
+        }
+    }
+}

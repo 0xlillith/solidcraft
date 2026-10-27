@@ -33,6 +33,10 @@
 //! the family's format check, every number in range, the upgrade, the typed record, then
 //! [`Drawing::validate`]; [`Drawing::from_value`] the same from the format check on.
 
+mod sketch;
+
+pub use sketch::{MAX_SHEET_SKETCHES, SheetSketch};
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -88,6 +92,9 @@ pub struct Drawing {
     pub language: String,
     /// In order, each behind its own `Arc`, so an undo step shares every sheet it didn't change.
     pub sheets: Vec<Arc<Sheet>>,
+    /// Authored sheet sketches, ordered by id on disk, with their original paper-mm payload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", serialize_with = "sketch::serialize_sorted")]
+    pub sketches: Vec<Arc<SheetSketch>>,
 }
 
 /// A design the drawing draws: the design the drawing is in. Views and sheets name it by its id,
@@ -182,6 +189,7 @@ impl Drawing {
             units: Units::default(),
             language: language.into(),
             sheets: vec![Arc::new(first)],
+            sketches: Vec::new(),
         };
         drawing.validate()?;
         Ok(drawing)
@@ -203,7 +211,9 @@ impl Drawing {
         let (version, applied) = DRAWING.take_version(&mut v)?;
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
-        let d: Drawing = serde_json::from_value(v).map_err(damaged)?;
+        sketch::check_raw(&v).map_err(damaged)?;
+        let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
+        d.sketches.sort_by_key(|record| record.id);
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
@@ -213,6 +223,9 @@ impl Drawing {
     /// properties are kept as they came, and indenting them can make a drawing that read in
     /// under the limit save over it.
     pub fn to_json(&self) -> Result<String> {
+        if !self.sketches.is_empty() {
+            self.validate()?;
+        }
         let text = serde_json::to_string_pretty(self).map_err(|e| DocError::Invalid(format!("drawing not saved: {e}")))?;
         require(text.len() <= MAX_DRAWING_BYTES, || format!("drawing too large to save (at most {} MiB)", MAX_DRAWING_BYTES >> 20))?;
         Ok(text)
@@ -224,10 +237,18 @@ impl Drawing {
         id_source.next(&self.ids().collect())
     }
 
+    /// Read only this drawing's sketch. Identical local sketch ids in another drawing are unrelated.
+    pub fn sheet_sketch(&self, id: u64) -> Option<&Arc<SheetSketch>> {
+        self.sketches.iter().find(|record| record.id == id)
+    }
+
     /// Every object's id, of every kind: what a new id must differ from. Each later kind adds its
     /// own here.
     fn ids(&self) -> impl Iterator<Item = u64> {
-        std::iter::once(self.id).chain(self.sources.iter().map(|s| s.id)).chain(self.sheets.iter().map(|s| s.id))
+        std::iter::once(self.id)
+            .chain(self.sources.iter().map(|s| s.id))
+            .chain(self.sheets.iter().map(|s| s.id))
+            .chain(self.sketches.iter().map(|s| s.id))
     }
 
     /// The record's rules (the module's notes): what reading a drawing checks, and what every edit
@@ -244,6 +265,7 @@ impl Drawing {
             let length = unit.trim() == unit.as_str() && expr::unit_info(unit).is_some_and(|(kind, _)| kind == expr::Kind::Length);
             require(length, || "the drawing's unit is not a length unit (such as `mm` or `in`)".into())?;
         }
+        sketch::check_drawing(self)?;
         let mut seen = BTreeSet::new();
         for id in self.ids() {
             require(id != 0, || "an object has the id 0, which is never one".into())?;
