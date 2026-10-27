@@ -1,0 +1,74 @@
+{
+  "cs": {
+    "cmd.canvas_to_sketch": "Náčrt z plátna"
+  },
+  "da": {
+    "cmd.canvas_to_sketch": "Skitse fra referencebillede"
+  },
+  "de": {
+    "cmd.canvas_to_sketch": "Skizze aus Zeichenfläche"
+  },
+  "en": {
+    "cmd.canvas_to_sketch": "Canvas to Sketch"
+  },
+  "es": {
+    "cmd.canvas_to_sketch": "Boceto desde lienzo"
+  },
+  "fr": {
+    "cmd.canvas_to_sketch": "Esquisse depuis le canevas"
+  },
+  "gl": {
+    "cmd.canvas_to_sketch": "Bosquexo desde o lenzo"
+  },
+  "hu": {
+    "cmd.canvas_to_sketch": "Vázlat vászonból"
+  },
+  "id": {
+    "cmd.canvas_to_sketch": "Kanvas ke Sketsa"
+  },
+  "it": {
+    "cmd.canvas_to_sketch": "Schizzo da immagine di riferimento"
+  },
+  "ja": {
+    "cmd.canvas_to_sketch": "キャンバスからスケッチ"
+  },
+  "ko": {
+    "cmd.canvas_to_sketch": "캔버스에서 스케치"
+  },
+  "ms": {
+    "cmd.canvas_to_sketch": "Kanvas ke Lakaran"
+  },
+  "nl": {
+    "cmd.canvas_to_sketch": "Canvas naar schets"
+  },
+  "pl": {
+    "cmd.canvas_to_sketch": "Szkic z płótna"
+  },
+  "pt-BR": {
+    "cmd.canvas_to_sketch": "Esboço a partir da tela de referência"
+  },
+  "ro": {
+    "cmd.canvas_to_sketch": "Schiță din pânză"
+  },
+  "ru": {
+    "cmd.canvas_to_sketch": "Эскиз из подложки"
+  },
+  "sv": {
+    "cmd.canvas_to_sketch": "Skiss från duk"
+  },
+  "tr": {
+    "cmd.canvas_to_sketch": "Tuvalden eskiz"
+  },
+  "uk": {
+    "cmd.canvas_to_sketch": "Ескіз з полотна"
+  },
+  "vi": {
+    "cmd.canvas_to_sketch": "Phác thảo từ hình ảnh Canvas"
+  },
+  "zh-TW": {
+    "cmd.canvas_to_sketch": "畫布轉草圖"
+  },
+  "zh": {
+    "cmd.canvas_to_sketch": "画布转草图"
+  }
+}
