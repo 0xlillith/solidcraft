@@ -1,10 +1,10 @@
-# Drawing-owned sheet sketches: records and atomic edits
+# Drawing-owned sheet sketches: records, solving and command lifecycle
 
-R1 of [W38a #7082][issue] stores sheet-sketch records; R2 resolves their source
-references and applies candidate edits through the existing solver. Both build
-on the embedded-drawing K3b/K4-prime receiver in [#3891][storage], not the
-superseded separate-file drawing session. These library interfaces do not yet
-enable sketch commands, an interactive editor or complete W38a.
+These increments of [W38a #7082][issue] build on the embedded-drawing K3b/K4-prime
+receiver in [#3891][storage], not the superseded separate-file session. R1 adds
+records, R2 read-only solving and atomic edits, R3 composes the shared store,
+and R4 connects a bounded command lifecycle. This is not the complete native or
+browser Drawing UI, all-tools parity, or completed W38a.
 
 ## Stored meaning
 
@@ -149,12 +149,11 @@ source cycles, unrelated errors and no-op Arc identity. They exercise the actual
 shared evaluator and solver. Actual executed results belong in the PR, not this
 design note.
 
-The command/store increment still depends on W38.0 #6336 and the real K session
-interfaces. It must route reads/edits to the resolved-state boundary above and
-supply drawing-owned dimension bindings, create/edit/finish/cancel, drawing-local
-undo/redo and checkpoints, hostile command handling, reopening after live edits
-and UI/native/browser parity. The
-record-only container checks above are not that end-to-end acceptance. W38d's later
+R3/R4 compose the actual W38.0 #6336 store with the embedded K session and route
+a first set of sheet commands through R2, including entry, finish/cancel and
+history. Drawing-owned dimension definitions, the remaining tools, cached live
+presentation and native/browser UI parity still need implementation and acceptance.
+The record-only container checks above do not qualify all those editing paths. W38d's later
 saved-fill integration must retain outer-plus-holes identity after edits. W38b/c/e
 and source-edge projection remain with their existing owners.
 
@@ -166,8 +165,8 @@ and source-edge projection remain with their existing owners.
 The existing W38.0 store from CamWight's #6336, revision `07984653`, is now
 composed with this embedded K receiver. This is a source-compatible port of the
 same `cmd::sketch_store`, not another store or a replacement main-target PR.
-Its original module, including its routing scan and null/exact-number tests,
-is unchanged. The calls present on this receiver go through `target`, `active`,
+R3 retained the original module, including its routing scan and null/exact-number
+tests; R4 extends that same module with the explicitly owned sheet adapter. The calls present on this receiver go through `target`, `active`,
 `read`, `write`, `update` and `checked` as in the original work.
 
 The receiver predates several unrelated main changes. This adaptation does not
@@ -178,16 +177,68 @@ MidPoint/standard-part behavior just to make a cherry-pick apply. In particular,
 shared update transaction. Model-only joint/plane lookups stay explicitly
 marked. Original author/source references remain in the commit and PR.
 
-This step is deliberately **still model-store routing**, not the sheet receiver.
-The drawing part gate remains unchanged; no drawing id is put into
+At the R3 checkpoint this was **model-store routing**, not the sheet receiver.
+R4 below changes the part gate only for its admitted tools; no drawing id is put into
 `Session::active_sketch`. Two receiver-specific engine tests exercise model/sheet
 id collisions, refusal of model sketch commands with a drawing open, successful
 model editing after closing it, and callback failure without publishing a clone.
 Their executed results, if available, belong in the PR.
 
-The next change must give an active sketch an explicit owner, route sheet edits
-to R2, and preserve model-only command refusals before enabling existing tools.
-Drawing-owned dimension definitions, create/edit/finish/cancel, live presentation,
-undo/checkpoint restoration and UI acceptance remain incomplete. Integrating this
-port is not evidence that #6336 landed on main or that its independent full gate
-qualifies the combined receiver.
+The R4 command slice below now supplies explicit sheet ownership and R2 routing.
+Drawing-owned dimensions, remaining tools, live presentation and UI acceptance
+remain incomplete. Integrating this port is not evidence that #6336 landed on
+main or that its independent full gate qualifies the combined receiver.
+
+## R4: exact-owner command lifecycle
+
+`drawing.sketch.create {owner, name?}` creates and enters a sketch on the exact
+encoded sheet id of the open drawing. `drawing.sketch.edit {sketch}` enters an
+existing exact encoded id; repeating it on the same sketch preserves the first
+cancel boundary. `drawing.sketch.inspect {sketch?}` reports the resolved paper-mm
+points, local entity ids and solver state without adopting that solution.
+
+The existing `sketch.rectangle.two_point`, `sketch.line` and `sketch.point` tools
+use the same geometry implementations through the shared store's sheet adapter.
+There is no parallel sketcher or alternate model-feature lookup. A separate
+session entry names drawing, sheet and sketch explicitly; the model's
+`active_sketch` is never assigned a sheet id. An explicit tool target can confirm
+that entry, not silently switch to another drawing or a same-numbered feature.
+The ordinary model paths of these tools remain available with no drawing open.
+
+Point and line expressions read the containing design's parameter values, under
+R2's declared-source checks. Bare expression values are paper millimetres even
+when the model displays inches. The legacy tool callback may read a copy of the
+source document, but any attempted mutation of that source is refused before
+publication. R2 validates and solves the changed sketch before storing it.
+
+`sketch.finish` ends sheet editing. `sketch.cancel` restores only that sketch's
+entry record, or removes a sketch created in that entry, then leaves editing.
+The cancellation is itself one drawing undo step when data changed; Undo restores
+the edited record and its active entry, and Redo returns to the cancelled state.
+Other sketches, drawing properties, other drawings and model history are not
+rolled back. Session checkpoints, scratch previews and restored drawing history
+carry the explicit sheet entry. Switching or deleting drawings while it is active
+requires Finish or Cancel. These commands must not evaluate a stale model merely
+because a model-only operation was attempted from the drawing.
+
+This first command slice deliberately does **not** enable dimensions that define
+parameters, the other sketch geometry/modify/constraint tools, text, patterns,
+offsets, clipboard, live drag or model projection paths in Drawing. They remain
+explicitly unavailable, not silently redirected to model geometry. New source
+bindings, auxiliary payload validation, all-tools parity, cached solved-state
+presentation and actual native/browser editor UI acceptance remain subsequent
+work. W38d saved-fill association is not enabled by these commands.
+
+The lifecycle acceptance cases are in the existing engine `cmd/drawing_tests.rs`:
+paper rectangle size, source-read-only point/line expressions, failed calls,
+finish/cancel and history, checkpoint/scratch/reopen, colliding identifiers across
+two drawings and a model sketch, schemas/hostile input, and no stale-model
+re-evaluation. Executed results and any remaining failures belong in the PR.
+
+New command messages are supplied as a pending locale delta, per current project
+rules. This pinned K receiver predates the pending-catalog reader; native UI
+translation qualification requires the already-merged shared prerequisite #6448
+(`1ceab2ed4c03832f1937e0da98b9c8c50f49aa3e`) to reach `drawings`. The four pending
+ids were checked against the current main English catalog and are not duplicates.
+This feature does not modify the i18n loader, shared catalogs or CI to bypass that
+integration requirement.

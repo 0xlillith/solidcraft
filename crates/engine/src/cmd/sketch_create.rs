@@ -168,6 +168,20 @@ const AT_MUST: &str = "`at` must be the baseline start [x, y], each a number or 
 /// to. Returns the value (mm or radians) and the expression kept. Anything else is refused with
 /// `must`.
 pub(super) fn text_number(doc: &solidcraft_doc::Document, v: &Value, cmd: &str, key: &str, must: &str, angle: bool) -> Result<(f64, Option<String>)> {
+    text_number_in(doc, v, cmd, key, must, angle, false)
+}
+
+/// Shared numeric parsing with explicit paper defaults. The source parameter
+/// evaluator still sees the original design and its own parameter units.
+pub(super) fn text_number_in(
+    doc: &solidcraft_doc::Document,
+    v: &Value,
+    cmd: &str,
+    key: &str,
+    must: &str,
+    angle: bool,
+    paper: bool,
+) -> Result<(f64, Option<String>)> {
     use solidcraft_doc::expr::{self, Kind};
     let kind = if angle { Kind::Angle } else { Kind::Length };
     match v {
@@ -176,7 +190,7 @@ pub(super) fn text_number(doc: &solidcraft_doc::Document, v: &Value, cmd: &str, 
             Ok((if angle { x.to_radians() } else { x }, None))
         }
         Value::String(e) if !e.trim().is_empty() && e.len() <= 4096 => {
-            let e = doc.with_design_unit(e.trim(), kind);
+            let e = if paper { e.trim().to_string() } else { doc.with_design_unit(e.trim(), kind) };
             match doc.eval(&e, kind) {
                 Ok(x) => {
                     let x = crate::params::finite(x).ok_or_else(|| bad(cmd, must))?;

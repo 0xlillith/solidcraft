@@ -32,8 +32,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("sketch")
         .params("plane: XY|XZ|YZ | construction plane name or id | {origin?: [x,y,z] numbers in mm, default [0,0,0] (not an expression), x_dir, y_dir} | {face: [world x,y,z], body?: exact world body, index?: face index, path?: complete occurrence ids, fixed?: bool}; new face attachments require a unique certified source (a flat face of a sheet metal body attaches to its panel instead, in the flat pattern's coordinates), fixed:true explicitly freezes the selected plane; offset?: expr, flip?: bool | \"x\" | \"y\" (not on a face: sketch the plane from its other side, so the normal and the default extrude direction are reversed; a half turn about the plane's own x or y axis, true picks the one keeping the sketch's y axis upward; offset still moves along the unflipped normal), project_edges?: bool, name?"),
     CommandSpec::new("sketch.edit", "Edit Sketch", edit_sketch).noundo().icon("sketch").params("sketch: id or name"),
-    CommandSpec::new("sketch.finish", "Finish Sketch", finish_sketch).at("SKETCH", "FINISH SKETCH").icon("finish").enabled(in_sketch).noundo(),
+    CommandSpec::new("sketch.finish", "Finish Sketch", finish_sketch).in_sketch_part().at("SKETCH", "FINISH SKETCH").icon("finish").enabled(in_sketch).noundo(),
+    CommandSpec::new("sketch.cancel", "Cancel Sketch", crate::checked!("sketch.cancel", crate::schema::drawing_sketch::EMPTY, super::drawing_sketch::cancel))
+        .in_drawing().doc_only().icon("close").enabled(in_sketch)
+        .contract(&crate::schema::drawing_sketch::EMPTY).output(crate::schema::output_schema_for::<crate::schema::drawing_sketch::Cancelled>)
+        .params("Restore the active sheet sketch to its entry geometry (or remove a new sketch), close editing and record the change in drawing undo. Does not change other drawing data or the source model."),
     CommandSpec::new("sketch.line", "Line", draw_line)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("line")
         .key("L")
@@ -43,6 +48,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params(concat!("command: sketch creation command, params: object, dimensions: object of role to numeric or expression value; creates geometry and all driving dimensions atomically in one undo step", created_doc!())),
     CommandSpec::new("sketch.rectangle.two_point", "2-Point Rectangle", rect_two_point)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("rect")
         .key("R")
@@ -114,7 +120,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("slot_overall")
         .enabled(in_sketch)
         .params(concat!("p0, p1: overall ends, width", connect_doc!(), created_doc!())),
-    CommandSpec::new("sketch.point", "Point", draw_point).at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y] (each a number or an expression over the design's parameters: the point is then fixed where it comes to and follows them), id?", connect_doc!(), created_doc!())),
+    CommandSpec::new("sketch.point", "Point", draw_point).in_sketch_part().at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y] (each a number or an expression over the design's parameters: the point is then fixed where it comes to and follows them), id?", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.dimension", "Sketch Dimension", dimension).at("SKETCH", "CREATE").icon("dimension").key("D").enabled(in_sketch).params(
         "entities: [refs], type?: auto|distance|horizontal|vertical|length|radius|diameter|angle, value?: number or expression (default: current; a bare number is in the design's units, e.g. 2 means 2 in in an inch design; give a unit such as \"50 mm\" to override), or `name = expression` (e.g. \"width = 40\"), which adds the user parameter `name` with that expression and dimensions with `name` (refused when the name is taken or reserved; the reply's `defined` names it); text_at?: [x, y]. Two points or a line off the axes: with auto, text_at across from them is the distance between them, above or below them horizontal, beside them vertical. Two lines: the angle between them (acute, or 180° − it when the value is nearer that) unless text_at picks a sector. A line and a circle or arc: the distance from the line to its edge (the gap, or how far the edge reaches past a line that cuts it; 0 is tangent); dimension the centre point for the distance to the centre. A dimension the sketch already determines is refused (naming what determines it); if_redundant?: \"driven\" places it as a driven (reference) dimension instead. scale_sketch?: bool (the dimension tool sends true): when this is the sketch's first length dimension and nothing in the sketch fixes a size (no other driving length dimension, nothing fixed or projected), the whole sketch scales about its origin to the value instead of distorting. Returns measured in unit (mm or deg), and scaled: the factor when the sketch was scaled",
     ),
@@ -217,6 +223,9 @@ pub(super) fn edit<T>(
     strict: bool,
     f: impl FnOnce(&mut Sketch, &mut solidcraft_doc::Document) -> Result<T>,
 ) -> Result<(T, Value)> {
+    if s.open_drawing.is_some() {
+        return sketch_store::edit_sheet(s, p, cmd, f);
+    }
     let id = sketch_store::target(s, p, cmd)?;
     let (out, rep) = edit_solved(s, id, strict, Analysis::Freedom, |sk, doc| Ok((f(sk, doc)?, Left::Unsolved)))?;
     Ok((out, rep.map(|rep| report_json(&rep)).unwrap_or(Value::Null)))
@@ -427,10 +436,14 @@ impl PArg {
 }
 
 pub(super) fn parg(sk: &mut Sketch, doc: &solidcraft_doc::Document, v: &Value, cmd: &str) -> Result<PArg> {
+    parg_in(sk, doc, v, cmd, false)
+}
+
+fn parg_in(sk: &mut Sketch, doc: &solidcraft_doc::Document, v: &Value, cmd: &str, paper: bool) -> Result<PArg> {
     if let Some(p) = vec2(v) {
         return Ok(PArg::At(p));
     }
-    if let Some((at, exprs)) = expr_point(doc, v, cmd)? {
+    if let Some((at, exprs)) = expr_point_in(doc, v, cmd, paper)? {
         return Ok(match exprs {
             Some(exprs) => PArg::Ref(add_placed_point(sk, at, exprs, None)?, at),
             None => PArg::At(at),
@@ -459,13 +472,13 @@ const POINT_MUST: &str = "a point's coordinates must be numbers or expressions o
 
 /// A point given as `[x, y]` with a coordinate typed as text: where it is now and, when a
 /// coordinate names a parameter, the expressions that place it (none: a plain point).
-pub(super) fn expr_point(doc: &solidcraft_doc::Document, v: &Value, cmd: &str) -> Result<Option<(Vec2, Option<PointExprs>)>> {
+fn expr_point_in(doc: &solidcraft_doc::Document, v: &Value, cmd: &str, paper: bool) -> Result<Option<(Vec2, Option<PointExprs>)>> {
     let Some([x, y]) = v.as_array().map(Vec::as_slice) else { return Ok(None) };
     if !x.is_string() && !y.is_string() {
         return Ok(None);
     }
-    let (px, ex) = super::sketch_create::text_number(doc, x, cmd, "point x", POINT_MUST, false)?;
-    let (py, ey) = super::sketch_create::text_number(doc, y, cmd, "point y", POINT_MUST, false)?;
+    let (px, ex) = super::sketch_create::text_number_in(doc, x, cmd, "point x", POINT_MUST, false, paper)?;
+    let (py, ey) = super::sketch_create::text_number_in(doc, y, cmd, "point y", POINT_MUST, false, paper)?;
     let exprs = (ex.is_some() || ey.is_some()).then_some(PointExprs { x: ex, y: ey });
     Ok(Some((Vec2::new(px, py), exprs)))
 }
@@ -775,6 +788,9 @@ fn edit_sketch(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn finish_sketch(s: &mut Session, _p: &Value) -> Result<Value> {
+    if s.open_drawing.is_some() {
+        return super::drawing_sketch::finish(s, _p);
+    }
     let id = s.active_sketch.take();
     s.revision += 1;
     let profiles = id.and_then(|i| s.model.state().sketch(i).map(|ss| ss.profiles.len())).unwrap_or(0);
@@ -786,7 +802,11 @@ fn finish_sketch(s: &mut Session, _p: &Value) -> Result<Value> {
 
 fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.line";
-    let p = &super::sketch_project::snap_points(s, p, cmd)?;
+    let paper = s.open_drawing.is_some();
+    // Model projections and automatic model-reference snaps are not sheet tools.
+    // Plain coordinates/local ids still use the existing parser below; unsupported
+    // reference forms fail there without creating a link or falling back to a model.
+    let p = &if paper { p.clone() } else { super::sketch_project::snap_points(s, p, cmd)? };
     let list = p.get("points").and_then(Value::as_array).cloned().ok_or_else(|| bad(cmd, "`points` must be a list"))?;
     if list.len() < 2 || list.len() > 10_000 {
         return Err(bad(cmd, "a line needs 2 or more points"));
@@ -795,7 +815,7 @@ fn draw_line(s: &mut Session, p: &Value) -> Result<Value> {
     let infer = bool_(p, "infer").unwrap_or(false);
     let ids = string_list(p, "ids");
     let ((curves, cons), info) = draw(s, p, cmd, |sk, doc| {
-        let args: Vec<PArg> = list.iter().map(|v| parg(sk, doc, v, cmd)).collect::<Result<_>>()?;
+        let args: Vec<PArg> = list.iter().map(|v| parg_in(sk, doc, v, cmd, paper)).collect::<Result<_>>()?;
         let n = args.len();
         let segs = if closed { n } else { n - 1 };
         let mut pts: Vec<Option<usize>> = args.iter().map(PArg::idx).collect();
@@ -1369,9 +1389,10 @@ fn slot_overall(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn draw_point(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.point";
+    let paper = s.open_drawing.is_some();
     let id = str_(p, "id").map(str::to_string);
     let ((pid, cons), info) = edit(s, p, cmd, false, |sk, doc| {
-        let i = match expr_point(doc, p.get("point").unwrap_or(&Value::Null), cmd)? {
+        let i = match expr_point_in(doc, p.get("point").unwrap_or(&Value::Null), cmd, paper)? {
             Some((at, Some(exprs))) => add_placed_point(sk, at, exprs, id.as_deref())?,
             Some((at, None)) => sk.add_point(at, id.as_deref())?,
             None => sk.add_point(req_vec2(cmd, p, "point")?, id.as_deref())?,

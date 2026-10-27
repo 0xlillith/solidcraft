@@ -533,3 +533,283 @@ fn receiver_store_callback_failure_preserves_model_drawings_and_history() {
     assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
     assert!(sketch_store::read(&s.doc, id).unwrap().resolve_point("not_committed").is_none());
 }
+
+// W38a R4: exercise real commands and Session history, not an alternative sketcher.
+fn sheet_editor() -> (Session, u64, u64, Value) {
+    let mut s = design();
+    s.doc_mut().units = "in".into();
+    let drawing = run(&mut s, "drawing.create", json!({"name": "Paper", "units": "in"}));
+    let owner = drawing["sheets"][0]["id"].clone();
+    let made = run(&mut s, "drawing.sketch.create", json!({"owner": owner, "name": "Detail"}));
+    let d = ids::decode(made["drawing"].as_str().unwrap()).unwrap();
+    let sk = ids::decode(made["sketch"].as_str().unwrap()).unwrap();
+    (s, d, sk, made)
+}
+
+#[test]
+fn sheet_editor_existing_tools_make_paper_geometry_without_evaluating_the_model() {
+    use solidcraft_geom::Vec2;
+    let (mut s, d, sk, made) = sheet_editor();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let count = s.evaluations;
+    let steps = s.undo.len();
+    assert!(s.active_sketch.is_none(), "a sheet id is never a model active_sketch");
+    assert_eq!(s.active_sheet_sketch.as_ref().unwrap().sketch, sk);
+    let rectangle = run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15,10], "p1": [55,30]}));
+    assert_eq!(rectangle["created"]["curves"].as_array().unwrap().len(), 4);
+    let record = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap();
+    assert_eq!(record.sketch.curves.len(), 4);
+    for at in [[15.0, 10.0], [55.0, 10.0], [55.0, 30.0], [15.0, 30.0]] {
+        assert!(record.sketch.points.iter().any(|p| p.pos.dist(Vec2::new(at[0], at[1])) < 1e-8));
+    }
+    run(&mut s, "sketch.line", json!({"points": [[70,10],[100,50]]}));
+    let record = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap();
+    assert_eq!(record.sketch.curves.len(), 5);
+    assert_eq!(s.undo.len(), steps + 2);
+    assert_eq!(s.undo.last().unwrap().part, Some(d));
+    assert_eq!((s.evaluations, &s.doc.features, &s.doc.params), (count, &source.features, &source.params));
+    assert!(Arc::ptr_eq(&model, &s.model.state()));
+    let inspected = run(&mut s, "drawing.sketch.inspect", json!({}));
+    assert_eq!(inspected["sketch"], made["sketch"]);
+    assert_eq!(inspected["curves"].as_array().unwrap().len(), 5);
+    assert_eq!(s.undo.len(), steps + 2, "inspection adds no step");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 4);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 5);
+    assert_eq!(s.evaluations, count);
+}
+
+#[test]
+fn sheet_editor_point_and_line_expressions_keep_paper_defaults_and_read_only_source() {
+    let (mut s, d, sk, _) = sheet_editor();
+    s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+    s.doc_mut().set_param("Angle", "90", Some("deg"), None).unwrap();
+    let original = s.doc.clone();
+    let count = s.evaluations;
+    run(&mut s, "sketch.point", json!({"point": ["Inset + 5", "2"], "id": "driven"}));
+    run(&mut s, "sketch.line", json!({"points": [["Inset", "5"], ["Inset + 10", "5"]]}));
+    let sketch = &s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch;
+    let point = &sketch.points[sketch.resolve_point("driven").unwrap()];
+    assert!((point.pos.x - 30.4).abs() < 1e-9);
+    assert_eq!(point.pos.y, 2.0);
+    assert_eq!(point.exprs.as_ref().unwrap().x.as_deref(), Some("Inset + 5"));
+    assert!(sketch.points.iter().any(|p| (p.pos.x - 25.4).abs() < 1e-9 && p.pos.y == 5.0));
+    assert!(sketch.points.iter().any(|p| (p.pos.x - 35.4).abs() < 1e-9 && p.pos.y == 5.0));
+    assert_eq!((&s.doc.params, &s.doc.features), (&original.params, &original.features));
+    for point in [json!(["Missing", 0]), json!(["Angle", 0]), json!(["1 / 0", 0])] {
+        let before = s.doc.clone();
+        let entry = s.active_sheet_sketch.clone();
+        let history = (s.undo.len(), s.redo.len());
+        refused(&mut s, "sketch.point", json!({"point": point}));
+        assert!(Arc::ptr_eq(&before, &s.doc));
+        assert_eq!(s.active_sheet_sketch, entry);
+        assert_eq!((s.undo.len(), s.redo.len()), history);
+    }
+    assert_eq!(s.evaluations, count);
+}
+
+#[test]
+fn sheet_editor_finish_cancel_and_their_undo_preserve_the_correct_entry() {
+    let (mut s, d, sk, made) = sheet_editor();
+    let count = s.evaluations;
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15,10], "p1": [55,30]}));
+    let finished = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().clone();
+    assert_eq!(run(&mut s, "sketch.finish", json!({}))["editing"], false);
+    assert!(s.active_sheet_sketch.is_none());
+    run(&mut s, "drawing.sketch.edit", json!({"sketch": made["sketch"]}));
+    run(&mut s, "sketch.point", json!({"point": [90,60], "id": "temporary"}));
+    let edited = s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().clone();
+    // Re-entering the same sketch must not move the cancellation boundary.
+    run(&mut s, "drawing.sketch.edit", json!({"sketch": made["sketch"]}));
+    assert_eq!(run(&mut s, "sketch.cancel", json!({}))["removed"], false);
+    assert!(Arc::ptr_eq(&finished, s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap()));
+    assert!(s.active_sheet_sketch.is_none());
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch, edited.sketch);
+    assert_eq!(s.active_sheet_sketch.as_ref().unwrap().sketch, sk);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch, finished.sketch);
+    assert!(s.active_sheet_sketch.is_none());
+    let sheet = made["sheet"].clone();
+    let new = run(&mut s, "drawing.sketch.create", json!({"owner": sheet}));
+    let new_id = ids::decode(new["sketch"].as_str().unwrap()).unwrap();
+    run(&mut s, "sketch.point", json!({"point": [5,7]}));
+    assert_eq!(run(&mut s, "sketch.cancel", json!({}))["removed"], true);
+    assert!(s.doc.drawing(d).unwrap().sheet_sketch(new_id).is_none());
+    assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch, finished.sketch);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc.drawing(d).unwrap().sheet_sketch(new_id).is_some());
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.doc.drawing(d).unwrap().sheet_sketch(new_id).is_none());
+    assert!(s.active_sheet_sketch.is_none());
+    assert_eq!(s.evaluations, count);
+}
+
+#[test]
+fn sheet_editor_checkpoint_scratch_and_reopen_keep_owners_separate() {
+    let (mut s, d, sk, made) = sheet_editor();
+    let count = s.evaluations;
+    let checkpoint = run(&mut s, "edit.checkpoint", json!({}))["checkpoint"].clone();
+    let before = s.doc.clone();
+    let mut scratch = s.scratch();
+    run(&mut scratch, "sketch.rectangle.two_point", json!({"p0": [15,10], "p1": [55,30]}));
+    assert!(Arc::ptr_eq(&before, &s.doc));
+    assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.is_empty());
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15,10], "p1": [55,30]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint": checkpoint}));
+    assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.is_empty());
+    assert_eq!(s.active_sheet_sketch.as_ref().unwrap().sketch, sk);
+    run(&mut s, "sketch.line", json!({"points": [[15,10],[55,30]]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let saved = s.doc.to_json();
+    let document = solidcraft_doc::Document::from_json(&saved).unwrap();
+    let mut reopened = Session::new(document);
+    assert!(reopened.active_sheet_sketch.is_none());
+    run(&mut reopened, "drawing.open", json!({"drawing": made["drawing"]}));
+    run(&mut reopened, "drawing.sketch.edit", json!({"sketch": made["sketch"]}));
+    let result = run(&mut reopened, "drawing.sketch.inspect", json!({}));
+    assert_eq!(result["curves"].as_array().unwrap().len(), 1);
+    assert_eq!(reopened.doc.to_json(), saved);
+    assert_eq!(s.evaluations, count);
+}
+
+#[test]
+fn sheet_editor_rejects_cross_targets_model_tools_and_source_mutation() {
+    let (mut s, d, sk, made) = sheet_editor();
+    let before = s.doc.clone();
+    let entry = s.active_sheet_sketch.clone();
+    let state = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let model = s.doc.features[0].id;
+    assert_ne!(model, sk);
+    for (command, params) in [
+        ("sketch.point", json!({"sketch": model, "point": [2,3]})),
+        ("sketch.point", json!({"sketch": -1, "point": [2,3]})),
+        ("sketch.point", json!({"sketch": 1.5, "point": [2,3]})),
+        ("sketch.line", json!({"points": ["vertex:1,2,3",[4,5]]})),
+        ("sketch.dimension", json!({"entities": [], "value": "Forbidden = 3"})),
+        ("sketch.project", json!({"refs": []})),
+        ("sketch.create", json!({"plane": "XY"})),
+        ("drawing.close", json!({})),
+        ("drawing.open", json!({"drawing": made["drawing"]})),
+        ("drawing.delete", json!({"drawing": made["drawing"]})),
+        ("drawing.sketch.create", json!({"owner": made["sheet"]})),
+    ] {
+        refused(&mut s, command, params);
+        assert!(Arc::ptr_eq(&s.doc, &before), "{command}");
+        assert_eq!(s.active_sheet_sketch, entry, "{command}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}");
+    }
+    let result = super::super::sketch_store::edit_sheet(&mut s, &json!({}), "test", |_sketch, doc| {
+        doc.name = "Forbidden mutation".into();
+        Ok(())
+    });
+    assert!(result.unwrap_err().to_string().contains("cannot change the source design"));
+    assert!(Arc::ptr_eq(&s.doc, &before) && Arc::ptr_eq(&s.model.state(), &state));
+    assert_eq!(s.open_drawing, Some(d));
+}
+
+#[test]
+fn sheet_editor_new_commands_validate_hostile_inputs_and_declare_schemas() {
+    let mut s = design();
+    let drawing = run(&mut s, "drawing.create", json!({}));
+    let before = s.doc.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for params in [
+        json!({}),
+        json!({"owner": 1}),
+        json!({"owner": "not-an-id"}),
+        json!({"owner": drawing["id"]}),
+        json!({"owner": drawing["sheets"][0]["id"], "name": " "}),
+        json!({"owner": drawing["sheets"][0]["id"], "name": "X".repeat(257)}),
+        json!({"owner": drawing["sheets"][0]["id"], "unexpected": true}),
+        json!([]),
+    ] {
+        refused(&mut s, "drawing.sketch.create", params);
+        assert!(Arc::ptr_eq(&s.doc, &before));
+        assert!(s.active_sheet_sketch.is_none());
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    }
+    for command in ["drawing.sketch.create", "drawing.sketch.edit", "drawing.sketch.inspect", "sketch.cancel"] {
+        let spec = find_command(command).unwrap();
+        assert!(spec.contract.is_some() && spec.output.is_some(), "{command}");
+    }
+    s.param_check = crate::schema::ParamCheck::Strict;
+    let made = run(&mut s, "drawing.sketch.create", json!({"owner": drawing["sheets"][0]["id"]}));
+    assert!(made["editing"].as_bool().unwrap());
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "drawing.sketch.edit", json!({"sketch": made["sketch"]}));
+    run(&mut s, "sketch.cancel", json!({}));
+}
+
+#[test]
+fn sheet_editor_same_numeric_id_in_two_drawings_and_model_never_retargets_geometry() {
+    use solidcraft_doc::drawing::SheetSketch;
+    use solidcraft_sketch::Sketch;
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Model"}));
+    let id = s.active_sketch.unwrap();
+    run(&mut s, "sketch.line", json!({"points": [[0,0],[40,0]]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let model = s.doc.sketch(id).unwrap().clone();
+    run(&mut s, "drawing.create", json!({"name": "First"}));
+    s.edit_drawing("test", |drawing| {
+        drawing.sketches.push(Arc::new(SheetSketch { id, sheet: drawing.sheets[0].id, name: "Same id".into(), sketch: Sketch::new() }));
+        Ok(())
+    })
+    .unwrap();
+    let first = open_one(&s);
+    let mut second = (*first).clone();
+    second.id = first.allocate_id(&mut IdSource::seeded(7082)).unwrap();
+    second.name = "Second".into();
+    let second_id = second.id;
+    s.doc_mut().put_drawing(Arc::new(second));
+    let second = s.doc.drawing(second_id).unwrap().clone();
+    let count = s.evaluations;
+    run(&mut s, "drawing.sketch.edit", json!({"sketch": ids::encode(id)}));
+    run(&mut s, "sketch.point", json!({"sketch": id, "point": [15,10], "id": "first_point"}));
+    assert_eq!(s.doc.sketch(id).unwrap(), &model);
+    assert!(Arc::ptr_eq(s.doc.drawing(second_id).unwrap(), &second));
+    run(&mut s, "sketch.finish", json!({}));
+    let first_edited = s.doc.drawing(first.id).unwrap().clone();
+    run(&mut s, "drawing.open", the(second_id));
+    run(&mut s, "drawing.sketch.edit", json!({"sketch": ids::encode(id)}));
+    run(&mut s, "sketch.point", json!({"point": [50,20], "id": "second_point"}));
+    assert_eq!(s.doc.sketch(id).unwrap(), &model);
+    assert!(Arc::ptr_eq(s.doc.drawing(first.id).unwrap(), &first_edited));
+    assert!(s.doc.drawing(second_id).unwrap().sheet_sketch(id).unwrap().sketch.resolve_point("first_point").is_none());
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc.drawing(second_id).unwrap().sheet_sketch(id).unwrap().sketch.resolve_point("second_point").is_none());
+    assert!(Arc::ptr_eq(s.doc.drawing(first.id).unwrap(), &first_edited));
+    assert_eq!(s.evaluations, count);
+}
+
+#[test]
+fn sheet_editor_commands_and_refusals_do_not_evaluate_a_stale_model() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    let model_sketch = s.active_sketch.unwrap();
+    let line = run(&mut s, "sketch.line", json!({"points": [[0,0],[40,0]]}))["curves"][0].as_str().unwrap().to_string();
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.box", json!({"length": 5,"width": 5,"height": 5}));
+    run(&mut s, "sketch.edit", json!({"sketch": model_sketch}));
+    run(&mut s, "sketch.drag", json!({"entity": format!("{line}.end"), "from": [40,0], "to": [45,3], "live": true}));
+    assert!(s.model.is_stale(), "the fixture includes an unfinished model gesture");
+    let model = s.model.state();
+    let count = s.evaluations;
+    let drawing = run(&mut s, "drawing.create", json!({}));
+    run(&mut s, "drawing.sketch.create", json!({"owner": drawing["sheets"][0]["id"]}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15,10], "p1": [55,30]}));
+    run(&mut s, "drawing.sketch.inspect", json!({}));
+    refused(&mut s, "solid.box", json!({"length": 3,"width": 3,"height": 3}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.redo", json!({}));
+    run(&mut s, "sketch.finish", json!({}));
+    assert!(s.model.is_stale());
+    assert!(Arc::ptr_eq(&model, &s.model.state()));
+    assert_eq!(s.evaluations, count);
+    assert_eq!(s.active_sketch, Some(model_sketch), "model active state was not overwritten");
+}

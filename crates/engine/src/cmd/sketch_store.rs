@@ -66,6 +66,66 @@ pub(super) fn checked(sk: &Sketch) -> Result<()> {
     Ok(())
 }
 
+/// The exact active sheet target, checked before a shared tool reads or edits it.
+/// A number/string can confirm that target; it never selects a model or another sheet.
+pub(super) fn sheet_target(s: &Session, p: &Value, cmd: &str) -> Result<std::sync::Arc<crate::SheetSketchEdit>> {
+    let entry = s.active_sheet_sketch.as_ref().ok_or_else(|| bad(cmd, "no sheet sketch is being edited"))?;
+    if s.open_drawing != Some(entry.drawing) {
+        return Err(bad(cmd, "the edited sketch does not belong to the open drawing"));
+    }
+    let mut owners = s.doc.drawings.iter().filter(|drawing| drawing.id == entry.drawing);
+    let owner = owners.next().ok_or_else(|| bad(cmd, "the edited drawing no longer exists"))?;
+    if owners.next().is_some() {
+        return Err(bad(cmd, "the edited drawing id is ambiguous"));
+    }
+    owner.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    let record = owner.sheet_sketch(entry.sketch).ok_or_else(|| bad(cmd, "the edited sheet sketch no longer exists"))?;
+    if record.sheet != entry.sheet {
+        return Err(bad(cmd, "the edited sketch's owning sheet changed"));
+    }
+    if let Some(given) = p.get("sketch").filter(|value| !value.is_null()) {
+        let target = match given {
+            Value::Number(number) => number.as_u64(),
+            Value::String(text) => solidcraft_doc::ids::decode(text),
+            _ => None,
+        }
+        .ok_or_else(|| bad(cmd, "a sheet sketch target must be its exact id"))?;
+        if target != entry.sketch {
+            return Err(bad(cmd, "finish or cancel before selecting a different sheet sketch"));
+        }
+    }
+    Ok(entry.clone())
+}
+
+/// Apply an existing geometry tool through R2. The legacy callback may read its
+/// Document, but any attempted source mutation is refused before publication.
+/// This is the sheet receiver of this store, not a second store or solver.
+pub(super) fn edit_sheet<T>(
+    s: &mut Session,
+    p: &Value,
+    cmd: &str,
+    change: impl FnOnce(&mut Sketch, &mut Document) -> Result<T>,
+) -> Result<(T, Value)> {
+    let entry = sheet_target(s, p, cmd)?;
+    let mut candidate = s.doc.solve_sheet_sketch(entry.drawing, entry.sketch)?.sketch;
+    let mut source = (*s.doc).clone();
+    let out = change(&mut candidate, &mut source)?;
+    if source != *s.doc {
+        return Err(bad(cmd, "a sheet sketch cannot change the source design or its parameters"));
+    }
+    let (_, solved) = source.edit_sheet_sketch(entry.drawing, entry.sketch, |sketch| {
+        *sketch = candidate;
+        Ok(())
+    })?;
+    if solved.sheet != entry.sheet {
+        return Err(bad(cmd, "the edited sketch's owning sheet changed"));
+    }
+    if source != *s.doc {
+        s.doc = std::sync::Arc::new(source);
+    }
+    Ok((out, super::sketch::report_json(&solved.report)))
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
