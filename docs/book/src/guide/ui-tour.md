@@ -82,7 +82,10 @@
   identity or change the exported solid. Unsupported or uncertain wall geometry
   keeps its existing edge presentation.
 - **Dialogs** dock on the right with a live preview. Most features also show drag handles and a
-  value box in the viewport. Interface › **Dialog buttons** › **Top** puts OK, Cancel and Apply in
+  value box in the viewport. Preferences › Interface › **Dialogs** › *In the left column* opens
+  them in the browser's place instead (and the History's, when it is at the left), at least as
+  wide as that column; the column comes back as it was when the dialog closes.
+  Interface › **Dialog buttons** › **Top** puts OK, Cancel and Apply in
   the dialog's title row, right of the title, where they stay while sections open and close;
   Cancel then also takes the place of the close button. Enter and Esc work as before.
 - **Timeline** (bottom). Every feature in order. Double-click to edit, drag the marker to roll
