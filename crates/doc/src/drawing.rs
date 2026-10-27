@@ -35,7 +35,7 @@
 
 mod sketch;
 
-pub use sketch::{MAX_SHEET_SKETCHES, SheetSketch};
+pub use sketch::{MAX_SHEET_SKETCHES, SheetSketch, SolvedSheetSketch};
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

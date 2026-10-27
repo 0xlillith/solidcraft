@@ -226,3 +226,120 @@ pub(super) fn serialize_sorted<S: Serializer>(records: &[Arc<SheetSketch>], seri
     sorted.sort_by_key(|record| record.id);
     sorted.serialize(serializer)
 }
+
+/// A sheet sketch resolved by the shared solver, in paper XY millimetres.
+/// This is runtime data, not another stored sketch or a model feature. The drawing
+/// and sheet ids remain explicit even when two drawings reuse the same sketch id.
+#[derive(Clone, Debug)]
+pub struct SolvedSheetSketch {
+    pub drawing: u64,
+    pub sheet: u64,
+    pub id: u64,
+    pub sketch: Sketch,
+    pub report: solidcraft_sketch::SolveReport,
+}
+
+impl crate::Document {
+    /// Resolve the stored sketch against this containing design, without changing
+    /// either its authored record or the model. A later source change is read on
+    /// the next call; this function neither caches nor evaluates model geometry.
+    pub fn solve_sheet_sketch(&self, drawing: u64, sketch: u64) -> Result<SolvedSheetSketch> {
+        let (owner, record) = sheet_record(self, drawing, sketch)?;
+        let (_, solved) = solve_candidate(self, owner, record, record.sketch.clone())?;
+        Ok(solved)
+    }
+
+    /// Apply one proposed sketch edit atomically. The closure receives only the
+    /// shared Sketch payload, never a mutable source document. Validation and the
+    /// existing dimension/point evaluator and solver run on a private candidate;
+    /// an error leaves every document field and drawing Arc unchanged.
+    ///
+    /// Only the selected drawing is replaced on success, and a no-op keeps its
+    /// Arc. The caller's Session owns undo/lifecycle; this adds no second history
+    /// or active-sketch store and does not enable sketch commands in Drawing.
+    pub fn edit_sheet_sketch<T>(
+        &mut self,
+        drawing: u64,
+        sketch: u64,
+        change: impl FnOnce(&mut Sketch) -> Result<T>,
+    ) -> Result<(T, SolvedSheetSketch)> {
+        let (owner, record) = sheet_record(self, drawing, sketch)?;
+        let mut candidate = record.sketch.clone();
+        let out = change(&mut candidate)?;
+        let (next, solved) = solve_candidate(self, owner, record, candidate)?;
+        if next != **owner {
+            self.put_drawing(Arc::new(next));
+        }
+        Ok((out, solved))
+    }
+}
+
+fn sheet_record(doc: &crate::Document, drawing: u64, sketch: u64) -> Result<(&Arc<Drawing>, &Arc<SheetSketch>)> {
+    super::check_count(doc.drawings.len())?;
+    let mut matches = doc.drawings.iter().filter(|record| record.id == drawing);
+    let owner = matches.next().ok_or_else(|| invalid("the containing design has no such drawing"))?;
+    require(matches.next().is_none(), || "sheet sketch owner id is ambiguous in this design".into())?;
+    owner.validate()?;
+    let record = owner.sheet_sketch(sketch).ok_or_else(|| invalid("the selected drawing has no such sheet sketch"))?;
+    Ok((owner, record))
+}
+
+fn solve_candidate(doc: &crate::Document, owner: &Drawing, original: &SheetSketch, candidate: Sketch) -> Result<(Drawing, SolvedSheetSketch)> {
+    let mut next = owner.clone();
+    let slot = next.sketches.iter_mut().find(|record| record.id == original.id).ok_or_else(|| invalid("sheet sketch disappeared"))?;
+    Arc::make_mut(slot).sketch = candidate;
+    // In particular, validate point indices and the admitted payload before the
+    // shared solver reads them. No linked, 3D, pattern or offset bypass is added.
+    next.validate()?;
+    let record = next.sketches.iter_mut().find(|record| record.id == original.id).ok_or_else(|| invalid("sheet sketch disappeared"))?;
+    let record = Arc::make_mut(record);
+    let names = parameter_names(&record.sketch)?;
+    let values = if names.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        // A Source in this receiver means exactly this containing design, and
+        // Drawing::validate admits at most one. Sheet.documents is the title
+        // block's component selector, not an alternative expression source.
+        require(owner.sources.len() == 1, || "sheet sketch parameters need the drawing's declared design source".into())?;
+        let (values, errors) = doc.param_values();
+        for name in &names {
+            if let Some(why) = errors.get(name) {
+                return Err(invalid(format!("source parameter `{name}`: {why}")));
+            }
+            require(values.contains_key(name), || format!("sheet sketch: unknown source parameter `{name}`"))?;
+        }
+        values
+    };
+    let stored = original.sketch.driving_values();
+    let report = doc.solve_sketch(&values, &mut record.sketch, &stored, None)?;
+    require(report.keeps_orientation(), || report.failure(|conflicts| format!("sheet sketch edit would conflict with {conflicts}")))?;
+    // Source expressions can produce a valid scalar outside the record's range.
+    // Check the solved payload too, before publishing any of the candidate.
+    let solved = SolvedSheetSketch { drawing: owner.id, sheet: original.sheet, id: original.id, sketch: record.sketch.clone(), report };
+    next.validate()?;
+    Ok((next, solved))
+}
+
+/// Names are collected after record admission, with cumulative expression work
+/// bounded by the existing drawing byte ceiling. Literal expressions need no
+/// source and keep the expression engine's paper-mm/degree defaults.
+fn parameter_names(sketch: &Sketch) -> Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    let mut bytes = 0;
+    for point in &sketch.points {
+        if let Some(expressions) = &point.exprs {
+            for expression in [&expressions.x, &expressions.y].into_iter().flatten() {
+                charge(&mut bytes, expression.len(), MAX_DRAWING_BYTES, "expression text")?;
+                names.extend(crate::expr::references(expression));
+            }
+        }
+    }
+    for constraint in &sketch.constraints {
+        if let Some(name) = &constraint.param {
+            require(constraint.kind.is_dimension(), || "only a sheet sketch dimension can refer to a source parameter".into())?;
+            charge(&mut bytes, name.len(), MAX_DRAWING_BYTES, "expression text")?;
+            names.insert(name.clone());
+        }
+    }
+    Ok(names)
+}

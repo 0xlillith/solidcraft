@@ -1,8 +1,10 @@
-# Drawing-owned sheet sketches: W38a record slice
+# Drawing-owned sheet sketches: records and atomic edits
 
-This is the first, data-only increment of [W38a #7082][issue]. It builds on the
-embedded-drawing K3b/K4-prime receiver in [#3891][storage], not the superseded
-separate-file drawing session. It does not enable sketch commands or complete W38a.
+R1 of [W38a #7082][issue] stores sheet-sketch records; R2 resolves their source
+references and applies candidate edits through the existing solver. Both build
+on the embedded-drawing K3b/K4-prime receiver in [#3891][storage], not the
+superseded separate-file drawing session. These library interfaces do not yet
+enable sketch commands, an interactive editor or complete W38a.
 
 ## Stored meaning
 
@@ -20,11 +22,11 @@ rectangle (15,10) to (55,30) remains 40 by 20 paper mm when units are `in`.
 There is no view scale or source path in this sheet-owned record.
 
 Point expression strings and dimension parameter names are retained verbatim.
-This layer neither evaluates them nor creates a model parameter. A successful
+Record loading neither evaluates them nor creates a model parameter. A successful
 read does not establish that a name resolves in the design, that expressions
-have compatible units, or that constraints solve. Those checks belong to the
-later receiver-aware read-only evaluation/edit transaction, before tools are
-enabled. No model evaluation or geometry repair occurs during record loading.
+have compatible units, or that constraints solve. The explicit R2 solve/edit
+interface below performs those checks on a candidate before adopting it. No
+model evaluation or geometry repair occurs during record loading.
 
 ## Current supported payload
 
@@ -78,8 +80,54 @@ bounds, not a claim about geometric precision:
 The typed edit boundary repeats array, identity, range, owner and constraint
 checks. Nonfinite positions/dimensions are errors before a drawing with sketches
 can be written by `Drawing::to_json`; NaN is not silently stored as JSON null.
-The shared Sketch type and model-sketch reader are unchanged. No solver, cache,
-active sketch, source state, external font, dependency or CI setting is added.
+The shared Sketch type and model-sketch reader are unchanged. No new solver,
+cache, active-sketch store, external font, dependency or CI setting is added.
+
+## R2: read-only source resolution and atomic editing
+
+`Document::solve_sheet_sketch(drawing_id, sketch_id)` returns a
+`SolvedSheetSketch`: explicit drawing, sheet and sketch identities, the candidate
+Sketch payload and its full shared solver report. It never adopts that result.
+Repeated calls read current source parameter values rather than a stale cache.
+
+`Document::edit_sheet_sketch(drawing_id, sketch_id, change)` gives the caller only
+`&mut Sketch` on a private copy. The callback cannot use that argument to mutate
+the containing design or change the record's identity/owner. Existing record
+validation runs before the solver reads the candidate and again after solving.
+The implementation calls the existing `Document::solve_sketch`, with the original
+sketch's driving values, instead of adding an alternative solver or evaluator.
+
+The lookup uses exact ids in the selected drawing. A missing or duplicate drawing
+id, a missing sketch, invalid owning sheet or malformed payload is an error;
+there is no name lookup or fallback to a similarly numbered model sketch.
+Named references require that drawing's declared Source. In the current embedded
+receiver a Source means the containing design, and at most one is admitted.
+`Sheet.documents` names the component for the title block; it is not a separate
+parameter source or permission to inspect another document.
+
+Stored point expressions and dimension parameter names use the existing source
+parameter evaluator read-only. Source values keep their own units and become
+internal millimetres/radians. Bare numbers in the sketch's point expressions
+retain the expression engine's mm/degree defaults, not the design's display units.
+For example a source `Inset = 1 in` plus a bare `5` places X at 30.4 paper mm.
+Literal-only sketches need no source. Errors in referenced source parameters,
+including cycles, remain explicit; an unrelated parameter error does not redirect
+or unnecessarily block an independent sketch.
+
+A failed callback, invalid candidate, missing name, wrong dimension, nonfinite or
+out-of-range evaluation, or incompatible solve publishes nothing. On success only
+the chosen drawing is replaced. A no-op keeps the drawing and sketch Arcs. Point
+expressions and source parameter names remain authored data, not baked values;
+this API does not introduce a drawing-local parameter definition syntax or allow
+a dimension command to write a source parameter. Expression text work is charged
+against the existing drawing byte ceiling; other solver limits remain the shared
+solver's. This is not a per-frame latency or whole-process memory guarantee.
+
+This boundary supplies resolved state and atomic commits for the later
+receiver-aware store. Session undo, edit entry/finish/cancel, command schemas,
+view updates and UI integration are not implemented by these Document methods.
+There is no second active-sketch store or history, and no model geometry is
+requested or evaluated here. The R1 unsupported auxiliary payloads remain refused.
 
 ## Acceptance and remaining work
 
@@ -94,12 +142,18 @@ round trips retain the paper-mm geometry, expressions and drawing-local ownershi
 changing one sketch changes only its drawing entry, not the model/container metadata
 or a second drawing; damaged sketch records refuse the whole input without falling
 back to another drawing's sheet. These checks do not run an editor or evaluate a model.
-Actual executed results belong in the PR, not this design note.
+The additional R2 tests in `drawing_tests.rs` check source resolution without
+mutation, paper-mm defaults under inch display units, fresh source values, atomic
+success/refusal, conflict and malformed-expression handling, exact ownership,
+source cycles, unrelated errors and no-op Arc identity. They exercise the actual
+shared evaluator and solver. Actual executed results belong in the PR, not this
+design note.
 
 The command/store increment still depends on W38.0 #6336 and the real K session
-interfaces. It must supply read-only expression bindings and evaluation, solved
-state, create/edit/finish/cancel, drawing-local undo/redo and checkpoints, hostile
-command handling, reopening after live edits and UI/native/browser parity. The
+interfaces. It must route reads/edits to the resolved-state boundary above and
+supply drawing-owned dimension bindings, create/edit/finish/cancel, drawing-local
+undo/redo and checkpoints, hostile command handling, reopening after live edits
+and UI/native/browser parity. The
 record-only container checks above are not that end-to-end acceptance. W38d's later
 saved-fill integration must retain outer-plus-holes identity after edits. W38b/c/e
 and source-edge projection remain with their existing owners.

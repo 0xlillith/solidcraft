@@ -829,3 +829,227 @@ fn sheet_sketch_json_mutations_are_errors_or_complete_reopenable_records() {
         }
     }
 }
+
+// W38a R2: the edit boundary uses the existing evaluator/solver, not a second sketcher.
+fn sheet_edit_design() -> (crate::Document, u64) {
+    use solidcraft_sketch::ConstraintKind;
+    let mut drawing = read(&paper_sketch_file()).unwrap();
+    let sketch = &mut Arc::make_mut(&mut drawing.sketches[0]).sketch;
+    for l in [0, 2] {
+        sketch.add_constraint(ConstraintKind::Horizontal { l }, None).unwrap();
+    }
+    for l in [1, 3] {
+        sketch.add_constraint(ConstraintKind::Vertical { l }, None).unwrap();
+    }
+    sketch.add_constraint(ConstraintKind::Length { l: 1, value: 20.0 }, None).unwrap();
+    let id = drawing.id;
+    let mut doc = crate::Document::new("Read-only parameter source");
+    doc.units = "in".into();
+    doc.set_param("Width", "40", Some("mm"), None).unwrap();
+    doc.set_param("Inset", "10", Some("mm"), None).unwrap();
+    doc.put_drawing(Arc::new(drawing));
+    (doc, id)
+}
+
+fn sheet_rectangle_size(sketch: &solidcraft_sketch::Sketch) -> (f64, f64) {
+    (sketch.points[2].pos.dist(sketch.points[1].pos), sketch.points[3].pos.dist(sketch.points[2].pos))
+}
+
+#[test]
+fn sheet_sketch_resolution_reads_source_values_without_changing_the_record_or_model() {
+    let (doc, id) = sheet_edit_design();
+    let before = doc.to_json();
+    let owner = doc.drawing(id).unwrap().clone();
+    let solved = doc.solve_sheet_sketch(id, 41).unwrap();
+    assert_eq!((solved.drawing, solved.sheet, solved.id), (id, owner.sheets[0].id, 41));
+    assert!(solved.report.keeps_orientation());
+    assert_eq!(solved.report.dof, 0);
+    let (width, height) = sheet_rectangle_size(&solved.sketch);
+    assert!((width - 40.0).abs() < 1e-6 && (height - 20.0).abs() < 1e-6);
+    assert_eq!(solved.sketch.points[1].pos, solidcraft_geom::Vec2::new(15.0, 10.0));
+    assert_eq!(solved.sketch.points[1].exprs, owner.sketches[0].sketch.points[1].exprs);
+    assert_eq!(solved.sketch.constraints[0].param.as_deref(), Some("Width"));
+    assert_eq!(doc.to_json(), before);
+    assert!(Arc::ptr_eq(doc.drawing(id).unwrap(), &owner));
+}
+
+#[test]
+fn sheet_sketch_resolution_uses_fresh_parameters_and_paper_defaults_not_display_units() {
+    let (mut doc, id) = sheet_edit_design();
+    doc.set_param("Width", "2", Some("in"), None).unwrap();
+    doc.set_param("Inset", "1", Some("in"), None).unwrap();
+    let d = Arc::make_mut(doc.drawings.iter_mut().find(|d| d.id == id).unwrap());
+    Arc::make_mut(&mut d.sketches[0]).sketch.points[1].exprs.as_mut().unwrap().x = Some("Inset + 5".into());
+    let before = doc.to_json();
+    let solved = doc.solve_sheet_sketch(id, 41).unwrap();
+    let (width, height) = sheet_rectangle_size(&solved.sketch);
+    assert!((width - 50.8).abs() < 1e-6 && (height - 20.0).abs() < 1e-6);
+    // Inset is 25.4 mm, but the literal +5 is five paper mm, not five inches.
+    assert!((solved.sketch.points[1].pos.x - 30.4).abs() < 1e-9);
+    assert_eq!(doc.to_json(), before);
+    doc.set_param("Width", "60", Some("mm"), None).unwrap();
+    let solved_again = doc.solve_sheet_sketch(id, 41).unwrap();
+    assert!((sheet_rectangle_size(&solved_again.sketch).0 - 60.0).abs() < 1e-6);
+    assert_eq!(doc.drawing(id).unwrap().sketches[0].sketch.points[2].pos.x, 55.0, "read-only resolution never adopts a result");
+}
+
+#[test]
+fn sheet_sketch_edit_solves_and_commits_only_its_own_drawing() {
+    let (mut doc, id) = sheet_edit_design();
+    let before = doc.clone();
+    let mut other = (**doc.drawing(id).unwrap()).clone();
+    other.id += 1;
+    other.name = "Other drawing, same local sketch id".into();
+    let other_id = other.id;
+    doc.put_drawing(Arc::new(other));
+    let other = doc.drawing(other_id).unwrap().clone();
+    let (answer, solved) = doc
+        .edit_sheet_sketch(id, 41, |sketch| {
+            sketch.constraints[0].param = None;
+            sketch.constraints[0].kind.set_value(60.0);
+            Ok("accepted")
+        })
+        .unwrap();
+    assert_eq!(answer, "accepted");
+    assert!((sheet_rectangle_size(&solved.sketch).0 - 60.0).abs() < 1e-6);
+    assert_eq!(doc.drawing(id).unwrap().sketches[0].sketch, solved.sketch);
+    assert_eq!(doc.params, before.params, "editing cannot create a source parameter");
+    assert_eq!(doc.features, before.features);
+    assert!(Arc::ptr_eq(doc.drawing(other_id).unwrap(), &other));
+    assert_eq!(other.sketches[0].sketch.constraints[0].param.as_deref(), Some("Width"));
+    let mut only_model = doc.clone();
+    only_model.drawings = before.drawings.clone();
+    assert_eq!(only_model.to_json(), before.to_json(), "no other document field changed");
+    let reopened = crate::Document::from_json(&doc.to_json()).unwrap();
+    assert_eq!(reopened.drawing(id).unwrap().sketches[0].sketch, solved.sketch);
+}
+
+#[test]
+fn sheet_sketch_edit_refuses_bad_inputs_and_conflicts_atomically() {
+    let (mut doc, id) = sheet_edit_design();
+    let original = doc.to_json();
+    let owner = doc.drawing(id).unwrap().clone();
+    for kind in 0..5 {
+        let result = doc.edit_sheet_sketch(id, 41, |sketch| {
+            match kind {
+                0 => {
+                    sketch.points[1].pos.x += 1.0;
+                    return Err(DocError::Invalid("deliberately refused edit".into()));
+                }
+                1 => sketch.points[2].pos.x = f64::NAN,
+                2 => sketch.curves[0].kind = solidcraft_sketch::CurveKind::Line { a: 99_999, b: 1 },
+                3 => sketch.constraints[0].param = Some("Absent".into()),
+                _ => {
+                    sketch.add_constraint(solidcraft_sketch::ConstraintKind::Length { l: 0, value: 99.0 }, None)?;
+                }
+            }
+            Ok(())
+        });
+        assert!(result.is_err(), "accepted failed edit {kind}");
+        assert_eq!(doc.to_json(), original, "edit {kind} changed the stored document");
+        assert!(Arc::ptr_eq(doc.drawing(id).unwrap(), &owner));
+    }
+}
+
+#[test]
+fn sheet_sketch_edit_does_not_publish_partial_expression_evaluation() {
+    let (mut doc, id) = sheet_edit_design();
+    let before = doc.to_json();
+    let owner = doc.drawing(id).unwrap().clone();
+    for expression in ["Absent + 1 mm", "90 deg", "1 / 0", "100000000000 mm", "("] {
+        let result = doc.edit_sheet_sketch(id, 41, |sketch| {
+            sketch.points[1].exprs.as_mut().unwrap().x = Some("Inset + 15 mm".into());
+            sketch.points[2].exprs = Some(Box::new(solidcraft_sketch::PointExprs { x: Some(expression.into()), y: None }));
+            Ok(())
+        });
+        assert!(result.is_err(), "accepted {expression}");
+        assert_eq!(doc.to_json(), before);
+        assert!(Arc::ptr_eq(doc.drawing(id).unwrap(), &owner));
+    }
+}
+
+#[test]
+fn sheet_sketch_resolution_requires_a_declared_source_only_for_named_references() {
+    let (mut doc, id) = sheet_edit_design();
+    let d = Arc::make_mut(doc.drawings.iter_mut().find(|d| d.id == id).unwrap());
+    d.sources.clear();
+    for sheet in &mut d.sheets {
+        Arc::make_mut(sheet).documents = None;
+    }
+    let before = doc.to_json();
+    let e = doc.solve_sheet_sketch(id, 41).unwrap_err().to_string();
+    assert!(e.contains("declared design source"), "{e}");
+    assert_eq!(doc.to_json(), before);
+    let (_, solved) = doc
+        .edit_sheet_sketch(id, 41, |sketch| {
+            sketch.constraints[0].param = None;
+            sketch.points[1].exprs.as_mut().unwrap().x = Some("5".into());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(solved.sketch.points[1].pos.x, 5.0, "bare values stay paper mm without a source");
+    assert!((sheet_rectangle_size(&solved.sketch).0 - 40.0).abs() < 1e-6);
+}
+
+#[test]
+fn sheet_sketch_source_errors_are_explicit_and_unrelated_errors_do_not_retarget_it() {
+    let (mut doc, id) = sheet_edit_design();
+    doc.set_param("Width", "90", Some("deg"), None).unwrap();
+    assert!(doc.solve_sheet_sketch(id, 41).is_err());
+    doc.set_param("Width", "40", Some("mm"), None).unwrap();
+    let at = doc.params.iter().position(|p| p.name == "Width").unwrap();
+    doc.params[at].expr = "Width + 1 mm".into();
+    let before = doc.to_json();
+    let error = doc.solve_sheet_sketch(id, 41).unwrap_err().to_string();
+    assert!(error.contains("circular reference") && error.contains("Width"), "{error}");
+    assert_eq!(doc.to_json(), before);
+    let (_, solved) = doc
+        .edit_sheet_sketch(id, 41, |sketch| {
+            sketch.constraints[0].param = None;
+            Ok(())
+        })
+        .unwrap();
+    assert!((sheet_rectangle_size(&solved.sketch).0 - 40.0).abs() < 1e-6, "unreferenced source error is not a fallback or a global blocker");
+}
+
+#[test]
+fn sheet_sketch_target_is_exact_and_a_noop_preserves_the_record_arc() {
+    let (mut doc, id) = sheet_edit_design();
+    let before = doc.to_json();
+    assert!(doc.solve_sheet_sketch(id + 1, 41).is_err());
+    assert!(doc.edit_sheet_sketch(id, 42, |_| Ok(())).is_err());
+    assert_eq!(doc.to_json(), before);
+    doc.edit_sheet_sketch(id, 41, |_| Ok(())).unwrap();
+    let owner = doc.drawing(id).unwrap().clone();
+    let record = owner.sketches[0].clone();
+    doc.edit_sheet_sketch(id, 41, |_| Ok(())).unwrap();
+    assert!(Arc::ptr_eq(doc.drawing(id).unwrap(), &owner));
+    assert!(Arc::ptr_eq(&doc.drawing(id).unwrap().sketches[0], &record));
+}
+
+#[test]
+fn sheet_sketch_resolution_refuses_ambiguous_drawing_identity() {
+    let (mut doc, id) = sheet_edit_design();
+    let owner = doc.drawing(id).unwrap().clone();
+    doc.drawings.push(owner.clone());
+    let before = doc.to_json();
+    assert!(doc.solve_sheet_sketch(id, 41).unwrap_err().to_string().contains("ambiguous"));
+    assert!(doc.edit_sheet_sketch(id, 41, |_| Ok(())).is_err());
+    assert_eq!(doc.to_json(), before);
+    assert!(doc.drawings.iter().all(|drawing| Arc::ptr_eq(drawing, &owner)));
+}
+
+#[test]
+fn sheet_sketch_resolution_refuses_parameter_binding_on_a_nondimension() {
+    let (mut doc, id) = sheet_edit_design();
+    let before = doc.to_json();
+    let error = doc
+        .edit_sheet_sketch(id, 41, |sketch| {
+            sketch.constraints[1].param = Some("Width".into());
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("only a sheet sketch dimension"), "{error}");
+    assert_eq!(doc.to_json(), before);
+}
