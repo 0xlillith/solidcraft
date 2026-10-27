@@ -1,0 +1,30 @@
+{
+  "en": {
+    "Ctrl+Enter continues on GitHub.": "Ctrl+Enter continues on GitHub.",
+    "⌘Enter continues on GitHub.": "⌘Enter continues on GitHub."
+  },
+  "ar": {
+    "Ctrl+Enter continues on GitHub.": "Ctrl+Enter يتابع في GitHub.",
+    "⌘Enter continues on GitHub.": "⌘Enter يتابع في GitHub."
+  },
+  "de": {
+    "Ctrl+Enter continues on GitHub.": "Strg+Enter geht weiter zu GitHub.",
+    "⌘Enter continues on GitHub.": "⌘Enter geht weiter zu GitHub."
+  },
+  "he": {
+    "Ctrl+Enter continues on GitHub.": "Ctrl+Enter ממשיך ב־GitHub.",
+    "⌘Enter continues on GitHub.": "⌘Enter ממשיך ב־GitHub."
+  },
+  "ja": {
+    "Ctrl+Enter continues on GitHub.": "Ctrl+EnterでGitHubに進みます。",
+    "⌘Enter continues on GitHub.": "⌘EnterでGitHubに進みます。"
+  },
+  "vi": {
+    "Ctrl+Enter continues on GitHub.": "Nhấn Ctrl+Enter để tiếp tục trên GitHub.",
+    "⌘Enter continues on GitHub.": "Nhấn ⌘Enter để tiếp tục trên GitHub."
+  },
+  "zh": {
+    "Ctrl+Enter continues on GitHub.": "按Ctrl+Enter在GitHub中继续。",
+    "⌘Enter continues on GitHub.": "按⌘Enter在GitHub中继续。"
+  }
+}
