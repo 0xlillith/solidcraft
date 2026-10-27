@@ -764,3 +764,135 @@ fn empty_circular_output_still_charges_geometric_and_gap_work() {
     assert!(circle_output(&exterior, &r, Some(Limits { candidate_lines: 0, ..Limits::default() })).is_err());
     assert!(circle_output(&exterior, &r, Some(Limits { work: 0, ..Limits::default() })).is_err());
 }
+
+// Decimal-spacing fixtures use the exact stored 0.1 = N / 2^55. This integer
+// oracle is independent of the generator's dyadic and enclosure implementation.
+fn tenth_member(k: i64) -> f64 {
+    let numerator = i128::from(k) * 3_602_879_701_896_397;
+    numerator as f64 / 36_028_797_018_963_968.0
+}
+
+#[test]
+fn decimal_spacing_keeps_every_signed_member_in_a_polygon() {
+    let r = region(-1.0, -0.95, 1.0, 0.95);
+    let before = r.clone();
+    let lines: Vec<_> = (-9..=9).map(|k| [-1.0, tenth_member(k), 1.0, tenth_member(k)]).collect();
+    assert_eq!(lines.len(), 19);
+    for dy in [0.1, -0.1] {
+        let p = pattern(vec![family([0.0, 0.0], 0.0, dy, &[])]);
+        let saved = p.clone();
+        assert_marks(&generate(&p, &r).unwrap(), &lines, &[], 0.0);
+        assert_eq!(p, saved);
+        assert_eq!(r, before);
+    }
+}
+
+#[test]
+fn decimal_spacing_keeps_dot_phase_and_holes_without_partial_output() {
+    let mut r = region(-0.25, -0.35, 2.25, 0.35);
+    r.holes.push(rectangle(0.75, -0.15, 1.25, 0.15).reversed());
+    let mut dots = Vec::new();
+    for k in -3i64..=3 {
+        let xs: &[f64] = if k == 0 {
+            &[0.0, 2.0]
+        } else if k % 2 == 0 {
+            &[0.0, 1.0, 2.0]
+        } else {
+            &[0.5, 1.5]
+        };
+        dots.extend(xs.iter().map(|&x| [x, tenth_member(k)]));
+    }
+    assert_eq!(dots.len(), 16);
+    for (dx, dy) in [(0.5, 0.1), (-0.5, -0.1)] {
+        let p = pattern(vec![family([0.0, 0.0], dx, dy, &[0.0, -1.0])]);
+        assert_marks(&generate_with_limits(&p, &r, Limits { marks: 16, ..Limits::default() }).unwrap(), &[], &dots, 0.0);
+        assert!(generate_with_limits(&p, &r, Limits { marks: 15, ..Limits::default() }).is_err());
+    }
+}
+
+#[test]
+fn decimal_spacing_clips_disks_and_annuli_with_the_same_offset_enclosure() {
+    for hole in [false, true] {
+        let r =
+            Region2 { outer: Loop2::circle(Vec2::ZERO, 1.125), holes: if hole { vec![Loop2::circle(Vec2::ZERO, 0.25).reversed()] } else { vec![] } };
+        let mut lines = Vec::new();
+        for k in -11..=11 {
+            let y = tenth_member(k);
+            let outer = (1.265625 - y * y).sqrt();
+            if hole && (-2..=2).contains(&k) {
+                let inner = (0.0625 - y * y).sqrt();
+                lines.extend([[-outer, y, -inner, y], [inner, y, outer, y]]);
+            } else {
+                lines.push([-outer, y, outer, y]);
+            }
+        }
+        assert_eq!(lines.len(), if hole { 28 } else { 23 });
+        for dy in [0.1, -0.1] {
+            let p = pattern(vec![family([0.0, 0.0], 0.0, dy, &[])]);
+            assert_marks(&generate(&p, &r).unwrap(), &lines, &[], ROUNDOFF_MM);
+        }
+    }
+}
+
+#[test]
+fn decimal_spacing_contact_uncertainty_is_not_replaced_by_a_rounded_line() {
+    // 3 * stored(0.1) is strictly between stored(0.3) and its successor.
+    // Its enclosure touches the lower edge: guessing from nearest() would
+    // silently draw a stroke instead of reporting that unresolved contact.
+    let r = region(-1.0, 0.3, 1.0, 0.4);
+    let p = pattern(vec![family([0.0, 0.0], 0.0, 0.1, &[])]);
+    assert!(generate(&p, &r).is_err());
+}
+
+#[test]
+fn decimal_spacing_preserves_cumulative_limits_and_gap_only_semantics() {
+    let r = region(-1.0, -0.95, 1.0, 0.95);
+    let p = pattern(vec![family([0.0, 0.0], 0.0, 0.1, &[])]);
+    assert_eq!(generate_with_limits(&p, &r, Limits { marks: 19, ..Limits::default() }).unwrap().len(), 19);
+    for limits in [
+        Limits { marks: 18, ..Limits::default() },
+        Limits { candidate_lines: 18, ..Limits::default() },
+        Limits { input_pieces: 3, ..Limits::default() },
+        Limits { work: 0, ..Limits::default() },
+        Limits { events: 0, ..Limits::default() },
+    ] {
+        assert!(generate_with_limits(&p, &r, limits).is_err());
+    }
+    let gap = pattern(vec![family([0.0, 0.0], 0.5, 0.1, &[-1.0])]);
+    assert!(generate(&gap, &r).unwrap().is_empty());
+    assert!(generate_with_limits(&gap, &r, Limits { dash_steps: 0, ..Limits::default() }).is_err());
+}
+
+#[test]
+fn decimal_spacing_strokes_keep_their_phase_across_hole_fragments() {
+    let mut r = region(-0.25, -0.35, 2.25, 0.35);
+    r.holes.push(rectangle(0.75, -0.15, 1.25, 0.15).reversed());
+    // Member k starts at k/2 and repeats [1,-1]. The k=0 and k=1
+    // strokes meet the hole; clipping must not restart their two-mm cycle.
+    let endpoints: &[(i64, &[(f64, f64)])] = &[
+        (-3, &[(0.5, 1.5)]),
+        (-2, &[(-0.25, 0.0), (1.0, 2.0)]),
+        (-1, &[(-0.25, 0.5), (1.5, 2.25)]),
+        (0, &[(0.0, 0.75), (2.0, 2.25)]),
+        (1, &[(0.5, 0.75), (1.25, 1.5)]),
+        (2, &[(-0.25, 0.0), (1.0, 2.0)]),
+        (3, &[(-0.25, 0.5), (1.5, 2.25)]),
+    ];
+    let lines: Vec<_> = endpoints.iter().flat_map(|&(k, spans)| spans.iter().map(move |&(a, b)| [a, tenth_member(k), b, tenth_member(k)])).collect();
+    assert_eq!(lines.len(), 13);
+    for (dx, dy) in [(0.5, 0.1), (-0.5, -0.1)] {
+        let p = pattern(vec![family([0.0, 0.0], dx, dy, &[1.0, -1.0])]);
+        assert_marks(&generate(&p, &r).unwrap(), &lines, &[], 0.0);
+    }
+}
+
+#[test]
+fn decimal_spacing_circle_contact_is_not_invented_by_nearest_rounding() {
+    // The third exact offset is between adjacent floats. Treating nearest()
+    // as the exact offset could guess a miss or tangency at these radii.
+    for radius in [0.3, tenth_member(3)] {
+        let r = Region2 { outer: Loop2::circle(Vec2::ZERO, radius), holes: vec![] };
+        let p = pattern(vec![family([0.0, 0.0], 0.0, 0.1, &[])]);
+        assert!(generate(&p, &r).is_err(), "uncertain contact at radius {radius}");
+    }
+}

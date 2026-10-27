@@ -1,4 +1,4 @@
-# Hatch patterns, PAT import and bounded generation (W38d D1–D5)
+# Hatch patterns, PAT import and bounded generation (W38d D1–D6)
 
 D1 supplies a neutral hatch-pattern model and a bounded PAT reader for
 [W38d (#7062)][issue], following [the drawing-sketch handoff][handoff].
@@ -7,7 +7,8 @@ D3 extends its phase arithmetic and clipping queries while retaining the D1
 model, public generation API, polygon-only scope and existing resource caps.
 D4 adds end-to-end PAT-to-polygon acceptance cases. D5 extends clipping to a
 canonical disk or an annulus with one concentric circular hole, retaining the
-polygon path, phase rules and caps.
+polygon path, phase rules and caps. D6 admits bounded decimal member spacing
+by carrying exact-product enclosures through the same clipping paths.
 These are library foundations: they do not attach a fill to a sketch, save
 drawing records, change the paper scene or register a command. They do not
 complete W38d or implement section-derived hatching (W34).
@@ -98,7 +99,7 @@ across clipped fragments and holes; clipping does not restart the dash sequence.
 The eventual paper adapter must keep, for example, a 3 mm hatch spacing at 3 mm
 on paper when a view scale changes. It must transform the region to paper
 coordinates without applying that view scale to the pattern a second time.
-D1–D5 have no view or placement API. A multi-family pattern also has no single
+D1–D6 have no view or placement API. A multi-family pattern also has no single
 intrinsic spacing: a future spacing control must define its relationship to
 pattern scale explicitly.
 
@@ -251,10 +252,12 @@ tangential phase `k * delta_x`, and each cumulative sum of absolute dash
 lengths. That policy refused, for example, the cycle sum for `[0.1, -0.2]`
 even though the stored pattern passes D1 validation.
 
-D3 retains the exact-binary64 check for every candidate normal offset
-`k * delta_y`, including conservative exterior candidates. It replaces the
-phase and cycle-sum restrictions with bounded exact arithmetic in the private
-[`phase` module][phase]. No new public type, dependency or saved field is added.
+D3 originally retained the exact-binary64 check for every candidate normal
+offset `k * delta_y`, including conservative exterior candidates, while replacing
+the phase and cycle-sum restrictions with bounded exact arithmetic in the private
+[`phase` module][phase]. D6 below removes that remaining exact-product restriction
+by reusing the same arithmetic and carrying its enclosure into clipping.
+No new public type, dependency or saved field is added.
 
 ### What is exact
 
@@ -277,8 +280,8 @@ The implementation does not first round a cycle base and then add a prefix.
 
 This admits some decimal-valued dash sequences that D2 refused: for instance,
 the represented inputs `[0.1, -0.2]` can form an exact dyadic period. Success
-still depends on the region, exact normal spacing, arithmetic envelope, clipping
-classification and cumulative budgets. It is not a promise to generate every
+still depends on the region, certified normal offsets, arithmetic envelope,
+clipping classification and cumulative budgets. It is not a promise to generate every
 finite pattern or every decimal spacing.
 
 ### Clipping before rounding for output
@@ -392,7 +395,49 @@ The exact phase, candidate-index limits and numeric-progress rules from D3 are
 unchanged. Root certification is not a universal accuracy guarantee for final
 rounded XY marks or a promise to handle every finite circle/frame combination.
 
-## Work and output limits (D2–D5)
+## D6 bounded decimal member spacing
+
+A validated family may use a decimal spacing such as `0.1 mm`. Even though the
+stored value is binary64, an integer multiple can fall between two binary64
+values. D1–D5 refused such a product before attempting to clip the member.
+D6 forms `k * delta_y` in the existing checked dyadic representation and passes
+its finite neighbour enclosure to both polygon and canonical-circle clipping.
+The product is exact for the **stored input**, not for the decimal source text.
+
+Classification, intersections and circle-root predicates consume the enclosure;
+`nearest()` is used only in the final frame reconstruction. It is never fed back
+as an exact normal offset. Signed member order and the existing numeric-progress
+check remain. All arithmetic is charged to the same work budget, so the added
+checks can exhaust a tight budget sooner; none of the ceilings are increased.
+
+This admits ordinary decimal-spaced members away from uncertain contacts without
+an epsilon or a snap. It does **not** promise success for every finite pattern:
+if the enclosure meets a polygon vertex/edge or an uncertain circle tangency,
+the complete generation still fails. For example, three times stored `0.1`
+lies between stored `0.3` and its successor. Where that enclosure touches a
+boundary, rounding first would guess a boundary relation; D6 refuses it.
+The supported polygon/disk/concentric-annulus topology is unchanged.
+
+Original independent tests check the following, with the original D1–D5 tests
+and expectations retained:
+
+| Fixture | Expected result |
+| --- | --- |
+| Rectangle `[-1,1] x [-0.95,0.95]`, signed spacing `+/-0.1` | 19 full strokes at the independently calculated member positions |
+| Rectangle with an interior hole, spacing `0.1`, phase `k/2`, `[0,-1]` | 16 dots; the hole does not restart phase |
+| Same region/phase with `[1,-1]` | 13 clipped strokes, including split hole contacts |
+| Canonical disk R1.125, optional concentric R0.25 hole, spacing `0.1` | 23 disk strokes or 28 annulus strokes, checked against circle equations |
+| Decimal offset enclosure touching a polygon or circle boundary | Explicit whole-result refusal, not a guessed hit/miss/tangent |
+| Lowered mark/member/work/event/input/dash ceilings | Refusal without a partial successful result |
+| Original PAT spacing `0.2`, millimetres at scale 0.5 | 19 strokes after one conversion to `0.1 mm` |
+| Original PAT spacing `0.125`, inches at scale 0.5 | 7 strokes in the +/-5 mm height range at `1.5875 mm` spacing |
+
+The signed `0.1` member oracle uses the independent integer ratio
+`3602879701896397 / 2^55`; it does not call the dyadic implementation to obtain
+expected coordinates. The PAT cases verify complete output and unchanged inputs.
+This remains a library increment, not saved-fill, paper-output or UI acceptance.
+
+## Work and output limits (D2–D6)
 
 One internal [budget][budget] spans preparation, every family, clipping, dash
 enumeration, dot membership queries and output. Its default cumulative caps are:
@@ -438,7 +483,7 @@ later paper-scene record limit remain separate responsibilities.
 ## Later phases and acceptance
 
 The future paper adapter must choose a visible representation for `Mark::Dot`;
-the current scene's butt-cap strokes reject degenerate geometry. D1–D5 supply no
+the current scene's butt-cap strokes reject degenerate geometry. D1–D6 supply no
 paper adapter, stroke width, colour, export, command or interactive preview.
 General arc and curved-region clipping beyond the explicit D5 circle subset
 remains outside this slice.
@@ -447,7 +492,7 @@ Connecting fills to sketches waits for W38a's drawing-owned sketch record.
 The later W38d integration owns persistent boundary identity, retained geometry
 and lost-reference reporting, commands and undo, embedded imported definitions,
 paper object kinds/layers and export acceptance. Section-derived hatching
-remains a separate feature. D1–D5 add no drawing-format field or new dependency.
+remains a separate feature. D1–D6 add no drawing-format field or new dependency.
 
 D1 acceptance covers model validation and serde, converted units and phase data,
 Unicode/BOM/line-ending handling, strict final blanks, malformed numeric/header

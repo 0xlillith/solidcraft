@@ -317,12 +317,24 @@ impl PreparedRegion {
         Ok((bounds.lo, bounds.hi))
     }
 
+    /// Exact scalar offsets retained for the existing clipping fixtures.
+    #[cfg(test)]
     pub fn clip(&self, frame: &Frame, offset: f64, budget: &mut Budget) -> Result<ClippedLine> {
+        self.clip_bound(frame, Bound::point(offset)?, budget)
+    }
+
+    /// Classify the exact represented-input normal offset through its enclosure.
+    /// nearest() is used only later, when constructing rounded output points.
+    pub fn clip_parameter(&self, frame: &Frame, offset: Param, budget: &mut Budget) -> Result<ClippedLine> {
+        budget.work(1)?;
+        self.clip_bound(frame, Bound::parameter(offset)?, budget)
+    }
+
+    fn clip_bound(&self, frame: &Frame, offset: Bound, budget: &mut Budget) -> Result<ClippedLine> {
         let loops = match &self.shape {
             PreparedShape::Polygon(loops) => loops,
             PreparedShape::Circular(region) => return region.clip(frame, offset, budget),
         };
-        let offset = Bound::point(offset)?;
         let mut events = Vec::new();
         let mut base = 0usize;
         for points in loops {

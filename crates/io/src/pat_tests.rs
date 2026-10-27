@@ -544,3 +544,55 @@ fn imported_units_and_scale_reach_generation_once_in_paper_millimetres() {
         assert_diagonal_marks(&marks, &expected, (220.0 * SQRT_2 - 150.0) * factor);
     }
 }
+
+#[test]
+fn imported_decimal_spacing_reaches_generation_after_one_unit_conversion() {
+    // Original PAT records. Independent binary64 ratios after conversion:
+    // 0.1 = 3602879701896397 / 2^55; 1.5875 = 3574732204225331 / 2^51.
+    for (text, options, spacing, numerator, denominator, half_height, last) in [
+        (
+            "*SC_DECIMAL,Original decimal spacing\n0,0,0,0,0.2\n\n",
+            PatImportOptions { units: PatUnits::Millimetres, scale: 0.5 },
+            0.1,
+            3_602_879_701_896_397i128,
+            36_028_797_018_963_968.0,
+            0.95,
+            9i64,
+        ),
+        (
+            "*SC_DECIMAL,Original decimal spacing\n0,0,0,0,0.125\n\n",
+            PatImportOptions { units: PatUnits::Inches, scale: 0.5 },
+            1.5875,
+            3_574_732_204_225_331i128,
+            2_251_799_813_685_248.0,
+            5.0,
+            3i64,
+        ),
+    ] {
+        let imported = read_pat(text.as_bytes(), options).unwrap();
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].families[0].delta_y, spacing);
+        let before = imported.clone();
+        let region = Region2 {
+            outer: Loop2::polygon(&[
+                Vec2::new(-1.0, -half_height),
+                Vec2::new(1.0, -half_height),
+                Vec2::new(1.0, half_height),
+                Vec2::new(-1.0, half_height),
+            ]),
+            holes: vec![],
+        };
+        let saved_region = region.clone();
+        let marks = hatch::generate(&imported[0], &region).unwrap();
+        let expected: Vec<_> = (-last..=last)
+            .map(|k| {
+                let y = (i128::from(k) * numerator) as f64 / denominator;
+                Mark::Line { a: Vec2::new(-1.0, y), b: Vec2::new(1.0, y) }
+            })
+            .collect();
+        assert_eq!(marks, expected);
+        assert_eq!(marks.len(), if last == 9 { 19 } else { 7 });
+        assert_eq!(imported, before);
+        assert_eq!(region, saved_region);
+    }
+}

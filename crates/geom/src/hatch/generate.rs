@@ -34,12 +34,13 @@ pub enum Mark {
 /// Preparation, candidate lines, clipping, dash visits and marks share cumulative limits.
 /// Unsupported boundaries, exhausted limits, nonfinite arithmetic, unsafe indices or
 /// lost numeric progress return an error rather than truncated or repaired geometry.
-/// Every candidate's normal spacing product must still be exactly representable as f64.
-/// Dash phase, prefixes and periods use exact stored-binary64 values within a checked
-/// i128 envelope. Excessive exponent alignment or arithmetic overflow is refused.
+/// Normal offsets, dash phase, prefixes and periods use exact stored-binary64 values
+/// within a checked i128 envelope; clipping receives their enclosing neighbours.
+/// No rounded normal offset is promoted to an exact line for contact classification.
+/// Excessive exponent alignment or arithmetic overflow is refused.
 /// Parameters round once to nearest-even after the complete exact phase expression;
 /// clipping uses their enclosures. Ambiguous contacts, collapsed rounded steps and
-/// unsupported spacing can still refuse valid patterns. Final frame coordinates are
+/// uncertain normal contacts can still refuse valid patterns. Final frame coordinates are
 /// rounded f64 values, not an exact geometry or universal accuracy certificate.
 pub fn generate(pattern: &Pattern, region: &Region2) -> Result<Vec<Mark>> {
     generate_with_limits(pattern, region, Limits::default())
@@ -61,31 +62,33 @@ pub(super) fn generate_with_limits(pattern: &Pattern, region: &Region2, limits: 
         let lines = IndexRange::new(a.min(b).floor() - 1.0, a.max(b).ceil() + 1.0)?;
         budget.candidate_lines(lines.count()?)?;
         let cycle = Cycle::new(&family.dashes, &mut budget)?;
+        let spacing = Dyadic::from_f64(family.delta_y, &mut budget)?;
         let mut previous_offset = None;
         for k in lines.start..=lines.end {
             budget.work(1)?;
-            let offset = certified_index_product(k, family.delta_y, "uncertified hatch spacing product")?;
+            let offset = spacing.mul_index(k, &mut budget)?.param(&mut budget)?;
+            let rounded_offset = offset.nearest();
             if let Some(previous) = previous_offset {
-                let advances = if family.delta_y > 0.0 { offset > previous } else { offset < previous };
+                let advances = if family.delta_y > 0.0 { rounded_offset > previous } else { rounded_offset < previous };
                 if !advances {
                     return Err(Invalid("line spacing loses numeric progress"));
                 }
             }
-            previous_offset = Some(offset);
-            let clipped = region.clip(&frame, offset, &mut budget)?;
+            previous_offset = Some(rounded_offset);
+            let clipped = region.clip_parameter(&frame, offset, &mut budget)?;
             if clipped.spans().is_empty() {
                 continue;
             }
             let phase =
                 if cycle.entries.is_empty() { Dyadic::ZERO } else { Dyadic::from_f64(family.delta_x, &mut budget)?.mul_index(k, &mut budget)? };
-            let member = Member { clipped: &clipped, frame: &frame, offset, phase };
+            let member = Member { clipped: &clipped, frame: &frame, offset: rounded_offset, phase };
             for (i, span) in clipped.spans().iter().enumerate() {
                 budget.work(1)?;
                 if !span.start.is_finite() || !span.end.is_finite() || span.start >= span.end {
                     return Err(Invalid("invalid clipped span"));
                 }
                 if cycle.entries.is_empty() {
-                    push_line(&frame, offset, span.start, span.end, &mut budget, &mut marks)?;
+                    push_line(&frame, rounded_offset, span.start, span.end, &mut budget, &mut marks)?;
                 } else {
                     cycle.expand(&member, i, &mut budget, &mut marks)?;
                 }
@@ -237,17 +240,4 @@ fn push_line(frame: &Frame, offset: f64, start: f64, end: f64, budget: &mut Budg
 
 fn finite(value: f64) -> Result<f64> {
     if value.is_finite() { Ok(value) } else { Err(Invalid("nonfinite hatch arithmetic")) }
-}
-
-fn certified_index_product(index: i64, factor: f64, reason: &'static str) -> Result<f64> {
-    let k = index as f64;
-    let product = finite(k * factor)?;
-    // k is an exactly represented integer from IndexRange. Its exact product
-    // with a finite f64 is a multiple of the minimum subnormal, so a nonzero
-    // residual cannot disappear below that value. This is not a certificate
-    // for arbitrary f64 multiplication. The offset passed to clip must be exact.
-    if k.mul_add(factor, -product) != 0.0 {
-        return Err(Invalid(reason));
-    }
-    Ok(product)
 }

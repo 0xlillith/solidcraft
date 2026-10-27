@@ -54,9 +54,8 @@ impl CircularRegion {
         Ok((height.sub(radius)?.lo, height.add(radius)?.hi))
     }
 
-    pub(super) fn clip(&self, frame: &Frame, offset: f64, budget: &mut Budget) -> Result<ClippedLine> {
+    pub(super) fn clip(&self, frame: &Frame, offset: Bound, budget: &mut Budget) -> Result<ClippedLine> {
         budget.work(1)?;
-        let offset = Bound::point(offset)?;
         let mut events = Vec::new();
         self.outer.events(frame, offset, 0, &mut events, budget)?;
         if let Some(inner) = self.inner {
