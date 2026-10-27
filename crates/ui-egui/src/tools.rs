@@ -524,8 +524,15 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
         }
         "sketch.rectangle.three_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "p2": xy(&p[2])}),
         "sketch.circle.center" => {
-            // A second click snapped to a point keeps the circle on that point (#3099).
-            let mut v = json!({"center": arg(&p[0]), "radius": d(0, 1)});
+            // A centre snapped to an existing point goes as its place, where `connect` ties
+            // them with a Coincident the sketch shows (#7299); a midpoint, on-curve, crossing or
+            // body-vertex snap goes as itself, so the centre is held there. A second click
+            // snapped to a point keeps the circle on that point (#3099).
+            let center = match &p[0].1 {
+                Some(id) if ["mid:", "on:", "vertex:", "x:"].iter().any(|k| id.starts_with(k)) => json!(id),
+                _ => xy(&p[0]),
+            };
+            let mut v = json!({"center": center, "radius": d(0, 1)});
             if p[1].1.is_some() {
                 v["through"] = arg(&p[1]);
             }
