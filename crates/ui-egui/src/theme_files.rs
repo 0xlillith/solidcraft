@@ -861,6 +861,19 @@ mod tests {
         assert_eq!(resolve(&own).file_rail, Color32::from_rgb(0x10, 0x20, 0x30));
     }
 
+    /// Okibi and Akari spend their ember on one or two marks a screen: the start page's rail is
+    /// one of their neutrals, not their accent.
+    #[test]
+    fn okibi_and_akari_rails_are_neutral() {
+        for id in ["okibi", "akari"] {
+            let t = resolve(builtin().iter().find(|t| t.id == id).unwrap());
+            for c in [t.file_rail, t.file_rail_hover] {
+                let [r, g, b, _] = c.to_array();
+                assert!(r.max(g).max(b) - r.min(g).min(b) <= 12, "{id}: {c:?} is tinted");
+            }
+        }
+    }
+
     #[test]
     fn a_short_file_sets_only_its_colours() {
         let t = parse(r##"{"format":"solidcraft-theme/1","name":"My Theme!","base":"light","colors":{"panel":"#102030","axis_z":"#0000ff80"}}"##)
