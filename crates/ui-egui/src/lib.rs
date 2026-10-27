@@ -211,6 +211,7 @@ mod rule_editor;
 mod rule_editor_tests;
 pub mod save_job;
 pub mod scenario;
+pub(crate) mod scene_palette;
 pub mod select_other;
 pub mod selection;
 pub mod shell;
@@ -778,6 +779,7 @@ impl SolveApp {
             depth: egui_wgpu::depth_format_from_bits(depth_bits, stencil_bits),
             samples: samples.max(1),
             tess: false,
+            oit: false,
         };
         self.set_wgpu_targets(rs, target, target);
     }
@@ -792,8 +794,9 @@ impl SolveApp {
             depth: egui_wgpu::depth_format_from_bits(depth_bits, stencil_bits),
             samples: samples.max(1),
             tess: false,
+            oit: false,
         };
-        let window = crate::gpu::GpuTarget { format: rs.target_format, depth: None, samples: 1, tess: false };
+        let window = crate::gpu::GpuTarget { format: rs.target_format, depth: None, samples: 1, tess: false, oit: false };
         self.set_wgpu_targets(rs, scene, window);
         self.viewport.gpu.map_or(samples, |g| g.samples)
     }
