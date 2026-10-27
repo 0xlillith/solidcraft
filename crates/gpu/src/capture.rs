@@ -194,10 +194,11 @@ impl Capturer {
             _ => None,
         };
         let mut frame = frame(scene, cam, [width, height], state.key, access);
-        if let Some(h) = highlight {
-            frame.hl_key = state.key;
-            frame.hl_slot = Arc::new(Mutex::new(Some(h)));
-        }
+        // Always a highlight scene of the picture's own, empty without one: the renderer keeps
+        // its last highlight scene while the slot is empty (as the viewport does until the next
+        // is built), so the previous picture's highlight would show in this one.
+        frame.hl_key = state.key;
+        frame.hl_slot = Arc::new(Mutex::new(Some(highlight.unwrap_or_default())));
         let (device, queue) = (&self.device, &self.queue);
         let scopes = error_scopes(device);
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
