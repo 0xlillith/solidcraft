@@ -1,0 +1,18 @@
+{
+  "en": {
+    "prefs.dialog_buttons": "Dialog buttons",
+    "prefs.top": "Top"
+  },
+  "ja": {
+    "prefs.dialog_buttons": "ダイアログのボタン",
+    "prefs.top": "上"
+  },
+  "ko": {
+    "prefs.dialog_buttons": "대화 상자 버튼",
+    "prefs.top": "위쪽"
+  },
+  "zh": {
+    "prefs.dialog_buttons": "对话框按钮",
+    "prefs.top": "顶部"
+  }
+}
