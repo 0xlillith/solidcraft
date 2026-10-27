@@ -78,7 +78,13 @@ pub(super) fn sheet_target(s: &Session, p: &Value, cmd: &str) -> Result<std::syn
     if owners.next().is_some() {
         return Err(bad(cmd, "the edited drawing id is ambiguous"));
     }
-    owner.validate().map_err(|e| bad(cmd, e.to_string()))?;
+    // Target selection checks identity, not every payload. Staging checks the
+    // candidate before solving; edit_drawing validates the whole publication.
+    if owner.sketches.iter().filter(|record| record.id == entry.sketch).count() != 1
+        || owner.sheets.iter().filter(|sheet| sheet.id == entry.sheet).count() != 1
+    {
+        return Err(bad(cmd, "the edited sketch or sheet id is missing or ambiguous"));
+    }
     let record = owner.sheet_sketch(entry.sketch).ok_or_else(|| bad(cmd, "the edited sheet sketch no longer exists"))?;
     if record.sheet != entry.sheet {
         return Err(bad(cmd, "the edited sketch's owning sheet changed"));
@@ -107,22 +113,23 @@ pub(super) fn edit_sheet<T>(
     change: impl FnOnce(&mut Sketch, &mut Document) -> Result<T>,
 ) -> Result<(T, Value)> {
     let entry = sheet_target(s, p, cmd)?;
-    let mut candidate = s.doc.solve_sheet_sketch(entry.drawing, entry.sketch)?.sketch;
-    let mut source = (*s.doc).clone();
+    let design = s.doc.clone();
+    let mut candidate = s.drawing(cmd)?.solve_sheet_sketch(&design, entry.sketch)?.sketch;
+    let mut source = (*design).clone();
     let out = change(&mut candidate, &mut source)?;
-    if source != *s.doc {
+    if source != *design {
         return Err(bad(cmd, "a sheet sketch cannot change the source design or its parameters"));
     }
-    let (_, solved) = source.edit_sheet_sketch(entry.drawing, entry.sketch, |sketch| {
-        *sketch = candidate;
-        Ok(())
+    let solved = s.edit_drawing(cmd, |drawing| {
+        let (_, solved) = drawing.edit_sheet_sketch(&design, entry.sketch, |sketch| {
+            *sketch = candidate;
+            Ok(())
+        })?;
+        if solved.sheet != entry.sheet {
+            return Err(bad(cmd, "the edited sketch's owning sheet changed"));
+        }
+        Ok(solved)
     })?;
-    if solved.sheet != entry.sheet {
-        return Err(bad(cmd, "the edited sketch's owning sheet changed"));
-    }
-    if source != *s.doc {
-        s.doc = std::sync::Arc::new(source);
-    }
     Ok((out, super::sketch::report_json(&solved.report)))
 }
 

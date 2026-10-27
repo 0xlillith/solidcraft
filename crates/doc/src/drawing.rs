@@ -223,9 +223,7 @@ impl Drawing {
     /// properties are kept as they came, and indenting them can make a drawing that read in
     /// under the limit save over it.
     pub fn to_json(&self) -> Result<String> {
-        if !self.sketches.is_empty() {
-            self.validate()?;
-        }
+        self.validate()?;
         let text = serde_json::to_string_pretty(self).map_err(|e| DocError::Invalid(format!("drawing not saved: {e}")))?;
         require(text.len() <= MAX_DRAWING_BYTES, || format!("drawing too large to save (at most {} MiB)", MAX_DRAWING_BYTES >> 20))?;
         Ok(text)
@@ -254,6 +252,14 @@ impl Drawing {
     /// The record's rules (the module's notes): what reading a drawing checks, and what every edit
     /// keeps.
     pub fn validate(&self) -> Result<()> {
+        self.validate_structure()?;
+        sketch::check_drawing(self)
+    }
+
+    /// Ownership/header checks also used before staging one sketch edit. Deep
+    /// payload validation remains at the full publication and file boundaries.
+    fn validate_structure(&self) -> Result<()> {
+        require(self.sketches.len() <= MAX_SHEET_SKETCHES, || "too many sheet sketches".into())?;
         require((1..=MAX_SHEETS).contains(&self.sheets.len()), || format!("a drawing has 1 to {MAX_SHEETS} sheets"))?;
         require(self.sources.len() <= 1, || "a drawing draws only the design it is in".into())?;
         check_name(&self.name, "the drawing's")?;
@@ -265,7 +271,10 @@ impl Drawing {
             let length = unit.trim() == unit.as_str() && expr::unit_info(unit).is_some_and(|(kind, _)| kind == expr::Kind::Length);
             require(length, || "the drawing's unit is not a length unit (such as `mm` or `in`)".into())?;
         }
-        sketch::check_drawing(self)?;
+        let sheets: BTreeSet<_> = self.sheets.iter().map(|sheet| sheet.id).collect();
+        for record in &self.sketches {
+            require(sheets.contains(&record.sheet), || "sheet sketch owner does not exist in this drawing".into())?;
+        }
         let mut seen = BTreeSet::new();
         for id in self.ids() {
             require(id != 0, || "an object has the id 0, which is never one".into())?;

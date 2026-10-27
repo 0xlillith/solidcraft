@@ -813,3 +813,42 @@ fn sheet_editor_commands_and_refusals_do_not_evaluate_a_stale_model() {
     assert_eq!(s.evaluations, count);
     assert_eq!(s.active_sketch, Some(model_sketch), "model active state was not overwritten");
 }
+
+// W38a review: an unchanged Arc is not a validation certificate.
+#[test]
+fn sheet_review_publication_revalidates_unchanged_sketch_records() {
+    let (mut s, d, sk, _) = sheet_editor();
+    let owner = s.doc.drawing(d).unwrap().clone();
+    let mut next = (*owner).clone();
+    let mut other = (*next.sheet_sketch(sk).unwrap().as_ref()).clone();
+    other.id = next.allocate_id(&mut IdSource::seeded(7608)).unwrap();
+    other.name = "Unchanged invalid payload".into();
+    other.sketch.add_point(solidcraft_geom::Vec2::new(4.0, 5.0), Some("invalid_point")).unwrap();
+    other.sketch.points[1].pos.x = solidcraft_sketch::MAX_COORD;
+    let invalid = Arc::new(other);
+    next.sketches.push(invalid.clone());
+    s.doc_mut().put_drawing(Arc::new(next));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let e = s.execute("sketch.point", &json!({"point":[12,13],"id":"must_not_publish"})).unwrap_err().to_string();
+    assert!(e.contains("out of range"), "{e}");
+    assert!(Arc::ptr_eq(&s.doc, &before));
+    assert!(Arc::ptr_eq(s.doc.drawing(d).unwrap().sheet_sketch(invalid.id).unwrap(), &invalid));
+    assert!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.resolve_point("must_not_publish").is_none());
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+}
+
+#[test]
+fn sheet_review_shared_store_noop_keeps_the_document_and_record_arcs() {
+    let (mut s, d, sk, _) = sheet_editor();
+    let before = s.doc.clone();
+    let record = before.drawing(d).unwrap().sheet_sketch(sk).unwrap().clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let (answer, _) = crate::cmd::sketch_store::edit_sheet(&mut s, &json!({}), "test", |_, _| Ok(42)).unwrap();
+    assert_eq!(answer, 42);
+    assert!(Arc::ptr_eq(&s.doc, &before));
+    assert!(Arc::ptr_eq(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap(), &record));
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+}

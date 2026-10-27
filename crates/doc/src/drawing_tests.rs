@@ -851,6 +851,28 @@ fn sheet_edit_design() -> (crate::Document, u64) {
     (doc, id)
 }
 
+// Test-only container adoption of a staged Drawing edit. The production engine
+// always publishes through Session::edit_drawing; no Document writer API remains.
+fn edit_sheet_fixture<T>(
+    doc: &mut crate::Document,
+    drawing: u64,
+    sketch: u64,
+    change: impl FnOnce(&mut solidcraft_sketch::Sketch) -> Result<T>,
+) -> Result<(T, SolvedSheetSketch)> {
+    let mut owners = doc.drawings.iter().filter(|owner| owner.id == drawing);
+    let owner = owners.next().ok_or_else(|| DocError::Invalid("missing drawing".into()))?;
+    if owners.next().is_some() {
+        return Err(DocError::Invalid("ambiguous drawing".into()));
+    }
+    let mut next = (**owner).clone();
+    let out = next.edit_sheet_sketch(doc, sketch, change)?;
+    next.validate()?;
+    if next != **owner {
+        doc.put_drawing(Arc::new(next));
+    }
+    Ok(out)
+}
+
 fn sheet_rectangle_size(sketch: &solidcraft_sketch::Sketch) -> (f64, f64) {
     (sketch.points[2].pos.dist(sketch.points[1].pos), sketch.points[3].pos.dist(sketch.points[2].pos))
 }
@@ -903,13 +925,12 @@ fn sheet_sketch_edit_solves_and_commits_only_its_own_drawing() {
     let other_id = other.id;
     doc.put_drawing(Arc::new(other));
     let other = doc.drawing(other_id).unwrap().clone();
-    let (answer, solved) = doc
-        .edit_sheet_sketch(id, 41, |sketch| {
-            sketch.constraints[0].param = None;
-            sketch.constraints[0].kind.set_value(60.0);
-            Ok("accepted")
-        })
-        .unwrap();
+    let (answer, solved) = edit_sheet_fixture(&mut doc, id, 41, |sketch| {
+        sketch.constraints[0].param = None;
+        sketch.constraints[0].kind.set_value(60.0);
+        Ok("accepted")
+    })
+    .unwrap();
     assert_eq!(answer, "accepted");
     assert!((sheet_rectangle_size(&solved.sketch).0 - 60.0).abs() < 1e-6);
     assert_eq!(doc.drawing(id).unwrap().sketches[0].sketch, solved.sketch);
@@ -930,7 +951,7 @@ fn sheet_sketch_edit_refuses_bad_inputs_and_conflicts_atomically() {
     let original = doc.to_json();
     let owner = doc.drawing(id).unwrap().clone();
     for kind in 0..5 {
-        let result = doc.edit_sheet_sketch(id, 41, |sketch| {
+        let result = edit_sheet_fixture(&mut doc, id, 41, |sketch| {
             match kind {
                 0 => {
                     sketch.points[1].pos.x += 1.0;
@@ -957,7 +978,7 @@ fn sheet_sketch_edit_does_not_publish_partial_expression_evaluation() {
     let before = doc.to_json();
     let owner = doc.drawing(id).unwrap().clone();
     for expression in ["Absent + 1 mm", "90 deg", "1 / 0", "100000000000 mm", "("] {
-        let result = doc.edit_sheet_sketch(id, 41, |sketch| {
+        let result = edit_sheet_fixture(&mut doc, id, 41, |sketch| {
             sketch.points[1].exprs.as_mut().unwrap().x = Some("Inset + 15 mm".into());
             sketch.points[2].exprs = Some(Box::new(solidcraft_sketch::PointExprs { x: Some(expression.into()), y: None }));
             Ok(())
@@ -980,13 +1001,12 @@ fn sheet_sketch_resolution_requires_a_declared_source_only_for_named_references(
     let e = doc.solve_sheet_sketch(id, 41).unwrap_err().to_string();
     assert!(e.contains("declared design source"), "{e}");
     assert_eq!(doc.to_json(), before);
-    let (_, solved) = doc
-        .edit_sheet_sketch(id, 41, |sketch| {
-            sketch.constraints[0].param = None;
-            sketch.points[1].exprs.as_mut().unwrap().x = Some("5".into());
-            Ok(())
-        })
-        .unwrap();
+    let (_, solved) = edit_sheet_fixture(&mut doc, id, 41, |sketch| {
+        sketch.constraints[0].param = None;
+        sketch.points[1].exprs.as_mut().unwrap().x = Some("5".into());
+        Ok(())
+    })
+    .unwrap();
     assert_eq!(solved.sketch.points[1].pos.x, 5.0, "bare values stay paper mm without a source");
     assert!((sheet_rectangle_size(&solved.sketch).0 - 40.0).abs() < 1e-6);
 }
@@ -1003,12 +1023,11 @@ fn sheet_sketch_source_errors_are_explicit_and_unrelated_errors_do_not_retarget_
     let error = doc.solve_sheet_sketch(id, 41).unwrap_err().to_string();
     assert!(error.contains("circular reference") && error.contains("Width"), "{error}");
     assert_eq!(doc.to_json(), before);
-    let (_, solved) = doc
-        .edit_sheet_sketch(id, 41, |sketch| {
-            sketch.constraints[0].param = None;
-            Ok(())
-        })
-        .unwrap();
+    let (_, solved) = edit_sheet_fixture(&mut doc, id, 41, |sketch| {
+        sketch.constraints[0].param = None;
+        Ok(())
+    })
+    .unwrap();
     assert!((sheet_rectangle_size(&solved.sketch).0 - 40.0).abs() < 1e-6, "unreferenced source error is not a fallback or a global blocker");
 }
 
@@ -1017,12 +1036,12 @@ fn sheet_sketch_target_is_exact_and_a_noop_preserves_the_record_arc() {
     let (mut doc, id) = sheet_edit_design();
     let before = doc.to_json();
     assert!(doc.solve_sheet_sketch(id + 1, 41).is_err());
-    assert!(doc.edit_sheet_sketch(id, 42, |_| Ok(())).is_err());
+    assert!(edit_sheet_fixture(&mut doc, id, 42, |_| Ok(())).is_err());
     assert_eq!(doc.to_json(), before);
-    doc.edit_sheet_sketch(id, 41, |_| Ok(())).unwrap();
+    edit_sheet_fixture(&mut doc, id, 41, |_| Ok(())).unwrap();
     let owner = doc.drawing(id).unwrap().clone();
     let record = owner.sketches[0].clone();
-    doc.edit_sheet_sketch(id, 41, |_| Ok(())).unwrap();
+    edit_sheet_fixture(&mut doc, id, 41, |_| Ok(())).unwrap();
     assert!(Arc::ptr_eq(doc.drawing(id).unwrap(), &owner));
     assert!(Arc::ptr_eq(&doc.drawing(id).unwrap().sketches[0], &record));
 }
@@ -1034,7 +1053,7 @@ fn sheet_sketch_resolution_refuses_ambiguous_drawing_identity() {
     doc.drawings.push(owner.clone());
     let before = doc.to_json();
     assert!(doc.solve_sheet_sketch(id, 41).unwrap_err().to_string().contains("ambiguous"));
-    assert!(doc.edit_sheet_sketch(id, 41, |_| Ok(())).is_err());
+    assert!(edit_sheet_fixture(&mut doc, id, 41, |_| Ok(())).is_err());
     assert_eq!(doc.to_json(), before);
     assert!(doc.drawings.iter().all(|drawing| Arc::ptr_eq(drawing, &owner)));
 }
@@ -1043,13 +1062,133 @@ fn sheet_sketch_resolution_refuses_ambiguous_drawing_identity() {
 fn sheet_sketch_resolution_refuses_parameter_binding_on_a_nondimension() {
     let (mut doc, id) = sheet_edit_design();
     let before = doc.to_json();
-    let error = doc
-        .edit_sheet_sketch(id, 41, |sketch| {
-            sketch.constraints[1].param = Some("Width".into());
+    let error = edit_sheet_fixture(&mut doc, id, 41, |sketch| {
+        sketch.constraints[1].param = Some("Width".into());
+        Ok(())
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("only a sheet sketch dimension"), "{error}");
+    assert_eq!(doc.to_json(), before);
+}
+
+// Cam's W38a review: save has the same validation rule with or without sketches.
+#[test]
+fn saving_a_drawing_validates_its_record_even_without_sketches() {
+    for with_sketch in [false, true] {
+        let good = if with_sketch { read(&paper_sketch_file()).unwrap() } else { bare() };
+        let before = good.to_json().unwrap();
+        for problem in 0..5 {
+            let mut damaged = good.clone();
+            match problem {
+                0 => damaged.name.clear(),
+                1 => Arc::make_mut(&mut damaged.sheets[0]).dpi = f64::NAN,
+                2 => damaged.sheets.clear(),
+                3 => damaged.language = "???".into(),
+                _ => damaged.units = Units::Fixed { unit: "deg".into() },
+            }
+            assert!(damaged.to_json().is_err(), "saved invalid record {problem}, sketches={with_sketch}");
+        }
+        assert_eq!(good.to_json().unwrap(), before);
+        assert_eq!(Drawing::from_json(&before).unwrap(), good);
+    }
+}
+
+#[test]
+fn staged_sheet_sketch_edit_changes_only_the_given_drawing_not_the_source_design() {
+    let (doc, id) = sheet_edit_design();
+    let source = doc.to_json();
+    let mut staged = (**doc.drawing(id).unwrap()).clone();
+    let old_record = staged.sheet_sketch(41).unwrap().clone();
+    let (_, solved) = staged
+        .edit_sheet_sketch(&doc, 41, |sketch| {
+            sketch.constraints[0].param = None;
+            sketch.constraints[0].kind.set_value(60.0);
+            Ok(())
+        })
+        .unwrap();
+    staged.validate().unwrap();
+    assert!((sheet_rectangle_size(&solved.sketch).0 - 60.0).abs() < 1e-6);
+    assert!((sheet_rectangle_size(&staged.sheet_sketch(41).unwrap().sketch).0 - 60.0).abs() < 1e-6);
+    assert_eq!(doc.to_json(), source, "a staged Drawing operation never publishes to the source design");
+    assert!(Arc::ptr_eq(doc.drawing(id).unwrap().sheet_sketch(41).unwrap(), &old_record));
+    assert_eq!(staged.sheet_sketch(41).unwrap().sketch.points[0].pos, solidcraft_geom::Vec2::ZERO);
+    assert_eq!(staged.sheet_sketch(41).unwrap().sheet, staged.sheets[0].id);
+}
+
+#[test]
+fn staged_sheet_sketch_edit_checks_the_cumulative_entity_cap_before_solving() {
+    use solidcraft_sketch::{MAX_CONSTRAINTS, MAX_CURVES, MAX_POINTS, Sketch};
+    let mut d = bare();
+    let mut payload = Sketch::new();
+    for i in 1..80 {
+        payload.add_point(solidcraft_geom::Vec2::new(i as f64, 10.0), Some(&format!("p{i}"))).unwrap();
+    }
+    for i in 0..1000 {
+        d.sketches.push(Arc::new(SheetSketch { id: 1000 + i, sheet: d.sheets[0].id, name: format!("Sketch {i}"), sketch: payload.clone() }));
+    }
+    assert_eq!(d.sketches.len(), MAX_SHEET_SKETCHES);
+    assert_eq!(d.sketches.iter().map(|s| s.sketch.points.len()).sum::<usize>(), MAX_POINTS + MAX_CURVES + MAX_CONSTRAINTS);
+    d.validate().unwrap();
+    let original = d.clone();
+    let record = d.sheet_sketch(1000).unwrap().clone();
+    let e = d
+        .edit_sheet_sketch(&crate::Document::default(), 1000, |sketch| {
+            sketch.add_point(solidcraft_geom::Vec2::new(3.0, 4.0), Some("over_cap"))?;
             Ok(())
         })
         .unwrap_err()
         .to_string();
-    assert!(error.contains("only a sheet sketch dimension"), "{error}");
-    assert_eq!(doc.to_json(), before);
+    assert!(e.contains("entity") && e.contains("limit"), "{e}");
+    assert_eq!(d, original);
+    assert!(Arc::ptr_eq(d.sheet_sketch(1000).unwrap(), &record));
+}
+
+#[test]
+fn sheet_sketch_validation_preserves_the_slot_work_allowance() {
+    use solidcraft_geom::Vec2;
+    use solidcraft_sketch::{ConstraintKind as K, Sketch};
+    let mut sk = Sketch::new();
+    let line = sk.add_line(Vec2::new(20.0, 15.0), Vec2::new(60.0, 15.0), None, None, None).unwrap();
+    let a = sk.add_arc(Vec2::new(20.0, 20.0), Vec2::new(20.0, 25.0), Vec2::new(20.0, 15.0), [None; 3], None).unwrap();
+    let b = sk.add_arc(Vec2::new(60.0, 20.0), Vec2::new(60.0, 15.0), Vec2::new(60.0, 25.0), [None; 3], None).unwrap();
+    for _ in 0..703 {
+        sk.add_constraint(K::Horizontal { l: line }, None).unwrap();
+    }
+    sk.add_constraint(K::Radius { c: a, value: 5.0 }, None).unwrap();
+    sk.add_constraint(K::Radius { c: b, value: 5.0 }, None).unwrap();
+    sk.add_constraint(K::SlotOverallLength { a, b, value: 50.0 }, None).unwrap();
+    let mut d = bare();
+    d.sketches.push(Arc::new(SheetSketch { id: 41, sheet: d.sheets[0].id, name: "Slot".into(), sketch: sk }));
+    // 705 ordinary charges plus 4*706^2 for the one slot: 1,994,449.
+    d.validate().unwrap();
+    let before = d.clone();
+    let e = d
+        .edit_sheet_sketch(&crate::Document::default(), 41, |sketch| {
+            sketch.add_constraint(K::Horizontal { l: line }, None)?;
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+    // Adding one ordinary constraint makes the same conservative charge 2,000,102.
+    assert!(e.contains("validation work"), "{e}");
+    assert_eq!(d, before);
+}
+
+#[test]
+fn staged_sheet_sketch_edit_refuses_an_invalid_original_before_running_the_callback() {
+    let (doc, id) = sheet_edit_design();
+    let mut d = (**doc.drawing(id).unwrap()).clone();
+    Arc::make_mut(&mut d.sketches[0]).sketch.curves[0].kind = solidcraft_sketch::CurveKind::Line { a: 99_999, b: 1 };
+    let before = d.clone();
+    let mut called = false;
+    assert!(
+        d.edit_sheet_sketch(&doc, 41, |_| {
+            called = true;
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!called, "unsafe original data must be refused before a callback sees it");
+    assert_eq!(d, before);
 }

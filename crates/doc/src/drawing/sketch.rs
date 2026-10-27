@@ -23,7 +23,8 @@ const MAX_LOCAL_ID_BYTES: usize = 512;
 const AUXILIARY: [&str; 5] = ["links", "patterns", "offsets", "freeform_offsets", "wires"];
 
 /// Authored sheet geometry. Points and lengths are paper XY millimetres, regardless
-/// of the drawing's display units. This record has no view scale or source path.
+/// of the drawing's display units. The origin is the sheet's lower-left corner,
+/// with x right and y up, not the border corner. No view scale or source path.
 /// Expressions are retained verbatim; interpreting them is the later read-only store's job.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,68 +132,26 @@ fn raw_tree(value: &Value, depth: usize, nodes: &mut usize, bytes: &mut usize) -
     Ok(())
 }
 
-pub(super) fn check_drawing(drawing: &Drawing) -> Result<()> {
-    require(drawing.sketches.len() <= MAX_SHEET_SKETCHES, || "too many sheet sketches".into())?;
-    let sheets: BTreeSet<_> = drawing.sheets.iter().map(|s| s.id).collect();
+/// Cheap cumulative admission precedes validation/solving of any candidate. It
+/// counts unchanged records too: editing one record cannot exceed a drawing cap.
+fn check_budget<'a>(records: impl Iterator<Item = &'a SheetSketch>) -> Result<()> {
     let mut entities = 0;
     let mut work = 0;
-    for record in &drawing.sketches {
-        require(sheets.contains(&record.sheet), || "sheet sketch owner does not exist in this drawing".into())?;
-        check_name(&record.name, "sheet sketch")?;
+    for record in records {
         let sk = &record.sketch;
         for (count, cap) in [(sk.points.len(), MAX_POINTS), (sk.curves.len(), MAX_CURVES), (sk.constraints.len(), MAX_CONSTRAINTS)] {
             require(count <= cap, || "sheet sketch array limit exceeded".into())?;
             charge(&mut entities, count, MAX_ENTITIES, "drawing sketch entity")?;
         }
-        require(
-            sk.links.is_empty() && sk.patterns.is_empty() && sk.offsets.is_empty() && sk.freeform_offsets.is_empty() && sk.wires.is_empty(),
-            || "not supported yet: sheet sketch links, patterns, offsets or 3D wires".into(),
-        )?;
-        require(!sk.view.three_d && !sk.view.slice, || "model-only sketch view is not a sheet sketch".into())?;
-        let origin = sk.points.first().ok_or_else(|| invalid("missing sketch origin"))?;
-        require(origin.id == "origin" && origin.pos == Vec2::ZERO && origin.fixed && origin.link.is_none() && origin.exprs.is_none(), || {
-            "sheet sketch point zero must be its fixed local origin".into()
-        })?;
-        let mut seen = BTreeSet::new();
-        for point in &sk.points {
-            identity(&mut seen, &point.id)?;
-            position(point.pos)?;
-            require(point.link.is_none(), || "not supported yet: linked sheet sketch point".into())?;
-            if let Some(expressions) = &point.exprs {
-                for expression in [&expressions.x, &expressions.y].into_iter().flatten() {
-                    text(expression)?;
-                }
-            }
-        }
         for curve in &sk.curves {
-            identity(&mut seen, &curve.id)?;
-            require(curve.link.is_none(), || "not supported yet: linked sheet sketch curve".into())?;
-            if let CurveKind::Spline { pts, degree, control, .. } = &curve.kind {
-                require(
-                    (2..=MAX_SPLINE_POINTS).contains(&pts.len()) && (1..=5).contains(degree) && (!control || pts.len() > usize::from(*degree)),
-                    || "invalid sheet sketch spline size or degree".into(),
-                )?;
+            if let CurveKind::Spline { pts, .. } = &curve.kind {
+                require(pts.len() <= MAX_SPLINE_POINTS, || "sheet sketch spline point limit exceeded".into())?;
                 charge(&mut entities, pts.len(), MAX_ENTITIES, "drawing sketch entity")?;
             }
-            require(curve.kind.point_ids().iter().all(|&i| i < sk.points.len()), || "sheet sketch curve references an unknown point".into())?;
-            match curve.kind {
-                CurveKind::Line { a, b } => require(a != b, || "sheet sketch line needs distinct point identities".into())?,
-                CurveKind::Circle { r, .. } | CurveKind::Ellipse { r, .. } => {
-                    require(r.is_finite() && r > 0.0 && r < MAX_COORD, || "sheet sketch radius is out of range".into())?;
-                }
-                CurveKind::Conic { rho, .. } => {
-                    require(rho.is_finite() && rho > 0.0 && rho < 1.0, || "sheet sketch conic rho is out of range".into())?
-                }
-                _ => {}
-            }
-            require(!curve.infinite || (curve.construction && matches!(curve.kind, CurveKind::Line { .. })), || {
-                "only a construction line can be infinite in a sheet sketch".into()
-            })?;
         }
         for constraint in &sk.constraints {
-            identity(&mut seen, &constraint.id)?;
-            // Slot validation can search the constraint list twice. Charge that upper
-            // bound before invoking the shared validator, rather than allowing O(n^3).
+            // The shared slot validator can search the list twice. Keep the same
+            // conservative work charge, before invoking it, even on staged edits.
             let cost = if matches!(constraint.kind, ConstraintKind::SlotOverallLength { .. }) {
                 sk.constraints
                     .len()
@@ -203,16 +162,77 @@ pub(super) fn check_drawing(drawing: &Drawing) -> Result<()> {
                 1
             };
             charge(&mut work, cost, MAX_VALIDATION_WORK, "validation work")?;
-            sk.validate(&constraint.kind).map_err(|e| invalid(e.to_string()))?;
-            if let Some(value) = &constraint.param {
-                text(value)?;
-            }
-            if let Some(at) = constraint.text {
-                position(at)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_drawing(drawing: &Drawing) -> Result<()> {
+    require(drawing.sketches.len() <= MAX_SHEET_SKETCHES, || "too many sheet sketches".into())?;
+    check_budget(drawing.sketches.iter().map(AsRef::as_ref))?;
+    for record in &drawing.sketches {
+        check_payload(record)?;
+    }
+    Ok(())
+}
+
+// Only after check_budget: the single payload is checked before and after the
+// solver, while the Session's publication boundary checks the complete drawing.
+fn check_payload(record: &SheetSketch) -> Result<()> {
+    check_name(&record.name, "sheet sketch")?;
+    let sk = &record.sketch;
+    require(sk.links.is_empty() && sk.patterns.is_empty() && sk.offsets.is_empty() && sk.freeform_offsets.is_empty() && sk.wires.is_empty(), || {
+        "not supported yet: sheet sketch links, patterns, offsets or 3D wires".into()
+    })?;
+    require(!sk.view.three_d && !sk.view.slice, || "model-only sketch view is not a sheet sketch".into())?;
+    let origin = sk.points.first().ok_or_else(|| invalid("missing sketch origin"))?;
+    require(origin.id == "origin" && origin.pos == Vec2::ZERO && origin.fixed && origin.link.is_none() && origin.exprs.is_none(), || {
+        "sheet sketch point zero must be its fixed local origin".into()
+    })?;
+    let mut seen = BTreeSet::new();
+    for point in &sk.points {
+        identity(&mut seen, &point.id)?;
+        position(point.pos)?;
+        require(point.link.is_none(), || "not supported yet: linked sheet sketch point".into())?;
+        if let Some(expressions) = &point.exprs {
+            for expression in [&expressions.x, &expressions.y].into_iter().flatten() {
+                text(expression)?;
             }
         }
-        sk.validate_periodic_splines().map_err(|e| invalid(e.to_string()))?;
     }
+    for curve in &sk.curves {
+        identity(&mut seen, &curve.id)?;
+        require(curve.link.is_none(), || "not supported yet: linked sheet sketch curve".into())?;
+        if let CurveKind::Spline { pts, degree, control, .. } = &curve.kind {
+            require(
+                (2..=MAX_SPLINE_POINTS).contains(&pts.len()) && (1..=5).contains(degree) && (!control || pts.len() > usize::from(*degree)),
+                || "invalid sheet sketch spline size or degree".into(),
+            )?;
+        }
+        require(curve.kind.point_ids().iter().all(|&i| i < sk.points.len()), || "sheet sketch curve references an unknown point".into())?;
+        match curve.kind {
+            CurveKind::Line { a, b } => require(a != b, || "sheet sketch line needs distinct point identities".into())?,
+            CurveKind::Circle { r, .. } | CurveKind::Ellipse { r, .. } => {
+                require(r.is_finite() && r > 0.0 && r < MAX_COORD, || "sheet sketch radius is out of range".into())?;
+            }
+            CurveKind::Conic { rho, .. } => require(rho.is_finite() && rho > 0.0 && rho < 1.0, || "sheet sketch conic rho is out of range".into())?,
+            _ => {}
+        }
+        require(!curve.infinite || (curve.construction && matches!(curve.kind, CurveKind::Line { .. })), || {
+            "only a construction line can be infinite in a sheet sketch".into()
+        })?;
+    }
+    for constraint in &sk.constraints {
+        identity(&mut seen, &constraint.id)?;
+        sk.validate(&constraint.kind).map_err(|e| invalid(e.to_string()))?;
+        if let Some(value) = &constraint.param {
+            text(value)?;
+        }
+        if let Some(at) = constraint.text {
+            position(at)?;
+        }
+    }
+    sk.validate_periodic_splines().map_err(|e| invalid(e.to_string()))?;
     Ok(())
 }
 
@@ -240,68 +260,72 @@ pub struct SolvedSheetSketch {
 }
 
 impl crate::Document {
-    /// Resolve the stored sketch against this containing design, without changing
-    /// either its authored record or the model. A later source change is read on
-    /// the next call; this function neither caches nor evaluates model geometry.
+    /// Resolve a stored sketch without modifying its record or the model. This
+    /// public document read checks the complete drawing, including other records.
     pub fn solve_sheet_sketch(&self, drawing: u64, sketch: u64) -> Result<SolvedSheetSketch> {
-        let (owner, record) = sheet_record(self, drawing, sketch)?;
-        let (_, solved) = solve_candidate(self, owner, record, record.sketch.clone())?;
-        Ok(solved)
+        super::check_count(self.drawings.len())?;
+        let mut owners = self.drawings.iter().filter(|owner| owner.id == drawing);
+        let owner = owners.next().ok_or_else(|| invalid("the containing design has no such drawing"))?;
+        require(owners.next().is_none(), || "sheet sketch owner id is ambiguous in this design".into())?;
+        owner.validate()?;
+        owner.solve_sheet_sketch(self, sketch)
+    }
+}
+
+impl Drawing {
+    /// Resolve one admitted record against the read-only source design. Checks
+    /// owner identities, cumulative budgets and this payload, not every unrelated
+    /// payload. File reads/saves and Session::edit_drawing validate the whole drawing.
+    pub fn solve_sheet_sketch(&self, design: &crate::Document, sketch: u64) -> Result<SolvedSheetSketch> {
+        self.validate_structure()?;
+        check_budget(self.sketches.iter().map(AsRef::as_ref))?;
+        let original = self.sheet_sketch(sketch).ok_or_else(|| invalid("the selected drawing has no such sheet sketch"))?;
+        solve_record(design, self, original, (**original).clone())
     }
 
-    /// Apply one proposed sketch edit atomically. The closure receives only the
-    /// shared Sketch payload, never a mutable source document. Validation and the
-    /// existing dimension/point evaluator and solver run on a private candidate;
-    /// an error leaves every document field and drawing Arc unchanged.
+    /// Stage an atomic edit of one sketch on this drawing, without writing to the
+    /// source Document. Commands call this inside Session::edit_drawing, the one
+    /// publication/whole-drawing validation boundary. A library caller adopting
+    /// this drawing must likewise validate it before publishing the complete record.
     ///
-    /// Only the selected drawing is replaced on success, and a no-op keeps its
-    /// Arc. The caller's Session owns undo/lifecycle; this adds no second history
-    /// or active-sketch store and does not enable sketch commands in Drawing.
+    /// Failed callbacks, unsafe candidates and solve failures leave self unchanged.
+    /// Only the selected record is checked deeply here; unchanged Arcs are NOT a
+    /// certificate that other records are valid. Their validation is never skipped
+    /// by the outer publication boundary or the file reader/writer.
     pub fn edit_sheet_sketch<T>(
         &mut self,
-        drawing: u64,
+        design: &crate::Document,
         sketch: u64,
         change: impl FnOnce(&mut Sketch) -> Result<T>,
     ) -> Result<(T, SolvedSheetSketch)> {
-        let (owner, record) = sheet_record(self, drawing, sketch)?;
-        let mut candidate = record.sketch.clone();
-        let out = change(&mut candidate)?;
-        let (next, solved) = solve_candidate(self, owner, record, candidate)?;
-        if next != **owner {
-            self.put_drawing(Arc::new(next));
+        self.validate_structure()?;
+        let original = self.sheet_sketch(sketch).cloned().ok_or_else(|| invalid("the selected drawing has no such sheet sketch"))?;
+        check_budget(self.sketches.iter().map(AsRef::as_ref))?;
+        check_payload(&original)?;
+        let mut candidate = (*original).clone();
+        let out = change(&mut candidate.sketch)?;
+        check_budget(self.sketches.iter().map(|record| if record.id == sketch { &candidate } else { record.as_ref() }))?;
+        let solved = solve_record(design, self, &original, candidate)?;
+        if solved.sketch != original.sketch {
+            let next = SheetSketch { sketch: solved.sketch.clone(), ..(*original).clone() };
+            check_budget(self.sketches.iter().map(|record| if record.id == sketch { &next } else { record.as_ref() }))?;
+            let slot = self.sketches.iter_mut().find(|record| record.id == sketch).ok_or_else(|| invalid("sheet sketch disappeared"))?;
+            *slot = Arc::new(next);
         }
         Ok((out, solved))
     }
 }
 
-fn sheet_record(doc: &crate::Document, drawing: u64, sketch: u64) -> Result<(&Arc<Drawing>, &Arc<SheetSketch>)> {
-    super::check_count(doc.drawings.len())?;
-    let mut matches = doc.drawings.iter().filter(|record| record.id == drawing);
-    let owner = matches.next().ok_or_else(|| invalid("the containing design has no such drawing"))?;
-    require(matches.next().is_none(), || "sheet sketch owner id is ambiguous in this design".into())?;
-    owner.validate()?;
-    let record = owner.sheet_sketch(sketch).ok_or_else(|| invalid("the selected drawing has no such sheet sketch"))?;
-    Ok((owner, record))
-}
-
-fn solve_candidate(doc: &crate::Document, owner: &Drawing, original: &SheetSketch, candidate: Sketch) -> Result<(Drawing, SolvedSheetSketch)> {
-    let mut next = owner.clone();
-    let slot = next.sketches.iter_mut().find(|record| record.id == original.id).ok_or_else(|| invalid("sheet sketch disappeared"))?;
-    Arc::make_mut(slot).sketch = candidate;
-    // In particular, validate point indices and the admitted payload before the
-    // shared solver reads them. No linked, 3D, pattern or offset bypass is added.
-    next.validate()?;
-    let record = next.sketches.iter_mut().find(|record| record.id == original.id).ok_or_else(|| invalid("sheet sketch disappeared"))?;
-    let record = Arc::make_mut(record);
-    let names = parameter_names(&record.sketch)?;
+fn solve_record(design: &crate::Document, owner: &Drawing, original: &SheetSketch, mut candidate: SheetSketch) -> Result<SolvedSheetSketch> {
+    // Only the candidate is admitted before the solver sees its input-derived
+    // indices. No link/pattern/offset or 3D path bypasses the existing checks.
+    check_payload(&candidate)?;
+    let names = parameter_names(&candidate.sketch)?;
     let values = if names.is_empty() {
         std::collections::BTreeMap::new()
     } else {
-        // A Source in this receiver means exactly this containing design, and
-        // Drawing::validate admits at most one. Sheet.documents is the title
-        // block's component selector, not an alternative expression source.
         require(owner.sources.len() == 1, || "sheet sketch parameters need the drawing's declared design source".into())?;
-        let (values, errors) = doc.param_values();
+        let (values, errors) = design.param_values();
         for name in &names {
             if let Some(why) = errors.get(name) {
                 return Err(invalid(format!("source parameter `{name}`: {why}")));
@@ -311,13 +335,11 @@ fn solve_candidate(doc: &crate::Document, owner: &Drawing, original: &SheetSketc
         values
     };
     let stored = original.sketch.driving_values();
-    let report = doc.solve_sketch(&values, &mut record.sketch, &stored, None)?;
+    let report = design.solve_sketch(&values, &mut candidate.sketch, &stored, None)?;
     require(report.keeps_orientation(), || report.failure(|conflicts| format!("sheet sketch edit would conflict with {conflicts}")))?;
-    // Source expressions can produce a valid scalar outside the record's range.
-    // Check the solved payload too, before publishing any of the candidate.
-    let solved = SolvedSheetSketch { drawing: owner.id, sheet: original.sheet, id: original.id, sketch: record.sketch.clone(), report };
-    next.validate()?;
-    Ok((next, solved))
+    check_budget(std::iter::once(&candidate))?;
+    check_payload(&candidate)?;
+    Ok(SolvedSheetSketch { drawing: owner.id, sheet: original.sheet, id: original.id, sketch: candidate.sketch, report })
 }
 
 /// Names are collected after record admission, with cumulative expression work

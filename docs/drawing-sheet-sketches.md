@@ -17,6 +17,9 @@ and `l1` remain local to the payload and may repeat in a different sketch.
 active model or search other drawings.
 
 Positions and length dimensions are paper XY millimetres, angles are radians.
+The origin is the physical sheet's lower-left corner, x right and y up, exactly
+as in the paper scene. It is not the drawing-border corner; no margin translation
+or view scale is applied.
 Changing `Drawing.units` is not a geometry conversion. For example the authored
 rectangle (15,10) to (55,30) remains 40 by 20 paper mm when units are `in`.
 There is no view scale or source path in this sheet-owned record.
@@ -40,8 +43,10 @@ local origin must remain point zero. Input is not snapped or solved.
 patterns, offsets/freeform offsets and 3D wires, and the model-only slice/3D
 palette state. They are refused, not dropped. Linked points/curves are also
 refused. Enabling these auxiliary record families requires their bounded
-validation and Drawing receiver paths; it is later W38a work. This is not an
-alternative numeric-only editing mode: no editing mode or command is enabled.
+validation and Drawing receiver paths; it is later W38a work. Record admission
+alone does not enable a tool. R4's explicit rectangle/line/point command subset
+is described below; it supports source expressions, not a separate numeric-only
+sketcher, and does not enable these auxiliary payloads.
 
 ## Identity, ordering and compatibility
 
@@ -83,51 +88,53 @@ can be written by `Drawing::to_json`; NaN is not silently stored as JSON null.
 The shared Sketch type and model-sketch reader are unchanged. No new solver,
 cache, active-sketch store, external font, dependency or CI setting is added.
 
-## R2: read-only source resolution and atomic editing
+## Read-only solving and staged edits (R2, revised after review)
 
-`Document::solve_sheet_sketch(drawing_id, sketch_id)` returns a
-`SolvedSheetSketch`: explicit drawing, sheet and sketch identities, the candidate
-Sketch payload and its full shared solver report. It never adopts that result.
-Repeated calls read current source parameter values rather than a stale cache.
+`Document::solve_sheet_sketch(drawing_id, sketch_id)` still resolves the exact
+stored sketch against the current containing design, without publishing its
+solution. This public document read validates the complete drawing. Repeated
+calls read the current source values, not a model-evaluation cache.
 
-`Document::edit_sheet_sketch(drawing_id, sketch_id, change)` gives the caller only
-`&mut Sketch` on a private copy. The callback cannot use that argument to mutate
-the containing design or change the record's identity/owner. Existing record
-validation runs before the solver reads the candidate and again after solving.
-The implementation calls the existing `Document::solve_sketch`, with the original
-sketch's driving values, instead of adding an alternative solver or evaluator.
+`Drawing::solve_sheet_sketch(design, sketch_id)` is the staging counterpart:
+owner/header identities, cumulative sketch budgets and the selected payload are
+checked, without deeply validating every unrelated payload. It is used only
+inside a drawing editing boundary, or after the full document-read check.
 
-The lookup uses exact ids in the selected drawing. A missing or duplicate drawing
-id, a missing sketch, invalid owning sheet or malformed payload is an error;
-there is no name lookup or fallback to a similarly numbered model sketch.
-Named references require that drawing's declared Source. In the current embedded
-receiver a Source means the containing design, and at most one is admitted.
-`Sheet.documents` names the component for the title block; it is not a separate
-parameter source or permission to inspect another document.
+`Drawing::edit_sheet_sketch(design, sketch_id, change)` stages an edit on this
+Drawing. The callback receives a private `&mut Sketch`. The original payload is
+checked before the callback, the candidate before solving and its solved result
+afterwards. Cumulative entity and validation-work limits include the unchanged
+sketches as well, before the solver runs. Errors leave the Drawing unchanged;
+a no-op retains its selected record Arc. The operation reads source parameters
+and uses `Document::solve_sketch`; it cannot write into the source Document.
 
-Stored point expressions and dimension parameter names use the existing source
-parameter evaluator read-only. Source values keep their own units and become
-internal millimetres/radians. Bare numbers in the sketch's point expressions
-retain the expression engine's mm/degree defaults, not the design's display units.
-For example a source `Inset = 1 in` plus a bare `5` places X at 30.4 paper mm.
-Literal-only sketches need no source. Errors in referenced source parameters,
-including cycles, remain explicit; an unrelated parameter error does not redirect
-or unnecessarily block an independent sketch.
+The previous `Document::edit_sheet_sketch` publication API has been removed.
+The engine captures the immutable source and calls the staged operation inside
+`Session::edit_drawing`. That existing Session boundary validates the **whole**
+result once and adopts only the open Drawing. Its command's history therefore
+belongs to that same Drawing. The shared store never publishes a Document copy
+itself for sheet geometry. A library caller adopting a staged Drawing likewise
+must validate the complete record at its publication boundary.
 
-A failed callback, invalid candidate, missing name, wrong dimension, nonfinite or
-out-of-range evaluation, or incompatible solve publishes nothing. On success only
-the chosen drawing is replaced. A no-op keeps the drawing and sketch Arcs. Point
-expressions and source parameter names remain authored data, not baked values;
-this API does not introduce a drawing-local parameter definition syntax or allow
-a dimension command to write a source parameter. Expression text work is charged
-against the existing drawing byte ceiling; other solver limits remain the shared
-solver's. This is not a per-frame latency or whole-process memory guarantee.
+Unchanged Arcs are not a validation certificate: the complete check still rejects
+an invalid unrelated sketch, even if it was not edited and its Arc is unchanged.
+No implicit trusted-record cache has been added. Full reading and saving retain
+complete validation; `Drawing::to_json` now applies that rule regardless of
+whether the drawing contains sketches. An invalid empty-sketch drawing is no
+longer serialised as a successful file.
 
-This boundary supplies resolved state and atomic commits for the later
-receiver-aware store. Session undo, edit entry/finish/cancel, command schemas,
-view updates and UI integration are not implemented by these Document methods.
-There is no second active-sketch store or history, and no model geometry is
-requested or evaluated here. The R1 unsupported auxiliary payloads remain refused.
+The current embedded G3 Source means the containing design. `Sheet.documents`
+is only the title block's component selector. Source values keep their units;
+bare point-expression values keep paper-mm/degree defaults. For example,
+`Inset = 1 in` plus bare `5` produces 30.4 paper mm. Names, expressions and their
+error states remain authored data, not baked values. Only named references need
+a declared Source; unrelated source errors do not retarget the sketch.
+
+This is not a drawing-local parameter-definition syntax, another solver, an
+incremental validation certificate or a whole-process latency/memory guarantee.
+The original unsupported auxiliary payloads remain refused. Resource limits and
+error expectations are unchanged; timing evidence and executed checks are in the
+PR rather than being asserted as performance thresholds in correctness tests.
 
 ## Acceptance and remaining work
 
@@ -242,3 +249,19 @@ translation qualification requires the already-merged shared prerequisite #6448
 ids were checked against the current main English catalog and are not duplicates.
 This feature does not modify the i18n loader, shared catalogs or CI to bypass that
 integration requirement.
+
+## Sheet ownership and deletion
+
+The shared sheet-deletion rule belongs to the sheet commands (#3875): refuse a
+sheet that contains objects and list its views/sketches; only an explicit
+"delete everything" choice removes that sheet and its contents as one drawing
+undo step. W38a does not add a competing deletion command or silently detach a
+sketch. A missing owning sheet remains invalid. The eventual sheet command must
+also respect the active edit boundary (finish or cancel before switching or
+removing its owner). This records the agreed integration rule, not acceptance
+of a sheet-deletion UI that is absent from this receiver.
+
+For future shared-scene integration, sheet sketches use the same lower-left
+frame and the proposed paint band after views and before tables/title blocks.
+The paper ObjectKind/scene implementation remains with the shared-scene owner;
+this review change adds neither a second scene nor an exporter.
