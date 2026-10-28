@@ -844,6 +844,9 @@ preference_settings! {
     navigation_bar: crate::navigation_bar::NavigationBar = Default::default(), PAGE_INTERFACE;
     /// Show command names beneath ribbon icons, independently of workspace layout.
     ribbon_labels: bool = true, PAGE_INTERFACE;
+    /// Keep the SKETCH tab in the ribbon, right after MODEL, while no sketch is open; its drawing
+    /// tools then start a sketch first (#7904).
+    sketch_tab_always: bool = false, PAGE_INTERFACE => check_id("prefs.sketch_tab_always");
     /// Where a dialog's OK and Cancel sit: under its inputs (the default) or in its title row (#6708).
     dialog_buttons: crate::ui_kit::DialogButtons = Default::default(), PAGE_INTERFACE;
     /// Interface scale (1 = 100 %).
@@ -4254,6 +4257,7 @@ mod tests {
             ("ui_font", json!("test font"), PAGE_INTERFACE),
             ("layout", json!("compact"), PAGE_INTERFACE),
             ("ribbon_labels", json!(false), PAGE_INTERFACE),
+            ("sketch_tab_always", json!(true), PAGE_INTERFACE),
             ("dialog_buttons", json!("top"), PAGE_INTERFACE),
             ("timeline_left", json!(true), PAGE_INTERFACE),
             ("timeline_under_browser", json!(true), PAGE_INTERFACE),
