@@ -91,7 +91,7 @@ fn layered_entity_weight(entity: &Ent) -> Result<Option<DxfEntityWeight>> {
 
 /// Read a deliberately partial layered ASCII DXF into the shared owned model.
 ///
-/// LINE/CIRCLE/ARC, straight open LWPOLYLINE and clamped SPLINE retain
+/// POINT/LINE/CIRCLE/ARC, straight open LWPOLYLINE and clamped SPLINE retain
 /// entity order, declared ASCII layers and raw lineweights. Coordinates/radii
 /// scale to millimetres once; spline knots and weights stay dimensionless;
 /// stored ARC angles remain degrees, as required by DxfShape. Valid paper space
@@ -393,12 +393,18 @@ fn layered_spline(entity: &Ent, k: f64, bytes: &mut usize, work: &mut usize) -> 
 fn layered_geometry(entity: &Ent, k: f64, linetype: DxfLinetype, bytes: &mut usize, work: &mut usize) -> Result<DxfShape> {
     if entity.kind == "LWPOLYLINE" { return layered_polyline(entity, k, linetype, bytes, work); }
     if entity.kind == "SPLINE" { return layered_spline(entity, k, bytes, work); }
-    if !matches!(entity.kind.as_str(), "LINE" | "CIRCLE" | "ARC") {
+    if !matches!(entity.kind.as_str(), "POINT" | "LINE" | "CIRCLE" | "ARC") {
         return Err(IoError::Invalid(format!("not supported yet: layered DXF {} geometry", entity.kind)));
+    }
+    // No coordinate defaults are invented for an incomplete POINT. Present
+    // malformed/duplicate values still fail through the real typed helper.
+    if entity.kind == "POINT" && layered_number(entity, 10)?.is_none() && layered_number(entity, 20)?.is_none() {
+        return Err(IoError::Invalid("not supported yet: layered DXF POINT without coordinates".into()));
     }
     let raw = Vec2::new(layered_required(entity, 10)?, layered_required(entity, 20)?);
     let c = raw * k;
     if !c.is_finite() { return Err(IoError::Invalid("nonfinite scaled DXF point".into())); }
+    if entity.kind == "POINT" { return Ok(DxfShape::Point(c)); }
     if entity.kind == "LINE" {
         let raw_end = Vec2::new(layered_required(entity, 11)?, layered_required(entity, 21)?);
         let end = raw_end * k;
@@ -441,6 +447,7 @@ fn layered_entity_fields(entity: &Ent) -> Result<()> {
     }
     for code in entity.f.iter().map(|(code, _)| *code).chain(entity.s.iter().map(|(code, _)| *code)) {
         let geometry = match entity.kind.as_str() {
+            "POINT" => matches!(code, 10 | 20),
             "LINE" => matches!(code, 10 | 20 | 11 | 21),
             "CIRCLE" => matches!(code, 10 | 20 | 40),
             "ARC" => matches!(code, 10 | 20 | 40 | 50 | 51),
@@ -1925,5 +1932,74 @@ mod tests {
         assert_eq!(read_dxf_file(&polyline).unwrap().entities()[0].geometry(), &DxfShape::Polyline { points: repeated.clone() });
         let spline = format!("{header}0\nSPLINE\n70\n8\n71\n1\n72\n4\n73\n2\n40\n0\n40\n0\n40\n1\n40\n1\n{points}");
         assert_eq!(read_dxf_file(&spline).unwrap().entities()[0].geometry(), &DxfShape::Spline { degree: 1, knots: vec![0.,0.,1.,1.], ctrl: repeated, weights: None });
+    }
+
+    #[test]
+    fn layered_point_uses_real_layer_weight_metadata_and_scales_inches_once() {
+        let text = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n",
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nDATUMS\n62\n6\n6\nContinuous\n370\n50\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nPOINT\n8\ndatums\n370\n-1\n10\n2\n20\n-1\n30\n0\n210\n0\n220\n0\n230\n1\n",
+            "0\nPOINT\n10\n0\n20\n0.5\n0\nENDSEC\n0\nEOF\n",
+        );
+        let before = text.to_owned();
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.entities().len(), 2);
+        let point = &file.entities()[0];
+        assert_eq!(point.geometry(), &DxfShape::Point(Vec2::new(50.8, -25.4)));
+        assert_eq!(file.layer(point.layer()).unwrap().name(), "DATUMS");
+        assert_eq!(file.layer(point.layer()).unwrap().color(), 6);
+        assert_eq!(point.weight(), Some(DxfEntityWeight::ByLayer));
+        assert_eq!(file.effective_weight(0).unwrap(), DxfEntityWeight::Explicit(DxfStandardWeight::from_code(50).unwrap()));
+        assert_eq!(file.effective_linetype(0).unwrap(), DxfLinetype::Continuous);
+        assert_eq!(file.entities()[1].geometry(), &DxfShape::Point(Vec2::new(0.0, 12.7)));
+        assert_eq!(file.entities()[1].layer(), file.default_layer());
+        assert_eq!(file.entities()[1].weight(), None);
+        assert_eq!(text, before);
+    }
+
+    #[test]
+    fn layered_point_uses_each_existing_unit_factor_without_length_defaults() {
+        for (unit, mm) in [("0", 1.0), ("1", 25.4), ("2", 304.8), ("4", 1.0), ("5", 10.0), ("6", 1000.0)] {
+            let text = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n{unit}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n1\n20\n0\n0\nENDSEC\n0\nEOF\n");
+            assert_eq!(read_dxf_file(&text).unwrap().entities()[0].geometry(), &DxfShape::Point(Vec2::new(mm, 0.0)));
+        }
+        let zero = "0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n";
+        assert_eq!(read_dxf_file(zero).unwrap().entities()[0].geometry(), &DxfShape::Point(Vec2::ZERO));
+    }
+
+    #[test]
+    fn layered_point_refuses_missing_duplicate_malformed_or_nonfinite_coordinates() {
+        for fields in ["", "10\n1\n", "20\n1\n", "10\n0\n10\n1\n20\n0\n", "10\n0\n20\n0\n20\nnan\n",
+            "10\nnan\n20\n0\n", "10\n0\n20\ninf\n", "10\n-Infinity\n20\n0\n", "10\n1e400\n20\n0\n", "10\n1000000000000\n20\n0\n"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n{fields}0\nENDSEC\n0\nEOF\n");
+            let before = text.clone();
+            assert!(read_dxf_file(&text).is_err(), "{fields}");
+            assert_eq!(text, before);
+        }
+    }
+
+    #[test]
+    fn layered_point_refuses_unrepresented_ocs_thickness_and_entity_styles_atomically() {
+        for field in ["30\n1\n", "30\n0\n30\n0\n", "39\n1\n", "210\n1\n", "220\n1\n", "230\n0\n", "230\n-1\n",
+            "230\nnan\n", "6\nByLayer\n", "62\n7\n", "60\n1\n", "50\n0\n", "40\n1\n"] {
+            // A valid preceding entity must not escape as a partial file.
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n40\n1\n0\nPOINT\n10\n0\n20\n0\n{field}0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn layered_point_keeps_paper_space_and_raw_symbolic_weights_distinct() {
+        let paper = "0\nSECTION\n2\nENTITIES\n0\nPOINT\n67\n1\n0\nENDSEC\n0\nEOF\n";
+        assert!(read_dxf_file(paper).unwrap().entities().is_empty());
+        for (raw, expected) in [("", None), ("370\n-1\n", Some(DxfEntityWeight::ByLayer)),
+            ("370\n-2\n", Some(DxfEntityWeight::ByBlock)), ("370\n-3\n", Some(DxfEntityWeight::Default)),
+            ("370\n0\n", Some(DxfEntityWeight::Explicit(DxfStandardWeight::from_code(0).unwrap())))] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n1\n20\n2\n{raw}0\nENDSEC\n0\nEOF\n");
+            assert_eq!(read_dxf_file(&text).unwrap().entities()[0].weight(), expected);
+        }
+        let malformed = "0\nSECTION\n2\nENTITIES\n0\nPOINT\n67\n0.5\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n";
+        assert!(read_dxf_file(malformed).is_err());
     }
 }

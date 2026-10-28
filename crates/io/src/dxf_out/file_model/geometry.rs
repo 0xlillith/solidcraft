@@ -1,5 +1,6 @@
 //! Conservative bounds and positive uniform transforms for owned DXF geometry.
 //!
+//! POINT bounds are its stored location; the positive transform maps that point.
 //! ARC bounds enclose its supporting circle; ELLIPSE uses an outward L1 box;
 //! clamped continuous positive-weight SPLINE uses its control-point hull.
 //! These bounds are conservative, not tight. TEXT requires explicit world-space
@@ -188,6 +189,10 @@ where
     F: FnMut(&DxfShape) -> Result<DxfGeometryBounds>,
 {
     match shape {
+        DxfShape::Point(point) => {
+            let point = finite_point(*point)?;
+            DxfGeometryBounds::new(point, point)
+        }
         DxfShape::Line(a, b) => {
             finite_point(*a)?;
             finite_point(*b)?;
@@ -225,6 +230,7 @@ fn transformed_point(point: Vec2, scale: f64, translation: Vec2) -> Result<Vec2>
 
 fn transformed_shape(shape: &DxfShape, scale: f64, translation: Vec2) -> Result<DxfShape> {
     match shape {
+        DxfShape::Point(point) => Ok(DxfShape::Point(transformed_point(*point, scale, translation)?)),
         DxfShape::Line(a, b) => {
             let start = transformed_point(*a, scale, translation)?;
             let end = transformed_point(*b, scale, translation)?;
@@ -374,7 +380,7 @@ impl DxfFile<DxfShape> {
                         budget.array::<f64>(weights.len(), copy_limit, work_limit)?;
                     }
                 }
-                DxfShape::Line(..) | DxfShape::Circle { .. } | DxfShape::Arc { .. } | DxfShape::Ellipse { .. } => {}
+                DxfShape::Point(_) | DxfShape::Line(..) | DxfShape::Circle { .. } | DxfShape::Arc { .. } | DxfShape::Ellipse { .. } => {}
             }
         }
         Ok(())
@@ -403,6 +409,48 @@ impl DxfFile<DxfShape> {
 #[cfg(test)]
 mod tests {
     use super::super::super::DxfLinetype;
+
+    #[test]
+    fn point_has_exact_bounds_and_positive_transform_preserves_metadata() {
+        let mut file = DxfFile::new().unwrap();
+        let weight = StandardWeight::from_code(50).unwrap();
+        let layer = file.declare_layer("DATUM", 4, DxfLinetype::Hidden, Some(weight)).unwrap();
+        let point = Vec2::new(-3.0, 4.0);
+        file.push(layer, DxfShape::Point(point), Some(EntityWeight::ByLayer)).unwrap();
+        assert_eq!(file.extents().unwrap(), Some(DxfGeometryBounds::new(point, point).unwrap()));
+        let copied = file.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
+        assert_eq!(copied.entities()[0].geometry(), &DxfShape::Point(Vec2::new(4.0, 3.0)));
+        assert_eq!(copied.entities()[0].weight(), Some(EntityWeight::ByLayer));
+        assert_eq!(copied.effective_weight(0).unwrap(), EntityWeight::Explicit(weight));
+        assert_eq!(copied.effective_linetype(0).unwrap(), DxfLinetype::Hidden);
+        assert!(copied.layer(layer).is_err());
+        assert_eq!(file.entities()[0].geometry(), &DxfShape::Point(point));
+    }
+
+    #[test]
+    fn point_nonfinite_or_overflowing_transform_leaves_source_intact() {
+        for point in [Vec2::new(f64::NAN, 0.0), Vec2::new(0.0, f64::INFINITY)] {
+            let mut file = DxfFile::new().unwrap();
+            file.push(file.default_layer(), DxfShape::Point(point), None).unwrap();
+            assert!(file.extents().is_err());
+            assert!(file.translated_scaled(Vec2::ZERO, 1.0).is_err());
+            assert_eq!(file.entities().len(), 1);
+        }
+        let mut file = DxfFile::new().unwrap();
+        let point = Vec2::new(f64::MAX, 1.0);
+        file.push(file.default_layer(), DxfShape::Point(point), Some(EntityWeight::ByBlock)).unwrap();
+        assert!(file.translated_scaled(Vec2::ZERO, 2.0).is_err());
+        assert_eq!(file.entities()[0].geometry(), &DxfShape::Point(point));
+        assert_eq!(file.entities()[0].weight(), Some(EntityWeight::ByBlock));
+    }
+
+    #[test]
+    fn point_costs_fixed_work_and_no_variable_copy_payload() {
+        let mut file = DxfFile::new().unwrap();
+        file.push(file.default_layer(), DxfShape::Point(Vec2::ZERO), None).unwrap();
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, 0, 32).is_ok());
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, 0, 31).is_err());
+    }
     use super::super::{EntityWeight, StandardWeight};
     use super::*;
 

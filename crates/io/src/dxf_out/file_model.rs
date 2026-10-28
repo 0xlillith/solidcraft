@@ -491,4 +491,182 @@ mod tests {
         assert!(owner_from(&counter).is_err());
         assert!(owner_from(&counter).is_err());
     }
+
+    // Round trips exercise the real writer and layered reader, not group-code test parsers.
+    use crate::DxfShape;
+    use solidcraft_geom::Vec2;
+
+    fn read_written_file(file: &DxfFile<DxfShape>) -> DxfFile<DxfShape> {
+        crate::read_dxf_file(&crate::write_dxf_file(file).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn writer_reader_keep_mixed_layer_declarations_entity_order_and_file_scoped_handles() {
+        let mut source = DxfFile::new().unwrap();
+        let cut = source.declare_layer("CUT", 1, DxfLinetype::Continuous, Some(StandardWeight::from_code(50).unwrap())).unwrap();
+        let hidden = source.declare_layer("HIDDEN", 8, DxfLinetype::Hidden, Some(StandardWeight::from_code(0).unwrap())).unwrap();
+        source.declare_layer("UNUSED", 3, DxfLinetype::Dashed, None).unwrap();
+        source.push(cut, DxfShape::Line(Vec2::new(-2.0, 1.5), Vec2::new(3.0, 1.5)), None).unwrap();
+        source.push(source.default_layer(), DxfShape::Circle { c: Vec2::new(4.0, -1.0), r: 0.5 }, Some(EntityWeight::ByBlock)).unwrap();
+        source.push(hidden, DxfShape::Arc { c: Vec2::new(-3.0, 2.0), r: 2.0, a0: 350.0, a1: 10.0 }, Some(EntityWeight::ByLayer)).unwrap();
+        source.push(cut, DxfShape::Line(Vec2::new(7.0, 0.0), Vec2::new(7.0, 4.0)), Some(EntityWeight::Default)).unwrap();
+
+        let recovered = read_written_file(&source);
+        let layers: Vec<_> = recovered.layers().iter().map(|layer| (layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code))).collect();
+        assert_eq!(layers, [
+            ("0", 7, DxfLinetype::Continuous, None),
+            ("CUT", 1, DxfLinetype::Continuous, Some(50)),
+            ("HIDDEN", 8, DxfLinetype::Hidden, Some(0)),
+            ("UNUSED", 3, DxfLinetype::Dashed, None),
+        ]);
+        let names: Vec<_> = recovered.entities().iter().map(|entity| recovered.layer(entity.layer()).unwrap().name()).collect();
+        assert_eq!(names, ["CUT", "0", "HIDDEN", "CUT"]);
+        assert_eq!(recovered.entities().len(), 4);
+        assert_eq!(recovered.entities()[0].geometry(), &DxfShape::Line(Vec2::new(-2.0, 1.5), Vec2::new(3.0, 1.5)));
+        assert_eq!(recovered.entities()[1].geometry(), &DxfShape::Circle { c: Vec2::new(4.0, -1.0), r: 0.5 });
+        assert_eq!(recovered.entities()[2].geometry(), &DxfShape::Arc { c: Vec2::new(-3.0, 2.0), r: 2.0, a0: 350.0, a1: 10.0 });
+        assert_eq!(recovered.entities()[3].geometry(), &DxfShape::Line(Vec2::new(7.0, 0.0), Vec2::new(7.0, 4.0)));
+        assert_eq!(recovered.entities().iter().map(Entity::weight).collect::<Vec<_>>(), [None, Some(EntityWeight::ByBlock), Some(EntityWeight::ByLayer), Some(EntityWeight::Default)]);
+        // Imported handles belong to the new file; compare resolved metadata, not owner IDs.
+        assert!(recovered.layer(cut).is_err());
+        assert!(recovered.layer(source.default_layer()).is_err());
+        assert!(source.layer(recovered.default_layer()).is_err());
+    }
+
+    #[test]
+    fn writer_reader_keep_omission_symbols_and_all_physical_weights_in_each_linetype() {
+        let mut weights = vec![None, Some(EntityWeight::ByLayer), Some(EntityWeight::ByBlock), Some(EntityWeight::Default)];
+        // Independent explicit public code list: not the model's internal lookup table.
+        for code in [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211] {
+            weights.push(Some(EntityWeight::Explicit(StandardWeight::from_code(code).unwrap())));
+        }
+        let styles = [
+            ("MEASURED", 1, DxfLinetype::Continuous, Some(50)),
+            ("OMITTED", 3, DxfLinetype::Dashed, None),
+            ("ZERO_WEIGHT", 8, DxfLinetype::Hidden, Some(0)),
+        ];
+        let mut source = DxfFile::new().unwrap();
+        for (name, color, linetype, weight) in styles {
+            let layer = source.declare_layer(name, color, linetype, weight.map(|code| StandardWeight::from_code(code).unwrap())).unwrap();
+            for weight in &weights {
+                source.push(layer, DxfShape::Line(Vec2::new(0.5, 0.75), Vec2::new(1.25, -0.5)), *weight).unwrap();
+            }
+        }
+        let recovered = read_written_file(&source);
+        assert_eq!(recovered.layers().len(), 4);
+        assert_eq!(recovered.entities().len(), 84);
+        for (style_index, (name, color, linetype, layer_weight)) in styles.iter().enumerate() {
+            for (weight_index, expected_weight) in weights.iter().enumerate() {
+                let index = style_index * 28 + weight_index;
+                let entity = &recovered.entities()[index];
+                let layer = recovered.layer(entity.layer()).unwrap();
+                assert_eq!((layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)), (*name, *color, *linetype, *layer_weight));
+                assert_eq!(entity.weight(), *expected_weight, "style={name} weight ordinal={weight_index}");
+                assert_eq!(entity.geometry(), &DxfShape::Line(Vec2::new(0.5, 0.75), Vec2::new(1.25, -0.5)));
+            }
+        }
+    }
+
+    #[test]
+    fn writer_reader_keep_exact_supported_curves_on_all_three_layer_styles() {
+        for (name, linetype) in [("SOLID", DxfLinetype::Continuous), ("DASH", DxfLinetype::Dashed), ("HIDE", DxfLinetype::Hidden)] {
+            let mut source = DxfFile::new().unwrap();
+            let layer = source.declare_layer(name, 5, linetype, None).unwrap();
+            for shape in [
+                DxfShape::Line(Vec2::new(-1.25, 2.5), Vec2::new(3.75, -4.0)),
+                DxfShape::Circle { c: Vec2::new(8.0, -2.0), r: 1.25 },
+                DxfShape::Arc { c: Vec2::new(2.0, 3.0), r: 0.75, a0: 45.0, a1: 135.0 },
+                // Open straight chain, with an intentional repeated vertex retained.
+                DxfShape::Polyline { points: vec![Vec2::new(-2.0, 0.0), Vec2::new(0.0, 1.5), Vec2::new(0.0, 1.5), Vec2::new(4.0, -0.5)] },
+            ] {
+                source.push(layer, shape, Some(EntityWeight::ByLayer)).unwrap();
+            }
+            let recovered = read_written_file(&source);
+            assert_eq!(recovered.entities().len(), 4);
+            assert_eq!(recovered.entities()[0].geometry(), &DxfShape::Line(Vec2::new(-1.25, 2.5), Vec2::new(3.75, -4.0)));
+            assert_eq!(recovered.entities()[1].geometry(), &DxfShape::Circle { c: Vec2::new(8.0, -2.0), r: 1.25 });
+            assert_eq!(recovered.entities()[2].geometry(), &DxfShape::Arc { c: Vec2::new(2.0, 3.0), r: 0.75, a0: 45.0, a1: 135.0 });
+            assert_eq!(recovered.entities()[3].geometry(), &DxfShape::Polyline { points: vec![Vec2::new(-2.0, 0.0), Vec2::new(0.0, 1.5), Vec2::new(0.0, 1.5), Vec2::new(4.0, -0.5)] });
+            for entity in recovered.entities() {
+                let layer = recovered.layer(entity.layer()).unwrap();
+                assert_eq!((layer.name(), layer.linetype()), (name, linetype));
+                assert_eq!(entity.weight(), Some(EntityWeight::ByLayer));
+            }
+        }
+    }
+
+    #[test]
+    fn writer_reader_keep_degree_nine_nonunit_knots_controls_and_optional_rational_weights() {
+        for linetype in [DxfLinetype::Continuous, DxfLinetype::Dashed, DxfLinetype::Hidden] {
+            let mut source = DxfFile::new().unwrap();
+            let layer = source.declare_layer("CURVE", 2, linetype, Some(StandardWeight::from_code(35).unwrap())).unwrap();
+            for weights in [None, Some(vec![1.0; 10]), Some(vec![0.5, 1.0, 2.0, 4.0, 0.25, 0.5, 1.0, 2.0, 4.0, 1.0])] {
+                source.push(layer, DxfShape::Spline {
+                    degree: 9,
+                    knots: vec![-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
+                    ctrl: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 2.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 8.0), Vec2::new(4.0, 4.0), Vec2::new(5.0, 2.0), Vec2::new(6.0, 1.0), Vec2::new(7.0, 0.0), Vec2::new(8.0, -1.0), Vec2::new(9.0, -2.0)],
+                    weights,
+                }, Some(EntityWeight::Explicit(StandardWeight::from_code(0).unwrap()))).unwrap();
+            }
+            let recovered = read_written_file(&source);
+            assert_eq!(recovered.entities().len(), 3);
+            for (index, entity) in recovered.entities().iter().enumerate() {
+                let DxfShape::Spline { degree, knots, ctrl, weights } = entity.geometry() else { panic!("expected degree-nine spline") };
+                assert_eq!(*degree, 9);
+                assert_eq!(ctrl, &[Vec2::new(0.0, 0.0), Vec2::new(1.0, 2.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 8.0), Vec2::new(4.0, 4.0), Vec2::new(5.0, 2.0), Vec2::new(6.0, 1.0), Vec2::new(7.0, 0.0), Vec2::new(8.0, -1.0), Vec2::new(9.0, -2.0)]);
+                assert_eq!(knots, &[-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]);
+                match index {
+                    0 => assert_eq!(weights, &None),
+                    1 => assert_eq!(weights.as_deref(), Some([1.0; 10].as_slice())),
+                    2 => assert_eq!(weights.as_deref(), Some([0.5, 1.0, 2.0, 4.0, 0.25, 0.5, 1.0, 2.0, 4.0, 1.0].as_slice())),
+                    _ => panic!("unexpected extra spline"),
+                }
+                let layer = recovered.layer(entity.layer()).unwrap();
+                assert_eq!((layer.name(), layer.linetype(), layer.weight().map(StandardWeight::code)), ("CURVE", linetype, Some(35)));
+                assert_eq!(entity.weight(), Some(EntityWeight::Explicit(StandardWeight::from_code(0).unwrap())));
+            }
+        }
+    }
+
+    #[test]
+    fn writer_reader_keep_degree_nine_interior_knots_without_normalizing_the_domain() {
+        let mut source = DxfFile::new().unwrap();
+        source.push(source.default_layer(), DxfShape::Spline {
+            degree: 9,
+            knots: vec![-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -0.5, 2.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
+            ctrl: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 1.0), Vec2::new(4.0, 0.0), Vec2::new(5.0, -1.0), Vec2::new(6.0, -2.0), Vec2::new(7.0, -1.0), Vec2::new(8.0, 0.0), Vec2::new(9.0, 1.0), Vec2::new(10.0, 2.0), Vec2::new(11.0, 0.0)],
+            weights: Some(vec![1.0, 0.5, 2.0, 1.0, 0.25, 4.0, 1.0, 2.0, 0.5, 1.0, 4.0, 1.0]),
+        }, Some(EntityWeight::Default)).unwrap();
+        let recovered = read_written_file(&source);
+        assert_eq!(recovered.entities().len(), 1);
+        let entity = &recovered.entities()[0];
+        let DxfShape::Spline { degree, knots, ctrl, weights } = entity.geometry() else { panic!("expected degree-nine spline") };
+        assert_eq!(*degree, 9);
+        assert_eq!(knots, &[-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -0.5, 2.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]);
+        assert_eq!(ctrl, &[Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 1.0), Vec2::new(4.0, 0.0), Vec2::new(5.0, -1.0), Vec2::new(6.0, -2.0), Vec2::new(7.0, -1.0), Vec2::new(8.0, 0.0), Vec2::new(9.0, 1.0), Vec2::new(10.0, 2.0), Vec2::new(11.0, 0.0)]);
+        assert_eq!(weights.as_deref(), Some([1.0, 0.5, 2.0, 1.0, 0.25, 4.0, 1.0, 2.0, 0.5, 1.0, 4.0, 1.0].as_slice()));
+        assert_eq!(recovered.layer(entity.layer()).unwrap().name(), "0");
+        assert_eq!(entity.weight(), Some(EntityWeight::Default));
+    }
+
+    // DEPENDENT CASE ONLY: apply after W1's real DxfShape::Point(Vec2) and writer
+    // support plus Kernel's real POINT read_dxf_file branch are integrated.
+    // No fake variant/API, ignore attribute or active-source compile claim.
+    #[test]
+    fn writer_reader_keep_point_geometry_layer_and_stored_weight() {
+        let mut source = DxfFile::new().unwrap();
+        let points = source.declare_layer("DATUM", 4, DxfLinetype::Hidden, Some(StandardWeight::from_code(50).unwrap())).unwrap();
+        source.push(points, DxfShape::Point(Vec2::new(-0.5, 1.25)), Some(EntityWeight::ByBlock)).unwrap();
+        source.push(source.default_layer(), DxfShape::Point(Vec2::new(8.0, -2.0)), None).unwrap();
+        let recovered = read_written_file(&source);
+        assert_eq!(recovered.entities().len(), 2);
+        assert_eq!(recovered.entities()[0].geometry(), &DxfShape::Point(Vec2::new(-0.5, 1.25)));
+        assert_eq!(recovered.entities()[1].geometry(), &DxfShape::Point(Vec2::new(8.0, -2.0)));
+        let layer = recovered.layer(recovered.entities()[0].layer()).unwrap();
+        assert_eq!((layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)), ("DATUM", 4, DxfLinetype::Hidden, Some(50)));
+        assert_eq!(recovered.entities()[0].weight(), Some(EntityWeight::ByBlock));
+        assert_eq!(recovered.layer(recovered.entities()[1].layer()).unwrap().name(), "0");
+        assert_eq!(recovered.entities()[1].weight(), None);
+        assert!(recovered.layer(points).is_err());
+    }
 }

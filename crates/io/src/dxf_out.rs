@@ -67,6 +67,8 @@ impl DxfLayer {
 /// The geometry of one entity (millimetres).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DxfShape {
+    /// A planar POINT at this WCS location, with zero Z and default thickness/normal.
+    Point(Vec2),
     Line(Vec2, Vec2),
     /// Connected straight segments, with continuous linetype generation through the vertices.
     Polyline {
@@ -223,6 +225,7 @@ impl DxfShape {
     /// Points on the shape (or its control polygon) for the drawing's extents.
     fn sample(&self, out: &mut Vec<Vec2>) {
         match self {
+            DxfShape::Point(point) => out.push(*point),
             DxfShape::Line(a, b) => out.extend([*a, *b]),
             DxfShape::Polyline { points } => out.extend(points.iter().copied()),
             DxfShape::Circle { c, r } => out.extend([*c - Vec2::new(*r, *r), *c + Vec2::new(*r, *r)]),
@@ -469,7 +472,8 @@ struct EntityView<'a> {
 /// [`write_dxf_drawing`]; it does not implement X3 import or X4 alignment/transform policy.
 ///
 /// Unlike that legacy entry point, this refuses invalid or non-finite geometry rather than
-/// replacing numbers with zero. It accepts positive-radius circles/arcs, nondegenerate
+/// replacing numbers with zero. POINT locations must be finite in both entry points.
+/// It accepts planar points, positive-radius circles/arcs, nondegenerate
 /// ellipses, polylines of at least two points and positive-weight clamped splines of supported
 /// degree. TEXT is limited to 250 BMP characters and is refused rather than truncated.
 /// Geometry whose required positive values or distinct points/knot spans collapse under
@@ -528,6 +532,7 @@ fn write_dxf_file_limited(file: &DxfFile<DxfShape>, bytes: usize, values: usize)
 fn shape_preflight(shape: &DxfShape) -> Result<()> {
     let invalid = || IoError::Invalid("invalid or unsupported DXF geometry".into());
     let finite = match shape {
+        DxfShape::Point(point) => point.is_finite(),
         DxfShape::Line(a, b) => a.is_finite() && b.is_finite(),
         DxfShape::Polyline { points } => points.len() >= 2 && points.len() <= MAX_DXF_FILE_VALUES && points.iter().all(|p| p.is_finite()),
         DxfShape::Circle { c, r } => c.is_finite() && r.is_finite() && *r > 0.0,
@@ -590,6 +595,7 @@ fn shape_preflight(shape: &DxfShape) -> Result<()> {
 
 fn shape_work(shape: &DxfShape) -> Result<usize> {
     match shape {
+        DxfShape::Point(_) => Ok(1),
         DxfShape::Line(..) | DxfShape::Circle { .. } => Ok(2),
         DxfShape::Polyline { points } => Ok(points.len()),
         DxfShape::Arc { .. } => Ok(65),
@@ -620,6 +626,7 @@ fn shape_emission_preflight(shape: &DxfShape) -> Result<()> {
     let collapse = || IoError::Invalid("DXF geometry loses a required positive value or distinct point/knot span at twelve decimals".into());
     let positive = |value| -> Result<()> { if emitted_number(value)? > 0.0 { Ok(()) } else { Err(collapse()) } };
     match shape {
+        DxfShape::Point(point) => { emitted_point(*point)?; }
         DxfShape::Line(a, b) => {
             if emitted_point(*a)? == emitted_point(*b)? {
                 return Err(collapse());
@@ -790,6 +797,7 @@ where
     for (index, e) in entities.enumerate() {
         let e = e?;
         let kind = match e.shape {
+            DxfShape::Point(_) => "POINT",
             DxfShape::Line(..) => "LINE",
             DxfShape::Polyline { .. } => "LWPOLYLINE",
             DxfShape::Circle { .. } => "CIRCLE",
@@ -808,6 +816,15 @@ where
             o.code(370, weight.group370());
         }
         match e.shape {
+            DxfShape::Point(point) => {
+                // POINT uses WCS10/20/30, not an OCS displacement. The planar
+                // default normal/thickness need no extra optional fields.
+                if !point.is_finite() {
+                    return Err(IoError::Invalid(format!("DXF POINT entity {} on layer {:?}: non-finite location", index + 1, e.layer)));
+                }
+                o.code(100, "AcDbPoint");
+                o.point(10, *point);
+            }
             DxfShape::Polyline { points } => {
                 o.code(100, "AcDbPolyline");
                 o.code(90, points.len());
@@ -939,6 +956,69 @@ mod tests {
     /// The conic quarter of the ellipse `c ± u`, `c ± v` from `c + u` to `c + v`.
     fn quarter(c: Vec2, u: Vec2, v: Vec2) -> Seg2 {
         Seg2::Conic { a: c + u, apex: c + u + v, b: c + v, w: FRAC_1_SQRT_2 }
+    }
+
+    #[test]
+    fn owned_point_uses_real_wcs_record_and_retains_layer_and_each_optional_weight() {
+        let mut file = DxfFile::new().unwrap();
+        let physical = DxfStandardWeight::from_code(50).unwrap();
+        let layer = file.declare_layer("DATUM", 4, DxfLinetype::Hidden, Some(physical)).unwrap();
+        let weights = [None, Some(DxfEntityWeight::ByLayer), Some(DxfEntityWeight::ByBlock), Some(DxfEntityWeight::Default), Some(DxfEntityWeight::Explicit(physical))];
+        for weight in weights { file.push(layer, DxfShape::Point(Vec2::new(1.25, -2.5)), weight).unwrap(); }
+        let dxf = write_dxf_file(&file).unwrap();
+        let records = entities(&dxf);
+        assert_eq!(records.len(), 5);
+        for (record, weight) in records.iter().zip(weights) {
+            assert_eq!(record.0, "POINT");
+            assert_eq!(field(&record.1, 8), "DATUM");
+            assert_eq!(values(record, 10), [1.25]);
+            assert_eq!(values(record, 20), [-2.5]);
+            assert_eq!(values(record, 30), [0.0]);
+            assert!(record.1.contains(&(100, "AcDbPoint".into())));
+            assert!(record.1.contains(&(100, "AcDbEntity".into())));
+            assert!(!field(&record.1, 5).is_empty() && !field(&record.1, 330).is_empty());
+            assert_eq!(values(record, 370), weight.map(|value| vec![f64::from(value.group370())]).unwrap_or_default());
+            assert!(values(record, 39).is_empty() && values(record, 210).is_empty());
+        }
+        let fields = pairs(&dxf);
+        for header in ["$EXTMIN", "$EXTMAX"] {
+            let at = fields.iter().position(|(code, value)| *code == 9 && value == header).unwrap();
+            assert_eq!(&fields[at + 1..at + 4], &[(10, "1.25".into()), (20, "-2.5".into()), (30, "0.0".into())]);
+        }
+    }
+
+    #[test]
+    fn point_uses_one_writer_work_unit_and_existing_output_byte_budget() {
+        let mut file = DxfFile::new().unwrap();
+        file.push(file.default_layer(), DxfShape::Point(Vec2::ZERO), None).unwrap();
+        assert_eq!(shape_work(file.entities()[0].geometry()).unwrap(), 1);
+        let output = write_dxf_file_limited(&file, crate::MAX_DRAWING_BYTES, 1).unwrap();
+        assert!(write_dxf_file_limited(&file, output.len(), 1).is_ok());
+        assert!(write_dxf_file_limited(&file, output.len() - 1, 1).is_err());
+        assert!(write_dxf_file_limited(&file, crate::MAX_DRAWING_BYTES, 0).is_err());
+    }
+
+    #[test]
+    fn point_nonfinite_locations_refuse_in_owned_and_legacy_routes() {
+        for point in [Vec2::new(f64::NAN, 0.0), Vec2::new(0.0, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, 0.0)] {
+            let mut file = DxfFile::new().unwrap();
+            file.push(file.default_layer(), DxfShape::Point(point), None).unwrap();
+            let error = write_dxf_file(&file).unwrap_err().to_string();
+            assert!(error.contains("entity 1") && error.contains("layer"));
+            assert!(write_dxf_drawing(&[], &[DxfEntity { layer: "DATUM".into(), shape: DxfShape::Point(point) }]).is_err());
+            assert_eq!(file.entities().len(), 1);
+        }
+    }
+
+    #[test]
+    fn finite_point_shares_writer_with_legacy_and_does_not_change_line_record_order() {
+        let shapes = [DxfShape::Point(Vec2::new(-3.0, 4.0)), DxfShape::Line(Vec2::ZERO, Vec2::X)];
+        let mut file = DxfFile::new().unwrap();
+        for shape in &shapes { file.push(file.default_layer(), shape.clone(), None).unwrap(); }
+        let legacy: Vec<_> = shapes.into_iter().map(|shape| DxfEntity { layer: "0".into(), shape }).collect();
+        let owned_output = write_dxf_file(&file).unwrap();
+        assert_eq!(owned_output, write_dxf_drawing(&[], &legacy).unwrap());
+        assert_eq!(entities(&owned_output).iter().map(|record| record.0.as_str()).collect::<Vec<_>>(), ["POINT", "LINE"]);
     }
 
     /// The ellipse of 50 × 24 round (50, 40): its four quarters, counter-clockwise from (75, 40).
