@@ -211,7 +211,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.delete", "Delete Sketch Entities", sketch_delete).in_sketch_part().icon("delete")
         .enabled(in_sketch)
         .params("entities: [curve, point or constraint ids]"),
-    CommandSpec::new("sketch.move_point", "Drag Sketch Point", move_point).icon("sketch_move").enabled(in_sketch).params("point: ref, to: [x,y]"),
+    CommandSpec::new("sketch.move_point", "Drag Sketch Point", move_point).in_sketch_part().icon("sketch_move").enabled(in_sketch).params("point: ref, to: [x,y]"),
     CommandSpec::new("sketch.drag", "Drag Sketch Geometry", drag).icon("sketch_move").enabled(in_sketch).live(drag_live).params(
         "entity: point or curve, from: [x,y] where it was grabbed, to: [x,y], live?: bool: points and the material point grabbed on a line move toward `to` within the design constraints. When exact placement is impossible, bounded feasible steps minimize cursor distance. Splines slide by to - from; a circle or arc grabbed on its edge takes the radius to `to`. `with?`: [point or curve ids] moves the rest of a selection with the entity as one translation (circles keep their radii). Long moves retain the solution branch; arcs cannot sweep through their starts. Returns `reached`: progress projected onto the requested move (0..1), `at`: the grabbed position for the next frame, and `retry`: budget-limited progress can continue in another frame. `live: true` shares a work budget across held-solve decomposition and cursor correction; ordinary recovery and the final model evaluation retain their existing limits, not a wall-clock deadline. Later features stay stale until `sketch.drag_end`; `dof` stays from before the drag",
     ),
@@ -221,7 +221,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.dimension_text", "Move Dimension Text", dimension_text).in_sketch_part().icon("edit")
         .enabled(in_sketch)
         .params("dimension: constraint id or parameter name; at: [x,y] text centre (sketch coordinates) | reset: true (default place)"),
-    CommandSpec::new("sketch.options", "Sketch Palette Options", sketch_options).icon("sketch").params(
+    CommandSpec::new("sketch.options", "Sketch Palette Options", sketch_options).in_sketch_part().icon("sketch").params(
         "sketch?: id|name (default active); any of show_profile, show_points, show_dimensions, show_constraints, show_projected, show_construction, grid, snap, slice, sketch_3d: bool. Returns them all",
     ),
     CommandSpec::new("sketch.chain", "Chain", chain_cmd).in_sketch_part().icon("chain")
@@ -2679,6 +2679,16 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
 fn move_point(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.move_point";
     let to = req_vec2(cmd, p, "to")?;
+    if s.open_drawing.is_some() {
+        // Reuse the existing point drag on solved paper coordinates. Only the
+        // shared sheet receiver publishes one drawing-local undo step.
+        let (_, report) = edit(s, p, cmd, false, |sk, _| {
+            let q = point_ref(sk, p.get("point"), cmd, "point")?;
+            let _ = drag_entity(sk, Ent::Point(q), &[], to, to, false, None);
+            Ok(())
+        })?;
+        return Ok(json!({"sketch": report}));
+    }
     let id = sketch_store::target(s, p, cmd)?;
     let state = s.model.result(id).map(|r| r.state.clone());
     let last = state.as_ref().and_then(|state| state.sketch(id));
@@ -2817,8 +2827,11 @@ fn sketch_options(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let set = |k: &str| bool_(p, k);
     if keys.iter().all(|k| set(k).is_none()) {
-        let id = sketch_store::target(s, p, cmd)?;
-        return Ok(json!({"options": options_json(&sketch_store::read(&s.doc, id)?.view)}));
+        let sk = sketch_store::read_for_command(s, p, cmd)?;
+        return Ok(json!({"options": options_json(&sk.view)}));
+    }
+    if s.open_drawing.is_some() && (set("slice") == Some(true) || set("sketch_3d") == Some(true)) {
+        return Err(bad(cmd, "slice and 3D sketch options are model-only"));
     }
     let (v, info) = edit(s, p, cmd, false, |sk, _| {
         let v = &mut sk.view;

@@ -485,3 +485,18 @@ history, source-model state and cross-owner refusals. This only enables
 workspace, canvas selection, ownership-aware event routing and visual
 acceptance remain with the agreed UI integration work; these two commands
 alone do not make a sheet sketch editable through the GUI.
+### W38a R15: point repositioning and sheet palette settings
+
+The existing sketch.move_point command now uses the same point-drag geometry on
+the exact active drawing/sheet/sketch, with destination coordinates in paper
+millimetres (not the displayed source-design units). Its solved candidate is
+published through the shared sheet receiver as a single drawing-local undo step.
+It is not the live pointer gesture or the desktop/browser canvas hookup.
+
+sketch.options now supports read-only inspection and changes to the existing
+2D sketch visibility, grid and snap toggles on the same sheet receiver. A read
+never creates history; changes use Session::edit_drawing, retain the source
+model unchanged, and persist with the drawing. The model-only slice and
+sketch_3d modes are refused when enabling them on a paper sketch. The model
+version of both existing commands retains its original route. Native/browser
+palette wiring and pointer-frame interactions remain with the shared UI owner.

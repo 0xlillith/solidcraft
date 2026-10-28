@@ -1861,3 +1861,95 @@ fn sheet_reviewer_chain_and_solve_refuse_foreign_or_missing_targets_atomically()
     assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 1);
     assert!(Arc::ptr_eq(&s.doc, &before));
 }
+/// R15: palette state uses the exact paper sketch and drawing-local history.
+#[test]
+fn sheet_reviewer_palette_options_are_drawing_local_and_undoable() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    let snapshot = s.doc.clone();
+    let model = s.model.state();
+    let evaluations = s.evaluations;
+    let history = s.undo.len();
+    let entry = s.active_sheet_sketch.clone();
+    let current = run(&mut s, "sketch.options", json!({"sketch": made["sketch"]}));
+    assert!(current["options"]["grid"].is_boolean(), "{current}");
+    assert!(current["options"]["show_points"].is_boolean(), "{current}");
+    assert!(Arc::ptr_eq(&s.doc, &snapshot), "reading palette options is non-mutating");
+    assert_eq!(s.undo.len(), history);
+    assert_eq!(s.active_sheet_sketch, entry);
+
+    let updated = run(&mut s, "sketch.options", json!({"sketch": made["sketch"], "grid": false, "show_points": false, "snap": false}));
+    assert_eq!(updated["options"]["grid"], false);
+    assert_eq!(updated["options"]["show_points"], false);
+    assert_eq!(updated["options"]["snap"], false);
+    let kept = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert!(kept.view.hide_grid && kept.view.hide_points && kept.view.no_snap);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (history + 1, Some(drawing)));
+    assert_eq!(s.active_sheet_sketch, entry);
+    assert_eq!((&s.doc.features, &s.doc.params), (&snapshot.features, &snapshot.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluations);
+
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(
+        s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch,
+        snapshot.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch
+    );
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, kept);
+    assert_eq!(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap().drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, kept);
+}
+
+/// R15: the existing point drag places paper geometry even under inch display units.
+#[test]
+fn sheet_reviewer_point_move_is_paper_mm_one_drawing_step_and_reopens() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    run(&mut s, "sketch.point", json!({"point": [15, 20], "id": "free_pin", "connect": false}));
+    let previous = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let evaluations = s.evaluations;
+    let history = s.undo.len();
+    let moved = run(&mut s, "sketch.move_point", json!({"sketch": made["sketch"], "point": "free_pin", "to": [25, 35]}));
+    assert!(moved["sketch"]["dof"].is_number(), "{moved}");
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let point = after.resolve_point("free_pin").unwrap();
+    let actual = after.point(point).unwrap();
+    assert!((actual.x - 25.0).abs() < 1e-6 && (actual.y - 35.0).abs() < 1e-6, "{actual:?}");
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (history + 1, Some(drawing)));
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluations);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, previous);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+}
+
+#[test]
+fn sheet_reviewer_palette_and_point_move_refuse_model_only_or_wrong_owner_atomically() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    run(&mut s, "sketch.point", json!({"point": [15, 20], "id": "free_pin", "connect": false}));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (command, params) in [
+        ("sketch.options", json!({"slice": true})),
+        ("sketch.options", json!({"sketch_3d": true})),
+        ("sketch.options", json!({"sketch": ids::encode(drawing), "grid": false})),
+        ("sketch.options", json!({"sketch": 18446744073709551615u64})),
+        ("sketch.move_point", json!({"point": "absent", "to": [30, 40]})),
+        ("sketch.move_point", json!({"sketch": ids::encode(drawing), "point": "free_pin", "to": [30, 40]})),
+        ("sketch.move_point", json!({"sketch": made["sketch"], "point": "free_pin", "to": ["1 mm", 40]})),
+    ] {
+        refused(&mut s, command, params.clone());
+        assert!(Arc::ptr_eq(&s.doc, &before), "{command}: {params}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{command}: {params}");
+        assert_eq!(s.active_sheet_sketch, entry, "{command}: {params}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}: {params}");
+        assert_eq!(s.open_drawing, Some(drawing));
+        assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).is_some());
+    }
+}
