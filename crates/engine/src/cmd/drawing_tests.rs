@@ -1472,3 +1472,97 @@ fn sheet_reviewer_constraints_refuse_cross_owner_targets_atomically() {
         assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 1);
     }
 }
+
+// W38a R10: qualify existing fix/unfix and symmetry through the shared sheet store.
+#[test]
+fn sheet_reviewer_fix_and_symmetry_keep_model_and_drawing_history_separate() {
+    use solidcraft_sketch::ConstraintKind;
+
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.point", json!({"point":[30,40],"id":"held"}));
+    let original_source = s.doc.clone();
+    let model = s.model.state();
+    let (undo, evaluated) = (s.undo.len(), s.evaluations);
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let fixed = run(&mut s, "sketch.constraint.fix", json!({"entity":"held","fixed":true}));
+    assert_eq!(fixed["result"]["fixed"], true);
+    assert_eq!(fixed["result"]["changed"], 1);
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let index = after.resolve_point("held").unwrap();
+    assert!(after.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::Fix { p } if p == index)));
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (undo + 1, Some(drawing)));
+    assert_eq!((&s.doc.features, &s.doc.params), (&original_source.features, &original_source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluated);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let saved = s.doc.to_json();
+    let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let released = run(&mut s, "sketch.constraint.fix", json!({"entity":"held","fixed":false}));
+    assert_eq!(released["result"]["fixed"], false);
+    assert_eq!(released["result"]["changed"], 1);
+    let unfixed = &s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch;
+    assert!(!unfixed.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::Fix { p } if p == index)));
+
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points":[[50,0],[50,100]],"ids":["axis"]}));
+    run(&mut s, "sketch.point", json!({"point":[30,40],"id":"a"}));
+    run(&mut s, "sketch.point", json!({"point":[75,43],"id":"b"}));
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let (undo, evaluated) = (s.undo.len(), s.evaluations);
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let result = run(&mut s, "sketch.constraint.symmetry", json!({"a":"a","b":"b","line":"axis"}));
+    assert_eq!(result["constraints"].as_array().unwrap().len(), 1);
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let pa = after.point(after.resolve_point("a").unwrap()).unwrap();
+    let pb = after.point(after.resolve_point("b").unwrap()).unwrap();
+    let axis = after.curve_index("axis").unwrap();
+    let solidcraft_sketch::CurveKind::Line { a, b } = after.curves[axis].kind else { panic!("missing symmetry axis") };
+    let p0 = after.point(a).unwrap();
+    let direction = after.point(b).unwrap() - p0;
+    let length = direction.len();
+    assert!(length > 1.0);
+    assert!((((pa + pb) * 0.5 - p0).cross(direction) / length).abs() < 1e-4);
+    assert!(((pb - pa).dot(direction) / length).abs() < 1e-4);
+    assert!(after.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::Symmetric { .. })));
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (undo + 1, Some(drawing)));
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluated);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let saved = s.doc.to_json();
+    let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+}
+
+#[test]
+fn sheet_reviewer_fix_and_symmetry_refuse_foreign_targets_atomically() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points":[[50,0],[50,100]],"ids":["axis"]}));
+    run(&mut s, "sketch.point", json!({"point":[30,40],"id":"a"}));
+    run(&mut s, "sketch.point", json!({"point":[75,43],"id":"b"}));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (command, args) in [
+        ("sketch.constraint.fix", json!({"sketch":-1,"entity":"a","fixed":true})),
+        ("sketch.constraint.symmetry", json!({"sketch":-1,"a":"a","b":"b","line":"axis"})),
+        ("sketch.constraint.fix", json!({"entity":"foreign","fixed":true})),
+        ("sketch.constraint.symmetry", json!({"a":"a","b":"b","line":"foreign"})),
+    ] {
+        refused(&mut s, command, args);
+        assert!(Arc::ptr_eq(&s.doc, &before), "{command}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{command}");
+        assert_eq!(s.active_sheet_sketch, entry, "{command}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}");
+        assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 1);
+    }
+}

@@ -375,3 +375,23 @@ drawing-only undo/redo and file reopening, and atomic refusal of a model
 target. This does not qualify other constraint commands, interactive
 snap/picking, drawing-owned dimensions, the native/browser editor or the
 full workspace CI suite.
+
+
+### R10: fixing sheet geometry and point/axis symmetry
+
+The existing sketch.constraint.fix and sketch.constraint.symmetry commands
+now use the same exact sheet target, shared sketch implementation and solver as
+the admitted constraints above. Fix/unfix changes only the selected sheet
+sketch's point constraints or curve fixed state. Symmetry uses the sketcher's
+existing point/axis and curve mirroring logic; it does not construct a second
+geometry engine or a model feature.
+
+Both commands publish only through Session::edit_drawing, with one drawing
+undo step per changed command. Incorrect sketch ids, unknown local entities or
+an absent editing boundary fail without changing the source design or drawing
+history. Analytic point/line symmetry and fix/unfix, undo/redo, isolation and
+JSON save/reopen cases live in the existing engine Drawing tests.
+
+This is not shared annotation dimension support, pointer-driven UI integration,
+canonical sketch.cancel composition or full native/browser acceptance.
+Those remain separate dependencies and deliverables.
