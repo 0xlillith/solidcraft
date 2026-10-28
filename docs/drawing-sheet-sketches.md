@@ -460,3 +460,28 @@ local entities. Their executed results and the exact tested commit belong in
 the PR. This does **not** complete sheet sketch driving dimensions, model
 projection, sheet editor UI, all-tool parity, canonical model/sheet Cancel
 composition or the full repository CI gate.
+
+### W38a R14: read-only chain selection and solve reports
+
+The existing `sketch.chain` and `sketch.solve` commands now accept the active
+sheet-sketch receiver, without adding command ids or changing model-sketch
+behavior. Both use the same sketch-part gate as the geometry tools: with a
+drawing open, an exact active drawing/sheet/sketch entry is required. Explicit
+`sketch` inputs may only confirm that entry; an absent, invalid or foreign
+owner is never resolved as a model feature.
+
+`sketch.chain` reads a solved paper sketch through the shared command store and
+uses the original connected-curve selection algorithm. `sketch.solve` reads the
+same drawing-owned record through its existing read-only solve boundary and
+reports status, degrees of freedom, failed constraints and a bounded profile
+count from the shared drawn-profile finder. Neither query publishes the solved
+geometry, changes a source parameter, triggers model evaluation or creates a
+drawing undo step. Invalid local curves and wrong owners fail without mutation.
+
+Existing engine regressions and two new sheet-specific cases distinguish the
+model receiver from paper-owned queries, including profile counts, no-op
+history, source-model state and cross-owner refusals. This only enables
+**command-level inspection**. The native/browser pointer-driven Drawing
+workspace, canvas selection, ownership-aware event routing and visual
+acceptance remain with the agreed UI integration work; these two commands
+alone do not make a sheet sketch editable through the GUI.

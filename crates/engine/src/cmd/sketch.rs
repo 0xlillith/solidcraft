@@ -224,11 +224,11 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.options", "Sketch Palette Options", sketch_options).icon("sketch").params(
         "sketch?: id|name (default active); any of show_profile, show_points, show_dimensions, show_constraints, show_projected, show_construction, grid, snap, slice, sketch_3d: bool. Returns them all",
     ),
-    CommandSpec::new("sketch.chain", "Chain", chain_cmd).icon("chain")
+    CommandSpec::new("sketch.chain", "Chain", chain_cmd).in_sketch_part().icon("chain")
         .enabled(in_sketch)
         .noundo()
         .params("curve: id: the curves joined to it end to end (what a double-click selects)"),
-    CommandSpec::new("sketch.solve", "Solve Sketch", solve_cmd).icon("compute")
+    CommandSpec::new("sketch.solve", "Solve Sketch", solve_cmd).in_sketch_part().icon("compute")
         .enabled(in_sketch)
         .noundo()
         .params("reports the solver status and degrees of freedom"),
@@ -2844,14 +2844,25 @@ fn sketch_options(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn chain_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.chain";
-    let id = sketch_store::target(s, p, cmd)?;
-    let sk = sketch_store::read(&s.doc, id)?;
-    let c = curve_ref(sk, p.get("curve"), cmd, "curve")?;
-    Ok(json!({"curves": ids_of(sk, &sk.chain(c))}))
+    let sk = sketch_store::read_for_command(s, p, cmd)?;
+    let c = curve_ref(&sk, p.get("curve"), cmd, "curve")?;
+    Ok(json!({"curves": ids_of(&sk, &sk.chain(c))}))
 }
 
 fn solve_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = sketch_store::target(s, p, "sketch.solve")?;
+    let cmd = "sketch.solve";
+    if s.open_drawing.is_some() {
+        let entry = sketch_store::sheet_target(s, p, cmd)?;
+        let solved = s.drawing(cmd)?.solve_sheet_sketch(&s.doc, entry.sketch)?;
+        let profiles = solidcraft_sketch::find_drawn_profiles(&solved.sketch).len();
+        return Ok(json!({
+            "status": solved.report.status,
+            "dof": solved.report.dof,
+            "failing": solved.report.failing,
+            "profiles": profiles,
+        }));
+    }
+    let id = sketch_store::target(s, p, cmd)?;
     let st = s.model.state();
     let ss = st.sketch(id).ok_or_else(|| EngineError::Other("the sketch has not been evaluated".into()))?;
     Ok(json!({"status": ss.report.status, "dof": ss.report.dof, "failing": ss.report.failing, "profiles": ss.profiles.len()}))

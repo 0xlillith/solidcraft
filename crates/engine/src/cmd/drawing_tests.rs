@@ -1805,3 +1805,59 @@ fn sheet_reviewer_coincident_lines_join_only_their_local_endpoints() {
     run(&mut s, "edit.redo", json!({}));
     assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
 }
+
+/// R14: read-only curve selection and solve reports share the exact sheet receiver.
+#[test]
+fn sheet_reviewer_chain_and_solve_are_paper_owned_read_only_queries() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [15, 10], "p1": [55, 30]}));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let inspected = run(&mut s, "drawing.sketch.inspect", json!({}));
+
+    let chain = run(&mut s, "sketch.chain", json!({"sketch": made["sketch"], "curve": "l1"}));
+    let ids = chain["curves"].as_array().unwrap();
+    assert_eq!(ids.len(), 4, "the rectangle is one sheet-local connected chain: {chain}");
+    assert!(ids.iter().any(|id| id == "l1"));
+    let solved = run(&mut s, "sketch.solve", json!({"sketch": made["sketch"]}));
+    assert_eq!(solved["profiles"], 1, "the existing profile finder sees one paper rectangle: {solved}");
+    assert_eq!(solved["dof"], inspected["dof"], "inspection and solve use the same paper sketch");
+    assert!(!solved["status"].is_null(), "the actual solver status must be reported");
+
+    assert!(Arc::ptr_eq(&s.doc, &before), "neither read-only command publishes a drawing");
+    assert!(Arc::ptr_eq(&s.model.state(), &model), "neither query evaluates the model");
+    assert_eq!(s.active_sheet_sketch, entry);
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 4);
+}
+
+/// R14: no implicit switch to a similarly named model sketch or another sheet.
+#[test]
+fn sheet_reviewer_chain_and_solve_refuse_foreign_or_missing_targets_atomically() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points": [[10, 10], [30, 20]], "ids": ["only_sheet_line"]}));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (command, params) in [
+        ("sketch.chain", json!({"sketch": ids::encode(drawing), "curve": "only_sheet_line"})),
+        ("sketch.chain", json!({"sketch": "not-an-id", "curve": "only_sheet_line"})),
+        ("sketch.chain", json!({"curve": "no_such_curve"})),
+        ("sketch.solve", json!({"sketch": ids::encode(drawing)})),
+        ("sketch.solve", json!({"sketch": -1})),
+        ("sketch.solve", json!({"sketch": true})),
+    ] {
+        refused(&mut s, command, params.clone());
+        assert!(Arc::ptr_eq(&s.doc, &before), "{command}: {params}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{command}: {params}");
+        assert_eq!(s.active_sheet_sketch, entry, "{command}: {params}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}: {params}");
+    }
+    assert_eq!(run(&mut s, "sketch.chain", json!({"curve": "only_sheet_line"}))["curves"], json!(["only_sheet_line"]));
+    assert_eq!(run(&mut s, "sketch.solve", json!({}))["profiles"], 0);
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 1);
+    assert!(Arc::ptr_eq(&s.doc, &before));
+}
