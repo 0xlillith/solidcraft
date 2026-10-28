@@ -812,6 +812,9 @@ preference_settings! {
     frame_rate_details: bool = false, PAGE_GRAPHICS;
     /// Draw a wider rim under finished sketch curves to improve contrast on shaded faces.
     sketch_halo: bool = false, PAGE_GRAPHICS => check("Halo under sketch curves");
+    /// Show the view's pitch, yaw and roll and its projection under the orientation gizmo (#6032).
+    /// Off by default; View ▸ View angles and `view.angle_readout` turn it on.
+    show_view_angles: bool = false, PAGE_GRAPHICS;
     /// Show world X/Y/Z component dimensions beside the total distance in Measure.
     measure_axis_distances: bool = true, PAGE_GRAPHICS => check_id("settings.measure_axis_distances");
     /// Decimals shown for lengths and angles.
@@ -5806,6 +5809,16 @@ mod ui_scale_regression_tests {
         h.call("ui.prefs", json!({"button":"cancel"}));
         assert_eq!(h.app.preferences.ui_scale, 1.0, "Cancel restores the original scale");
         assert_eq!(h.ctx.zoom_factor(), 1.0);
+    }
+}
+
+/// View ▸ View angles and Preferences ▸ Graphics run the same command (#6032).
+pub(crate) fn view_angles_checkbox(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let mut enabled = app.preferences.show_view_angles;
+    let response = ui_kit::checkbox(ui, crate::i18n::tr("ui.view_angles"), &mut enabled).on_hover_text(crate::i18n::tr("ui.view_angles_help"));
+    crate::scenario::publish_handle("view:view_angles", response.rect.center());
+    if response.changed() {
+        let _ = app.run("view.angle_readout", json!({"enabled": enabled}));
     }
 }
 

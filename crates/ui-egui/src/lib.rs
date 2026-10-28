@@ -284,6 +284,7 @@ pub mod ui_kit;
 mod ui_kit_guard_tests;
 pub mod update;
 mod value_step;
+pub(crate) mod view_angles;
 mod view_confirm;
 pub mod view_pick;
 pub mod viewport;
@@ -1139,6 +1140,9 @@ impl SolveApp {
             {
                 self.ui.perspective = perspective;
             }
+            if id == "view.angle_readout" {
+                self.preferences.show_view_angles = v.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+            }
             if matches!(id, "view.ambient_occlusion" | "view.graphics_preset") {
                 self.preferences.ambient_occlusion = v.get("enabled").and_then(Value::as_bool).unwrap_or(false);
                 if id == "view.graphics_preset" {
@@ -1373,6 +1377,10 @@ impl SolveApp {
         }
         if id == "view.perspective" {
             let _ = self.run(id, json!({"enabled": !self.ui.perspective}));
+            return;
+        }
+        if id == "view.angle_readout" {
+            let _ = self.run(id, json!({"enabled": !self.preferences.show_view_angles}));
             return;
         }
         // Another command ends Edit Text (its dialog is not a feature edit to keep).

@@ -4493,6 +4493,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::sketch_dims::show(app, ui, &proj);
     crate::select_other::show(app, ui.ctx());
     axis_view(app, ui, rect);
+    crate::view_angles::show(app, ui, rect);
     crate::navigation_bar_view::show(app, ui, rect);
     // The notices and the agent chip first, so the 3D mouse picture can keep clear of them.
     let toasts = transient_messages(app, ui, rect);

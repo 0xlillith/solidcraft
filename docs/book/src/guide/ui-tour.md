@@ -80,6 +80,13 @@
   top right while a dialog or a sketch is open, and moves the axis view or cube down below them.
   With a dialog open they do what its OK and Cancel do (the check is grey whenever OK is); in a
   sketch without a dialog they are Finish Sketch and Cancel Sketch.
+  **View angles** in the navigation bar's View menu (or Preferences › Graphics, or the
+  `view.angle_readout` command) shows the view's pitch, yaw and roll in degrees under the axis
+  view, with **Ortho** or **Persp** for the projection; it is off by default and updates as the
+  view turns. The angles turn about the up axis: yaw 0° is the Front view, 90° Left, −90° Right
+  and 180° Back; pitch 90° is the Top view and −90° the Bottom; a positive roll turns the model
+  clockwise on screen. Click the readout to type exact angles; **Apply** turns the view there
+  (it keeps the view's centre and zoom). Scripts set the same angles in radians with `view.apply`.
   Right-click for the marking menu: eight commands around the cursor, plus a
   menu for whatever is under it. Near the window's bottom or right edge a menu opens above or
   to the left of the cursor, so it stays in view.
