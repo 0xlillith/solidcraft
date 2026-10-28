@@ -32,7 +32,7 @@ mod threemf;
 pub mod urdf;
 pub mod vfs;
 
-pub use dxf::{read_dxf, write_dxf};
+pub use dxf::{read_dxf, read_dxf_file, write_dxf};
 pub use dxf_out::{
     DxfEntity, DxfEntityWeight, DxfFile, DxfFileEntity, DxfFileLayer, DxfGeometryBounds, DxfLayer, DxfLayerId, DxfLinetype, DxfShape,
     DxfStandardWeight, loop_shapes, seg_shape, write_dxf_drawing, write_dxf_file,

@@ -10,15 +10,18 @@ use std::collections::HashMap;
 use solidcraft_geom::{MAX_BEZIER_DEGREE, Vec2};
 
 use crate::sketch2d::{Geom2, MAX_DRAWING_BYTES, MAX_ENTITIES, bulge_arc};
-use crate::{IoError, Result};
+// Shared X2 model; the partial reader below consumes the real metadata API.
+use crate::{DxfEntityWeight, DxfFile, DxfLayerId, DxfLinetype, DxfShape, DxfStandardWeight, IoError, Result};
 
-/// Group code / value pairs.
+/// One group-code parser: text values1/3 stay raw; other values normalize.
+/// Legacy Ent::text access retains its historical trim. Layered callers read raw Ent::s.
 fn pairs(text: &str) -> Vec<(i32, String)> {
     let mut out = Vec::new();
     let mut lines = text.lines();
     while let (Some(c), Some(v)) = (lines.next(), lines.next()) {
         let Ok(code) = c.trim().parse::<i32>() else { continue };
-        out.push((code, v.trim().to_string()));
+        let value = if matches!(code, 1 | 3) { v } else { v.trim() };
+        out.push((code, value.to_string()));
     }
     out
 }
@@ -50,9 +53,534 @@ impl Ent {
         self.f.iter().filter(|(c, _)| *c == code).map(|(_, v)| *v).collect()
     }
     fn text(&self, code: i32) -> Option<&str> {
-        self.s.iter().find(|(c, _)| *c == code).map(|(_, v)| v.as_str())
+        self.s.iter().find(|(c, _)| *c == code).map(|(_, v)| v.trim())
     }
 }
+
+/// Layered-reader adapter over the EXISTING parsed entity. This does
+/// not resolve layer/block defaults, create layers or inspect group6. The shared
+/// X2 aliases are used by the production partial layered reader below.
+fn layered_entity_weight(entity: &Ent) -> Result<Option<DxfEntityWeight>> {
+    // Count both storage classes: a malformed present field is not omission,
+    // and a numeric/text duplicate must not become a first-field-wins result.
+    // This scans existing fields only, without allocation or a second parser.
+    let mut fields = entity.f.iter().filter(|(code, _)| *code == 370).map(|(_, value)| Some(*value))
+        .chain(entity.s.iter().filter(|(code, _)| *code == 370).map(|_| None));
+    let Some(raw) = fields.next() else { return Ok(None) };
+    if fields.next().is_some() {
+        return Err(IoError::Invalid("duplicate DXF entity lineweight field".into()));
+    }
+    let value = raw.ok_or_else(|| IoError::Invalid("invalid DXF entity lineweight field".into()))?;
+    let weight = if value == -1.0 {
+        DxfEntityWeight::ByLayer
+    } else if value == -2.0 {
+        DxfEntityWeight::ByBlock
+    } else if value == -3.0 {
+        DxfEntityWeight::Default
+    } else {
+        // Raw370 is an enum code, not a millimetre length to snap. Domain and
+        // integral checks precede the unsigned cast; from_code enforces X2's
+        // standard table. In particular, do not route symbols through from_mm.
+        if !value.is_finite() || !(0.0..=211.0).contains(&value) || value.fract() != 0.0 {
+            return Err(IoError::Invalid("invalid DXF entity lineweight code".into()));
+        }
+        DxfEntityWeight::Explicit(DxfStandardWeight::from_code(value as u16)?)
+    };
+    Ok(Some(weight))
+}
+
+/// Read a deliberately partial layered ASCII DXF into the shared owned model.
+///
+/// LINE/CIRCLE/ARC, straight open LWPOLYLINE and clamped SPLINE retain
+/// entity order, declared ASCII layers and raw lineweights. Coordinates/radii
+/// scale to millimetres once; spline knots and weights stay dimensionless;
+/// stored ARC angles remain degrees, as required by DxfShape. Valid paper space
+/// (group67=1) is skipped before interpreting geometry as in the legacy reader;
+/// malformed space flags are refused instead of silently classifying an entity.
+/// INSERT and all other geometry return an explicit unsupported error. This
+/// does not replace read_dxf or claim the complete #5320 import contract.
+pub fn read_dxf_file(text: &str) -> Result<DxfFile<DxfShape>> {
+    if text.len() > MAX_DRAWING_BYTES {
+        return Err(IoError::Invalid("the DXF file is too large".into()));
+    }
+    if text.starts_with("AutoCAD Binary DXF") {
+        return Err(IoError::Invalid("binary DXF is not supported; save as ASCII DXF".into()));
+    }
+    let p = pairs(text);
+    let start = layered_section_start(&p, "ENTITIES")?.ok_or_else(|| IoError::Invalid("no ENTITIES section".into()))?;
+    layered_integer_fields(&p, start, &[67])?;
+    layered_array_integer_fields(&p, start)?;
+    let k = layered_units_scale(&p)?;
+    let mut file = DxfFile::new()?;
+    let mut handles = Vec::new();
+    handles.try_reserve(1).map_err(|_| IoError::Invalid("DXF layer lookup allocation failed".into()))?;
+    handles.push(file.default_layer());
+    let mut work = 0;
+    let mut geometry_bytes = 0;
+    if let Some(tables) = layered_section_start(&p, "TABLES")? {
+        layered_integer_fields(&p, tables, &[70, 72, 73, 74])?;
+        let records = section(&p, tables)?;
+        layered_tables(&records, k, &mut file, &mut handles, &mut work)?;
+    }
+    for entity in section(&p, start)? {
+        layered_work(&mut work)?;
+        let space = layered_number(&entity, 67)?.unwrap_or(0.0);
+        if space == 1.0 {
+            continue;
+        }
+        if space != 0.0 { return Err(IoError::Invalid("invalid layered DXF space flag; expected 0 or 1".into())); }
+        layered_entity_fields(&entity)?;
+        let name = layered_text(&entity, 8)?.filter(|name| !name.is_empty()).unwrap_or("0");
+        if !name.is_ascii() || name.len() > 255 {
+            return Err(IoError::Invalid("not supported yet: non-ASCII or overlong DXF layer reference".into()));
+        }
+        let mut selected = None;
+        for handle in &handles {
+            layered_work(&mut work)?;
+            if file.layer(*handle)?.name().eq_ignore_ascii_case(name) {
+                selected = Some(*handle);
+                break;
+            }
+        }
+        let layer = selected.ok_or_else(|| IoError::Invalid("DXF entity references an undeclared layer".into()))?;
+        let geometry = layered_geometry(&entity, k, file.layer(layer)?.linetype(), &mut geometry_bytes, &mut work)?;
+        file.push(layer, geometry, layered_entity_weight(&entity)?)?;
+    }
+    Ok(file)
+}
+
+fn layered_work(work: &mut usize) -> Result<()> {
+    *work = work.saturating_add(1);
+    if *work > MAX_WORK { return Err(IoError::Invalid("the layered DXF drawing is too complex".into())); }
+    Ok(())
+}
+
+/// Locate real SECTION/name pairs, rather than matching a block/layer named
+/// ENTITIES. Use the existing parsed pairs; no second group-code parser.
+fn layered_section_start(p: &[(i32, String)], name: &str) -> Result<Option<usize>> {
+    let mut found = None;
+    for (index, pair) in p.iter().enumerate() {
+        if pair.0 != 0 || pair.1 != "SECTION" { continue; }
+        let Some((2, section_name)) = p.get(index + 1) else { return Err(IoError::Invalid("DXF SECTION has no name".into())); };
+        if section_name != name { continue; }
+        if found.is_some() { return Err(IoError::Invalid("duplicate layered DXF section".into())); }
+        found = Some(index + 1);
+        let terminal = p.iter().skip(index + 2).find(|(code, value)| *code == 0 && matches!(value.as_str(), "ENDSEC" | "EOF" | "SECTION"));
+        if !terminal.is_some_and(|(_, value)| value == "ENDSEC") {
+            return Err(IoError::Invalid("unterminated layered DXF section".into()));
+        }
+    }
+    Ok(found)
+}
+
+fn layered_units_scale(p: &[(i32, String)]) -> Result<f64> {
+    let Some(header_start) = layered_section_start(p, "HEADER")? else { return Ok(1.0); };
+    let header = layered_section_body(p, header_start)?;
+    let mut found = false;
+    let mut linetype_scale_found = false;
+    for (index, (code, name)) in header.iter().enumerate() {
+        if *code == 9 && name == "$LTSCALE" {
+            if linetype_scale_found { return Err(IoError::Invalid("duplicate DXF LTSCALE".into())); }
+            linetype_scale_found = true;
+            let value = header.get(index + 1).and_then(|(field, value)| (*field == 40).then_some(value)).and_then(|value| value.parse::<f64>().ok());
+            if value != Some(1.0) {
+                return Err(IoError::Invalid("not supported yet: nondefault DXF global linetype scale".into()));
+            }
+        }
+        if *code != 9 || name != "$INSUNITS" { continue; }
+        if found { return Err(IoError::Invalid("duplicate DXF INSUNITS".into())); }
+        found = true;
+        let Some((70, value)) = header.get(index + 1) else { return Err(IoError::Invalid("invalid DXF INSUNITS field".into())); };
+        match value.parse::<i16>() {
+            Ok(0 | 1 | 2 | 4 | 5 | 6) => {}
+            _ => return Err(IoError::Invalid("not supported yet: this DXF INSUNITS value".into())),
+        }
+    }
+    // The existing helper owns the actual conversion factors; missing or
+    // unitless values retain its documented millimetre interpretation.
+    Ok(units_scale(header))
+}
+
+/// A bounded view of the EXISTING parsed pairs in a previously located section.
+/// The caller's section locator validates uniqueness and the ENDSEC terminator.
+fn layered_section_body(p: &[(i32, String)], start: usize) -> Result<&[(i32, String)]> {
+    let rest = p.get(start.saturating_add(1)..).ok_or_else(|| IoError::Invalid("invalid layered DXF section start".into()))?;
+    let end = rest.iter().position(|(code, value)| *code == 0 && value == "ENDSEC")
+        .ok_or_else(|| IoError::Invalid("unterminated layered DXF section".into()))?;
+    rest.get(..end).ok_or_else(|| IoError::Invalid("invalid layered DXF section bounds".into()))
+}
+
+/// Validate integer spelling BEFORE the existing section() converts general
+/// numeric fields through f64. This only audits shared parsed tokens in the
+/// selected section: no second parser, stored model or legacy semantic change.
+/// The existing typed consumers still enforce each field's permitted enum.
+fn layered_integer_fields(p: &[(i32, String)], start: usize, codes: &[i32]) -> Result<()> {
+    for (code, value) in layered_section_body(p, start)? {
+        if codes.contains(code) && value.parse::<i16>().is_err() {
+            return Err(IoError::Invalid(format!("invalid integer spelling for layered DXF group {code}")));
+        }
+    }
+    Ok(())
+}
+
+/// A present malformed/duplicate numeric field is an error, never omission.
+fn layered_number(entity: &Ent, code: i32) -> Result<Option<f64>> {
+    let mut values = entity.f.iter().filter(|(field, _)| *field == code).map(|(_, value)| Some(*value))
+        .chain(entity.s.iter().filter(|(field, _)| *field == code).map(|_| None));
+    let Some(value) = values.next() else { return Ok(None); };
+    if values.next().is_some() { return Err(IoError::Invalid(format!("duplicate layered DXF group {code}"))); }
+    value.map(Some).ok_or_else(|| IoError::Invalid(format!("invalid layered DXF group {code}")))
+}
+
+fn layered_text(entity: &Ent, code: i32) -> Result<Option<&str>> {
+    let mut values = entity.s.iter().filter(|(field, _)| *field == code).map(|(_, value)| Some(value.as_str()))
+        .chain(entity.f.iter().filter(|(field, _)| *field == code).map(|_| None));
+    let Some(value) = values.next() else { return Ok(None); };
+    if values.next().is_some() { return Err(IoError::Invalid(format!("duplicate layered DXF group {code}"))); }
+    value.map(Some).ok_or_else(|| IoError::Invalid(format!("invalid layered DXF group {code}")))
+}
+
+fn layered_required(entity: &Ent, code: i32) -> Result<f64> {
+    layered_number(entity, code)?.ok_or_else(|| IoError::Invalid(format!("missing layered DXF group {code}")))
+}
+
+/// Layered-only metadata audit on the existing pairs, before section() can
+/// round integer spellings through f64. Legacy parsing remains untouched.
+fn layered_array_integer_fields(p: &[(i32, String)], start: usize) -> Result<()> {
+    layered_integer_fields(p, start, &[70, 71, 72, 73, 74])?;
+    for (code, value) in layered_section_body(p, start)? {
+        if *code == 90 && value.parse::<i32>().is_err() {
+            return Err(IoError::Invalid("invalid integer spelling for layered DXF group 90".into()));
+        }
+    }
+    Ok(())
+}
+
+fn layered_count(entity: &Ent, code: i32, min: usize, max: usize) -> Result<usize> {
+    let value = layered_number(entity, code)?.ok_or_else(|| IoError::Invalid(format!(
+        "not supported yet: layered DXF {} without explicit group {code}", entity.kind,
+    )))?;
+    // Integer tokens were checked in the existing section's pair slice. Keep
+    // a local guard too; only a bounded integral value reaches the cast.
+    if !value.is_finite() || value.fract() != 0.0 || value < min as f64 || value > max as f64 {
+        return Err(IoError::Invalid(format!("invalid layered DXF {} count/flag {code}", entity.kind)));
+    }
+    Ok(value as usize)
+}
+
+fn layered_array_count(entity: &Ent, code: i32, expected: usize) -> Result<()> {
+    if entity.s.iter().any(|(field, _)| *field == code)
+        || entity.f.iter().filter(|(field, _)| *field == code).count() != expected {
+        return Err(IoError::Invalid(format!("invalid layered DXF array length/value for group {code}")));
+    }
+    Ok(())
+}
+
+fn layered_array_budget<T>(count: usize, bytes: &mut usize, work: &mut usize) -> Result<()> {
+    let added = count.checked_mul(std::mem::size_of::<T>()).ok_or_else(|| IoError::Invalid("DXF geometry byte count overflow".into()))?;
+    *bytes = bytes.checked_add(added).filter(|total| *total <= MAX_DRAWING_BYTES)
+        .ok_or_else(|| IoError::Invalid("layered DXF geometry byte budget exceeded".into()))?;
+    *work = work.checked_add(count).filter(|total| *total <= MAX_WORK)
+        .ok_or_else(|| IoError::Invalid("layered DXF geometry work budget exceeded".into()))?;
+    Ok(())
+}
+
+fn layered_points(entity: &Ent, count: usize, k: f64) -> Result<Vec<Vec2>> {
+    let mut points = Vec::new();
+    points.try_reserve_exact(count).map_err(|_| IoError::Invalid("DXF point allocation failed".into()))?;
+    let xs = entity.f.iter().filter(|(code, _)| *code == 10).map(|(_, value)| *value);
+    let ys = entity.f.iter().filter(|(code, _)| *code == 20).map(|(_, value)| *value);
+    let mut previous: Option<(Vec2, Vec2)> = None;
+    for (x, y) in xs.zip(ys) {
+        let source = Vec2::new(x, y);
+        let point = source * k;
+        if !point.is_finite() { return Err(IoError::Invalid("nonfinite scaled DXF control/vertex".into())); }
+        if let Some((before, after)) = previous
+            && before != source && after == point {
+            return Err(IoError::Invalid("DXF unit conversion collapses adjacent distinct points".into()));
+        }
+        if points.len() >= count { return Err(IoError::Invalid("extra DXF point beyond checked count".into())); }
+        points.push(point);
+        previous = Some((source, point));
+    }
+    if points.len() != count { return Err(IoError::Invalid("missing DXF points after count check".into())); }
+    Ok(points)
+}
+
+fn layered_values(entity: &Ent, code: i32, count: usize) -> Result<Vec<f64>> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).map_err(|_| IoError::Invalid("DXF scalar-array allocation failed".into()))?;
+    for (_, value) in entity.f.iter().filter(|(field, _)| *field == code) {
+        // section() already admitted only finite, bounded numeric values.
+        if !value.is_finite() { return Err(IoError::Invalid("nonfinite DXF array value".into())); }
+        if values.len() >= count { return Err(IoError::Invalid("extra DXF scalar beyond checked count".into())); }
+        values.push(*value);
+    }
+    if values.len() != count { return Err(IoError::Invalid("missing DXF values after count check".into())); }
+    Ok(values)
+}
+
+fn layered_polyline(entity: &Ent, k: f64, linetype: DxfLinetype, bytes: &mut usize, work: &mut usize) -> Result<DxfShape> {
+    let count = layered_count(entity, 90, 2, MAX_ENTITIES)?;
+    let flags = layered_count(entity, 70, 0, 129)?;
+    if flags != 128 && !(flags == 0 && linetype == DxfLinetype::Continuous) {
+        return Err(IoError::Invalid("not supported yet: closed DXF polyline or unrepresented per-segment dash restart".into()));
+    }
+    layered_array_count(entity, 10, count)?;
+    layered_array_count(entity, 20, count)?;
+    let bulges = entity.f.iter().filter(|(code, _)| *code == 42);
+    if entity.s.iter().any(|(code, _)| *code == 42) || bulges.clone().count() > count || bulges.clone().any(|(_, value)| *value != 0.0) {
+        return Err(IoError::Invalid("not supported yet: bulged or invalid DXF polyline".into()));
+    }
+    layered_array_budget::<Vec2>(count, bytes, work)?;
+    Ok(DxfShape::Polyline { points: layered_points(entity, count, k)? })
+}
+
+fn layered_spline(entity: &Ent, k: f64, bytes: &mut usize, work: &mut usize) -> Result<DxfShape> {
+    let degree = layered_count(entity, 71, 1, MAX_BEZIER_DEGREE)?;
+    let controls = layered_count(entity, 73, degree + 1, MAX_ENTITIES)?;
+    let knots = layered_count(entity, 72, 1, MAX_ENTITIES)?;
+    let flags = layered_count(entity, 70, 0, 31)?;
+    if !matches!(flags, 0 | 4 | 8 | 12) || layered_number(entity, 74)?.unwrap_or(0.0) != 0.0 {
+        return Err(IoError::Invalid("not supported yet: closed/periodic/linear/fit-point DXF spline".into()));
+    }
+    if controls.checked_add(degree).and_then(|n| n.checked_add(1)) != Some(knots) {
+        return Err(IoError::Invalid("invalid layered DXF spline knot/control count".into()));
+    }
+    layered_array_count(entity, 10, controls)?;
+    layered_array_count(entity, 20, controls)?;
+    layered_array_count(entity, 40, knots)?;
+    let rational = flags & 4 != 0;
+    layered_array_count(entity, 41, if rational { controls } else { 0 })?;
+    if entity.f.iter().any(|(code, value)| *code == 41 && *value <= 0.0) {
+        return Err(IoError::Invalid("DXF spline weights must be positive".into()));
+    }
+    // Charge cumulative geometry work/payload before knot scans and every new
+    // array allocation. Declared counts and parsed values are already bounded.
+    layered_array_budget::<Vec2>(controls, bytes, work)?;
+    layered_array_budget::<f64>(knots, bytes, work)?;
+    if rational { layered_array_budget::<f64>(controls, bytes, work)?; }
+    // The current DxfShape contract is a clamped B-spline. Validate its knot
+    // domain and multiplicities on borrowed values before allocating copies.
+    let first = entity.get(40).ok_or_else(|| IoError::Invalid("missing spline start knot".into()))?;
+    let last = entity.f.iter().rev().find(|(code, _)| *code == 40).map(|(_, value)| *value)
+        .ok_or_else(|| IoError::Invalid("missing spline end knot".into()))?;
+    if first >= last { return Err(IoError::Invalid("empty DXF spline knot domain".into())); }
+    let mut previous = None;
+    let mut repeats = 0usize;
+    for (index, value) in entity.f.iter().filter(|(code, _)| *code == 40).map(|(_, value)| *value).enumerate() {
+        if previous.is_some_and(|old| old > value) { return Err(IoError::Invalid("decreasing DXF spline knots".into())); }
+        if index <= degree {
+            if value != first { return Err(IoError::Invalid("not supported yet: unclamped DXF spline start".into())); }
+        } else if index >= controls {
+            if value != last { return Err(IoError::Invalid("not supported yet: unclamped DXF spline end".into())); }
+        } else {
+            repeats = if previous == Some(value) { repeats + 1 } else { 1 };
+            if value <= first || value >= last || repeats > degree {
+                return Err(IoError::Invalid("not supported yet: excess DXF spline knot multiplicity".into()));
+            }
+        }
+        previous = Some(value);
+    }
+    let ctrl = layered_points(entity, controls, k)?;
+    let knot_values = layered_values(entity, 40, knots)?;
+    let weights = if rational { Some(layered_values(entity, 41, controls)?) } else { None };
+    // degree was checked against MAX_BEZIER_DEGREE (9), not clamped to7.
+    Ok(DxfShape::Spline { degree: degree as u8, knots: knot_values, ctrl, weights })
+}
+
+
+fn layered_geometry(entity: &Ent, k: f64, linetype: DxfLinetype, bytes: &mut usize, work: &mut usize) -> Result<DxfShape> {
+    if entity.kind == "LWPOLYLINE" { return layered_polyline(entity, k, linetype, bytes, work); }
+    if entity.kind == "SPLINE" { return layered_spline(entity, k, bytes, work); }
+    if !matches!(entity.kind.as_str(), "LINE" | "CIRCLE" | "ARC") {
+        return Err(IoError::Invalid(format!("not supported yet: layered DXF {} geometry", entity.kind)));
+    }
+    let raw = Vec2::new(layered_required(entity, 10)?, layered_required(entity, 20)?);
+    let c = raw * k;
+    if !c.is_finite() { return Err(IoError::Invalid("nonfinite scaled DXF point".into())); }
+    if entity.kind == "LINE" {
+        let raw_end = Vec2::new(layered_required(entity, 11)?, layered_required(entity, 21)?);
+        let end = raw_end * k;
+        if !end.is_finite() || (raw != raw_end && c == end) {
+            return Err(IoError::Invalid("invalid or collapsed scaled DXF line".into()));
+        }
+        return Ok(DxfShape::Line(c, end));
+    }
+    let radius = layered_required(entity, 40)? * k;
+    if !radius.is_finite() || radius <= 0.0 {
+        return Err(IoError::Invalid("DXF radius must be finite and positive".into()));
+    }
+    if entity.kind == "CIRCLE" { return Ok(DxfShape::Circle { c, r: radius }); }
+    let a0 = layered_required(entity, 50)?;
+    let a1 = layered_required(entity, 51)?;
+    Ok(DxfShape::Arc { c, r: radius, a0, a1 })
+}
+
+fn layered_entity_fields(entity: &Ent) -> Result<()> {
+    // Preserve 2D meaning instead of silently projecting tilted/elevated OCS.
+    for (code, default) in [(30, 0.0), (31, 0.0), (39, 0.0), (210, 0.0), (220, 0.0), (230, 1.0)] {
+        if code == 30 && entity.kind == "SPLINE" {
+            let zs = entity.f.iter().filter(|(field, _)| *field == 30);
+            if entity.s.iter().any(|(field, _)| *field == 30) || zs.clone().any(|(_, value)| *value != 0.0)
+                || zs.count() > entity.f.iter().filter(|(field, _)| *field == 10).count() {
+                return Err(IoError::Invalid("not supported yet: nonplanar or invalid DXF spline controls".into()));
+            }
+            continue;
+        }
+        if layered_number(entity, code)?.is_some_and(|value| value != default) {
+            return Err(IoError::Invalid("not supported yet: nonplanar or thick layered DXF entity".into()));
+        }
+    }
+    if entity.kind == "LWPOLYLINE" {
+        for code in [38, 43] {
+            if layered_number(entity, code)?.is_some_and(|value| value != 0.0) {
+                return Err(IoError::Invalid("not supported yet: elevated or wide DXF polyline".into()));
+            }
+        }
+    }
+    for code in entity.f.iter().map(|(code, _)| *code).chain(entity.s.iter().map(|(code, _)| *code)) {
+        let geometry = match entity.kind.as_str() {
+            "LINE" => matches!(code, 10 | 20 | 11 | 21),
+            "CIRCLE" => matches!(code, 10 | 20 | 40),
+            "ARC" => matches!(code, 10 | 20 | 40 | 50 | 51),
+            "LWPOLYLINE" => matches!(code, 10 | 20 | 38 | 42 | 43 | 70 | 90),
+            "SPLINE" => matches!(code, 10 | 20 | 40 | 41 | 70 | 71 | 72 | 73 | 74),
+            _ => false,
+        };
+        if geometry || matches!(code, 5 | 8 | 30 | 31 | 39 | 67 | 100 | 210 | 220 | 230 | 330 | 370) { continue; }
+        // Includes explicit group6, entity colors/visibility, per-vertex
+        // widths, spline fit/tangent data and unrepresented entity metadata.
+        return Err(IoError::Invalid(format!("not supported yet: layered DXF entity group {code}")));
+    }
+    Ok(())
+}
+
+
+#[derive(Default)]
+struct LayeredLinetypes { dashed: bool, hidden: bool }
+
+fn layered_tables(records: &[Ent], k: f64, file: &mut DxfFile<DxfShape>, handles: &mut Vec<DxfLayerId>, work: &mut usize) -> Result<()> {
+    let mut table = None;
+    let mut types = LayeredLinetypes::default();
+    // Validate table framing and every supplied LTYPE definition first, so
+    // record order cannot make a layer guess its linetype from a name.
+    for record in records {
+        layered_work(work)?;
+        match record.kind.as_str() {
+            "TABLE" if table.is_none() => {
+                table = Some(layered_text(record, 2)?.ok_or_else(|| IoError::Invalid("unnamed DXF table".into()))?);
+            }
+            "ENDTAB" if table.is_some() => { table = None; }
+            "LTYPE" if table == Some("LTYPE") => layered_linetype_definition(record, k, &mut types)?,
+            "LAYER" if table == Some("LAYER") => {}
+            // Non-text geometry does not consume text styles or model/paper
+            // block-record handles. INSERT itself remains unsupported.
+            "STYLE" if table == Some("STYLE") => {}
+            "BLOCK_RECORD" if table == Some("BLOCK_RECORD") => {}
+            _ => return Err(IoError::Invalid("not supported yet: malformed or unsupported layered DXF table record".into())),
+        }
+    }
+    if table.is_some() { return Err(IoError::Invalid("unterminated DXF table".into())); }
+    for record in records.iter().filter(|record| record.kind == "LAYER") {
+        // Both the shared declaration and our handle de-duplication scan the
+        // layer list. Charge the upper bound before either scan, including
+        // repeated declarations, rather than allowing quadratic lookup work.
+        *work = work.saturating_add(file.layers().len()).saturating_add(handles.len()).saturating_add(1);
+        if *work > MAX_WORK { return Err(IoError::Invalid("the layered DXF drawing is too complex".into())); }
+        layered_declare_layer(record, &types, file, handles)?;
+    }
+    Ok(())
+}
+
+fn layered_linetype_definition(record: &Ent, k: f64, types: &mut LayeredLinetypes) -> Result<()> {
+    let name = layered_text(record, 2)?.ok_or_else(|| IoError::Invalid("unnamed DXF linetype".into()))?;
+    let expected: &[f64] = if name.eq_ignore_ascii_case("DASHED") {
+        &[12.7, -6.35]
+    } else if name.eq_ignore_ascii_case("HIDDEN") {
+        &[2.0, -1.0]
+    } else if ["Continuous", "ByLayer", "ByBlock"].iter().any(|known| name.eq_ignore_ascii_case(known)) {
+        &[]
+    } else { return Err(IoError::Invalid("not supported yet: custom DXF linetype".into())); };
+    if !expected.is_empty() && k != 1.0 {
+        return Err(IoError::Invalid("not supported yet: non-millimetre patterned DXF linetype".into()));
+    }
+    if layered_number(record, 70)?.unwrap_or(0.0) != 0.0 || layered_required(record, 72)? != 65.0
+        || layered_required(record, 73)? != expected.len() as f64 {
+        return Err(IoError::Invalid("not supported yet: noncanonical DXF linetype definition".into()));
+    }
+    // Public canonical decimal lengths, not a recomputation whose binary sum
+    // may differ from the decimal field emitted by Out's fixed precision.
+    let total = if name.eq_ignore_ascii_case("DASHED") { 19.05 }
+        else if name.eq_ignore_ascii_case("HIDDEN") { 3.0 } else { 0.0 };
+    if layered_required(record, 40)? != total {
+        return Err(IoError::Invalid("not supported yet: noncanonical DXF linetype length".into()));
+    }
+    let mut patterns = record.f.iter().filter(|(code, _)| *code == 49).map(|(_, value)| *value);
+    for value in expected {
+        if patterns.next() != Some(*value) { return Err(IoError::Invalid("not supported yet: noncanonical DXF linetype pattern".into())); }
+    }
+    if patterns.next().is_some() || record.s.iter().any(|(code, _)| *code == 49) {
+        return Err(IoError::Invalid("invalid DXF linetype pattern fields".into()));
+    }
+    if record.s.iter().any(|(code, _)| *code == 74) {
+        return Err(IoError::Invalid("invalid DXF linetype element flags".into()));
+    }
+    for (code, value) in &record.f {
+        if *code == 74 && *value != 0.0 { return Err(IoError::Invalid("not supported yet: complex DXF linetype element".into())); }
+    }
+    for code in record.f.iter().map(|(code, _)| *code).chain(record.s.iter().map(|(code, _)| *code)) {
+        if !matches!(code, 2 | 3 | 5 | 40 | 49 | 70 | 72 | 73 | 74 | 100 | 330) {
+            return Err(IoError::Invalid("not supported yet: complex DXF linetype definition".into()));
+        }
+    }
+    if name.eq_ignore_ascii_case("DASHED") { types.dashed = true; }
+    if name.eq_ignore_ascii_case("HIDDEN") { types.hidden = true; }
+    Ok(())
+}
+
+fn layered_declare_layer(record: &Ent, types: &LayeredLinetypes, file: &mut DxfFile<DxfShape>, handles: &mut Vec<DxfLayerId>) -> Result<()> {
+    for code in record.f.iter().map(|(code, _)| *code).chain(record.s.iter().map(|(code, _)| *code)) {
+        if !matches!(code, 2 | 5 | 6 | 62 | 70 | 100 | 330 | 370) {
+            return Err(IoError::Invalid(format!("not supported yet: DXF layer group {code}")));
+        }
+    }
+    if layered_number(record, 70)?.unwrap_or(0.0) != 0.0 {
+        return Err(IoError::Invalid("not supported yet: frozen, locked or dependent DXF layer".into()));
+    }
+    let name = layered_text(record, 2)?.ok_or_else(|| IoError::Invalid("unnamed DXF layer".into()))?;
+    let color = layered_number(record, 62)?.unwrap_or(7.0);
+    // section() classified group62 lexically as i16 BEFORE f64. The range
+    // here therefore cannot admit a rounded decimal pretending to be an ACI.
+    if !(1.0..=255.0).contains(&color) || color.fract() != 0.0 {
+        return Err(IoError::Invalid("not supported yet: off or non-indexed DXF layer color".into()));
+    }
+    let raw_type = layered_text(record, 6)?.unwrap_or("Continuous");
+    let linetype = if raw_type.eq_ignore_ascii_case("Continuous") { DxfLinetype::Continuous }
+        else if raw_type.eq_ignore_ascii_case("DASHED") && types.dashed { DxfLinetype::Dashed }
+        else if raw_type.eq_ignore_ascii_case("HIDDEN") && types.hidden { DxfLinetype::Hidden }
+        else { return Err(IoError::Invalid("not supported yet: undefined or custom DXF layer linetype".into())); };
+    let weight = match layered_entity_weight(record)? {
+        None => None,
+        Some(DxfEntityWeight::Explicit(value)) => Some(value),
+        _ => return Err(IoError::Invalid("not supported yet: symbolic DXF LAYER lineweight".into())),
+    };
+    if (name.is_empty() || name == "0") && (color != 7.0 || linetype != DxfLinetype::Continuous || weight.is_some()) {
+        return Err(IoError::Invalid("not supported yet: nondefault DXF layer zero style".into()));
+    }
+    let handle = file.declare_layer(name, color as i16, linetype, weight)?;
+    // Import never silently renames an authored symbol. The shared model owns
+    // normalization/collision rules; reject if preserving the name is impossible.
+    if !name.is_empty() && file.layer(handle)?.name() != name {
+        return Err(IoError::Invalid("not supported yet: DXF layer name requires normalization".into()));
+    }
+    if !handles.contains(&handle) {
+        handles.try_reserve(1).map_err(|_| IoError::Invalid("DXF layer lookup allocation failed".into()))?;
+        handles.push(handle);
+    }
+    Ok(())
+}
+
 
 /// Read the entities of an ASCII DXF file.
 pub fn read_dxf(text: &str) -> Result<Vec<Geom2>> {
@@ -110,6 +638,16 @@ fn section(p: &[(i32, String)], start: usize) -> Result<Vec<Ent>> {
             continue;
         }
         let Some(e) = ents.last_mut() else { continue };
+        // Groups62/370 are signed 16-bit integer tokens, not floating lengths.
+        // Preserve an invalid present lexeme as text for the layered adapter;
+        // converting through f64 first could round it into a valid color/weight.
+        if matches!(*c, 62 | 370) {
+            match v.parse::<i16>() {
+                Ok(value) => e.f.push((*c, f64::from(value))),
+                Err(_) => e.s.push((*c, v.clone())),
+            }
+            continue;
+        }
         let numeric = matches!(*c, 10..=59 | 60..=99 | 140..=147 | 210..=239);
         match v.parse::<f64>() {
             Ok(x) if numeric && x.is_finite() && x.abs() < 1e12 => e.f.push((*c, x)),
@@ -578,5 +1116,814 @@ mod tests {
         );
         let g = read_dxf(&array).unwrap_or_default();
         assert!(g.is_empty(), "an empty block has no geometry to place");
+    }
+    // X3 partial preparation: raw fields only. Resolving DXF's symbolic weight
+    // values into the shared DxfFile model belongs to the later X2/X3 adapter.
+    #[test]
+    fn section_keeps_raw_lineweight_values_and_distinguishes_absence() {
+        for raw in [-3, -2, -1, 0, 50, 211] {
+            let text = format!(
+                "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n123\n6\n007\n370\n{raw}\n10\n0\n20\n0\n11\n2\n21\n1\n0\nENDSEC\n0\nEOF\n"
+            );
+            let parsed = section(&pairs(&text), 1).unwrap();
+            assert_eq!(parsed.len(), 1);
+            let entity = parsed.first().unwrap();
+            assert_eq!(entity.kind, "LINE");
+            assert_eq!(entity.get(370), Some(f64::from(raw)));
+            assert_eq!(entity.text(370), None);
+            // Names that look numeric remain names; this is not a widening of
+            // all group codes to numeric fields.
+            assert_eq!(entity.text(8), Some("123"));
+            assert_eq!(entity.text(6), Some("007"));
+            assert_eq!(entity.get(8), None);
+            assert_eq!(entity.get(6), None);
+        }
+        let absent = "0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n";
+        let parsed = section(&pairs(absent), 1).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.first().unwrap().get(370), None);
+        assert_eq!(parsed.first().unwrap().text(370), None);
+    }
+
+    #[test]
+    fn section_keeps_lineweight_with_its_entity_without_inheriting_the_previous_one() {
+        let text = concat!(
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n8\nCUT\n6\nDASHED\n370\n50\n10\n0\n20\n0\n11\n2\n21\n1\n",
+            "0\nPOINT\n8\nMARKS\n370\n211\n10\n3\n20\n4\n",
+            "0\nPOINT\n8\nPLAIN\n10\n5\n20\n6\n",
+            "0\nENDSEC\n0\nEOF\n"
+        );
+        let parsed = section(&pairs(text), 1).unwrap();
+        assert_eq!(parsed.len(), 3);
+        let line = parsed.first().unwrap();
+        let point = parsed.get(1).unwrap();
+        let plain = parsed.get(2).unwrap();
+        assert_eq!((line.kind.as_str(), line.text(8), line.text(6), line.get(370)), ("LINE", Some("CUT"), Some("DASHED"), Some(50.0)));
+        assert_eq!((point.kind.as_str(), point.text(8), point.text(6), point.get(370)), ("POINT", Some("MARKS"), None, Some(211.0)));
+        assert_eq!((plain.kind.as_str(), plain.text(8), plain.get(370)), ("POINT", Some("PLAIN"), None));
+    }
+
+    #[test]
+    fn raw_lineweight_metadata_preserves_legacy_inch_projection_and_text_fallback() {
+        let drawing = |metadata: &str| {
+            format!(
+                concat!(
+                    "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n",
+                    "0\nSECTION\n2\nENTITIES\n0\nLINE\n{metadata}",
+                    "10\n1\n20\n2\n11\n2\n21\n1\n",
+                    "0\nPOINT\n10\n0\n20\n1\n",
+                    "0\nLINE\n67\n1\n370\n211\n10\n0\n20\n0\n11\n1\n21\n1\n",
+                    "0\nENDSEC\n0\nEOF\n"
+                ),
+                metadata = metadata
+            )
+        };
+        // These values come from the authored inch coordinates, not write_dxf.
+        let expected = vec![Geom2::Line(Vec2::new(25.4, 50.8), Vec2::new(50.8, 25.4)), Geom2::Point(Vec2::new(0.0, 25.4))];
+        assert_eq!(read_dxf(&drawing("")).unwrap(), expected);
+        for raw in ["-3", "-2", "-1", "0", "50", "211"] {
+            let metadata = format!("8\nCUT\n6\nDASHED\n370\n{raw}\n");
+            assert_eq!(read_dxf(&drawing(&metadata)).unwrap(), expected);
+        }
+        // Retain the parser's existing fallback. This partial tranche does not
+        // authorize a physical-weight validator or a new malformed-input policy.
+        for raw in ["nan", "inf", "1e400", "not-a-number"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n370\n{raw}\n10\n0\n20\n1\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            assert_eq!(parsed.len(), 1);
+            assert_eq!(parsed.first().unwrap().get(370), None);
+            assert_eq!(parsed.first().unwrap().text(370), Some(raw));
+            assert_eq!(read_dxf(&drawing(&format!("370\n{raw}\n"))).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn layered_weight_keeps_absence_symbols_and_explicit_codes_distinct() {
+        let absent = "0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n";
+        let parsed = section(&pairs(absent), 1).unwrap();
+        assert_eq!(layered_entity_weight(parsed.first().unwrap()).unwrap(), None);
+        for (raw, expected) in [
+            ("-1", DxfEntityWeight::ByLayer),
+            ("-2", DxfEntityWeight::ByBlock),
+            ("-3", DxfEntityWeight::Default),
+            ("0", DxfEntityWeight::Explicit(DxfStandardWeight::from_code(0).unwrap())),
+            ("-0", DxfEntityWeight::Explicit(DxfStandardWeight::from_code(0).unwrap())),
+            ("50", DxfEntityWeight::Explicit(DxfStandardWeight::from_code(50).unwrap())),
+            ("211", DxfEntityWeight::Explicit(DxfStandardWeight::from_code(211).unwrap())),
+        ] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n6\nDASHED\n370\n{raw}\n10\n0\n20\n0\n11\n1\n21\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            let entity = parsed.first().unwrap();
+            assert_eq!(layered_entity_weight(entity).unwrap(), Some(expected));
+            // This helper preserves other parsed metadata; it does not adopt
+            // layer0's style or flatten an entity's group6 into layer metadata.
+            assert_eq!(entity.text(8), Some("0"));
+            assert_eq!(entity.text(6), Some("DASHED"));
+        }
+    }
+
+    #[test]
+    fn layered_weight_refuses_nonstandard_fractional_or_malformed_values_without_changing_legacy() {
+        for raw in ["6", "-4", "212", "65536", "1e11", "50.5", "nan", "inf", "-inf", "1e400", "bad"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nLINE\n370\n{raw}\n10\n0\n20\n0\n11\n1\n21\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            assert!(layered_entity_weight(parsed.first().unwrap()).is_err(), "raw370={raw}");
+            assert_eq!(read_dxf(&text).unwrap(), vec![Geom2::Line(Vec2::ZERO, Vec2::new(1.0, 2.0))]);
+        }
+    }
+
+    #[test]
+    fn layered_weight_refuses_duplicates_including_numeric_text_mixtures() {
+        // Duplicate rejection is proposed only for this new layered seam;
+        // read_dxf's existing geometry projection is deliberately unchanged.
+        for metadata in ["370\n50\n370\n50\n", "370\n50\n370\n211\n", "370\nbad\n370\n50\n", "370\n50\n370\nbad\n", "370\nbad\n370\ninf\n"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n{metadata}10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            assert!(layered_entity_weight(parsed.first().unwrap()).is_err());
+            assert_eq!(read_dxf(&text).unwrap(), vec![Geom2::Point(Vec2::new(1.0, 2.0))]);
+        }
+    }
+
+    #[test]
+    fn layered_weight_uses_each_entity_code_without_inheritance_or_inch_rescaling() {
+        let text = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nPOINT\n8\nCUT\n370\n50\n10\n1\n20\n2\n",
+            "0\nPOINT\n8\nCUT\n10\n2\n20\n1\n",
+            "0\nPOINT\n8\n0\n6\nBYBLOCK\n370\n-2\n10\n0\n20\n1\n",
+            "0\nENDSEC\n0\nEOF\n"
+        );
+        let pairs = pairs(text);
+        let start = pairs.iter().position(|(code, value)| *code == 2 && value == "ENTITIES").unwrap();
+        let parsed = section(&pairs, start).unwrap();
+        assert_eq!(parsed.len(), 3);
+        let weights: Vec<_> = parsed.iter().map(|entity| layered_entity_weight(entity).unwrap()).collect();
+        assert_eq!(weights, vec![Some(DxfEntityWeight::Explicit(DxfStandardWeight::from_code(50).unwrap())), None, Some(DxfEntityWeight::ByBlock)]);
+        assert_eq!(parsed.get(2).unwrap().text(6), Some("BYBLOCK"));
+        assert_eq!(read_dxf(text).unwrap(), vec![
+            Geom2::Point(Vec2::new(25.4, 50.8)),
+            Geom2::Point(Vec2::new(50.8, 25.4)),
+            Geom2::Point(Vec2::new(0.0, 25.4)),
+        ]);
+    }
+
+    #[test]
+    fn section_does_not_round_lineweight_spellings_through_f64() {
+        // All are invalid signed-integer spellings. Some would round to valid
+        // codes if parsed through f64 before the domain check; keep the text.
+        for raw in [
+            "50.0000000000000001", "211.00000000000000001", "-1.00000000000000001", "1e-400",
+            "5e1", "-1e0", "50.0", "-0.0", "+5e1",
+        ] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n370\n{raw}\n10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            assert_eq!(parsed.len(), 1);
+            let entity = parsed.first().unwrap();
+            assert_eq!(entity.get(370), None, "raw370={raw}");
+            assert_eq!(entity.text(370), Some(raw));
+            assert!(layered_entity_weight(entity).is_err(), "raw370={raw}");
+            assert_eq!(read_dxf(&text).unwrap(), vec![Geom2::Point(Vec2::new(1.0, 2.0))]);
+        }
+    }
+
+    #[test]
+    fn section_preserves_signed_integer_limits_before_standard_weight_validation() {
+        for (raw, code) in [("+50", 50_u16), ("-0", 0_u16)] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n370\n{raw}\n10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            let entity = parsed.first().unwrap();
+            assert_eq!(entity.get(370), Some(f64::from(code)));
+            assert_eq!(entity.text(370), None);
+            assert_eq!(layered_entity_weight(entity).unwrap(), Some(DxfEntityWeight::Explicit(DxfStandardWeight::from_code(code).unwrap())));
+        }
+        for (raw, value) in [("-32768", i16::MIN), ("32767", i16::MAX)] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n370\n{raw}\n10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            let entity = parsed.first().unwrap();
+            // Parsing the integer domain is distinct from approving a physical
+            // standard weight: these fit i16 but are not valid entity weights.
+            assert_eq!(entity.get(370), Some(f64::from(value)));
+            assert_eq!(entity.text(370), None);
+            assert!(layered_entity_weight(entity).is_err());
+        }
+        for raw in ["32768", "-32769"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n370\n{raw}\n10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            let entity = parsed.first().unwrap();
+            assert_eq!(entity.get(370), None);
+            assert_eq!(entity.text(370), Some(raw));
+            assert!(layered_entity_weight(entity).is_err());
+        }
+    }
+
+    #[test]
+    fn layered_weight_rejects_duplicates_when_one_integer_spelling_was_invalid() {
+        for metadata in [
+            "370\n50.0000000000000001\n370\n50\n",
+            "370\n50\n370\n50.0000000000000001\n",
+            "370\n1e-400\n370\n0\n",
+            "370\n5e1\n370\n50.0\n",
+        ] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nPOINT\n{metadata}10\n1\n20\n2\n0\nENDSEC\n0\nEOF\n");
+            let parsed = section(&pairs(&text), 1).unwrap();
+            assert_eq!(parsed.len(), 1);
+            assert!(layered_entity_weight(parsed.first().unwrap()).is_err());
+            assert_eq!(read_dxf(&text).unwrap(), vec![Geom2::Point(Vec2::new(1.0, 2.0))]);
+        }
+    }
+
+
+    #[test]
+    fn layered_read_retains_declared_layers_three_shapes_and_raw_weights_in_inches() {
+        // Original hand-authored fixture. The expected millimetre lengths and
+        // metadata below are independent of the writer and layered reader.
+        let text = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n",
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n2\n",
+            "0\nLAYER\n2\n0\n62\n7\n6\nContinuous\n",
+            "0\nLAYER\n2\nCUT\n62\n1\n6\nContinuous\n370\n50\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n8\ncut\n370\n-1\n10\n0\n20\n0\n11\n2\n21\n1\n",
+            "0\nCIRCLE\n370\n-3\n10\n1\n20\n2\n40\n0.5\n",
+            "0\nARC\n8\nCUT\n370\n-2\n10\n0\n20\n0\n40\n1\n50\n350\n51\n10\n",
+            "0\nINSERT\n67\n1\n2\nNOT_EXPANDED_PAPER\n",
+            "0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.layers().iter().map(|layer| layer.name()).collect::<Vec<_>>(), ["0", "CUT"]);
+        assert_eq!(file.layers()[1].color(), 1);
+        assert_eq!(file.layers()[1].weight().unwrap().code(), 50);
+        assert_eq!(file.entities().len(), 3);
+        let line = &file.entities()[0];
+        assert_eq!(file.layer(line.layer()).unwrap().name(), "CUT");
+        assert_eq!(line.weight(), Some(DxfEntityWeight::ByLayer));
+        assert_eq!(line.geometry(), &DxfShape::Line(Vec2::ZERO, Vec2::new(50.8, 25.4)));
+        assert_eq!(file.effective_weight(0).unwrap(), DxfEntityWeight::Explicit(DxfStandardWeight::from_code(50).unwrap()));
+        assert_eq!(file.entities()[1].layer(), file.default_layer());
+        assert_eq!(file.entities()[1].weight(), Some(DxfEntityWeight::Default));
+        assert_eq!(file.entities()[1].geometry(), &DxfShape::Circle { c: Vec2::new(25.4, 50.8), r: 12.7 });
+        assert_eq!(file.entities()[2].weight(), Some(DxfEntityWeight::ByBlock));
+        assert_eq!(file.entities()[2].geometry(), &DxfShape::Arc { c: Vec2::ZERO, r: 25.4, a0: 350.0, a1: 10.0 });
+    }
+
+    #[test]
+    fn layered_read_omission_symbols_and_zero_are_distinct_on_real_entities() {
+        let text = concat!(
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n",
+            "0\nLINE\n370\n-1\n10\n1\n20\n0\n11\n2\n21\n0\n",
+            "0\nLINE\n370\n-2\n10\n2\n20\n0\n11\n3\n21\n0\n",
+            "0\nLINE\n370\n-3\n10\n3\n20\n0\n11\n4\n21\n0\n",
+            "0\nLINE\n370\n0\n10\n4\n20\n0\n11\n5\n21\n0\n0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.entities().iter().map(|entity| entity.weight()).collect::<Vec<_>>(), [
+            None, Some(DxfEntityWeight::ByLayer), Some(DxfEntityWeight::ByBlock), Some(DxfEntityWeight::Default),
+            Some(DxfEntityWeight::Explicit(DxfStandardWeight::from_code(0).unwrap())),
+        ]);
+    }
+
+    #[test]
+    fn layered_read_uses_existing_unit_factors_once_and_refuses_unknown_units() {
+        for (unit, millimetres) in [("0", 1.0), ("1", 25.4), ("2", 304.8), ("4", 1.0), ("5", 10.0), ("6", 1000.0)] {
+            let text = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n{unit}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n1\n20\n0\n40\n1\n0\nENDSEC\n0\nEOF\n");
+            let file = read_dxf_file(&text).unwrap();
+            assert_eq!(file.entities()[0].geometry(), &DxfShape::Circle { c: Vec2::new(millimetres, 0.0), r: millimetres });
+        }
+        for value in ["3", "7", "1.0", "nan", "32768"] {
+            let text = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n{value}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{value}");
+        }
+        let duplicate = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+        assert!(read_dxf_file(duplicate).unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn layered_read_validates_actual_dashed_and_hidden_definitions() {
+        let text = concat!(
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n",
+            "0\nLTYPE\n2\nByBlock\n72\n65\n73\n0\n40\n0\n",
+            "0\nLTYPE\n2\nByLayer\n72\n65\n73\n0\n40\n0\n",
+            "0\nLTYPE\n2\nContinuous\n72\n65\n73\n0\n40\n0\n",
+            "0\nLTYPE\n2\nDASHED\n72\n65\n73\n2\n40\n19.05\n49\n12.7\n74\n0\n49\n-6.35\n74\n0\n",
+            "0\nLTYPE\n2\nHIDDEN\n72\n65\n73\n2\n40\n3\n49\n2\n74\n0\n49\n-1\n74\n0\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nBEND\n62\n2\n6\nDASHED\n",
+            "0\nLAYER\n2\nBACK\n62\n8\n6\nHIDDEN\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\nBEND\n10\n0\n20\n0\n11\n1\n21\n0\n",
+            "0\nCIRCLE\n8\nBACK\n10\n0\n20\n0\n40\n1\n0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.effective_linetype(0).unwrap(), DxfLinetype::Dashed);
+        assert_eq!(file.effective_linetype(1).unwrap(), DxfLinetype::Hidden);
+        for bad in [
+            text.replacen("49\n12.7\n", "49\n5\n", 1),
+            text.replacen("40\n19.05\n", "40\n19\n", 1),
+            text.replacen("74\n0\n", "74\n2\n", 1),
+            text.replacen("73\n2\n", "73\n1\n", 1),
+            text.replacen("49\n-1\n", "49\nnan\n", 1),
+            text.replacen("2\nDASHED\n", "2\nCUSTOM\n", 1),
+            format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n{text}"),
+        ] { assert!(read_dxf_file(&bad).is_err()); }
+    }
+
+    #[test]
+    fn layered_read_refuses_explicit_entity_styles_without_losing_them() {
+        for field in ["6\nByLayer\n", "6\nByBlock\n", "6\nContinuous\n", "6\nCUSTOM\n", "62\n7\n", "48\n1\n", "60\n1\n", "420\n123\n"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nLINE\n{field}10\n0\n20\n0\n11\n1\n21\n0\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).unwrap_err().to_string().contains("not supported yet"), "{field}");
+            assert_eq!(read_dxf(&text).unwrap().len(), 1, "legacy importer unchanged");
+        }
+    }
+
+    #[test]
+    fn layered_read_refuses_a_global_linetype_scale_the_model_cannot_retain() {
+        for scale in ["0", "2", "nan", "1e400"] {
+            let text = format!("0\nSECTION\n2\nHEADER\n9\n$LTSCALE\n40\n{scale}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).unwrap_err().to_string().contains("linetype scale"));
+        }
+        let identity = "0\nSECTION\n2\nHEADER\n9\n$LTSCALE\n40\n1\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+        assert!(read_dxf_file(identity).is_ok());
+    }
+
+    #[test]
+    fn layered_read_refuses_unrepresented_layer_zero_weights_and_colors() {
+        for (name, fields) in [
+            ("0", "62\n3\n"), ("0", "370\n50\n"), ("0", "6\nCUSTOM\n"),
+            ("CUT", "370\n-3\n"), ("CUT", "370\n-1\n"), ("CUT", "62\n-7\n"),
+            ("CUT", "62\n0\n"), ("CUT", "62\n256\n"), ("CUT", "70\n1\n"),
+            ("CUT", "6\nDASHED\n"), ("CUT", "6\nCUSTOM\n"),
+        ] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n{name}\n{fields}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{name}/{fields}");
+        }
+    }
+
+    #[test]
+    fn group62_integer_lexemes_are_preserved_before_float_rounding() {
+        for raw in ["7.0000000000000001", "255.00000000000000001", "1e-400", "7e0", "7.0", "32768", "-32769", "nan"] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nCUT\n62\n{raw}\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            let parsed = pairs(&text);
+            let records = section(&parsed, 1).unwrap();
+            let layer = records.iter().find(|record| record.kind == "LAYER").unwrap();
+            assert_eq!(layer.text(62), Some(raw));
+            assert_eq!(layer.get(62), None);
+            assert!(read_dxf_file(&text).is_err(), "{raw}");
+        }
+        for raw in ["+7", "7", "255"] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nCUT\n62\n{raw}\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_ok(), "{raw}");
+        }
+        let duplicate = "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nCUT\n62\n7\n62\n7.0000000000000001\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+        assert!(read_dxf_file(duplicate).unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn lexical_color_and_lineweight_metadata_do_not_change_legacy_geometry() {
+        let plain = "0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n2\n21\n3\n0\nCIRCLE\n10\n4\n20\n5\n40\n2\n0\nENDSEC\n0\nEOF\n";
+        for raw in ["7", "7.0000000000000001", "nan", "32768", "1e-400"] {
+            let metadata = plain.replacen("0\nLINE\n", &format!("0\nLINE\n62\n{raw}\n370\n50\n"), 1);
+            let projected = read_dxf(&metadata).unwrap();
+            assert_eq!(projected.len(), 2);
+            assert!(matches!(&projected[0], Geom2::Line(a, b) if *a == Vec2::ZERO && *b == Vec2::new(2.0, 3.0)));
+            assert!(matches!(&projected[1], Geom2::Circle(c, r) if *c == Vec2::new(4.0, 5.0) && *r == 2.0));
+        }
+    }
+
+    #[test]
+    fn layered_read_rejects_missing_colliding_or_renamed_layer_symbols() {
+        for declaration in ["", "0\nLAYER\n2\nOTHER\n", "0\nLAYER\n2\nC?T\n", "0\nLAYER\n2\nÉ\n", "0\nLAYER\n2\nCUT\n0\nLAYER\n2\ncut\n"] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n{declaration}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\nCUT\n10\n0\n20\n0\n11\n1\n21\n0\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{declaration}");
+        }
+    }
+
+    #[test]
+    fn layered_read_does_not_return_a_partial_file_for_unsupported_geometry() {
+        for kind in ["INSERT", "POINT", "LWPOLYLINE", "POLYLINE", "ELLIPSE", "SPLINE", "TEXT", "MTEXT", "UNKNOWN"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n0\n{kind}\n0\nENDSEC\n0\nEOF\n");
+            let saved = text.clone();
+            let error = read_dxf_file(&text).unwrap_err().to_string();
+            assert!(error.contains("not supported yet") && error.contains(kind), "{error}");
+            assert_eq!(text, saved);
+        }
+    }
+
+    #[test]
+    fn layered_read_refuses_malformed_geometry_and_nonplanar_semantics() {
+        for fields in [
+            "10\n0\n20\n0\n11\n1\n", "10\n0\n20\n0\n11\n1\n21\n0\n10\n0\n",
+            "10\nnan\n20\n0\n11\n1\n21\n0\n", "10\n0\n20\n0\n11\n1\n21\n0\n30\n1\n",
+            "10\n0\n20\n0\n11\n1\n21\n0\n230\n-1\n", "10\n0\n20\n0\n11\n1\n21\n0\n39\n2\n",
+        ] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nLINE\n{fields}0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err());
+        }
+        for radius in ["0", "-1", "nan", "inf", "1e400", "1e-400"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n0\n20\n0\n40\n{radius}\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{radius}");
+        }
+    }
+
+    #[test]
+    fn layered_read_checks_section_and_table_framing() {
+        for text in [
+            "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+            "0\nSECTION\n2\nENTITIES\n0\nEOF\n",
+            "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n",
+            "0\nSECTION\n2\nTABLES\n0\nLAYER\n2\nCUT\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n",
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nCUT\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n",
+        ] { assert!(read_dxf_file(text).is_err(), "{text}"); }
+    }
+
+    #[test]
+    fn layered_read_keeps_input_caps_and_binary_refusal() {
+        assert!(read_dxf_file("AutoCAD Binary DXF\r\n").is_err());
+        let over_limit = " ".repeat(MAX_DRAWING_BYTES + 1);
+        assert!(read_dxf_file(&over_limit).unwrap_err().to_string().contains("too large"));
+        let valid = "0\nSECTION\n2\nENTITIES\n0\nLINE\n10\n0\n20\n0\n11\n1\n21\n0\n0\nENDSEC\n0\nEOF\n";
+        for cut in (0..valid.len()).step_by(7) {
+            let _ = read_dxf_file(&valid[..cut]);
+        }
+    }
+
+    #[test]
+    fn layered_header_variables_in_objects_do_not_set_units_or_global_style() {
+        let circle = "0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n10\n1\n20\n0\n40\n1\n0\nENDSEC\n";
+        let objects = "0\nSECTION\n2\nOBJECTS\n0\nXRECORD\n9\n$INSUNITS\n70\n1\n9\n$LTSCALE\n40\n2\n0\nENDSEC\n0\nEOF\n";
+        for header in ["", "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n9\n$LTSCALE\n40\n1\n0\nENDSEC\n"] {
+            let text = format!("{header}{circle}{objects}");
+            let before = text.clone();
+            let file = read_dxf_file(&text).unwrap();
+            assert_eq!(file.entities()[0].geometry(), &DxfShape::Circle { c: Vec2::new(1.0, 0.0), r: 1.0 });
+            assert_eq!(text, before);
+        }
+        // A record named HEADER is not a HEADER section either.
+        let fake_header = "0\nSECTION\n2\nOBJECTS\n0\nXRECORD\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n";
+        let text = format!("{fake_header}{circle}0\nEOF\n");
+        assert_eq!(read_dxf_file(&text).unwrap().entities()[0].geometry(), &DxfShape::Circle { c: Vec2::new(1.0, 0.0), r: 1.0 });
+    }
+
+    #[test]
+    fn layered_read_checks_header_framing_even_without_repeated_variables() {
+        let entities = "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+        for header in [
+            "0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nSECTION\n2\nHEADER\n0\nENDSEC\n",
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nHEADER\n9\n$LTSCALE\n40\n1\n0\nENDSEC\n",
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n",
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n0\nENDSEC\n",
+        ] { assert!(read_dxf_file(&format!("{header}{entities}")).is_err(), "{header}"); }
+    }
+
+    #[test]
+    fn layered_table_integer_flags_never_accept_rounded_decimal_or_underflow_tokens() {
+        let text = concat!(
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n",
+            "0\nLTYPE\n2\nDASHED\n70\n0\n72\n65\n73\n2\n40\n19.05\n49\n12.7\n74\n0\n49\n-6.35\n74\n0\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nCUT\n70\n0\n62\n1\n6\nDASHED\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\nCUT\n10\n0\n20\n0\n11\n1\n21\n0\n0\nENDSEC\n0\nEOF\n",
+        );
+        assert!(read_dxf_file(text).is_ok());
+        for (field, value) in [
+            ("70\n0\n", "70\n1e-400\n"), ("72\n65\n", "72\n65.0000000000000001\n"),
+            ("73\n2\n", "73\n2.0000000000000001\n"), ("74\n0\n", "74\n1e-400\n"),
+            ("2\nCUT\n70\n0\n", "2\nCUT\n70\n1e-400\n"),
+            ("70\n0\n", "70\n32768\n"), ("74\n0\n", "74\n-0.0\n"),
+        ] {
+            let hostile = text.replacen(field, value, 1);
+            let before = hostile.clone();
+            assert!(read_dxf_file(&hostile).unwrap_err().to_string().contains("integer spelling"), "{value}");
+            assert_eq!(hostile, before);
+        }
+        let signed = text.replacen("70\n0\n", "70\n+0\n", 1).replacen("72\n65\n", "72\n+65\n", 1)
+            .replacen("73\n2\n", "73\n+2\n", 1).replacen("74\n0\n", "74\n-0\n", 1);
+        assert!(read_dxf_file(&signed).is_ok());
+        // Integer spelling alone does not make a different enum canonical.
+        for (field, value) in [("70\n0\n", "70\n1\n"), ("72\n65\n", "72\n64\n"), ("73\n2\n", "73\n3\n"), ("74\n0\n", "74\n2\n")] {
+            assert!(read_dxf_file(&text.replacen(field, value, 1)).is_err());
+        }
+    }
+
+    #[test]
+    fn layered_paper_flag_also_requires_integer_spelling_before_space_filtering() {
+        for raw in ["1e-400", "0.0", "1e0", "32768", "0.5", "1.0000000000000001", "2", "-1"] {
+            let text = format!("0\nSECTION\n2\nENTITIES\n0\nLINE\n67\n{raw}\n10\n0\n20\n0\n11\n1\n21\n0\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{raw}");
+        }
+        let paper = "0\nSECTION\n2\nENTITIES\n0\nINSERT\n67\n1\n2\nPAPER_ONLY\n0\nENDSEC\n0\nEOF\n";
+        assert!(read_dxf_file(paper).unwrap().entities().is_empty());
+        let model = "0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n67\n0\n10\n0\n20\n0\n40\n1\n0\nENDSEC\n0\nEOF\n";
+        assert_eq!(read_dxf_file(model).unwrap().entities().len(), 1);
+        for repeated in ["67\n0\n67\n1\n", "67\n0\n67\n1e-400\n", "67\n0\n67\nnan\n"] {
+            assert!(read_dxf_file(&model.replacen("67\n0\n", repeated, 1)).is_err());
+        }
+    }
+
+    #[test]
+    fn layered_integer_preflight_does_not_change_legacy_polyline_flag_parsing() {
+        // The existing legacy parser accepts this float spelling for its
+        // closed-polyline flag. Do not make section() globally lexical-i16.
+        let text = "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n70\n1.0\n90\n3\n10\n0\n20\n0\n10\n2\n20\n0\n10\n0\n20\n2\n0\nENDSEC\n0\nEOF\n";
+        let geometry = read_dxf(text).unwrap();
+        assert_eq!(geometry.len(), 3);
+        assert_eq!(geometry[2], Geom2::Line(Vec2::new(0.0, 2.0), Vec2::ZERO));
+    }
+
+    #[test]
+    fn layered_core_shapes_admit_neutral_z_thickness_and_ocs_but_refuse_projection() {
+        let neutral = concat!(
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n10\n0\n20\n0\n30\n0\n11\n1\n21\n0\n31\n0\n39\n0\n210\n0\n220\n0\n230\n1\n",
+            "0\nCIRCLE\n10\n2\n20\n3\n30\n0\n40\n1\n39\n0\n210\n0\n220\n0\n230\n1\n",
+            "0\nARC\n10\n0\n20\n0\n30\n0\n40\n1\n50\n0\n51\n90\n39\n0\n210\n0\n220\n0\n230\n1\n0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(neutral).unwrap();
+        assert_eq!(file.entities().len(), 3);
+        assert_eq!(file.entities()[0].geometry(), &DxfShape::Line(Vec2::ZERO, Vec2::new(1.0, 0.0)));
+        assert_eq!(file.entities()[1].geometry(), &DxfShape::Circle { c: Vec2::new(2.0, 3.0), r: 1.0 });
+        assert_eq!(file.entities()[2].geometry(), &DxfShape::Arc { c: Vec2::ZERO, r: 1.0, a0: 0.0, a1: 90.0 });
+        for (field, changed) in [
+            ("30\n0\n", "30\n2\n"), ("31\n0\n", "31\n2\n"), ("39\n0\n", "39\n1\n"),
+            ("210\n0\n", "210\n1\n"), ("220\n0\n", "220\n1\n"), ("230\n1\n", "230\n-1\n"),
+        ] { assert!(read_dxf_file(&neutral.replacen(field, changed, 1)).is_err()); }
+    }
+
+    #[test]
+    fn text_pairs_keep_only_group1_and3_values_raw() {
+        let parsed = pairs(" 1 \n \t lead  \t\n 3 \n\n 2 \n ENTITIES \n 10 \n 1.25 \n 8 \n NOTES \n");
+        assert_eq!(parsed, vec![
+            (1, " \t lead  \t".into()), (3, String::new()), (2, "ENTITIES".into()),
+            (10, "1.25".into()), (8, "NOTES".into()),
+        ]);
+    }
+
+    #[test]
+    fn raw_mtext_fields_keep_order_empty_chunks_and_final_spaces() {
+        let parsed = pairs("0\nSECTION\n2\nENTITIES\n0\nMTEXT\n3\n  first  \n3\n\n1\n last \n0\nENDSEC\n0\nEOF\n");
+        let entities = section(&parsed, 1).unwrap();
+        assert_eq!(entities.len(), 1);
+        let raw: Vec<_> = entities[0].s.iter().filter(|(code, _)| matches!(*code, 1 | 3)).map(|(code, value)| (*code, value.as_str())).collect();
+        assert_eq!(raw, [(3, "  first  "), (3, ""), (1, " last ")]);
+        assert_eq!(entities[0].text(1), Some("last"), "legacy access stays normalized");
+        assert_eq!(entities[0].text(3), Some("first"), "legacy access still takes the first requested field");
+    }
+
+    #[test]
+    fn empty_group1_and_whitespace_only_text_remain_distinct_raw_values() {
+        let parsed = pairs("0\nSECTION\n2\nENTITIES\n0\nTEXT\n1\n\n0\nTEXT\n1\n \t \n0\nENDSEC\n0\nEOF\n");
+        let entities = section(&parsed, 1).unwrap();
+        assert_eq!(entities.len(), 2);
+        assert_eq!(entities[0].s, [(1, String::new())]);
+        assert_eq!(entities[1].s, [(1, " \t ".into())]);
+        assert_eq!(entities[0].text(1), Some(""));
+        assert_eq!(entities[1].text(1), Some(""));
+    }
+
+    #[test]
+    fn crlf_delimiters_and_unicode_spaces_preserve_raw_but_not_legacy_padding() {
+        let parsed = pairs("0\r\nSECTION\r\n2\r\nENTITIES\r\n0\r\nTEXT\r\n1\r\n\u{2003} café \u{2003}\r\n0\r\nENDSEC\r\n0\r\nEOF\r\n");
+        let entities = section(&parsed, 1).unwrap();
+        assert_eq!(entities[0].s, [(1, "\u{2003} café \u{2003}".into())]);
+        assert_eq!(entities[0].text(1), Some("café"));
+    }
+
+    #[test]
+    fn legacy_geometry_units_section_names_and_text_paragraph_policy_stay_current() {
+        let text = "0\n SECTION \n2\n HEADER \n9\n $INSUNITS \n70\n 1 \n0\n ENDSEC \n0\n SECTION \n2\n ENTITIES \n0\n LINE \n8\n CUT \n10\n 1 \n20\n 2 \n11\n 2 \n21\n 1 \n0\n MTEXT \n10\n 1 \n20\n 2 \n40\n 3 \n3\n ignored prefix \n1\n  a\\Pb  \n0\n ENDSEC \n0\n EOF \n";
+        let parsed = pairs(text);
+        assert_eq!(units_scale(&parsed), 25.4);
+        let start = parsed.iter().position(|(code, value)| *code == 2 && value == "ENTITIES").unwrap();
+        let entities = section(&parsed, start).unwrap();
+        assert_eq!(entities[0].kind, "LINE");
+        assert_eq!(entities[0].text(8), Some("CUT"));
+        assert_eq!(entities[0].get(10), Some(1.0));
+        assert_eq!(entities[1].text(1), Some("a\\Pb"));
+        let geometry = read_dxf(text).unwrap();
+        assert_eq!(geometry.len(), 2);
+        assert!(matches!(&geometry[0], Geom2::Line(a, b) if *a == Vec2::new(25.4, 50.8) && *b == Vec2::new(50.8, 25.4)));
+        assert!(matches!(&geometry[1], Geom2::Text { text, at, height, angle } if text == "a\nb" && *at == Vec2::new(25.4, 50.8) && (*height - 76.2).abs() < 1e-12 && *angle == 0.0));
+    }
+
+    #[test]
+    fn existing_input_byte_cap_is_inclusive_before_parsing() {
+        let prefix = "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n999\n";
+        let mut text = format!("{prefix}{}\n", " ".repeat(MAX_DRAWING_BYTES - prefix.len() - 1));
+        assert_eq!(text.len(), MAX_DRAWING_BYTES);
+        assert!(read_dxf(&text).unwrap().is_empty());
+        text.push(' ');
+        let error = read_dxf(&text).unwrap_err().to_string();
+        assert!(error.contains("the DXF file is too large"), "{error}");
+    }
+
+
+    #[test]
+    fn layered_straight_polyline_keeps_order_duplicates_units_and_layer_metadata() {
+        let text = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n",
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nCUT\n62\n2\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nCUT\n370\n-1\n90\n3\n70\n128\n",
+            "10\n0\n20\n0\n42\n0\n10\n2\n20\n1\n10\n2\n20\n1\n0\nENDSEC\n0\nEOF\n",
+        );
+        for flags in ["128", "0"] {
+            let text = text.replacen("70\n128\n", &format!("70\n{flags}\n"), 1);
+            let before = text.clone();
+            let file = read_dxf_file(&text).unwrap();
+            assert_eq!(file.entities().len(), 1);
+            let entity = &file.entities()[0];
+            assert_eq!(file.layer(entity.layer()).unwrap().name(), "CUT");
+            assert_eq!(file.layer(entity.layer()).unwrap().color(), 2);
+            assert_eq!(entity.weight(), Some(DxfEntityWeight::ByLayer));
+            assert_eq!(entity.geometry(), &DxfShape::Polyline { points: vec![Vec2::ZERO, Vec2::new(50.8, 25.4), Vec2::new(50.8, 25.4)] });
+            assert_eq!(text, before);
+        }
+    }
+
+    #[test]
+    fn layered_polyline_dash_restart_uses_the_actual_layer_style_not_its_name() {
+        let text = concat!(
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n0\nLTYPE\n2\nDASHED\n72\n65\n73\n2\n40\n19.05\n49\n12.7\n49\n-6.35\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nContinuous\n62\n1\n6\nDASHED\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nContinuous\n90\n2\n70\n128\n10\n0\n20\n0\n10\n1\n20\n1\n0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.effective_linetype(0).unwrap(), DxfLinetype::Dashed);
+        assert!(read_dxf_file(&text.replacen("70\n128\n", "70\n0\n", 1)).is_err());
+        for replacement in ["", "70\n1\n", "70\n129\n", "70\n2\n"] {
+            assert!(read_dxf_file(&text.replacen("70\n128\n", replacement, 1)).is_err());
+        }
+    }
+
+    #[test]
+    fn layered_polyline_refuses_bulges_widths_bad_counts_and_malformed_integers() {
+        let base = "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n90\n2\n70\n128\n10\n0\n20\n0\n10\n1\n20\n1\n0\nENDSEC\n0\nEOF\n";
+        for (from, to) in [
+            ("90\n2\n", "90\n1\n"), ("90\n2\n", "90\n-1\n"), ("90\n2\n", "90\n2147483647\n"),
+            ("90\n2\n", "90\n2147483648\n"), ("90\n2\n", "90\n2.0000000000000001\n"),
+            ("90\n2\n", "90\n2\n90\n2\n"), ("70\n128\n", "70\n128.0000000000000001\n"),
+            ("70\n128\n", "70\n128\n70\n0\n"), ("20\n1\n", ""),
+            ("10\n1\n", "10\nnan\n"), ("10\n1\n", "10\n1\n42\n1\n"),
+            ("10\n1\n", "10\n1\n42\nnan\n"), ("10\n1\n", "10\n1\n40\n1\n"),
+            ("10\n1\n", "10\n1\n38\n2\n"), ("10\n1\n", "10\n1\n43\n1\n"),
+        ] { assert!(read_dxf_file(&base.replacen(from, to, 1)).is_err(), "{to}"); }
+        let over = base.replacen("90\n2\n", &format!("90\n{}\n", MAX_ENTITIES + 1), 1);
+        assert!(read_dxf_file(&over).unwrap_err().to_string().contains("count/flag"));
+    }
+
+    #[test]
+    fn layered_spline_preserves_degree_nine_knots_controls_and_raw_weight_metadata() {
+        // Original degree-nine Bézier-equivalent spline in the parameter
+        // interval[2,5]. Ten controls and twenty knots, with no degree clamp.
+        let text = concat!(
+            "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n370\n0\n70\n8\n71\n9\n72\n20\n73\n10\n74\n0\n",
+            "40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n",
+            "40\n5\n40\n5\n40\n5\n40\n5\n40\n5\n40\n5\n40\n5\n40\n5\n40\n5\n40\n5\n",
+            "10\n0\n20\n0\n10\n1\n20\n1\n10\n2\n20\n0\n10\n3\n20\n1\n10\n4\n20\n0\n",
+            "10\n5\n20\n1\n10\n6\n20\n0\n10\n7\n20\n1\n10\n8\n20\n0\n10\n9\n20\n1\n0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(text).unwrap();
+        let entity = &file.entities()[0];
+        assert_eq!(entity.weight(), Some(DxfEntityWeight::Explicit(DxfStandardWeight::from_code(0).unwrap())));
+        assert_eq!(entity.geometry(), &DxfShape::Spline {
+            degree: 9, knots: vec![2.,2.,2.,2.,2.,2.,2.,2.,2.,2.,5.,5.,5.,5.,5.,5.,5.,5.,5.,5.],
+            ctrl: vec![Vec2::new(0.,0.),Vec2::new(1.,1.),Vec2::new(2.,0.),Vec2::new(3.,1.),Vec2::new(4.,0.),
+                Vec2::new(5.,1.),Vec2::new(6.,0.),Vec2::new(7.,1.),Vec2::new(8.,0.),Vec2::new(9.,1.)], weights: None,
+        });
+        assert!(read_dxf_file(&text.replacen("71\n9\n", "71\n10\n", 1)).is_err());
+    }
+
+    fn original_rational_spline_input() -> &'static str {
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n5\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n70\n12\n71\n2\n72\n6\n73\n3\n74\n0\n",
+            "40\n2\n40\n2\n40\n2\n40\n5\n40\n5\n40\n5\n41\n1\n41\n0.5\n41\n1\n",
+            "10\n0\n20\n0\n30\n0\n10\n1\n20\n2\n30\n0\n10\n3\n20\n0\n30\n0\n",
+            "210\n0\n220\n0\n230\n1\n0\nENDSEC\n0\nEOF\n",
+        )
+    }
+
+    #[test]
+    fn layered_rational_spline_scales_controls_only_and_preserves_weight_presence() {
+        let text = original_rational_spline_input();
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.entities()[0].geometry(), &DxfShape::Spline {
+            degree: 2, knots: vec![2.,2.,2.,5.,5.,5.],
+            ctrl: vec![Vec2::ZERO,Vec2::new(10.,20.),Vec2::new(30.,0.)], weights: Some(vec![1.,0.5,1.]),
+        });
+        let ones = text.replacen("41\n0.5\n", "41\n1\n", 1);
+        assert!(matches!(read_dxf_file(&ones).unwrap().entities()[0].geometry(), DxfShape::Spline { weights: Some(values), .. } if values == &[1.,1.,1.]));
+        let unweighted = text.replacen("70\n12\n", "70\n8\n", 1).replace("41\n1\n", "").replace("41\n0.5\n", "");
+        assert!(matches!(read_dxf_file(&unweighted).unwrap().entities()[0].geometry(), DxfShape::Spline { weights: None, .. }));
+    }
+
+    #[test]
+    fn layered_spline_refuses_invalid_counts_flags_fit_data_and_nonpositive_weights() {
+        let text = original_rational_spline_input();
+        for (from, to) in [
+            ("71\n2\n", "71\n0\n"), ("71\n2\n", "71\n2.0000000000000001\n"),
+            ("72\n6\n", "72\n32768\n"), ("72\n6\n", "72\n7\n"), ("73\n3\n", "73\n2\n"),
+            ("72\n6\n", "72\n6\n72\n6\n"), ("70\n12\n", "70\n13\n"), ("70\n12\n", "70\n14\n"),
+            ("70\n12\n", "70\n28\n"), ("70\n12\n", ""), ("74\n0\n", "74\n1\n"),
+            ("41\n0.5\n", "41\n0\n"), ("41\n0.5\n", "41\n-1\n"), ("41\n0.5\n", "41\nnan\n"),
+            ("41\n0.5\n", ""), ("41\n0.5\n", "41\n0.5\n41\n1\n"), ("20\n2\n", "20\ninf\n"),
+            ("30\n0\n", "30\n1\n"), ("30\n0\n", "30\nnan\n"), ("10\n1\n", "11\n1\n"),
+            ("230\n1\n", "230\n-1\n"), ("74\n0\n", "74\n0\n12\n1\n"),
+        ] { assert!(read_dxf_file(&text.replacen(from, to, 1)).is_err(), "{to}"); }
+    }
+
+    #[test]
+    fn layered_spline_refuses_decreasing_unclamped_empty_or_excess_endpoint_knots() {
+        let text = original_rational_spline_input();
+        for knots in ["40\n2\n40\n1\n40\n2\n40\n5\n40\n5\n40\n5\n",
+            "40\n2\n40\n2\n40\n3\n40\n5\n40\n5\n40\n5\n",
+            "40\n2\n40\n2\n40\n2\n40\n5\n40\n5\n40\n6\n",
+            "40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n40\n2\n",
+            "40\nnan\n40\n2\n40\n2\n40\n5\n40\n5\n40\n5\n"] {
+            let changed = text.replacen("40\n2\n40\n2\n40\n2\n40\n5\n40\n5\n40\n5\n", knots, 1);
+            assert!(read_dxf_file(&changed).is_err());
+        }
+    }
+
+    #[test]
+    fn layered_geometry_budgets_are_cumulative_before_array_reservation() {
+        let poly_pairs = pairs("0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n90\n2\n70\n128\n10\n0\n20\n0\n10\n1\n20\n1\n0\nENDSEC\n");
+        let poly = section(&poly_pairs, 1).unwrap();
+        let spline_pairs = pairs(original_rational_spline_input());
+        let start = layered_section_start(&spline_pairs, "ENTITIES").unwrap().unwrap();
+        let spline = section(&spline_pairs, start).unwrap();
+        let (poly, spline) = (&poly[0], &spline[0]);
+        // This real rational shape costs3 point slots +6 knots +3 weights.
+        // It fits alone, but cannot fit after another two-point shape when
+        // only13 work slots remain. No large fixture allocation is needed.
+        let mut bytes = 0;
+        let mut work = MAX_WORK - 13;
+        assert!(layered_geometry(spline, 1.0, DxfLinetype::Continuous, &mut bytes, &mut work).is_ok());
+        let mut bytes = 0;
+        let mut work = MAX_WORK - 13;
+        assert!(layered_geometry(poly, 1.0, DxfLinetype::Continuous, &mut bytes, &mut work).is_ok());
+        assert!(layered_geometry(spline, 1.0, DxfLinetype::Continuous, &mut bytes, &mut work).unwrap_err().to_string().contains("work budget"));
+        let mut bytes = MAX_DRAWING_BYTES - 2 * std::mem::size_of::<Vec2>();
+        let mut work = 0;
+        assert!(layered_geometry(poly, 1.0, DxfLinetype::Continuous, &mut bytes, &mut work).is_ok());
+        assert!(layered_geometry(spline, 1.0, DxfLinetype::Continuous, &mut bytes, &mut work).unwrap_err().to_string().contains("byte budget"));
+        let mut bytes = 0;
+        let mut work = 0;
+        assert!(layered_array_budget::<Vec2>(usize::MAX, &mut bytes, &mut work).is_err());
+    }
+
+    #[test]
+    fn layered_spline_keeps_legal_interior_knots_and_refuses_excess_multiplicity() {
+        let text = concat!(
+            "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n70\n8\n71\n2\n72\n8\n73\n5\n",
+            "40\n0\n40\n0\n40\n0\n40\n0.5\n40\n0.5\n40\n1\n40\n1\n40\n1\n",
+            "10\n0\n20\n0\n10\n1\n20\n1\n10\n2\n20\n0\n10\n3\n20\n1\n10\n4\n20\n0\n0\nENDSEC\n0\nEOF\n",
+        );
+        assert!(matches!(read_dxf_file(text).unwrap().entities()[0].geometry(), DxfShape::Spline { knots, .. } if knots == &[0.,0.,0.,0.5,0.5,1.,1.,1.]));
+        let discontinuous = text.replacen("72\n8\n73\n5\n", "72\n9\n73\n6\n", 1)
+            .replacen("40\n0.5\n40\n0.5\n", "40\n0.5\n40\n0.5\n40\n0.5\n", 1)
+            .replacen("0\nENDSEC\n", "10\n5\n20\n1\n0\nENDSEC\n", 1);
+        assert!(read_dxf_file(&discontinuous).unwrap_err().to_string().contains("multiplicity"));
+        let excess_endpoint = text.replacen("40\n0.5\n", "40\n0\n", 1);
+        assert!(read_dxf_file(&excess_endpoint).is_err());
+    }
+
+    #[test]
+    fn layered_polyline_refuses_adjacent_distinct_vertices_collapsed_by_centimetres() {
+        // Literal binary64 witnesses supplied by the independent source review.
+        // At x=17.5, one output ULP is2^-48. Scaling the two distinct source
+        // neighbours by10 yields offsets0.625 and1.25 outputULPs, both rounding
+        // to the same+1ULP result under ordinary round-to-nearest arithmetic.
+        let text = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n5\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n70\n128\n90\n2\n",
+            "10\n1.7500000000000002\n20\n0\n10\n1.7500000000000004\n20\n0\n0\nENDSEC\n0\nEOF\n",
+        );
+        let before = text.to_owned();
+        assert!(read_dxf_file(text).unwrap_err().to_string().contains("collapses adjacent distinct"));
+        assert_eq!(text, before);
+    }
+
+    #[test]
+    fn layered_spline_refuses_adjacent_distinct_controls_collapsed_by_centimetres() {
+        let text = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n5\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n70\n8\n71\n1\n72\n4\n73\n2\n",
+            "40\n0\n40\n0\n40\n1\n40\n1\n",
+            "10\n1.7500000000000002\n20\n0\n10\n1.7500000000000004\n20\n0\n0\nENDSEC\n0\nEOF\n",
+        );
+        let before = text.to_owned();
+        assert!(read_dxf_file(text).unwrap_err().to_string().contains("collapses adjacent distinct"));
+        assert_eq!(text, before);
+    }
+
+    #[test]
+    fn layered_unit_conversion_preserves_explicitly_repeated_vertices_and_controls() {
+        let header = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n5\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n";
+        let points = "10\n1.7500000000000002\n20\n0\n10\n1.7500000000000002\n20\n0\n0\nENDSEC\n0\nEOF\n";
+        let repeated = vec![Vec2::new(17.500000000000004, 0.0), Vec2::new(17.500000000000004, 0.0)];
+        let polyline = format!("{header}0\nLWPOLYLINE\n70\n128\n90\n2\n{points}");
+        assert_eq!(read_dxf_file(&polyline).unwrap().entities()[0].geometry(), &DxfShape::Polyline { points: repeated.clone() });
+        let spline = format!("{header}0\nSPLINE\n70\n8\n71\n1\n72\n4\n73\n2\n40\n0\n40\n0\n40\n1\n40\n1\n{points}");
+        assert_eq!(read_dxf_file(&spline).unwrap().entities()[0].geometry(), &DxfShape::Spline { degree: 1, knots: vec![0.,0.,1.,1.], ctrl: repeated, weights: None });
     }
 }
