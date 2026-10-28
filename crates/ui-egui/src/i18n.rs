@@ -710,6 +710,17 @@ mod tests {
                 "render.tree_browser",
                 "render.tree_search",
                 "render.tree_more",
+                "render.studios_environments",
+                "render.frame_presets",
+                "render.size_presets",
+                "render.frame_presets_pending",
+                "render.size_presets_pending",
+                "render.search_appearances",
+                "render.library_applicable",
+                "render.library_other",
+                "render.library_apply_hint",
+                "render.studio_tiles_require_gpu",
+                "render.environment_tiles_require_raytrace",
             ] {
                 assert_ne!(locale.text(id), Locale::for_language("en").text(id), "{language}: {id}");
             }
