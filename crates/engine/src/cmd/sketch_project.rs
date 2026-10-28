@@ -439,7 +439,7 @@ pub(super) fn snap_points(s: &mut Session, p: &Value, cmd: &str) -> Result<Value
         if sheet
             && (v.get("vertex").is_some()
                 || v.get("on_edge").is_some()
-                || v.as_str().is_some_and(|text| ["vertex:", "mid:", "on:"].iter().any(|prefix| text.starts_with(prefix))))
+                || v.as_str().is_some_and(|text| ["vertex:", "mid:", "on:", "x:"].iter().any(|prefix| text.starts_with(prefix))))
         {
             return Err(bad(cmd, "not supported yet: automatic snap or projection in a sheet sketch; use a 2D point or exact local point id"));
         }

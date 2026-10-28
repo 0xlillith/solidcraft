@@ -1238,3 +1238,201 @@ fn sheet_next_polygon_and_slot_rejections_leave_the_source_and_history_untouched
     assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 0);
     assert_eq!(run(&mut s, "drawing.sketch.inspect", json!({}))["sketch"], made["sketch"]);
 }
+
+// W38a R8: the six point-parser sites not covered by R6's inch drawing.
+#[test]
+fn sheet_reviewer_curved_parser_sites_use_paper_mm_and_keep_expressions() {
+    use solidcraft_geom::Vec2;
+    let cases = [
+        (
+            "circle through",
+            "sketch.circle.center",
+            json!({"center":[25.4,10], "radius":5, "through":["Inset + 5","10"],"id":"curve"}),
+            Vec2::new(30.4, 10.0),
+        ),
+        (
+            "three point arc start",
+            "sketch.arc.three_point",
+            json!({"start":["Inset + 5","10"],"end":[45,10],"through":[38,17],"id":"curve"}),
+            Vec2::new(30.4, 10.0),
+        ),
+        (
+            "three point arc end",
+            "sketch.arc.three_point",
+            json!({"start":[20,10],"end":["Inset + 5","10"],"through":[25,17],"id":"curve"}),
+            Vec2::new(30.4, 10.0),
+        ),
+        (
+            "three point arc through",
+            "sketch.arc.three_point",
+            json!({"start":[20,10],"end":[40,10],"through":["Inset + 5","20"],"id":"curve"}),
+            Vec2::new(30.4, 20.0),
+        ),
+        (
+            "centre point arc centre",
+            "sketch.arc.center_point",
+            json!({"center":["Inset + 5","10"],"start":[35.4,10],"end":[30.4,15],"id":"curve"}),
+            Vec2::new(30.4, 10.0),
+        ),
+        (
+            "centre point arc end",
+            "sketch.arc.center_point",
+            json!({"center":[30.4,10],"start":[35.4,10],"end":["Inset + 5","15"],"id":"curve"}),
+            Vec2::new(30.4, 15.0),
+        ),
+    ];
+    for (site, cmd, params, expected) in cases {
+        let (mut s, drawing, sketch, _) = sheet_editor();
+        s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+        let source = s.doc.clone();
+        let model = s.model.state();
+        let (undo, evaluated) = (s.undo.len(), s.evaluations);
+        run(&mut s, cmd, params);
+        let saved = s.doc.to_json();
+        let record = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap();
+        let placed: Vec<_> = record.sketch.points.iter().filter(|p| p.exprs.as_ref().and_then(|x| x.x.as_deref()) == Some("Inset + 5")).collect();
+        assert_eq!(placed.len(), 1, "{site}: the authored expression identifies one point");
+        assert!(placed[0].pos.dist(expected) < 1e-7, "{site}: paper-mm expression, got {:?}", placed[0].pos);
+        assert_eq!(record.sketch.curves.len(), 1, "{site}");
+        assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params), "{site}: source unchanged");
+        assert!(Arc::ptr_eq(&model, &s.model.state()), "{site}: no model evaluation");
+        assert_eq!(s.evaluations, evaluated, "{site}");
+        assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (undo + 1, Some(drawing)), "{site}");
+        let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
+        assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, record.sketch, "{site}: round trip");
+    }
+}
+
+// The shared constraint commands operate on local sheet entities, never source features.
+#[test]
+fn sheet_reviewer_shared_geometric_constraints_keep_drawing_local_history() {
+    use solidcraft_sketch::CurveKind;
+    let cases: Vec<(&str, Vec<(&str, Value)>, Value)> = vec![
+        (
+            "sketch.constraint.horizontal_vertical",
+            vec![("sketch.line", json!({"points":[[10,10],[50,20]],"ids":["a"]}))],
+            json!({"line":"a","mode":"horizontal"}),
+        ),
+        (
+            "sketch.constraint.equal",
+            vec![
+                ("sketch.circle.center", json!({"center":[20,20],"radius":5,"id":"a"})),
+                ("sketch.circle.center", json!({"center":[60,20],"radius":9,"id":"b"})),
+            ],
+            json!({"a":"a","b":"b"}),
+        ),
+        (
+            "sketch.constraint.parallel",
+            vec![("sketch.line", json!({"points":[[10,10],[50,10]],"ids":["a"]})), ("sketch.line", json!({"points":[[10,30],[42,42]],"ids":["b"]}))],
+            json!({"a":"a","b":"b"}),
+        ),
+        (
+            "sketch.constraint.perpendicular",
+            vec![("sketch.line", json!({"points":[[10,10],[50,10]],"ids":["a"]})), ("sketch.line", json!({"points":[[20,30],[38,65]],"ids":["b"]}))],
+            json!({"a":"a","b":"b"}),
+        ),
+        (
+            "sketch.constraint.concentric",
+            vec![
+                ("sketch.circle.center", json!({"center":[20,20],"radius":5,"id":"a"})),
+                ("sketch.circle.center", json!({"center":[60,30],"radius":10,"id":"b"})),
+            ],
+            json!({"a":"a","b":"b"}),
+        ),
+        (
+            "sketch.constraint.midpoint",
+            vec![("sketch.line", json!({"points":[[20,20],[60,20]],"ids":["a"]})), ("sketch.point", json!({"point":[35,30],"id":"marker"}))],
+            json!({"point":"marker","line":"a"}),
+        ),
+    ];
+    for (cmd, geometry, params) in cases {
+        let (mut s, drawing, target, _) = sheet_editor();
+        for (make, inputs) in geometry {
+            run(&mut s, make, inputs);
+        }
+        let original = s.doc.clone();
+        let original_model = s.model.state();
+        let before = s.doc.drawing(drawing).unwrap().sheet_sketch(target).unwrap().sketch.clone();
+        let (undo, evaluated) = (s.undo.len(), s.evaluations);
+        let response = run(&mut s, cmd, params.clone());
+        let after = &s.doc.drawing(drawing).unwrap().sheet_sketch(target).unwrap().sketch;
+        let constraint_id = response["constraint"].as_str().unwrap();
+        assert!(after.constraints.iter().any(|c| c.id == constraint_id), "{cmd}: constraint stored on sheet");
+        let direction = |name: &str| {
+            let i = after.curve_index(name).unwrap();
+            match after.curves[i].kind {
+                CurveKind::Line { a, b } => after.points[b].pos - after.points[a].pos,
+                _ => panic!("{cmd}: {name} is not a line"),
+            }
+        };
+        let centre = |name: &str| {
+            let i = after.curve_index(name).unwrap();
+            match after.curves[i].kind {
+                CurveKind::Circle { c, .. } => after.points[c].pos,
+                _ => panic!("{cmd}: {name} is not a circle"),
+            }
+        };
+        match cmd {
+            "sketch.constraint.horizontal_vertical" => assert!(direction("a").y.abs() < 1e-6, "{cmd}: horizontal"),
+            "sketch.constraint.equal" => {
+                let radius = |name: &str| {
+                    let i = after.curve_index(name).unwrap();
+                    match after.curves[i].kind {
+                        CurveKind::Circle { r, .. } => r,
+                        _ => panic!("{cmd}: {name} is not a circle"),
+                    }
+                };
+                assert!((radius("a") - radius("b")).abs() < 1e-6, "{cmd}: equal radii");
+            }
+            "sketch.constraint.parallel" => assert!(direction("a").cross(direction("b")).abs() < 1e-5, "{cmd}: parallel"),
+            "sketch.constraint.perpendicular" => assert!(direction("a").dot(direction("b")).abs() < 1e-5, "{cmd}: perpendicular"),
+            "sketch.constraint.concentric" => assert!(centre("a").dist(centre("b")) < 1e-6, "{cmd}: common centre"),
+            "sketch.constraint.midpoint" => {
+                let i = after.curve_index("a").unwrap();
+                let CurveKind::Line { a, b } = after.curves[i].kind else { panic!("{cmd}: missing line") };
+                let centre = (after.points[a].pos + after.points[b].pos) * 0.5;
+                let mark = after.points[after.resolve_point("marker").unwrap()].pos;
+                assert!(mark.dist(centre) < 1e-6, "{cmd}: marker at line midpoint");
+            }
+            _ => panic!("unexpected case {cmd}"),
+        }
+        assert_eq!((&s.doc.features, &s.doc.params), (&original.features, &original.params), "{cmd}: no model writes");
+        assert!(Arc::ptr_eq(&original_model, &s.model.state()), "{cmd}: no model evaluation");
+        assert_eq!(s.evaluations, evaluated, "{cmd}");
+        assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (undo + 1, Some(drawing)), "{cmd}");
+        let changed = after.clone();
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(target).unwrap().sketch, before, "{cmd}: undo");
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(target).unwrap().sketch, changed, "{cmd}: redo");
+        let saved = s.doc.to_json();
+        let reopened = solidcraft_doc::Document::from_json(&saved).unwrap();
+        assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(target).unwrap().sketch, changed, "{cmd}: reopen");
+    }
+}
+
+#[test]
+fn sheet_reviewer_constraints_refuse_cross_owner_targets_atomically() {
+    let (mut s, d, sk, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points":[[20,20],[60,20]],"ids":["a"]}));
+    run(&mut s, "sketch.point", json!({"point":[40,30],"id":"marker"}));
+    let before = s.doc.clone();
+    let entry = s.active_sheet_sketch.clone();
+    let counts = (s.undo.len(), s.redo.len(), s.evaluations);
+    let model = s.model.state();
+    for (cmd, p) in [
+        ("sketch.constraint.horizontal_vertical", json!({"sketch":-1,"line":"a"})),
+        ("sketch.constraint.equal", json!({"sketch":-1,"a":"a","b":"a"})),
+        ("sketch.constraint.parallel", json!({"sketch":-1,"a":"a","b":"a"})),
+        ("sketch.constraint.perpendicular", json!({"sketch":-1,"a":"a","b":"a"})),
+        ("sketch.constraint.concentric", json!({"sketch":-1,"a":"a","b":"a"})),
+        ("sketch.constraint.midpoint", json!({"sketch":-1,"point":"marker","line":"a"})),
+    ] {
+        refused(&mut s, cmd, p);
+        assert!(Arc::ptr_eq(&s.doc, &before), "{cmd}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{cmd}");
+        assert_eq!(s.active_sheet_sketch, entry, "{cmd}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), counts, "{cmd}");
+        assert_eq!(s.doc.drawing(d).unwrap().sheet_sketch(sk).unwrap().sketch.curves.len(), 1);
+    }
+}

@@ -333,3 +333,28 @@ model isolation, undo/redo, a polygon save/reopen cycle, and atomic refusals of
 invalid geometry and a model sketch as target. These are tests, not a claim that
 the native or browser editor is connected. Text/geometry sheet-scene tools and
 view-aware sketching still require the owners' shared-scene and UI integration.
+
+
+### R8: six shared geometric constraints
+
+The same paper receiver now admits the existing horizontal/vertical, equal,
+parallel, perpendicular, concentric and midpoint constraint commands.
+They use the model sketcher's constraint builder and solver on an exact
+drawing/sheet/sketch target, but publish the solved geometry only through
+`Session::edit_drawing`, with drawing-local undo/redo. A constraint cannot
+select another sheet or a model sketch. These are geometric constraints on
+authored sheet sketches, **not** sheet annotation dimensions or model-linked
+projected geometry. The original model source and its parameters are read-only.
+
+Six remaining expression-parser sites for circle/arc point arguments have
+independent inch-design acceptance cases: circle through-point, all three
+three-point arc inputs, and centre-point arc centre/end. Source expressions
+remain authored while bare literals use paper millimetres. Until sheet-local
+snap resolution is implemented, `mid:`, `on:` and `x:` input markers and
+model `vertex`/`on_edge` projections refuse rather than implicitly reading
+the model's active sketch. Main's `x:` spelling is included proactively in
+this refusal, **not implemented** for sheet curves.
+
+Coincident, tangent, collinear, symmetry, dimensions and advanced constraints
+remain model-only pending dedicated qualification. Canonical Cancel and the
+shared receiver/locale merge are still prerequisites for a GUI-ready editor.
