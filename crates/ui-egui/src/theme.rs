@@ -764,7 +764,8 @@ pub struct Tokens {
     pub sketch_halo: Color32,
     /// Fixed (locked) sketch geometry.
     pub sketch_locked: Color32,
-    /// Sketch dimensions: driving, driven (reference).
+    /// Sketch dimensions: driving, driven (reference). Each theme gives them a colour of their
+    /// own, apart from the sketch curves they measure (#7861).
     pub dimension: Color32,
     pub dimension_driven: Color32,
     /// Sketch points: fully constrained, free.
