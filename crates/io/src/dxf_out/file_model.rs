@@ -12,8 +12,8 @@
 //! not a promise of complete DXF import support. Geometry owns its own budget.
 //! Standard physical lineweights use the 24 public DXF codes, with exact
 //! midpoint ties choosing the heavier weight. Absent and symbolic entity
-//! weights stay distinct. Layer zero retains its initial immutable style;
-//! importing other layer-zero styles and Unicode names remains unsupported.
+//! weights stay distinct. Layer zero is initialized by new() or with_layer_zero()
+//! and stays immutable after construction. Unicode names remain unsupported.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -198,14 +198,30 @@ impl<G> DxfFile<G> {
         Self::with_limits(MAX_LAYERS, MAX_ENTITIES)
     }
 
+    /// Construct a new file with the imported style of its first layer, `0`.
+    /// This is initialization, not a setter: the style is immutable after construction.
+    /// Colors use the same indexed range as [`Self::declare_layer`]; a missing
+    /// physical weight remains absent rather than becoming an explicit zero.
+    /// Every successful construction mints fresh file-scoped ownership handles.
+    pub fn with_layer_zero(color: i16, linetype: DxfLinetype, weight: Option<StandardWeight>) -> Result<Self> {
+        Self::with_layer_zero_limits(color, linetype, weight, MAX_LAYERS, MAX_ENTITIES)
+    }
+
     fn with_limits(max_layers: usize, max_entities: usize) -> Result<Self> {
+        Self::with_layer_zero_limits(7, DxfLinetype::Continuous, None, max_layers, max_entities)
+    }
+
+    fn with_layer_zero_limits(color: i16, linetype: DxfLinetype, weight: Option<StandardWeight>, max_layers: usize, max_entities: usize) -> Result<Self> {
+        if !(1..=255).contains(&color) {
+            return Err(invalid("DXF layer color must be an index from 1 to 255"));
+        }
         if max_layers == 0 {
             return Err(invalid("DXF file requires layer 0"));
         }
         let owner = owner_from(&NEXT_OWNER)?;
         let mut layers = Vec::new();
         layers.try_reserve(1).map_err(|_| invalid("DXF layer allocation failed"))?;
-        layers.push(Layer { original: owned("0")?, name: owned("0")?, color: 7, linetype: DxfLinetype::Continuous, weight: None });
+        layers.push(Layer { original: owned("0")?, name: owned("0")?, color, linetype, weight });
         Ok(Self { owner, layers, entities: Vec::new(), max_layers: max_layers.min(MAX_LAYERS), max_entities: max_entities.min(MAX_ENTITIES) })
     }
 
@@ -668,5 +684,119 @@ mod tests {
         assert_eq!(recovered.layer(recovered.entities()[1].layer()).unwrap().name(), "0");
         assert_eq!(recovered.entities()[1].weight(), None);
         assert!(recovered.layer(points).is_err());
+    }
+
+    #[test]
+    fn layer_zero_default_constructor_keeps_new_metadata_and_writer_bytes() {
+        let mut original = DxfFile::new().unwrap();
+        let mut imported = DxfFile::with_layer_zero(7, DxfLinetype::Continuous, None).unwrap();
+        for file in [&original, &imported] {
+            assert_eq!(file.layers().len(), 1);
+            assert!(file.entities().is_empty());
+            let zero = file.layer(file.default_layer()).unwrap();
+            assert_eq!((zero.name(), zero.color(), zero.linetype(), zero.weight()), ("0", 7, DxfLinetype::Continuous, None));
+        }
+        assert_eq!(crate::write_dxf_file(&original).unwrap(), crate::write_dxf_file(&imported).unwrap());
+        original.push(original.default_layer(), DxfShape::Line(Vec2::new(-1.0, 0.5), Vec2::new(2.0, 0.5)), None).unwrap();
+        imported.push(imported.default_layer(), DxfShape::Line(Vec2::new(-1.0, 0.5), Vec2::new(2.0, 0.5)), None).unwrap();
+        assert_eq!(original.effective_weight(0).unwrap(), EntityWeight::Default);
+        assert_eq!(imported.effective_weight(0).unwrap(), EntityWeight::Default);
+        assert_eq!(crate::write_dxf_file(&original).unwrap(), crate::write_dxf_file(&imported).unwrap());
+        assert!(original.layer(imported.default_layer()).is_err());
+        assert!(imported.layer(original.default_layer()).is_err());
+    }
+
+    #[test]
+    fn imported_layer_zero_is_first_and_immutable_through_every_zero_alias() {
+        let zero_weight = Some(StandardWeight::from_code(0).unwrap());
+        let mut file = DxfFile::with_layer_zero(3, DxfLinetype::Hidden, zero_weight).unwrap();
+        let zero = file.default_layer();
+        assert!(file.entities().is_empty());
+        let cut = file.declare_layer("CUT", 1, DxfLinetype::Dashed, None).unwrap();
+        file.push(zero, (), None).unwrap();
+        for alias in ["0", " 0 ", "\t0\r\n", "", " \t\r\n\x0b\x0c "] {
+            assert_eq!(file.declare_layer(alias, 3, DxfLinetype::Hidden, zero_weight).unwrap(), zero);
+            assert!(file.declare_layer(alias, 7, DxfLinetype::Hidden, zero_weight).is_err());
+            assert!(file.declare_layer(alias, 3, DxfLinetype::Continuous, zero_weight).is_err());
+            assert!(file.declare_layer(alias, 3, DxfLinetype::Hidden, None).is_err());
+        }
+        assert_eq!(file.layers().iter().map(Layer::name).collect::<Vec<_>>(), ["0", "CUT"]);
+        let layer = file.layer(zero).unwrap();
+        assert_eq!((layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)), (3, DxfLinetype::Hidden, Some(0)));
+        assert_eq!(file.layer(cut).unwrap().name(), "CUT");
+        assert_eq!(file.entities().len(), 1);
+        assert_eq!(file.entities()[0].layer(), zero);
+    }
+
+    #[test]
+    fn imported_zero_inheritance_keeps_omission_symbols_and_physical_zero_distinct() {
+        for code in [None, Some(0), Some(50)] {
+            let layer_weight = code.map(|value| StandardWeight::from_code(value).unwrap());
+            let mut file = DxfFile::with_layer_zero(5, DxfLinetype::Dashed, layer_weight).unwrap();
+            for weight in [None, Some(EntityWeight::ByLayer), Some(EntityWeight::ByBlock), Some(EntityWeight::Default), Some(EntityWeight::Explicit(StandardWeight::from_code(13).unwrap()))] {
+                file.push(file.default_layer(), (), weight).unwrap();
+            }
+            let inherited = match code {
+                None => EntityWeight::Default,
+                Some(0) => EntityWeight::Explicit(StandardWeight::from_code(0).unwrap()),
+                Some(50) => EntityWeight::Explicit(StandardWeight::from_code(50).unwrap()),
+                _ => panic!("unexpected fixture weight"),
+            };
+            assert_eq!(file.layer(file.default_layer()).unwrap().weight().map(StandardWeight::code), code);
+            assert_eq!(file.entities()[0].weight(), None);
+            assert_eq!(file.entities()[1].weight(), Some(EntityWeight::ByLayer));
+            assert_eq!(file.effective_weight(0).unwrap(), inherited);
+            assert_eq!(file.effective_weight(1).unwrap(), inherited);
+            assert_eq!(file.effective_weight(2).unwrap(), EntityWeight::ByBlock);
+            assert_eq!(file.effective_weight(3).unwrap(), EntityWeight::Default);
+            assert_eq!(file.effective_weight(4).unwrap(), EntityWeight::Explicit(StandardWeight::from_code(13).unwrap()));
+            assert_eq!(file.effective_linetype(0).unwrap(), DxfLinetype::Dashed);
+        }
+    }
+
+    #[test]
+    fn imported_layer_zero_uses_validated_colors_and_standard_weight_types() {
+        for color in [i16::MIN, -1, 0, 256, i16::MAX] {
+            let error = DxfFile::<()>::with_layer_zero(color, DxfLinetype::Continuous, None).unwrap_err();
+            assert!(error.to_string().contains("color must be an index from 1 to 255"));
+        }
+        for color in [1, 255] {
+            let file = DxfFile::<()>::with_layer_zero(color, DxfLinetype::Hidden, Some(StandardWeight::from_code(211).unwrap())).unwrap();
+            let zero = file.layer(file.default_layer()).unwrap();
+            assert_eq!((zero.color(), zero.linetype(), zero.weight().map(StandardWeight::code)), (color, DxfLinetype::Hidden, Some(211)));
+        }
+        assert!(StandardWeight::from_code(6).is_err());
+    }
+
+    #[test]
+    fn imported_zero_handles_are_fresh_and_foreign_insertion_is_atomic() {
+        let first = DxfFile::<()>::with_layer_zero(1, DxfLinetype::Dashed, None).unwrap();
+        let mut second = DxfFile::with_layer_zero(1, DxfLinetype::Dashed, None).unwrap();
+        let mut ordinary = DxfFile::new().unwrap();
+        assert!(second.push(first.default_layer(), (), None).is_err());
+        assert!(ordinary.push(second.default_layer(), (), None).is_err());
+        assert!(second.push(ordinary.default_layer(), (), None).is_err());
+        assert!(second.entities().is_empty());
+        assert!(ordinary.entities().is_empty());
+        second.push(second.default_layer(), (), None).unwrap();
+        assert_eq!(second.entities().len(), 1);
+        assert_eq!(second.layers().len(), 1);
+        assert_eq!(second.layer(second.entities()[0].layer()).unwrap().name(), "0");
+    }
+
+    #[test]
+    fn imported_zero_constructor_keeps_fallible_resource_limits() {
+        assert!(DxfFile::<()>::with_layer_zero_limits(1, DxfLinetype::Dashed, None, 0, 1).is_err());
+        let mut empty = DxfFile::with_layer_zero_limits(1, DxfLinetype::Dashed, None, 1, 0).unwrap();
+        assert!(empty.push(empty.default_layer(), (), None).is_err());
+        assert!(empty.entities().is_empty());
+        let mut file = DxfFile::with_layer_zero_limits(2, DxfLinetype::Hidden, None, 2, 1).unwrap();
+        file.declare_layer("CUT", 1, DxfLinetype::Continuous, None).unwrap();
+        assert!(file.declare_layer("EXCESS", 1, DxfLinetype::Continuous, None).is_err());
+        file.push(file.default_layer(), (), None).unwrap();
+        assert!(file.push(file.default_layer(), (), None).is_err());
+        assert_eq!((file.layers().len(), file.entities().len()), (2, 1));
+        let bounded = DxfFile::<()>::with_layer_zero_limits(7, DxfLinetype::Continuous, None, usize::MAX, usize::MAX).unwrap();
+        assert_eq!((bounded.max_layers, bounded.max_entities), (1024, 1_000_000));
     }
 }

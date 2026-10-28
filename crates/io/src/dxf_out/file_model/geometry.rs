@@ -212,7 +212,7 @@ where
             valid_arc(*a0, *a1)?;
             supporting_circle(*c, *r)
         }
-        DxfShape::Text { at, height, angle_deg, .. } => {
+        DxfShape::Text { at, height, angle_deg, .. } | DxfShape::AlignedText { at, height, angle_deg, .. } => {
             valid_text(*at, *height, *angle_deg)?;
             let supplied = text_bounds(shape)?;
             // Public fields do not bypass validation of callback output.
@@ -281,6 +281,15 @@ fn transformed_shape(shape: &DxfShape, scale: f64, translation: Vec2) -> Result<
             copy.push_str(text);
             Ok(DxfShape::Text { at, height, angle_deg: *angle_deg, text: copy })
         }
+        DxfShape::AlignedText { at, height, angle_deg, text, horizontal, vertical } => {
+            valid_text(*at, *height, *angle_deg)?;
+            let at = transformed_point(*at, scale, translation)?;
+            let height = positive(*height * scale)?;
+            let mut copy = String::new();
+            copy.try_reserve(text.len()).map_err(|_| invalid("DXF text allocation failed"))?;
+            copy.push_str(text);
+            Ok(DxfShape::AlignedText { at, height, angle_deg: *angle_deg, text: copy, horizontal: *horizontal, vertical: *vertical })
+        }
     }
 }
 
@@ -326,7 +335,8 @@ impl DxfFile<DxfShape> {
     }
 
     /// The callback supplies complete world-space bounds for the real TEXT
-    /// layout, including rotation and centre-baseline alignment. It owns metric
+    /// layout, including rotation and the actual stored alignment (centre on
+    /// baseline for legacy Text). It owns metric
     /// accuracy; this adapter only checks finiteness/order. No text is serialized.
     pub fn extents_with_text_bounds<F>(&self, mut text_bounds: F) -> Result<Option<DxfGeometryBounds>>
     where
@@ -368,7 +378,7 @@ impl DxfFile<DxfShape> {
             // string comparison cost in layer declarations, or wall-clock time.
             budget.charge(0, 32, copy_limit, work_limit)?;
             match entity.geometry() {
-                DxfShape::Text { text, .. } => {
+                DxfShape::Text { text, .. } | DxfShape::AlignedText { text, .. } => {
                     text_bytes = accumulated_text_bytes(text_bytes, text.len(), copy_limit)?;
                     budget.charge(text.len(), text.len(), copy_limit, work_limit)?;
                 }
@@ -391,7 +401,10 @@ impl DxfFile<DxfShape> {
         positive(scale)?;
         // Length-only preflight before validation scans, output or copying.
         self.preflight_geometry(copy_limit, work_limit)?;
-        let mut output = Self::new()?;
+        // Layer0 is immutable after construction. Seed the fresh owner with
+        // its actual source style before the normal layer-handle remap.
+        let zero = self.layer(self.default_layer())?;
+        let mut output = Self::with_layer_zero(zero.color(), zero.linetype(), zero.weight())?;
         let mut layers = Vec::new();
         layers.try_reserve(self.layers().len()).map_err(|_| invalid("DXF layer remap allocation failed"))?;
         for layer in self.layers() {
@@ -409,6 +422,123 @@ impl DxfFile<DxfShape> {
 #[cfg(test)]
 mod tests {
     use super::super::super::DxfLinetype;
+    use super::super::super::{DxfTextHorizontalAlignment, DxfTextVerticalAlignment};
+
+    #[test]
+    fn identity_and_positive_copy_preserve_custom_layer_zero_and_remap_all_handles() {
+        let physical_zero = StandardWeight::from_code(0).unwrap();
+        let physical_50 = StandardWeight::from_code(50).unwrap();
+        let cut_weight = StandardWeight::from_code(25).unwrap();
+        let explicit_13 = EntityWeight::Explicit(StandardWeight::from_code(13).unwrap());
+        let original = [
+            DxfShape::Line(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0)),
+            DxfShape::Point(Vec2::new(-1.0, 0.0)), DxfShape::Point(Vec2::new(0.0, 1.0)),
+            DxfShape::Point(Vec2::new(2.0, -1.0)), DxfShape::Point(Vec2::new(4.0, 2.0)),
+            DxfShape::Line(Vec2::new(0.0, -2.0), Vec2::new(2.0, -2.0)),
+        ];
+        let moved = [
+            DxfShape::Line(Vec2::new(12.0, -1.0), Vec2::new(16.0, 3.0)),
+            DxfShape::Point(Vec2::new(8.0, -5.0)), DxfShape::Point(Vec2::new(10.0, -3.0)),
+            DxfShape::Point(Vec2::new(14.0, -7.0)), DxfShape::Point(Vec2::new(18.0, -1.0)),
+            DxfShape::Line(Vec2::new(10.0, -9.0), Vec2::new(14.0, -9.0)),
+        ];
+        let weights = [None, Some(EntityWeight::ByLayer), Some(EntityWeight::ByBlock), Some(EntityWeight::Default), Some(explicit_13), None];
+        for zero_weight in [None, Some(physical_zero), Some(physical_50)] {
+            let mut source = DxfFile::with_layer_zero(3, DxfLinetype::Hidden, zero_weight).unwrap();
+            let zero = source.default_layer();
+            let cut = source.declare_layer("CUT", 5, DxfLinetype::Dashed, Some(cut_weight)).unwrap();
+            for (index, shape) in original.iter().enumerate() {
+                source.push(if index == 5 { cut } else { zero }, shape.clone(), weights[index]).unwrap();
+            }
+            for (translation, scale, expected) in [(Vec2::ZERO, 1.0, &original), (Vec2::new(10.0, -5.0), 2.0, &moved)] {
+                let copied = source.translated_scaled(translation, scale).unwrap();
+                assert_eq!(copied.layers().iter().map(|layer| layer.name()).collect::<Vec<_>>(), ["0", "CUT"]);
+                let new_zero = copied.layer(copied.default_layer()).unwrap();
+                assert_eq!((new_zero.color(), new_zero.linetype(), new_zero.weight()), (3, DxfLinetype::Hidden, zero_weight));
+                let new_cut = copied.layer(copied.entities()[5].layer()).unwrap();
+                assert_eq!((new_cut.name(), new_cut.color(), new_cut.linetype(), new_cut.weight()), ("CUT", 5, DxfLinetype::Dashed, Some(cut_weight)));
+                assert!(copied.layer(zero).is_err() && copied.layer(cut).is_err());
+                assert!(source.layer(copied.default_layer()).is_err());
+                assert!(source.layer(copied.entities()[5].layer()).is_err());
+                for (index, (entity, shape)) in copied.entities().iter().zip(expected).enumerate() {
+                    assert_eq!(entity.geometry(), shape);
+                    assert_eq!(entity.weight(), weights[index]);
+                    assert_eq!(copied.effective_linetype(index).unwrap(), if index == 5 { DxfLinetype::Dashed } else { DxfLinetype::Hidden });
+                    if index < 5 { assert_eq!(entity.layer(), copied.default_layer()); }
+                }
+                let inherited = zero_weight.map_or(EntityWeight::Default, EntityWeight::Explicit);
+                assert_eq!(copied.effective_weight(0).unwrap(), inherited);
+                assert_eq!(copied.effective_weight(1).unwrap(), inherited);
+                assert_eq!(copied.effective_weight(2).unwrap(), EntityWeight::ByBlock);
+                assert_eq!(copied.effective_weight(3).unwrap(), EntityWeight::Default);
+                assert_eq!(copied.effective_weight(4).unwrap(), explicit_13);
+                assert_eq!(copied.effective_weight(5).unwrap(), EntityWeight::Explicit(cut_weight));
+            }
+            assert_eq!(source.entities().len(), original.len());
+            for (index, (entity, shape)) in source.entities().iter().zip(&original).enumerate() {
+                assert_eq!(entity.geometry(), shape);
+                assert_eq!(entity.weight(), weights[index]);
+            }
+            let original_zero = source.layer(zero).unwrap();
+            assert_eq!((original_zero.color(), original_zero.linetype(), original_zero.weight()), (3, DxfLinetype::Hidden, zero_weight));
+        }
+    }
+
+    #[test]
+    fn all_nine_alignments_use_explicit_bounds_and_transform_without_losing_style() {
+        for horizontal in [DxfTextHorizontalAlignment::Left, DxfTextHorizontalAlignment::Centre, DxfTextHorizontalAlignment::Right] {
+            for vertical in [DxfTextVerticalAlignment::Baseline, DxfTextVerticalAlignment::Middle, DxfTextVerticalAlignment::Top] {
+                let mut file = DxfFile::new().unwrap();
+                let physical = StandardWeight::from_code(50).unwrap();
+                let layer = file.declare_layer("NOTES", 4, DxfLinetype::Hidden, Some(physical)).unwrap();
+                let original = DxfShape::AlignedText { at: Vec2::new(2.0, 3.0), height: 4.0, angle_deg: 90.0, text: "A".into(), horizontal, vertical };
+                file.push(layer, original.clone(), Some(EntityWeight::ByLayer)).unwrap();
+                assert!(file.extents().is_err());
+                let provided = DxfGeometryBounds::new(Vec2::new(-2.0, 1.0), Vec2::new(3.0, 6.0)).unwrap();
+                assert_eq!(file.extents_with_text_bounds(|shape| {
+                    assert_eq!(shape, &original);
+                    Ok(provided)
+                }).unwrap(), Some(provided));
+                let copied = file.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
+                assert_eq!(copied.entities()[0].geometry(), &DxfShape::AlignedText {
+                    at: Vec2::new(14.0, 1.0), height: 8.0, angle_deg: 90.0, text: "A".into(), horizontal, vertical,
+                });
+                assert!(copied.extents().is_err());
+                let moved_bounds = DxfGeometryBounds::new(Vec2::new(6.0, -3.0), Vec2::new(16.0, 7.0)).unwrap();
+                assert_eq!(copied.extents_with_text_bounds(|shape| {
+                    assert_eq!(shape, copied.entities()[0].geometry());
+                    Ok(moved_bounds)
+                }).unwrap(), Some(moved_bounds));
+                assert_eq!(copied.entities()[0].weight(), Some(EntityWeight::ByLayer));
+                assert_eq!(copied.effective_weight(0).unwrap(), EntityWeight::Explicit(physical));
+                assert_eq!(copied.effective_linetype(0).unwrap(), DxfLinetype::Hidden);
+                assert_eq!(file.entities()[0].geometry(), &original);
+            }
+        }
+    }
+
+    #[test]
+    fn aligned_payload_participates_in_existing_cumulative_text_budget() {
+        let mut file = DxfFile::new().unwrap();
+        file.push(file.default_layer(), DxfShape::Text { at: Vec2::ZERO, height: 1.0, angle_deg: 0.0, text: "é".into() }, None).unwrap();
+        file.push(file.default_layer(), DxfShape::AlignedText {
+            at: Vec2::ZERO, height: 1.0, angle_deg: 0.0, text: "abc".into(), horizontal: DxfTextHorizontalAlignment::Left, vertical: DxfTextVerticalAlignment::Top,
+        }, None).unwrap();
+        assert!(file.translated_scaled_with_text_limit(Vec2::ZERO, 1.0, 5).is_ok());
+        assert!(file.translated_scaled_with_text_limit(Vec2::ZERO, 1.0, 4).is_err());
+        assert_eq!(file.entities().len(), 2);
+    }
+
+    #[test]
+    fn aligned_transform_and_callback_refusals_preserve_source() {
+        let mut file = DxfFile::new().unwrap();
+        let original = DxfShape::AlignedText { at: Vec2::new(f64::MAX, 0.0), height: 1.0, angle_deg: 0.0, text: "A".into(), horizontal: DxfTextHorizontalAlignment::Right, vertical: DxfTextVerticalAlignment::Top };
+        file.push(file.default_layer(), original.clone(), Some(EntityWeight::Default)).unwrap();
+        assert!(file.translated_scaled(Vec2::ZERO, 2.0).is_err());
+        assert!(file.extents_with_text_bounds(|_| Ok(DxfGeometryBounds { min: Vec2::new(1.0, 1.0), max: Vec2::ZERO })).is_err());
+        assert_eq!(file.entities()[0].geometry(), &original);
+        assert_eq!(file.entities()[0].weight(), Some(EntityWeight::Default));
+    }
 
     #[test]
     fn point_has_exact_bounds_and_positive_transform_preserves_metadata() {

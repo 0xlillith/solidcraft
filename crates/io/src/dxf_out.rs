@@ -64,6 +64,41 @@ impl DxfLayer {
     }
 }
 
+/// The three horizontal TEXT modes in the nine-alignment subset.
+/// This deliberately excludes DXF Aligned/Middle/Fit modes72=3/4/5.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DxfTextHorizontalAlignment { Left, Centre, Right }
+
+impl DxfTextHorizontalAlignment {
+    pub fn group72(self) -> i16 {
+        match self { Self::Left => 0, Self::Centre => 1, Self::Right => 2 }
+    }
+
+    pub fn from_group72(code: i16) -> Result<Self> {
+        match code {
+            0 => Ok(Self::Left), 1 => Ok(Self::Centre), 2 => Ok(Self::Right),
+            _ => Err(IoError::Invalid("not supported yet: DXF horizontal TEXT alignment outside left/centre/right".into())),
+        }
+    }
+}
+
+/// Baseline, middle and top only; DXF Bottom73=1 is outside this subset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DxfTextVerticalAlignment { Baseline, Middle, Top }
+
+impl DxfTextVerticalAlignment {
+    pub fn group73(self) -> i16 {
+        match self { Self::Baseline => 0, Self::Middle => 2, Self::Top => 3 }
+    }
+
+    pub fn from_group73(code: i16) -> Result<Self> {
+        match code {
+            0 => Ok(Self::Baseline), 2 => Ok(Self::Middle), 3 => Ok(Self::Top),
+            _ => Err(IoError::Invalid("not supported yet: DXF vertical TEXT alignment outside baseline/middle/top".into())),
+        }
+    }
+}
+
 /// The geometry of one entity (millimetres).
 #[derive(Clone, Debug, PartialEq)]
 pub enum DxfShape {
@@ -112,6 +147,19 @@ pub enum DxfShape {
         height: f64,
         angle_deg: f64,
         text: String,
+    },
+    /// TEXT with one of nine explicit alignments. `at` is the requested anchor:
+    /// group10 for left/baseline, group11 otherwise. Both records carry `at`;
+    /// readers resolve the effective anchor from72/73. Default OCS is planar.
+    /// Encoding and Standard style are the same as Text, not a plain-text or
+    /// font-layout change. Bounds require an explicit real layout callback.
+    AlignedText {
+        at: Vec2,
+        height: f64,
+        angle_deg: f64,
+        text: String,
+        horizontal: DxfTextHorizontalAlignment,
+        vertical: DxfTextVerticalAlignment,
     },
 }
 
@@ -223,8 +271,9 @@ fn bezier_spline(pts: &[Vec2], weights: Option<Vec<f64>>) -> DxfShape {
 
 impl DxfShape {
     /// Points on the shape (or its control polygon) for the drawing's extents.
-    fn sample(&self, out: &mut Vec<Vec2>) {
+    fn sample(&self, out: &mut Vec<Vec2>) -> Result<()> {
         match self {
+            DxfShape::AlignedText { .. } => return Err(IoError::Invalid("aligned DXF TEXT requires explicit layout bounds".into())),
             DxfShape::Point(point) => out.push(*point),
             DxfShape::Line(a, b) => out.extend([*a, *b]),
             DxfShape::Polyline { points } => out.extend(points.iter().copied()),
@@ -250,6 +299,7 @@ impl DxfShape {
                 out.extend([-half, half].map(|s| *at + along * s + up * *height));
             }
         }
+        Ok(())
     }
 }
 
@@ -433,6 +483,7 @@ fn text_value(s: &str) -> Result<String> {
 /// A DXF drawing (AutoCAD 2000, millimetres) of `entities`. `layers` are the layers they are on
 /// (layer `0` is always there). A TEXT character beyond U+FFFF returns an error naming the
 /// character, its position, the entity and its layer; no drawing is returned on failure.
+/// Explicit AlignedText requires the owned writer with caller layout bounds.
 pub fn write_dxf_drawing(layers: &[DxfLayer], entities: &[DxfEntity]) -> Result<String> {
     let mut layer_list = vec![DxfLayer::new("0", 7)];
     for l in layers {
@@ -483,12 +534,29 @@ struct EntityView<'a> {
 /// Work is bounded to 1,024 layers, 1,000,000 entities and 1,000,000 cumulative sampled
 /// extent points plus spline knots/weights. Output, including its header, is limited to the
 /// existing 64 MiB drawing-byte budget. Allocation/budget failure returns no partial file.
+/// AlignedText requires [`write_dxf_file_with_text_bounds`]; this entry point
+/// cannot supply font metrics and refuses it. Legacy Text bytes remain unchanged.
 pub fn write_dxf_file(file: &DxfFile<DxfShape>) -> Result<String> {
     write_dxf_file_limited(file, crate::MAX_DRAWING_BYTES, MAX_DXF_FILE_VALUES)
 }
 
+/// Write owned geometry including explicit TEXT alignments. For AlignedText,
+/// the caller supplies complete world-space font/layout bounds for the actual
+/// anchor, height and rotation, including overhangs. Finite/order is checked;
+/// this writer cannot certify font metrics. Legacy Text retains its old sampled
+/// extents and bytes and does not call this provider. Errors return no file.
+pub fn write_dxf_file_with_text_bounds<F>(file: &DxfFile<DxfShape>, text_bounds: F) -> Result<String>
+where F: FnMut(&DxfShape) -> Result<DxfGeometryBounds> {
+    write_dxf_file_limited_with_text_bounds(file, crate::MAX_DRAWING_BYTES, MAX_DXF_FILE_VALUES, text_bounds)
+}
+
 // Private tightening seam lets the resource boundary be checked with tiny original cases.
 fn write_dxf_file_limited(file: &DxfFile<DxfShape>, bytes: usize, values: usize) -> Result<String> {
+    write_dxf_file_limited_with_text_bounds(file, bytes, values, |_| Err(IoError::Invalid("aligned DXF TEXT requires explicit layout bounds".into())))
+}
+
+fn write_dxf_file_limited_with_text_bounds<F>(file: &DxfFile<DxfShape>, bytes: usize, values: usize, mut text_bounds: F) -> Result<String>
+where F: FnMut(&DxfShape) -> Result<DxfGeometryBounds> {
     let bytes = bytes.min(crate::MAX_DRAWING_BYTES);
     let values = values.min(MAX_DXF_FILE_VALUES);
     if file.layers().len() > 1_024 || file.entities().len() > 1_000_000 {
@@ -512,7 +580,13 @@ fn write_dxf_file_limited(file: &DxfFile<DxfShape>, bytes: usize, values: usize)
             .map_err(|error| IoError::Invalid(format!("DXF entity {} on layer {:?}: {error}", index + 1, layer.name())))?;
         samples.clear();
         samples.try_reserve(count).map_err(|_| IoError::Invalid("DXF extent allocation failed".into()))?;
-        shape.sample(&mut samples);
+        if matches!(shape, DxfShape::AlignedText { .. }) {
+            let bounds = text_bounds(shape).and_then(|bounds| DxfGeometryBounds::new(bounds.min, bounds.max))
+                .map_err(|error| IoError::Invalid(format!("DXF aligned TEXT entity {} on layer {:?}: {error}", index + 1, layer.name())))?;
+            samples.extend([bounds.min, bounds.max]);
+        } else {
+            shape.sample(&mut samples)?;
+        }
         for point in &samples {
             if !point.is_finite() {
                 return Err(IoError::Invalid(format!("DXF entity {} has non-finite derived extents", index + 1)));
@@ -580,7 +654,7 @@ fn shape_preflight(shape: &DxfShape) -> Result<()> {
                 && knots.iter().rev().take(degree + 1).all(|k| *k == last)
                 && weights.as_ref().is_none_or(|w| w.iter().all(|v| v.is_finite() && *v > 0.0))
         }
-        DxfShape::Text { at, height, angle_deg, text } => {
+        DxfShape::Text { at, height, angle_deg, text } | DxfShape::AlignedText { at, height, angle_deg, text, .. } => {
             if text.len() > 1_000 || text.chars().count() > 250 || text.chars().any(|c| u32::from(c) > 0xffff) {
                 return Err(IoError::Invalid("DXF owned TEXT supports at most 250 BMP characters; no text was truncated".into()));
             }
@@ -601,6 +675,7 @@ fn shape_work(shape: &DxfShape) -> Result<usize> {
         DxfShape::Arc { .. } => Ok(65),
         DxfShape::Ellipse { .. } => Ok(129),
         DxfShape::Text { .. } => Ok(4),
+        DxfShape::AlignedText { .. } => Ok(2),
         DxfShape::Spline { knots, ctrl, weights, .. } => ctrl
             .len()
             .checked_add(knots.len())
@@ -689,7 +764,7 @@ fn shape_emission_preflight(shape: &DxfShape) -> Result<()> {
                 positive(*weight)?;
             }
         }
-        DxfShape::Text { height, .. } => positive(*height)?,
+        DxfShape::Text { height, .. } | DxfShape::AlignedText { height, .. } => positive(*height)?,
     }
     Ok(())
 }
@@ -709,7 +784,7 @@ where
             // Legacy path retains its existing permissive sampled extents.
             let mut pts = Vec::new();
             for e in entities.clone() {
-                e?.shape.sample(&mut pts);
+                e?.shape.sample(&mut pts)?;
             }
             pts.retain(|p| p.is_finite());
             pts.iter().fold(None, |acc, point| Some(extend_extents(acc, *point))).unwrap_or((Vec2::ZERO, Vec2::ZERO))
@@ -804,7 +879,7 @@ where
             DxfShape::Arc { .. } => "ARC",
             DxfShape::Ellipse { .. } => "ELLIPSE",
             DxfShape::Spline { .. } => "SPLINE",
-            DxfShape::Text { .. } => "TEXT",
+            DxfShape::Text { .. } | DxfShape::AlignedText { .. } => "TEXT",
         };
         let h = o.handle();
         o.code(0, kind);
@@ -816,6 +891,21 @@ where
             o.code(370, weight.group370());
         }
         match e.shape {
+            DxfShape::AlignedText { at, height, angle_deg, text, horizontal, vertical } => {
+                // The owned route validates payload/geometry and receives real
+                // bounds before reaching Out. The legacy route refuses this
+                // variant in sample(), before writing any final drawing.
+                o.code(100, "AcDbText");
+                o.point(10, *at);
+                o.num(40, *height);
+                let value = text_value(text).map_err(|error| IoError::Invalid(format!("DXF TEXT entity {} on layer {:?}: {error}", index + 1, e.layer)))?;
+                o.code(1, value);
+                o.num(50, *angle_deg);
+                o.code(72, horizontal.group72());
+                o.point(11, *at);
+                o.code(100, "AcDbText");
+                o.code(73, vertical.group73());
+            }
             DxfShape::Point(point) => {
                 // POINT uses WCS10/20/30, not an OCS displacement. The planar
                 // default normal/thickness need no extra optional fields.
@@ -1019,6 +1109,125 @@ mod tests {
         let owned_output = write_dxf_file(&file).unwrap();
         assert_eq!(owned_output, write_dxf_drawing(&[], &legacy).unwrap());
         assert_eq!(entities(&owned_output).iter().map(|record| record.0.as_str()).collect::<Vec<_>>(), ["POINT", "LINE"]);
+    }
+
+    #[test]
+    fn all_nine_text_alignments_emit_spec_codes_and_both_anchor_points() {
+        for (horizontal, code72) in [(DxfTextHorizontalAlignment::Left, 0), (DxfTextHorizontalAlignment::Centre, 1), (DxfTextHorizontalAlignment::Right, 2)] {
+            for (vertical, code73) in [(DxfTextVerticalAlignment::Baseline, 0), (DxfTextVerticalAlignment::Middle, 2), (DxfTextVerticalAlignment::Top, 3)] {
+                let mut file = DxfFile::new().unwrap();
+                let layer = file.declare_layer("NOTES", 4, DxfLinetype::Hidden, None).unwrap();
+                file.push(layer, DxfShape::AlignedText { at: Vec2::new(10.0, 20.0), height: 2.5, angle_deg: 30.0, text: "A".into(), horizontal, vertical }, Some(DxfEntityWeight::ByLayer)).unwrap();
+                let mut calls = 0;
+                // Explicit fixture from an external synthetic layout provider;
+                // its bounds are inputs, never inferred by the writer.
+                let bounds = DxfGeometryBounds::new(Vec2::new(7.0, 18.0), Vec2::new(15.0, 25.0)).unwrap();
+                let output = write_dxf_file_with_text_bounds(&file, |shape| {
+                    assert!(matches!(shape, DxfShape::AlignedText { horizontal: h, vertical: v, .. } if *h == horizontal && *v == vertical));
+                    calls += 1;
+                    Ok(bounds)
+                }).unwrap();
+                assert_eq!(calls, 1);
+                let records = entities(&output);
+                let record = records.first().unwrap();
+                assert_eq!(record.0, "TEXT");
+                assert_eq!(values(record, 72), [f64::from(code72)]);
+                assert_eq!(values(record, 73), [f64::from(code73)]);
+                for code in [10, 11] { assert_eq!(values(record, code), [10.0]); }
+                for code in [20, 21] { assert_eq!(values(record, code), [20.0]); }
+                for code in [30, 31] { assert_eq!(values(record, code), [0.0]); }
+                assert_eq!(field(&record.1, 8), "NOTES");
+                assert_eq!(values(record, 370), [-1.0]);
+                assert_eq!(values(record, 40), [2.5]);
+                assert_eq!(values(record, 50), [30.0]);
+                assert_eq!(record.1.iter().filter(|(code, value)| *code == 100 && value == "AcDbText").count(), 2);
+                let headers = pairs(&output);
+                let min = headers.iter().position(|(code, value)| *code == 9 && value == "$EXTMIN").unwrap();
+                let max = headers.iter().position(|(code, value)| *code == 9 && value == "$EXTMAX").unwrap();
+                assert_eq!(&headers[min + 1..min + 4], &[(10, "7.0".into()), (20, "18.0".into()), (30, "0.0".into())]);
+                assert_eq!(&headers[max + 1..max + 4], &[(10, "15.0".into()), (20, "25.0".into()), (30, "0.0".into())]);
+            }
+        }
+    }
+
+    #[test]
+    fn alignment_codes_reject_bottom_fit_and_unrepresented_modes() {
+        for code in [-1, 3, 4, 5, i16::MAX] { assert!(DxfTextHorizontalAlignment::from_group72(code).is_err()); }
+        for code in [-1, 1, 4, i16::MAX] { assert!(DxfTextVerticalAlignment::from_group73(code).is_err()); }
+        for (code, expected) in [(0, DxfTextHorizontalAlignment::Left), (1, DxfTextHorizontalAlignment::Centre), (2, DxfTextHorizontalAlignment::Right)] {
+            assert_eq!(DxfTextHorizontalAlignment::from_group72(code).unwrap(), expected);
+            assert_eq!(expected.group72(), code);
+        }
+        for (code, expected) in [(0, DxfTextVerticalAlignment::Baseline), (2, DxfTextVerticalAlignment::Middle), (3, DxfTextVerticalAlignment::Top)] {
+            assert_eq!(DxfTextVerticalAlignment::from_group73(code).unwrap(), expected);
+            assert_eq!(expected.group73(), code);
+        }
+    }
+
+    #[test]
+    fn explicit_centre_baseline_matches_legacy_bytes_when_given_the_same_layout_bounds() {
+        let at = Vec2::new(5.0, 6.0);
+        let legacy = DxfShape::Text { at, height: 2.5, angle_deg: 0.0, text: "AB".into() };
+        let legacy_output = write_dxf_drawing(&[], &[DxfEntity { layer: "0".into(), shape: legacy }]).unwrap();
+        let mut file = DxfFile::new().unwrap();
+        file.push(file.default_layer(), DxfShape::AlignedText {
+            at, height: 2.5, angle_deg: 0.0, text: "AB".into(), horizontal: DxfTextHorizontalAlignment::Centre, vertical: DxfTextVerticalAlignment::Baseline,
+        }, None).unwrap();
+        // Synthetic metrics chosen analytically: centre at5,6; width4,height2.5.
+        let output = write_dxf_file_with_text_bounds(&file, |_| DxfGeometryBounds::new(Vec2::new(3.0, 6.0), Vec2::new(7.0, 8.5))).unwrap();
+        assert_eq!(output, legacy_output);
+        let mut old_file = DxfFile::new().unwrap();
+        old_file.push(old_file.default_layer(), DxfShape::Text { at, height: 2.5, angle_deg: 0.0, text: "AB".into() }, None).unwrap();
+        assert_eq!(write_dxf_file_with_text_bounds(&old_file, |_| panic!("legacy Text must not request new metrics")).unwrap(), legacy_output);
+    }
+
+    #[test]
+    fn explicit_alignment_refuses_missing_or_invalid_layout_bounds_without_a_partial_file() {
+        let shape = DxfShape::AlignedText {
+            at: Vec2::ZERO, height: 1.0, angle_deg: 0.0, text: "A".into(), horizontal: DxfTextHorizontalAlignment::Left, vertical: DxfTextVerticalAlignment::Top,
+        };
+        let mut file = DxfFile::new().unwrap();
+        file.push(file.default_layer(), DxfShape::Point(Vec2::X), None).unwrap();
+        file.push(file.default_layer(), shape.clone(), None).unwrap();
+        assert!(write_dxf_file(&file).is_err());
+        assert!(write_dxf_drawing(&[], &[DxfEntity { layer: "0".into(), shape }]).is_err());
+        for bounds in [
+            DxfGeometryBounds { min: Vec2::new(f64::NAN, 0.0), max: Vec2::X },
+            DxfGeometryBounds { min: Vec2::new(1.0, 1.0), max: Vec2::ZERO },
+        ] { assert!(write_dxf_file_with_text_bounds(&file, |_| Ok(bounds)).is_err()); }
+        assert!(write_dxf_file_with_text_bounds(&file, |_| Err(IoError::Invalid("layout unavailable".into()))).is_err());
+        assert_eq!(file.entities().len(), 2);
+    }
+
+    #[test]
+    fn aligned_text_hostile_payloads_refuse_before_requesting_metrics() {
+        for (at, height, angle_deg, text) in [
+            (Vec2::new(f64::NAN, 0.0), 1.0, 0.0, "A".into()),
+            (Vec2::ZERO, 0.0, 0.0, "A".into()), (Vec2::ZERO, -1.0, 0.0, "A".into()),
+            (Vec2::ZERO, f64::INFINITY, 0.0, "A".into()), (Vec2::ZERO, 1.0, f64::NAN, "A".into()),
+            (Vec2::ZERO, 1e-20, 0.0, "A".into()), (Vec2::ZERO, 1.0, 0.0, "A".repeat(251)),
+            (Vec2::ZERO, 1.0, 0.0, "𠀋".into()),
+        ] {
+            let mut file = DxfFile::new().unwrap();
+            file.push(file.default_layer(), DxfShape::AlignedText { at, height, angle_deg, text, horizontal: DxfTextHorizontalAlignment::Right, vertical: DxfTextVerticalAlignment::Middle }, None).unwrap();
+            let mut requested = false;
+            assert!(write_dxf_file_with_text_bounds(&file, |_| { requested = true; DxfGeometryBounds::new(Vec2::ZERO, Vec2::X) }).is_err());
+            assert!(!requested);
+        }
+    }
+
+    #[test]
+    fn aligned_text_retains_existing_encoding_and_resource_boundaries() {
+        let mut file = DxfFile::new().unwrap();
+        file.push(file.default_layer(), DxfShape::AlignedText {
+            at: Vec2::ZERO, height: 1.0, angle_deg: 0.0, text: "A%%d\nB°\\{}".into(), horizontal: DxfTextHorizontalAlignment::Left, vertical: DxfTextVerticalAlignment::Baseline,
+        }, None).unwrap();
+        let metrics = |_: &DxfShape| DxfGeometryBounds::new(Vec2::ZERO, Vec2::new(8.0, 1.0));
+        let output = write_dxf_file_limited_with_text_bounds(&file, crate::MAX_DRAWING_BYTES, 2, metrics).unwrap();
+        assert_eq!(field(&entities(&output)[0].1, 1), "A%%d B\\U+00B0\\{}");
+        assert!(write_dxf_file_limited_with_text_bounds(&file, output.len(), 2, metrics).is_ok());
+        assert!(write_dxf_file_limited_with_text_bounds(&file, output.len() - 1, 2, metrics).is_err());
+        assert!(write_dxf_file_limited_with_text_bounds(&file, crate::MAX_DRAWING_BYTES, 1, |_| panic!("over-budget text must not request metrics")).is_err());
     }
 
     /// The ellipse of 50 × 24 round (50, 40): its four quarters, counter-clockwise from (75, 40).
@@ -1704,5 +1913,103 @@ mod tests {
         let records = entities(&output);
         assert_eq!(field(&records[0].1, 8), "0");
         assert_eq!(values(&records[0], 10), [0.0]);
+    }
+
+    // PRIVATE append fragment for dxf_out.rs::tests. NOT APPLIED / NOT RUN.
+    // Requires writer44b220e2 and W2 modeldf0d3a33; uses their production APIs
+    // and this area's existing pairs/table_records/entities/field helpers.
+
+    #[test]
+    fn customized_layer_zero_serializes_once_with_hidden_pattern_and_inherited_weight() {
+        let physical = DxfStandardWeight::from_code(50).unwrap();
+        let mut file = DxfFile::with_layer_zero(3, DxfLinetype::Hidden, Some(physical)).unwrap();
+        let zero = file.default_layer();
+        file.push(zero, DxfShape::Line(Vec2::ZERO, Vec2::new(2.0, 0.0)), None).unwrap();
+        file.push(zero, DxfShape::Point(Vec2::new(3.0, 4.0)), Some(DxfEntityWeight::ByLayer)).unwrap();
+        assert_eq!(file.effective_weight(0).unwrap(), DxfEntityWeight::Explicit(physical));
+        assert_eq!(file.effective_weight(1).unwrap(), DxfEntityWeight::Explicit(physical));
+        assert_eq!(file.effective_linetype(0).unwrap(), DxfLinetype::Hidden);
+        let output = write_dxf_file_with_text_bounds(&file, |_| panic!("LINE/POINT must not request TEXT metrics")).unwrap();
+        let groups = pairs(&output);
+        let layers = table_records(&groups, "LAYER");
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers.iter().filter(|record| field(record, 2) == "0").count(), 1);
+        let layer = layers.first().unwrap();
+        assert_eq!((field(layer, 2), field(layer, 62), field(layer, 6), field(layer, 370)), ("0", "3", "HIDDEN", "50"));
+        let linetypes = table_records(&groups, "LTYPE");
+        assert_eq!(linetypes.iter().map(|record| field(record, 2)).collect::<Vec<_>>(), ["ByBlock", "ByLayer", "Continuous", "DASHED", "HIDDEN"]);
+        let hidden = linetypes.iter().find(|record| field(record, 2) == "HIDDEN").unwrap();
+        assert_eq!((field(hidden, 40), field(hidden, 72), field(hidden, 73)), ("3.0", "65", "2"));
+        assert_eq!(hidden.iter().filter(|(code, _)| *code == 49).map(|(_, value)| value.as_str()).collect::<Vec<_>>(), ["2.0", "-1.0"]);
+        let records = entities(&output);
+        assert_eq!(records.iter().map(|record| record.0.as_str()).collect::<Vec<_>>(), ["LINE", "POINT"]);
+        assert_eq!(records.iter().map(|record| field(&record.1, 8)).collect::<Vec<_>>(), ["0", "0"]);
+        assert_eq!(records.iter().map(|record| record.1.iter().filter(|(code, _)| *code == 370)
+            .map(|(_, value)| value.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(), [vec![], vec!["-1"]]);
+        assert!(records.iter().all(|record| field(&record.1, 6).is_empty() && field(&record.1, 62).is_empty()));
+    }
+
+    #[test]
+    fn layer_zero_physical_zero_and_omission_keep_distinct_table_and_entity_spellings() {
+        let zero = DxfStandardWeight::from_code(0).unwrap();
+        for (layer_weight, layer_raw, inherited) in [
+            (None, "", DxfEntityWeight::Default),
+            (Some(zero), "0", DxfEntityWeight::Explicit(zero)),
+        ] {
+            let mut file = DxfFile::with_layer_zero(5, DxfLinetype::Dashed, layer_weight).unwrap();
+            let override_weight = DxfStandardWeight::from_code(13).unwrap();
+            let weights = [None, Some(DxfEntityWeight::ByLayer), Some(DxfEntityWeight::ByBlock), Some(DxfEntityWeight::Default), Some(DxfEntityWeight::Explicit(override_weight))];
+            for (index, weight) in weights.into_iter().enumerate() {
+                file.push(file.default_layer(), DxfShape::Point(Vec2::new(index as f64, 0.0)), weight).unwrap();
+            }
+            assert_eq!(file.effective_weight(0).unwrap(), inherited);
+            assert_eq!(file.effective_weight(1).unwrap(), inherited);
+            assert_eq!(file.effective_weight(2).unwrap(), DxfEntityWeight::ByBlock);
+            assert_eq!(file.effective_weight(3).unwrap(), DxfEntityWeight::Default);
+            assert_eq!(file.effective_weight(4).unwrap(), DxfEntityWeight::Explicit(override_weight));
+            let output = write_dxf_file_with_text_bounds(&file, |_| panic!("POINT must not request TEXT metrics")).unwrap();
+            let groups = pairs(&output);
+            let layers = table_records(&groups, "LAYER");
+            assert_eq!(layers.len(), 1);
+            let layer = layers.first().unwrap();
+            assert_eq!((field(layer, 2), field(layer, 62), field(layer, 6), field(layer, 370)), ("0", "5", "DASHED", layer_raw));
+            assert_eq!(layer.iter().filter(|(code, _)| *code == 370).count(), usize::from(layer_weight.is_some()));
+            let linetypes = table_records(&groups, "LTYPE");
+            assert_eq!(linetypes.iter().filter(|record| field(record, 2) == "DASHED").count(), 1);
+            assert!(!linetypes.iter().any(|record| field(record, 2) == "HIDDEN"));
+            let dashed = linetypes.iter().find(|record| field(record, 2) == "DASHED").unwrap();
+            assert_eq!((field(dashed, 40), field(dashed, 72), field(dashed, 73)), ("19.05", "65", "2"));
+            assert_eq!(dashed.iter().filter(|(code, _)| *code == 49).map(|(_, value)| value.as_str()).collect::<Vec<_>>(), ["12.7", "-6.35"]);
+            let records = entities(&output);
+            assert_eq!(records.len(), 5);
+            assert!(records.iter().all(|record| record.0 == "POINT" && field(&record.1, 8) == "0"));
+            assert_eq!(records.iter().map(|record| record.1.iter().filter(|(code, _)| *code == 370)
+                .map(|(_, value)| value.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(), [vec![], vec!["-1"], vec!["-2"], vec!["-3"], vec!["13"]]);
+        }
+    }
+
+    #[test]
+    fn default_layer_zero_constructor_keeps_new_and_legacy_writer_bytes_identical() {
+        let shapes = [DxfShape::Line(Vec2::ZERO, Vec2::new(2.0, 0.0)), DxfShape::Point(Vec2::new(3.0, 4.0))];
+        let mut ordinary = DxfFile::new().unwrap();
+        let mut explicit = DxfFile::with_layer_zero(7, DxfLinetype::Continuous, None).unwrap();
+        for shape in &shapes {
+            ordinary.push(ordinary.default_layer(), shape.clone(), None).unwrap();
+            explicit.push(explicit.default_layer(), shape.clone(), None).unwrap();
+        }
+        let ordinary_output = write_dxf_file(&ordinary).unwrap();
+        let explicit_output = write_dxf_file_with_text_bounds(&explicit, |_| panic!("LINE/POINT must not request TEXT metrics")).unwrap();
+        let legacy: Vec<_> = shapes.into_iter().map(|shape| DxfEntity { layer: "0".into(), shape }).collect();
+        assert_eq!(explicit_output, ordinary_output);
+        assert_eq!(explicit_output, write_dxf_drawing(&[], &legacy).unwrap());
+        let groups = pairs(&explicit_output);
+        let layers = table_records(&groups, "LAYER");
+        assert_eq!(layers.len(), 1);
+        let layer = layers.first().unwrap();
+        assert_eq!((field(layer, 2), field(layer, 62), field(layer, 6), field(layer, 370)), ("0", "7", "Continuous", ""));
+        assert!(!layer.iter().any(|(code, _)| *code == 370));
+        assert!(entities(&explicit_output).iter().all(|record| !record.1.iter().any(|(code, _)| *code == 370)));
+        let linetypes = table_records(&groups, "LTYPE");
+        assert_eq!(linetypes.iter().map(|record| field(record, 2)).collect::<Vec<_>>(), ["ByBlock", "ByLayer", "Continuous", "DASHED"]);
     }
 }

@@ -111,17 +111,16 @@ pub fn read_dxf_file(text: &str) -> Result<DxfFile<DxfShape>> {
     layered_integer_fields(&p, start, &[67])?;
     layered_array_integer_fields(&p, start)?;
     let k = layered_units_scale(&p)?;
-    let mut file = DxfFile::new()?;
-    let mut handles = Vec::new();
-    handles.try_reserve(1).map_err(|_| IoError::Invalid("DXF layer lookup allocation failed".into()))?;
-    handles.push(file.default_layer());
     let mut work = 0;
-    let mut geometry_bytes = 0;
-    if let Some(tables) = layered_section_start(&p, "TABLES")? {
+    let (mut file, handles) = if let Some(tables) = layered_section_start(&p, "TABLES")? {
         layered_integer_fields(&p, tables, &[70, 72, 73, 74])?;
         let records = section(&p, tables)?;
-        layered_tables(&records, k, &mut file, &mut handles, &mut work)?;
-    }
+        layered_tables(&records, k, &mut work)?
+    } else {
+        layered_tables(&[], k, &mut work)?
+    };
+    let mut geometry_bytes = 0;
+
     for entity in section(&p, start)? {
         layered_work(&mut work)?;
         let space = layered_number(&entity, 67)?.unwrap_or(0.0);
@@ -467,11 +466,13 @@ fn layered_entity_fields(entity: &Ent) -> Result<()> {
 #[derive(Default)]
 struct LayeredLinetypes { dashed: bool, hidden: bool }
 
-fn layered_tables(records: &[Ent], k: f64, file: &mut DxfFile<DxfShape>, handles: &mut Vec<DxfLayerId>, work: &mut usize) -> Result<()> {
+/// Validate the real tables and resolve layer0 BEFORE constructing a file or
+/// minting its handles. No late setter or parallel layer representation.
+fn layered_tables(records: &[Ent], k: f64, work: &mut usize) -> Result<(DxfFile<DxfShape>, Vec<DxfLayerId>)> {
     let mut table = None;
     let mut types = LayeredLinetypes::default();
-    // Validate table framing and every supplied LTYPE definition first, so
-    // record order cannot make a layer guess its linetype from a name.
+    // Definitions may follow their layer references in the file. Validate
+    // their real patterns first instead of guessing a style from its name.
     for record in records {
         layered_work(work)?;
         match record.kind.as_str() {
@@ -481,24 +482,42 @@ fn layered_tables(records: &[Ent], k: f64, file: &mut DxfFile<DxfShape>, handles
             "ENDTAB" if table.is_some() => { table = None; }
             "LTYPE" if table == Some("LTYPE") => layered_linetype_definition(record, k, &mut types)?,
             "LAYER" if table == Some("LAYER") => {}
-            // Non-text geometry does not consume text styles or model/paper
-            // block-record handles. INSERT itself remains unsupported.
             "STYLE" if table == Some("STYLE") => {}
             "BLOCK_RECORD" if table == Some("BLOCK_RECORD") => {}
             _ => return Err(IoError::Invalid("not supported yet: malformed or unsupported layered DXF table record".into())),
         }
     }
     if table.is_some() { return Err(IoError::Invalid("unterminated DXF table".into())); }
+
+    let mut zero = None;
     for record in records.iter().filter(|record| record.kind == "LAYER") {
-        // Both the shared declaration and our handle de-duplication scan the
-        // layer list. Charge the upper bound before either scan, including
-        // repeated declarations, rather than allowing quadratic lookup work.
+        layered_work(work)?;
+        let (name, color, linetype, weight) = layered_layer_style(record, &types)?;
+        if name.is_empty() || name == "0" {
+            if zero.is_some() { return Err(IoError::Invalid("duplicate DXF layer zero declaration".into())); }
+            zero = Some((color, linetype, weight));
+        }
+    }
+    // Pending model dependency, owned by W2: use its real constructor only.
+    // The omission branch keeps the existing new() default contract unchanged.
+    let mut file = match zero {
+        Some((color, linetype, weight)) => DxfFile::with_layer_zero(color, linetype, weight)?,
+        None => DxfFile::new()?,
+    };
+    let mut handles = Vec::new();
+    handles.try_reserve(1).map_err(|_| IoError::Invalid("DXF layer lookup allocation failed".into()))?;
+    handles.push(file.default_layer());
+    for record in records.iter().filter(|record| record.kind == "LAYER") {
+        let name = layered_text(record, 2)?.ok_or_else(|| IoError::Invalid("unnamed DXF layer".into()))?;
+        if name.is_empty() || name == "0" { continue; }
+        // Bound both the shared model's declaration scan and our handle scan.
         *work = work.saturating_add(file.layers().len()).saturating_add(handles.len()).saturating_add(1);
         if *work > MAX_WORK { return Err(IoError::Invalid("the layered DXF drawing is too complex".into())); }
-        layered_declare_layer(record, &types, file, handles)?;
+        layered_declare_layer(record, &types, &mut file, &mut handles)?;
     }
-    Ok(())
+    Ok((file, handles))
 }
+
 
 fn layered_linetype_definition(record: &Ent, k: f64, types: &mut LayeredLinetypes) -> Result<()> {
     let name = layered_text(record, 2)?.ok_or_else(|| IoError::Invalid("unnamed DXF linetype".into()))?;
@@ -546,7 +565,7 @@ fn layered_linetype_definition(record: &Ent, k: f64, types: &mut LayeredLinetype
     Ok(())
 }
 
-fn layered_declare_layer(record: &Ent, types: &LayeredLinetypes, file: &mut DxfFile<DxfShape>, handles: &mut Vec<DxfLayerId>) -> Result<()> {
+fn layered_layer_style<'a>(record: &'a Ent, types: &LayeredLinetypes) -> Result<(&'a str, i16, DxfLinetype, Option<DxfStandardWeight>)> {
     for code in record.f.iter().map(|(code, _)| *code).chain(record.s.iter().map(|(code, _)| *code)) {
         if !matches!(code, 2 | 5 | 6 | 62 | 70 | 100 | 330 | 370) {
             return Err(IoError::Invalid(format!("not supported yet: DXF layer group {code}")));
@@ -572,22 +591,22 @@ fn layered_declare_layer(record: &Ent, types: &LayeredLinetypes, file: &mut DxfF
         Some(DxfEntityWeight::Explicit(value)) => Some(value),
         _ => return Err(IoError::Invalid("not supported yet: symbolic DXF LAYER lineweight".into())),
     };
-    if (name.is_empty() || name == "0") && (color != 7.0 || linetype != DxfLinetype::Continuous || weight.is_some()) {
-        return Err(IoError::Invalid("not supported yet: nondefault DXF layer zero style".into()));
-    }
-    let handle = file.declare_layer(name, color as i16, linetype, weight)?;
-    // Import never silently renames an authored symbol. The shared model owns
-    // normalization/collision rules; reject if preserving the name is impossible.
-    if !name.is_empty() && file.layer(handle)?.name() != name {
-        return Err(IoError::Invalid("not supported yet: DXF layer name requires normalization".into()));
-    }
-    if !handles.contains(&handle) {
-        handles.try_reserve(1).map_err(|_| IoError::Invalid("DXF layer lookup allocation failed".into()))?;
-        handles.push(handle);
-    }
-    Ok(())
+    Ok((name, color as i16, linetype, weight))
 }
 
+fn layered_declare_layer(record: &Ent, types: &LayeredLinetypes, file: &mut DxfFile<DxfShape>, handles: &mut Vec<DxfLayerId>) -> Result<()> {
+    let (name, color, linetype, weight) = layered_layer_style(record, types)?;
+    let handle = file.declare_layer(name, color, linetype, weight)?;
+    // Keep model normalization/collision rules authoritative; never silently
+    // import a renamed symbol, or merge even an identical duplicate record.
+    if file.layer(handle)?.name() != name {
+        return Err(IoError::Invalid("not supported yet: DXF layer name requires normalization".into()));
+    }
+    if handles.contains(&handle) { return Err(IoError::Invalid("duplicate DXF layer declaration".into())); }
+    handles.try_reserve(1).map_err(|_| IoError::Invalid("DXF layer lookup allocation failed".into()))?;
+    handles.push(handle);
+    Ok(())
+}
 
 /// Read the entities of an ASCII DXF file.
 pub fn read_dxf(text: &str) -> Result<Vec<Geom2>> {
@@ -1457,7 +1476,7 @@ mod tests {
     #[test]
     fn layered_read_refuses_unrepresented_layer_zero_weights_and_colors() {
         for (name, fields) in [
-            ("0", "62\n3\n"), ("0", "370\n50\n"), ("0", "6\nCUSTOM\n"),
+            ("0", "6\nCUSTOM\n"),
             ("CUT", "370\n-3\n"), ("CUT", "370\n-1\n"), ("CUT", "62\n-7\n"),
             ("CUT", "62\n0\n"), ("CUT", "62\n256\n"), ("CUT", "70\n1\n"),
             ("CUT", "6\nDASHED\n"), ("CUT", "6\nCUSTOM\n"),
@@ -2001,5 +2020,123 @@ mod tests {
         }
         let malformed = "0\nSECTION\n2\nENTITIES\n0\nPOINT\n67\n0.5\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n";
         assert!(read_dxf_file(malformed).is_err());
+    }
+
+    #[test]
+    fn layered_zero_color_and_physical_weight_are_supported_now_not_discarded() {
+        // Exact two input rows and format string moved from the old refusal
+        // test under Engineer's explicit feature-contract update. No waiver.
+        for (name, fields, color, weight) in [
+            ("0", "62\n3\n", 3, None), ("0", "370\n50\n", 7, Some(50)),
+        ] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n{name}\n{fields}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            let before = text.clone();
+            let mut file = read_dxf_file(&text).unwrap();
+            assert_eq!(file.layers().len(), 1);
+            let handle = file.default_layer();
+            assert_eq!(file.layers()[0].name(), "0");
+            let zero = file.layer(handle).unwrap();
+            assert_eq!((zero.name(), zero.color(), zero.linetype(), zero.weight().map(DxfStandardWeight::code)), ("0", color, DxfLinetype::Continuous, weight));
+            assert!(file.entities().is_empty());
+            file.push(handle, DxfShape::Line(Vec2::ZERO, Vec2::new(1., 0.)), None).unwrap();
+            assert_eq!(file.entities()[0].layer(), handle);
+            assert_eq!(file.effective_weight(0).unwrap(), weight.map_or(DxfEntityWeight::Default, |code| DxfEntityWeight::Explicit(DxfStandardWeight::from_code(code).unwrap())));
+            let recovered = read_dxf_file(&crate::write_dxf_file(&file).unwrap()).unwrap();
+            let zero = recovered.layer(recovered.default_layer()).unwrap();
+            assert_eq!((zero.color(), zero.weight().map(DxfStandardWeight::code)), (color, weight));
+            assert_eq!(recovered.entities()[0].layer(), recovered.default_layer());
+            assert_eq!(text, before);
+        }
+    }
+
+    #[test]
+    fn layered_zero_is_first_even_when_declared_between_layers_with_linetypes_afterwards() {
+        let text = concat!(
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n",
+            "0\nLAYER\n2\nCUT\n62\n1\n0\nLAYER\n2\n0\n62\n3\n6\nHIDDEN\n370\n0\n",
+            "0\nLAYER\n2\nTAIL\n62\n2\n6\nDASHED\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLTYPE\n0\nLTYPE\n2\nHIDDEN\n72\n65\n73\n2\n40\n3\n49\n2\n49\n-1\n",
+            "0\nLTYPE\n2\nDASHED\n72\n65\n73\n2\n40\n19.05\n49\n12.7\n49\n-6.35\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n1\n20\n2\n",
+            "0\nLINE\n8\n0\n370\n-1\n10\n0\n20\n0\n11\n1\n21\n0\n",
+            "0\nCIRCLE\n8\nCUT\n370\n-2\n10\n0\n20\n0\n40\n1\n0\nINSERT\n67\n1\n0\nENDSEC\n0\nEOF\n",
+        );
+        let file = read_dxf_file(text).unwrap();
+        assert_eq!(file.layers().iter().map(|layer| layer.name()).collect::<Vec<_>>(), ["0", "CUT", "TAIL"]);
+        assert_eq!(file.entities().len(), 3);
+        assert_eq!(file.entities()[0].layer(), file.default_layer());
+        assert_eq!(file.entities()[1].layer(), file.default_layer());
+        assert_eq!(file.layer(file.default_layer()).unwrap().color(), 3);
+        assert_eq!(file.effective_linetype(0).unwrap(), DxfLinetype::Hidden);
+        assert_eq!(file.effective_weight(0).unwrap(), DxfEntityWeight::Explicit(DxfStandardWeight::from_code(0).unwrap()));
+        assert_eq!(file.entities()[0].weight(), None);
+        assert_eq!(file.entities()[1].weight(), Some(DxfEntityWeight::ByLayer));
+        assert_eq!(file.entities()[2].weight(), Some(DxfEntityWeight::ByBlock));
+        assert_eq!(file.layer(file.entities()[2].layer()).unwrap().name(), "CUT");
+        assert_eq!(file.entities()[0].geometry(), &DxfShape::Point(Vec2::new(1., 2.)));
+    }
+
+    #[test]
+    fn layered_zero_weight_omission_and_explicit_physical_zero_remain_distinct() {
+        for (field, expected) in [("", None), ("370\n0\n", Some(0))] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n0\n{field}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nPOINT\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n");
+            let file = read_dxf_file(&text).unwrap();
+            assert_eq!(file.layers()[0].weight().map(DxfStandardWeight::code), expected);
+            assert_eq!(file.entities()[0].weight(), None);
+            assert_eq!(file.effective_weight(0).unwrap(), expected.map_or(DxfEntityWeight::Default, |code| DxfEntityWeight::Explicit(DxfStandardWeight::from_code(code).unwrap())));
+        }
+    }
+
+    #[test]
+    fn layered_zero_pattern_is_real_and_polyline_restart_cannot_assume_continuous() {
+        let text = concat!(
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n0\nLTYPE\n2\nDASHED\n72\n65\n73\n2\n40\n19.05\n49\n12.7\n49\n-6.35\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n0\n6\nDASHED\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n90\n2\n70\n128\n10\n0\n20\n0\n10\n1\n20\n0\n0\nENDSEC\n0\nEOF\n",
+        );
+        assert_eq!(read_dxf_file(text).unwrap().effective_linetype(0).unwrap(), DxfLinetype::Dashed);
+        assert!(read_dxf_file(&text.replacen("70\n128\n", "70\n0\n", 1)).is_err());
+        assert!(read_dxf_file(&text.replacen("49\n12.7\n", "49\n1\n", 1)).is_err());
+    }
+
+    #[test]
+    fn layered_zero_duplicate_aliases_and_other_layer_collisions_refuse_explicitly() {
+        for declarations in [
+            "0\nLAYER\n2\n0\n0\nLAYER\n2\n0\n",
+            "0\nLAYER\n2\n0\n62\n3\n0\nLAYER\n2\n0\n62\n4\n",
+            "0\nLAYER\n2\n\n0\nLAYER\n2\n0\n",
+            "0\nLAYER\n2\n\n0\nLAYER\n2\n\n",
+            "0\nLAYER\n2\nCUT\n0\nLAYER\n2\nCUT\n",
+            "0\nLAYER\n2\nCUT\n0\nLAYER\n2\ncut\n",
+            "0\nLAYER\n2\nCUT?A\n0\nLAYER\n2\nCUT_A\n",
+        ] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n{declarations}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{declarations}");
+        }
+    }
+
+    #[test]
+    fn layered_zero_malformed_or_unrepresented_metadata_never_falls_back_to_defaults() {
+        for fields in ["62\n7.0000000000000001\n", "62\n0\n", "62\n-7\n", "62\n256\n", "62\n7\n62\n3\n",
+            "370\n-1\n", "370\n-2\n", "370\n-3\n", "370\n6\n", "370\n50.0000000000000001\n",
+            "370\n0\n370\n50\n", "70\n1e-400\n", "6\nDASHED\n", "6\nCUSTOM\n", "2\n0\n"] {
+            let text = format!("0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n0\n{fields}0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            assert!(read_dxf_file(&text).is_err(), "{fields}");
+        }
+    }
+
+    #[test]
+    fn layered_zero_empty_tables_or_absence_preserve_new_default_while_single_blank_name_aliases_zero() {
+        for tables in ["", "0\nSECTION\n2\nTABLES\n0\nENDSEC\n", "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nENDTAB\n0\nENDSEC\n"] {
+            let text = format!("{tables}0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n");
+            let file = read_dxf_file(&text).unwrap();
+            let zero = file.layer(file.default_layer()).unwrap();
+            assert_eq!(file.layers().len(), 1);
+            assert_eq!((zero.name(), zero.color(), zero.linetype(), zero.weight()), ("0", 7, DxfLinetype::Continuous, None));
+            assert!(file.entities().is_empty());
+        }
+        let blank = "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n\n62\n3\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+        assert_eq!(read_dxf_file(blank).unwrap().layers()[0].color(), 3);
+        assert!(read_dxf_file("").is_err());
     }
 }
