@@ -604,7 +604,7 @@ outer
     #[test]
     fn paper_scenes_survive_mutation_into_pdf() {
         let json = paper_scene_json();
-        let options = crate::paper::PdfOptions { title: Some("Sheet 1".into()), output_time: Some(1_761_436_800) };
+        let options = crate::paper::PdfOptions { layers: true, title: Some("Sheet 1".into()), output_time: Some(1_761_436_800) };
         let write = |b: &[u8]| -> Option<usize> {
             let scene: solidcraft_geom::paper::Scene = serde_json::from_slice(b).ok()?;
             crate::paper::paper_pdf(&scene.prepare().ok()?, &options).ok().map(|(bytes, _)| bytes.len())
