@@ -321,7 +321,7 @@ fn solve_record(design: &crate::Document, owner: &Drawing, original: &SheetSketc
     // indices. No link/pattern/offset or 3D path bypasses the existing checks.
     check_payload(&candidate)?;
     let names = parameter_names(&candidate.sketch)?;
-    let values = if names.is_empty() {
+    let mut values = if names.is_empty() {
         std::collections::BTreeMap::new()
     } else {
         require(owner.sources.len() == 1, || "sheet sketch parameters need the drawing's declared design source".into())?;
@@ -334,6 +334,24 @@ fn solve_record(design: &crate::Document, owner: &Drawing, original: &SheetSketc
         }
         values
     };
+    // A sheet dimension owns its authored expression, not a model parameter. Keep
+    // original source parameter values intact and add expression results under
+    // their exact stored keys, which the shared sketch solver already consumes.
+    // Mixed angle/length uses of an identical key would be ambiguous: refuse.
+    let mut expression_kinds = std::collections::BTreeMap::new();
+    for constraint in &candidate.sketch.constraints {
+        let Some(expression) = &constraint.param else { continue };
+        let is_angle = constraint.kind.is_angle();
+        if let Some(previous) = expression_kinds.insert(expression.as_str(), is_angle) {
+            require(previous == is_angle, || "one sheet expression cannot drive both lengths and angles".into())?;
+        }
+        if !values.contains_key(expression) {
+            let kind = if is_angle { crate::expr::Kind::Angle } else { crate::expr::Kind::Length };
+            let evaluated = crate::Document::eval_in(&values, expression, kind)?;
+            let resolved = if is_angle { crate::expr::Value::angle(evaluated) } else { crate::expr::Value::length(evaluated) };
+            values.insert(expression.clone(), resolved);
+        }
+    }
     let stored = original.sketch.driving_values();
     let report = design.solve_sketch(&values, &mut candidate.sketch, &stored, None)?;
     require(report.keeps_orientation(), || report.failure(|conflicts| format!("sheet sketch edit would conflict with {conflicts}")))?;
@@ -360,7 +378,7 @@ fn parameter_names(sketch: &Sketch) -> Result<BTreeSet<String>> {
         if let Some(name) = &constraint.param {
             require(constraint.kind.is_dimension(), || "only a sheet sketch dimension can refer to a source parameter".into())?;
             charge(&mut bytes, name.len(), MAX_DRAWING_BYTES, "expression text")?;
-            names.insert(name.clone());
+            names.extend(crate::expr::references(name));
         }
     }
     Ok(names)

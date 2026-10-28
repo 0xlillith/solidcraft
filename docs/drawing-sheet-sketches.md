@@ -500,3 +500,39 @@ model unchanged, and persist with the drawing. The model-only slice and
 sketch_3d modes are refused when enabling them on a paper sketch. The model
 version of both existing commands retains its original route. Native/browser
 palette wiring and pointer-frame interactions remain with the shared UI owner.
+
+### W38a R16: sheet-sketch driving dimensions and authored expressions
+
+The existing `sketch.dimension` command now admits a **driving sheet-sketch
+constraint** in addition to its earlier value-less `driven: true` reference
+measurement. The shared constraint builder and solver are unchanged. A driving
+value is authored on that *sheet*, in paper millimetres (or degrees for angle
+input, stored in radians), regardless of the containing design's display units.
+For example, `value: 50` means 50 paper mm in an inch-based design.
+The dimension's authored expression lives in the existing sketch constraint's
+`param` slot; it is *not* a newly created source-model parameter.
+
+An expression can read declared design-source parameters without modifying
+them: `Inset + 5` with `Inset = 1 in` resolves to 30.4 paper mm and is kept
+verbatim through save/reopen for read-only re-resolution. The single Drawing
+source and exact sketch owner are required for any external references.
+The receiver extends its parameter-value map with resolved expression values
+under those authored keys before invoking the existing solver. Source parameter
+keys are never overwritten. An identical expression key cannot be used to
+drive both a length and an angle in one sketch, since that would be ambiguous.
+Invalid expressions, unknown names, unit mismatches, solver conflicts and
+foreign owners fail without publication.
+
+Successful commands still publish **once** via `Session::edit_drawing` and
+produce one drawing-local undo step. The source model parameters, features,
+evaluated geometry and model history remain unchanged. Sheet dimensions refuse
+`name = expression` definitions, `scale_sketch: true` and automatic
+`if_redundant` reference fallback; those require a separate, agreed sheet
+parameter and constraint workflow. The existing model sketch dimension path,
+reference dimensions and W19 drawing-view annotation ownership are unchanged.
+
+Original R16 engine acceptance checks cover paper-mm driving values with inch
+display, stored source expressions with changed-source read-only resolution,
+saving/reopening, drawing-local undo/redo, and atomic invalid/foreign
+refusals. This is a command/store increment; it does **not** claim an
+interactive desktop/browser sheet editor or full repository CI.

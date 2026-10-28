@@ -1679,7 +1679,7 @@ fn sheet_reviewer_reference_dimension_measures_paper_mm_and_tracks_drawing_undo(
 }
 
 #[test]
-fn sheet_reviewer_reference_dimensions_refuse_driving_values_and_wrong_owners_atomically() {
+fn sheet_reviewer_reference_dimensions_refuse_invalid_values_and_wrong_owners_atomically() {
     let (mut s, drawing, sketch, _) = sheet_editor();
     run(&mut s, "sketch.line", json!({"points": [[10, 20], [50, 20]], "ids": ["measured_line"]}));
     let before = s.doc.clone();
@@ -1688,7 +1688,6 @@ fn sheet_reviewer_reference_dimensions_refuse_driving_values_and_wrong_owners_at
     let history = (s.undo.len(), s.redo.len(), s.evaluations);
 
     for (command, args) in [
-        ("sketch.dimension", json!({"entities": ["measured_line"], "value": 20})),
         ("sketch.dimension", json!({"entities": ["measured_line"], "value": "Width = 20"})),
         ("sketch.dimension", json!({"entities": ["measured_line"], "driven": true, "value": "20 mm"})),
         ("sketch.dimension", json!({"entities": ["measured_line"], "driven": true, "scale_sketch": true})),
@@ -1951,5 +1950,109 @@ fn sheet_reviewer_palette_and_point_move_refuse_model_only_or_wrong_owner_atomic
         assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}: {params}");
         assert_eq!(s.open_drawing, Some(drawing));
         assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).is_some());
+    }
+}
+
+/// R16: driving dimensions are part of a drawing, never newly created model parameters.
+#[test]
+fn sheet_reviewer_driving_dimension_uses_paper_mm_and_one_drawing_step() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points": [[10, 20], [50, 20]], "ids": ["sized_line"]}));
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let (steps, evals) = (s.undo.len(), s.evaluations);
+
+    let result = run(&mut s, "sketch.dimension", json!({"sketch": made["sketch"], "entities": ["sized_line"], "value": 50}));
+    assert_eq!(result["expression"], "50");
+    assert_eq!(result["param"], Value::Null, "the source model has no sheet dimension parameter");
+    assert_eq!(result["driven"], false);
+    assert_eq!(result["unit"], "mm", "an inch-design bare length is still paper millimetres");
+    assert!((result["measured"].as_f64().unwrap() - 50.0).abs() < 1e-5, "{result}");
+
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let constraint = after.constraints.last().unwrap();
+    assert!(!constraint.driven);
+    assert_eq!(constraint.param.as_deref(), Some("50"));
+    assert!((solidcraft_sketch::measure_dimension(&after, &constraint.kind).unwrap() - 50.0).abs() < 1e-5);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (steps + 1, Some(drawing)));
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evals);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    assert_eq!(s.evaluations, evals);
+}
+
+/// R16: stored expressions are resolved against source parameters, but live in the drawing.
+#[test]
+fn sheet_reviewer_driving_expression_reopens_and_recomputes_without_model_edits() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+    run(&mut s, "sketch.line", json!({"points": [[10, 20], [50, 20]], "ids": ["source_line"]}));
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let evals = s.evaluations;
+    let authored = "Inset + 5";
+    let result = run(&mut s, "sketch.dimension", json!({"entities": ["source_line"], "value": authored}));
+    assert_eq!(result["expression"], authored);
+    assert_eq!(result["param"], Value::Null);
+    assert_eq!(result["unit"], "mm");
+    assert!((result["measured"].as_f64().unwrap() - 30.4).abs() < 1e-5, "{result}");
+    let kept = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert_eq!(kept.constraints.last().unwrap().param.as_deref(), Some(authored));
+    assert_eq!((&s.doc.params, &s.doc.features), (&source.params, &source.features));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evals);
+
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    let solved = reopened.solve_sheet_sketch(drawing, sketch).unwrap();
+    let c = solved.sketch.constraints.last().unwrap();
+    assert!((solidcraft_sketch::measure_dimension(&solved.sketch, &c.kind).unwrap() - 30.4).abs() < 1e-5);
+    let mut changed_source = reopened.clone();
+    changed_source.set_param("Inset", "2", Some("in"), None).unwrap();
+    let solved_again = changed_source.solve_sheet_sketch(drawing, sketch).unwrap();
+    let c = solved_again.sketch.constraints.last().unwrap();
+    assert!((solidcraft_sketch::measure_dimension(&solved_again.sketch, &c.kind).unwrap() - 55.8).abs() < 1e-4);
+    assert_eq!(changed_source.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, kept, "solving is read-only");
+}
+
+/// R16: errors, foreign identities, typed source values and definitions must be atomic.
+#[test]
+fn sheet_reviewer_driving_dimension_rejects_invalid_inputs_without_publication() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    s.doc_mut().set_param("Angle", "90", Some("deg"), None).unwrap();
+    run(&mut s, "sketch.line", json!({"points": [[10, 20], [50, 20]], "ids": ["sized_line"]}));
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for args in [
+        json!({"entities": ["sized_line"], "value": "Width = 20"}),
+        json!({"entities": ["sized_line"], "value": "Angle"}),
+        json!({"entities": ["sized_line"], "value": "Missing + 2"}),
+        json!({"entities": ["sized_line"], "value": "1 / 0"}),
+        json!({"entities": ["sized_line"], "value": "8 cm", "scale_sketch": true}),
+        json!({"entities": ["sized_line"], "value": "25", "if_redundant": "driven"}),
+        json!({"entities": ["sized_line"], "value": "1".repeat(4097)}),
+        json!({"entities": ["sized_line"], "value": true}),
+        json!({"entities": ["sized_line"], "value": null}),
+        json!({"entities": ["sized_line"], "value": "  "}),
+        json!({"entities": ["sized_line"], "value": ["50"]}),
+        json!({"entities": ["missing"], "value": 50}),
+        json!({"sketch": ids::encode(drawing), "entities": ["sized_line"], "value": 50}),
+        json!({"sketch": -1, "entities": ["sized_line"], "value": 50}),
+        json!({"sketch": made["drawing"], "entities": ["sized_line"], "value": 50}),
+    ] {
+        refused(&mut s, "sketch.dimension", args.clone());
+        assert!(Arc::ptr_eq(&s.doc, &source), "changed source on {args}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "evaluated source on {args}");
+        assert_eq!(s.active_sheet_sketch, entry, "{args}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{args}");
+        assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.constraints.is_empty());
     }
 }
