@@ -1,0 +1,30 @@
+{
+  "en": {
+    "prefs.linked_designs": "Linked designs",
+    "settings.update_changed_links": "Update changed linked designs when a tab comes back"
+  },
+  "ar": {
+    "prefs.linked_designs": "التصاميم المرتبطة",
+    "settings.update_changed_links": "تحديث التصاميم المرتبطة التي تغيّرت عند العودة إلى علامة التبويب"
+  },
+  "de": {
+    "prefs.linked_designs": "Verknüpfte Designs",
+    "settings.update_changed_links": "Geänderte verknüpfte Designs aktualisieren, wenn ein Tab wieder angezeigt wird"
+  },
+  "he": {
+    "prefs.linked_designs": "תכנים מקושרים",
+    "settings.update_changed_links": "עדכון תכנים מקושרים שהשתנו כשלשונית מוצגת שוב"
+  },
+  "ja": {
+    "prefs.linked_designs": "リンクされたデザイン",
+    "settings.update_changed_links": "タブに戻ったときに変更されたリンク先デザインを更新"
+  },
+  "vi": {
+    "prefs.linked_designs": "Thiết kế liên kết",
+    "settings.update_changed_links": "Cập nhật các thiết kế liên kết đã thay đổi khi quay lại một thẻ"
+  },
+  "zh": {
+    "prefs.linked_designs": "链接设计",
+    "settings.update_changed_links": "返回标签页时更新已更改的链接设计"
+  }
+}

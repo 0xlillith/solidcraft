@@ -1009,6 +1009,7 @@ fn browser_contents(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions, c
         t.secondary_hline(ui.painter(), ui.max_rect().x_range(), ui.cursor().top() + 1.0, t.toolbar.lerp_to_gamma(t.border, 0.5));
         ui.add_space(t.space_3);
     }
+    crate::edit_in_place::browser_strip(app, ui);
     if collapsible && !stacked {
         browser_rows_hugging(app, ui, acts);
     } else {
@@ -1323,7 +1324,7 @@ fn component_rows_inner(
         if app.session.doc.parts.contains_key(&id) {
             crate::dialogs_part_size::open(app, id);
         } else {
-            let _ = app.run("component.activate", json!({ "component": id }));
+            crate::edit_in_place::double_click_component(app, json!({ "component": id }));
         }
     }
     if r.hovered {
@@ -1469,8 +1470,11 @@ fn occurrence_rows_inner(
     if r.eye {
         let _ = app.run("browser.visibility", json!({"visible": app.session.occurrence_hidden(path), "paths": [path]}));
     }
-    if r.radio || (r.double && !app.session.doc.parts.contains_key(&placement.component)) {
-        let _ = app.run("component.activate", json!({"component": placement.component, "occurrence": placement.occurrence, "path": path}));
+    let params = json!({"component": placement.component, "occurrence": placement.occurrence, "path": path});
+    if r.radio {
+        let _ = app.run("component.activate", params);
+    } else if r.double && !app.session.doc.parts.contains_key(&placement.component) {
+        crate::edit_in_place::double_click_component(app, params);
     }
     if r.double && app.session.doc.parts.contains_key(&placement.component) {
         crate::dialogs_part_size::open(app, placement.component);
