@@ -45,7 +45,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params(concat!("points: [[x,y] | \"l1.end\" | {at, ref}…] (x and y each a number or an expression over the design's parameters, \"W / 2\": such a point is fixed where it comes to and follows the parameters; likewise wherever a point argument also takes a point id), closed?: bool, construction?: bool, ids?: [..], infer?: bool (add horizontal/vertical)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.draw.dimensioned", "Draw Dimensioned Sketch Geometry", draw_dimensioned).icon("dimension")
-        .enabled(in_sketch)
+        .in_sketch_part().enabled(in_sketch)
         .params(concat!("command: sketch creation command, params: object, dimensions: object of role to numeric or expression value; creates geometry and all driving dimensions atomically in one undo step", created_doc!())),
     CommandSpec::new("sketch.rectangle.two_point", "2-Point Rectangle", rect_two_point)
         .in_sketch_part()
@@ -63,7 +63,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.rectangle.rounded", "Rounded Rectangle", rect_rounded)
         .at("SKETCH", "CREATE")
         .icon("rect_rounded")
-        .enabled(in_sketch)
+        .in_sketch_part().enabled(in_sketch)
         .params(concat!("p0, p1: opposite corners [x,y]; radius: expr (the corner radius, less than half the shorter side); construction?. A 2-point rectangle whose four corners are filleted alike: one radius dimension (`param`), the other arcs equal to it. Returns sides {bottom, right, top, left} (line ids) and arcs (the corner arcs: bottom-left, bottom-right, top-right, top-left)", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.rectangle.center", "Center Rectangle", rect_center)
         .in_sketch_part()
@@ -212,7 +212,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params("entities: [curve, point or constraint ids]"),
     CommandSpec::new("sketch.move_point", "Drag Sketch Point", move_point).in_sketch_part().icon("sketch_move").enabled(in_sketch).params("point: ref, to: [x,y]"),
-    CommandSpec::new("sketch.drag", "Drag Sketch Geometry", drag).icon("sketch_move").enabled(in_sketch).live(drag_live).params(
+    CommandSpec::new("sketch.drag", "Drag Sketch Geometry", drag).in_sketch_part().icon("sketch_move").enabled(in_sketch).live(drag_live).params(
         "entity: point or curve, from: [x,y] where it was grabbed, to: [x,y], live?: bool: points and the material point grabbed on a line move toward `to` within the design constraints. When exact placement is impossible, bounded feasible steps minimize cursor distance. Splines slide by to - from; a circle or arc grabbed on its edge takes the radius to `to`. `with?`: [point or curve ids] moves the rest of a selection with the entity as one translation (circles keep their radii). Long moves retain the solution branch; arcs cannot sweep through their starts. Returns `reached`: progress projected onto the requested move (0..1), `at`: the grabbed position for the next frame, and `retry`: budget-limited progress can continue in another frame. `live: true` shares a work budget across held-solve decomposition and cursor correction; ordinary recovery and the final model evaluation retain their existing limits, not a wall-clock deadline. Later features stay stale until `sketch.drag_end`; `dof` stays from before the drag",
     ),
     CommandSpec::new("sketch.drag_end", "End Sketch Drag", drag_end).icon("sketch_move").enabled(in_sketch).doc_only().params(
@@ -1095,6 +1095,9 @@ fn rect_rounded(s: &mut Session, p: &Value) -> Result<Value> {
         }
         o.insert("arcs".into(), arcs);
         o.insert("param".into(), rounded.get("param").cloned().unwrap_or(Value::Null));
+        if let Some(expression) = rounded.get("expression").filter(|_| s.open_drawing.is_some()) {
+            o.insert("expression".into(), expression.clone());
+        }
         if let Some(info) = rounded.get("sketch") {
             o.insert("sketch".into(), info.clone());
         }
@@ -2745,6 +2748,36 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
         None | Some(Value::Null) => to,
         Some(v) => vec2(v).ok_or_else(|| bad(cmd, "`from` must be a point [x, y]"))?,
     };
+    if s.open_drawing.is_some() {
+        // The drawing editor publishes a complete gesture once. Live frames remain
+        // model-only until the common UI gesture host owns a sheet transaction.
+        if live || p.get("live").is_some_and(|v| !v.is_null() && v != &Value::Bool(false)) {
+            return Err(bad(cmd, "live sheet drag needs the Drawing pointer gesture host; use a completed non-live sketch.drag edit"));
+        }
+        let entry = sketch_store::sheet_target(s, p, cmd)?;
+        let (moved, report) = edit(s, p, cmd, false, |sk, _| {
+            let id = p.get("entity").and_then(Value::as_str).ok_or_else(|| bad(cmd, "entity must be a sketch point or curve"))?;
+            let entity = ent(sk, id).ok_or_else(|| bad(cmd, format!("unknown sketch entity `{id}`")))?;
+            let companions = match p.get("with") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(ids)) if ids.len() <= sk.points.len() + sk.curves.len() => ids
+                    .iter()
+                    .map(|v| {
+                        let name = v.as_str().ok_or_else(|| bad(cmd, "with must list sketch point or curve ids"))?;
+                        ent(sk, name).ok_or_else(|| bad(cmd, format!("unknown sketch entity `{name}`")))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                _ => return Err(bad(cmd, "with must be a bounded list of sketch point or curve ids")),
+            };
+            let (out, _) = drag_entity(sk, entity, &companions, from, to, false, None);
+            Ok(out)
+        })?;
+        let owner = s.drawing(cmd)?;
+        let sketch = &owner.sheet_sketch(entry.sketch).ok_or_else(|| bad(cmd, "the edited sheet sketch no longer exists"))?.sketch;
+        let at = moved.at(sketch, from);
+        let result = json!({"sketch": report, "reached": moved.reached, "at": [at.x, at.y], "retry": moved.retry});
+        return Ok((result, None));
+    }
     let id = sketch_store::target(s, p, cmd)?;
     // The sketch's report as last evaluated: a live frame keeps its degrees of freedom.
     let state = s.model.result(id).map(|r| r.state.clone());

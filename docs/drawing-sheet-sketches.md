@@ -536,3 +536,50 @@ display, stored source expressions with changed-source read-only resolution,
 saving/reopening, drawing-local undo/redo, and atomic invalid/foreign
 refusals. This is a command/store increment; it does **not** claim an
 interactive desktop/browser sheet editor or full repository CI.
+
+
+### W38a R17: shared 2D command coverage on a paper-owned sketch
+
+The same Drawing receiver now admits the remaining **bounded, self-contained 2D
+geometry commands** that can already be represented by the stored sheet
+`Sketch` payload. These are not new geometry implementations or command ids:
+
+- Creation: midpoint line, tangent arc, two- and three-tangent circles,
+  center-point and arc slots, ellipse, cubic fit/control splines, degree-five
+  control spline, conic, G1/G2 blend, and rounded rectangle.
+- Editing: fillet, three chamfers, trim, path trim, extend, break,
+  scale, move/copy, mirror, centerline, infinite line and a completed
+  non-live `sketch.drag` command.
+- Compound `sketch.draw.dimensioned` creates its supported geometry and paper
+  driving dimensions together in **one** drawing edit; it never uses model
+  parameters or the model-only automatic reference-dimension fallback.
+
+All of these retain the original shared sketcher, solver and constraint builders.
+Every edit uses the exact active drawing, sheet and sketch and is published
+only through `Session::edit_drawing`; the original model remains read-only.
+The model-only parameter-pruning calls after trim and break have been gated to
+model sketches. Fillet and tangent-circle radius expressions belong to the
+sheet constraint itself, are evaluated with the paper-mm default and can refer
+to existing source parameters without creating model parameters.
+
+The bounded sheet format currently accepts splines only through degree five.
+Consequently G3/G4 blend requests are refused rather than stored in a format
+that cannot validate. Text links, arbitrary projected/reference links,
+pattern records, offset associations and 3D wires are still explicitly
+unavailable: admitting them requires their own bounded ownership/validation,
+resolution and persistence paths. They must not be silently discarded.
+
+The non-live drag command represents **one completed gesture per call**.
+Intermediate `live: true` sheet frames and `sketch.drag_end` are not enabled:
+a reliable single-undo pointer gesture and the native/browser hit-test
+provider must be integrated by the established UI owner. This code does not
+add a parallel sheet canvas, navigation handler, command registration or
+a second solver.
+
+The existing model command implementations and parameter semantics remain
+unchanged; `sketch.fillet` adds an `expression` output only in the sheet
+case. Model-only APIs and replies do not gain sheet-specific fields.
+W19 view-attached annotation dimensions, W38b view sketches, W38c
+projection, W38d saved fills and W38e images retain their separate owners.
+This slice does **not** certify complete W38a, native/browser editing,
+canonical model+sheet Cancel composition, K/store imports or full CI.

@@ -2056,3 +2056,366 @@ fn sheet_reviewer_driving_dimension_rejects_invalid_inputs_without_publication()
         assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.constraints.is_empty());
     }
 }
+
+/// W38a R17: the existing 2D edit commands are paper-owned transactions, not model edits.
+#[test]
+fn sheet_batch_move_scale_break_trim_and_drag_publish_only_the_selected_drawing() {
+    for command in ["sketch.move", "sketch.scale", "sketch.break", "sketch.trim", "sketch.drag"] {
+        let (mut s, drawing, sketch, made) = sheet_editor();
+        let line = run(
+            &mut s,
+            "sketch.line",
+            json!({
+                "points": [[15, 20], [55, 20]], "connect": false, "infer": false
+            }),
+        )["curves"][0]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let params = match command {
+            "sketch.move" => json!({"entities": [line], "translate": [8, 3]}),
+            "sketch.scale" => json!({"entities": [line], "base": [0, 0], "factor": 1.5}),
+            "sketch.break" => json!({"curve": line, "points": [[35, 20]]}),
+            "sketch.trim" => json!({"curve": line, "at": [35, 20]}),
+            "sketch.drag" => json!({"entity": line, "from": [35, 20], "to": [42, 26]}),
+            _ => {
+                assert!(command.is_empty(), "unexpected 2D test command: {command}");
+                Value::Null
+            }
+        };
+        let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+        let source = s.doc.clone();
+        let model = s.model.state();
+        let history = s.undo.len();
+        let evals = s.evaluations;
+        let result = run(&mut s, command, params);
+        assert!(result["sketch"].is_object(), "{command}: {result}");
+        let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+        assert_ne!(after, before, "{command} must modify the selected sheet");
+        assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (history + 1, Some(drawing)), "{command}");
+        assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params), "{command}");
+        assert!(Arc::ptr_eq(&model, &s.model.state()), "{command}");
+        assert_eq!(s.evaluations, evals, "{command}");
+        assert_eq!(s.active_sheet_sketch.as_ref().unwrap().sketch, sketch, "{command}");
+        assert_eq!(run(&mut s, "drawing.sketch.inspect", json!({}))["sketch"], made["sketch"]);
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before, "{command}");
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after, "{command}");
+        let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after, "{command}");
+    }
+}
+
+/// One modify command that looks at the other curves must not borrow a model sketch.
+#[test]
+fn sheet_batch_extend_and_path_trim_keep_paper_geometry_without_model_pruning() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    s.doc_mut().new_model_param("10 mm", "mm");
+    run(&mut s, "sketch.line", json!({"points": [[30, 5], [30, 45]], "connect": false, "infer": false}));
+    let extending = run(&mut s, "sketch.line", json!({"points": [[5, 25], [15, 25]], "connect": false, "infer": false}))["curves"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let snapshot = s.doc.clone();
+    let model = s.model.state();
+    let before_steps = s.undo.len();
+    let extended = run(&mut s, "sketch.extend", json!({"curve": extending, "at": [15, 25]}));
+    assert!(extended["sketch"].is_object());
+    let updated = &s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch;
+    let end = updated.point(updated.resolve_point(&format!("{extending}.end")).unwrap()).unwrap();
+    assert!((end.x - 30.0).abs() < 1e-6 && (end.y - 25.0).abs() < 1e-6, "{end:?}");
+    assert_eq!((&s.doc.params, &s.doc.features), (&snapshot.params, &snapshot.features));
+    assert!(Arc::ptr_eq(&model, &s.model.state()));
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (before_steps + 1, Some(drawing)));
+
+    let before_trim = s.doc.clone();
+    let history = s.undo.len();
+    let trimmed = run(&mut s, "sketch.trim.path", json!({"points": [[20, 15], [40, 15]]}));
+    assert!(trimmed["trimmed"].as_array().is_some_and(|a| !a.is_empty()), "{trimmed}");
+    assert_eq!((&s.doc.params, &s.doc.features), (&snapshot.params, &snapshot.features));
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (history + 1, Some(drawing)));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(
+        s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch,
+        before_trim.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch
+    );
+}
+
+/// Existing fillet/chamfer geometry must use an authored sheet expression, never a model param.
+#[test]
+fn sheet_batch_fillet_chamfer_and_rounded_rectangle_are_drawing_local() {
+    for command in
+        ["sketch.fillet", "sketch.chamfer.equal_distance", "sketch.chamfer.two_distance", "sketch.chamfer.distance_angle", "sketch.rectangle.rounded"]
+    {
+        let (mut s, drawing, sketch, _) = sheet_editor();
+        s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+        let before = s.doc.clone();
+        let model = s.model.state();
+        let evals = s.evaluations;
+        let result = if command == "sketch.rectangle.rounded" {
+            run(&mut s, command, json!({"p0": [20, 20], "p1": [90, 60], "radius": "Inset / 5"}))
+        } else {
+            let sides = run(&mut s, "sketch.rectangle.two_point", json!({"p0": [20, 20], "p1": [90, 60]}))["curves"].as_array().unwrap().clone();
+            let mut request = json!({"a": sides[0], "b": sides[1]});
+            match command {
+                "sketch.fillet" => request["radius"] = json!("Inset / 5"),
+                "sketch.chamfer.equal_distance" => request["distance"] = json!(4),
+                "sketch.chamfer.two_distance" => {
+                    request["distance"] = json!(3);
+                    request["distance2"] = json!(4);
+                }
+                "sketch.chamfer.distance_angle" => {
+                    request["distance"] = json!(4);
+                    request["angle"] = json!(45);
+                }
+                _ => assert!(command.is_empty(), "unexpected corner test command: {command}"),
+            };
+            run(&mut s, command, request)
+        };
+        assert!(result["curves"].is_array(), "{command}: {result}");
+        let saved = &s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch;
+        assert!(saved.curves.len() >= 5, "{command}");
+        if command == "sketch.fillet" || command == "sketch.rectangle.rounded" {
+            assert_eq!(result["param"], Value::Null, "{command}: no model parameter");
+            assert_eq!(result["expression"], "Inset / 5", "{command}");
+            assert!(saved.constraints.iter().any(|c| c.param.as_deref() == Some("Inset / 5")), "{command}");
+        }
+        assert_eq!((&s.doc.features, &s.doc.params), (&before.features, &before.params), "{command}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{command}");
+        assert_eq!(s.evaluations, evals, "{command}");
+        let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, *saved, "{command}");
+    }
+}
+
+/// A compound creator must stage its creator and dimensions atomically under the same sheet.
+#[test]
+fn sheet_batch_dimensioned_creation_respects_paper_units_and_owner() {
+    let (mut s, drawing, sketch, made) = sheet_editor();
+    s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let history = s.undo.len();
+    let evals = s.evaluations;
+    let out = run(
+        &mut s,
+        "sketch.draw.dimensioned",
+        json!({
+            "command": "sketch.line", "params": {"points": [[10, 15], [50, 15]], "connect": false},
+            "dimensions": {"length": "Inset + 5"}
+        }),
+    );
+    assert_eq!(out["dimensions"]["length"]["param"], Value::Null);
+    assert_eq!(out["dimensions"]["length"]["expression"], "Inset + 5");
+    assert_eq!(out["dimensions"]["length"]["unit"], "mm");
+    let record = &s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch;
+    assert!(record.constraints.iter().any(|c| c.param.as_deref() == Some("Inset + 5")));
+    let dimension = record.constraints.iter().find(|c| c.param.as_deref() == Some("Inset + 5")).unwrap();
+    assert!((solidcraft_sketch::measure_dimension(record, &dimension.kind).unwrap() - 30.4).abs() < 1e-5);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (history + 1, Some(drawing)));
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evals);
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.is_empty());
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len() == 1);
+
+    let pristine = s.doc.clone();
+    let original_history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for request in [
+        json!({"command":"sketch.line","params":{"points":[[0,0],[10,0]]},"dimensions":{"length":"Missing + 2"}}),
+        json!({"command":"sketch.line","params":{"sketch":made["drawing"],"points":[[0,0],[10,0]]},"dimensions":{"length":25}}),
+        json!({"command":"sketch.line","params":{"points":[[0,0],[10,0]]},"dimensions":{"length":"1".repeat(4097)}}),
+        json!({"command":"sketch.rectangle.rounded","params":{"p0":[10,10],"p1":[50,30],"radius":30},"dimensions":{"width":40}}),
+    ] {
+        refused(&mut s, "sketch.draw.dimensioned", request.clone());
+        assert!(Arc::ptr_eq(&s.doc, &pristine), "{request}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), original_history, "{request}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model));
+    }
+}
+
+/// Wrong target and unadmitted record families never borrow active model geometry.
+#[test]
+fn sheet_batch_modify_refuses_foreign_owner_and_unpersisted_families_atomically() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    let line = run(&mut s, "sketch.line", json!({"points": [[10,10],[50,10]], "connect": false}))["curves"][0].clone();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (command, params) in [
+        ("sketch.move", json!({"sketch":ids::encode(drawing),"entities":[line],"translate":[5,5]})),
+        ("sketch.scale", json!({"sketch":ids::encode(drawing),"entities":[line],"factor":2})),
+        ("sketch.break", json!({"sketch":ids::encode(drawing),"curve":line,"points":[[30,10]]})),
+        ("sketch.trim", json!({"sketch":ids::encode(drawing),"curve":line,"at":[30,10]})),
+        ("sketch.drag", json!({"sketch":ids::encode(drawing),"entity":line,"from":[30,10],"to":[40,20]})),
+        ("sketch.drag", json!({"entity":line,"from":[30,10],"to":[40,20],"live":true})),
+        ("sketch.drag", json!({"entity":line,"from":[30,10],"to":[40,20],"live":"frame"})),
+        ("sketch.fillet", json!({"sketch":ids::encode(drawing),"a":line,"b":line,"radius":5})),
+        ("sketch.mirror", json!({"sketch":ids::encode(drawing),"entities":[line],"line":line})),
+    ] {
+        refused(&mut s, command, params.clone());
+        assert!(Arc::ptr_eq(&s.doc, &source), "{command}: {params}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{command}");
+        assert_eq!(s.active_sheet_sketch, entry, "{command}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}");
+    }
+    // Association families require a bounded sheet-record contract before they can be enabled.
+    for command in ["sketch.offset", "sketch.pattern.circular", "sketch.pattern.rectangular"] {
+        assert!(find_command(command).unwrap().allowed(&s).is_err(), "{command} must stay disabled on sheets");
+    }
+    assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).is_some());
+}
+
+/// R17 2D creator coverage: only existing curve constructors and the paper receiver.
+#[test]
+fn sheet_batch_new_2d_creators_preserve_paper_records_and_history() {
+    for (command, params) in [
+        ("sketch.line.midpoint", json!({"mid": [40, 40], "end": [60, 40]})),
+        ("sketch.slot.center_point", json!({"center": [60, 50], "end": [80, 50], "width": 8})),
+        ("sketch.slot.arc_three_point", json!({"start": [80, 50], "through": [70, 65], "end": [60, 50], "width": 8})),
+        ("sketch.slot.arc_center", json!({"center": [60, 50], "start": [80, 50], "end": [60, 70], "width": 8})),
+        ("sketch.ellipse", json!({"center": [80, 50], "major": [100, 50], "minor_radius": 10})),
+        ("sketch.spline.fit_point", json!({"points": [[40,40],[50,60],[70,55],[85,40]],"connect":false})),
+        ("sketch.spline.control_point", json!({"points": [[40,40],[50,60],[70,55],[85,40]],"connect":false})),
+        ("sketch.spline.control_point_5", json!({"points": [[40,40],[50,60],[55,65],[70,65],[80,55],[85,40]],"connect":false})),
+        ("sketch.conic", json!({"start":[40,40],"end":[90,40],"apex":[65,65],"rho":0.5,"connect":false})),
+    ] {
+        let (mut s, drawing, sketch, _) = sheet_editor();
+        let source = s.doc.clone();
+        let model = s.model.state();
+        let steps = s.undo.len();
+        let evals = s.evaluations;
+        let result = run(&mut s, command, params.clone());
+        assert!(result["curves"].as_array().is_some_and(|curves| !curves.is_empty()), "{command}: {result}");
+        let record = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+        assert!(!record.curves.is_empty(), "{command}");
+        assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (steps + 1, Some(drawing)), "{command}");
+        assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params), "{command}");
+        assert!(Arc::ptr_eq(&model, &s.model.state()), "{command}");
+        assert_eq!(s.evaluations, evals, "{command}");
+        let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, record, "{command}");
+        run(&mut s, "edit.undo", json!({}));
+        assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.is_empty(), "{command}");
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, record, "{command}");
+    }
+}
+
+/// G1 blends and local line types operate within the same sheet and solver.
+#[test]
+fn sheet_batch_blend_tangent_arc_centerlines_and_infinite_are_local() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    let a = run(&mut s, "sketch.line", json!({"points":[[30,50],[60,50]],"connect":false,"infer":false}))["curves"][0].as_str().unwrap().to_string();
+    let b =
+        run(&mut s, "sketch.line", json!({"points":[[100,70],[120,70]],"connect":false,"infer":false}))["curves"][0].as_str().unwrap().to_string();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let evaluations = s.evaluations;
+    let blended = run(&mut s, "sketch.blend_curve", json!({"a":format!("{a}.end"),"b":format!("{b}.start"),"continuity":"g1"}));
+    assert!(blended["curves"].as_array().is_some_and(|v| !v.is_empty()), "{blended}");
+    let tangent = run(&mut s, "sketch.arc.tangent", json!({"start":format!("{b}.end"),"end":[135,85],"curve":b}));
+    assert!(tangent["curves"].as_array().is_some_and(|v| !v.is_empty()), "{tangent}");
+    let mid = run(&mut s, "sketch.centerline", json!({"curves":[a],"value":true}));
+    assert_eq!(mid["changed"], 1);
+    let infinite = run(&mut s, "sketch.infinite", json!({"curves":[a],"value":true}));
+    assert_eq!(infinite["changed"], 1);
+    let stored = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let ci = stored.curve_index(&a).unwrap();
+    assert!(stored.curves[ci].infinite && stored.curves[ci].construction);
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluations);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, stored);
+    let before = s.doc.clone();
+    let undo = (s.undo.len(), s.redo.len(), s.evaluations);
+    refused(&mut s, "sketch.blend_curve", json!({"a":format!("{a}.end"),"b":format!("{b}.start"),"continuity":"g4"}));
+    assert!(Arc::ptr_eq(&s.doc, &before));
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), undo);
+}
+
+/// A tangent circle with a radius expression belongs to the sheet, not model parameters.
+#[test]
+fn sheet_batch_tangent_circle_read_only_source_and_reference_refusal() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    s.doc_mut().set_param("Inset", "1", Some("in"), None).unwrap();
+    let h = run(&mut s, "sketch.line", json!({"points":[[20,30],[100,30]],"connect":false,"infer":false}))["curves"][0].clone();
+    let v = run(&mut s, "sketch.line", json!({"points":[[30,20],[30,100]],"connect":false,"infer":false}))["curves"][0].clone();
+    run(&mut s, "sketch.constraint.fix", json!({"entities":[h,v]}));
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let history = s.undo.len();
+    let evals = s.evaluations;
+    let r = run(&mut s, "sketch.circle.two_tangent", json!({"curves":[h,v], "radius":"Inset / 5","near":[40,40]}));
+    assert!(r["curves"].as_array().is_some_and(|x| x.len() == 1), "{r}");
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (history + 1, Some(drawing)));
+    let sheet = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert!(sheet.constraints.iter().any(|c| c.param.as_deref() == Some("Inset / 5")));
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evals);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, sheet);
+    let before = s.doc.clone();
+    let undo = (s.undo.len(), s.redo.len(), s.evaluations);
+    refused(&mut s, "sketch.circle.two_tangent", json!({"curves":[h,v],"radius":"Missing + 1","near":[40,40]}));
+    assert!(Arc::ptr_eq(&s.doc, &before));
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), undo);
+}
+
+/// The known 2D families are enabled for sheets, while text links and patterns remain
+/// blocked by the current bounded stored-record contract.
+#[test]
+fn sheet_batch_command_capability_matrix_refuses_unsafe_record_families() {
+    let (s, _, _, _) = sheet_editor();
+    for id in [
+        "sketch.line.midpoint",
+        "sketch.arc.tangent",
+        "sketch.circle.two_tangent",
+        "sketch.circle.three_tangent",
+        "sketch.slot.center_point",
+        "sketch.slot.arc_three_point",
+        "sketch.slot.arc_center",
+        "sketch.ellipse",
+        "sketch.spline.fit_point",
+        "sketch.spline.control_point",
+        "sketch.spline.control_point_5",
+        "sketch.conic",
+        "sketch.blend_curve",
+        "sketch.centerline",
+        "sketch.infinite",
+        "sketch.rectangle.rounded",
+        "sketch.draw.dimensioned",
+        "sketch.fillet",
+        "sketch.chamfer.equal_distance",
+        "sketch.chamfer.distance_angle",
+        "sketch.chamfer.two_distance",
+        "sketch.trim",
+        "sketch.trim.path",
+        "sketch.extend",
+        "sketch.break",
+        "sketch.scale",
+        "sketch.move",
+        "sketch.mirror",
+        "sketch.drag",
+    ] {
+        assert!(find_command(id).unwrap().allowed(&s).is_ok(), "{id} should accept an active drawing-owned sketch");
+    }
+    for id in [
+        "sketch.text",
+        "sketch.edit_text",
+        "sketch.offset",
+        "sketch.pattern.circular",
+        "sketch.pattern.rectangular",
+        "sketch.drag_end",
+        "sketch.create",
+        "sketch.edit",
+    ] {
+        assert!(find_command(id).unwrap().allowed(&s).is_err(), "{id} is not admitted on a sheet");
+    }
+}
