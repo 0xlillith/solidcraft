@@ -147,6 +147,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params("a, b: points, a point and a curve or sketch axis (x / y: the sketch's own axes, unless a curve has that id; an axis becomes a linked construction line on it, reported in created), or two distinct lines (joins their closest endpoints)"),
     CommandSpec::new("sketch.constraint.tangent", "Tangent", c_tangent)
+        .in_sketch_part()
         .at("SKETCH", "CONSTRAINTS")
         .icon("c_tangent")
         .enabled(in_sketch)
@@ -187,6 +188,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params("a, b: circles/arcs"),
     CommandSpec::new("sketch.constraint.collinear", "Collinear", c_collinear)
+        .in_sketch_part()
         .at("SKETCH", "CONSTRAINTS")
         .icon("c_collinear")
         .enabled(in_sketch)

@@ -1344,6 +1344,19 @@ fn sheet_reviewer_shared_geometric_constraints_keep_drawing_local_history() {
             vec![("sketch.line", json!({"points":[[20,20],[60,20]],"ids":["a"]})), ("sketch.point", json!({"point":[35,30],"id":"marker"}))],
             json!({"point":"marker","line":"a"}),
         ),
+        (
+            "sketch.constraint.tangent",
+            vec![
+                ("sketch.line", json!({"points":[[10,10],[50,10]],"ids":["a"]})),
+                ("sketch.circle.center", json!({"center":[30,20],"radius":8,"id":"b"})),
+            ],
+            json!({"a":"a","b":"b"}),
+        ),
+        (
+            "sketch.constraint.collinear",
+            vec![("sketch.line", json!({"points":[[10,10],[50,10]],"ids":["a"]})), ("sketch.line", json!({"points":[[20,25],[60,30]],"ids":["b"]}))],
+            json!({"a":"a","b":"b"}),
+        ),
     ];
     for (cmd, geometry, params) in cases {
         let (mut s, drawing, target, _) = sheet_editor();
@@ -1387,6 +1400,27 @@ fn sheet_reviewer_shared_geometric_constraints_keep_drawing_local_history() {
             "sketch.constraint.parallel" => assert!(direction("a").cross(direction("b")).abs() < 1e-5, "{cmd}: parallel"),
             "sketch.constraint.perpendicular" => assert!(direction("a").dot(direction("b")).abs() < 1e-5, "{cmd}: perpendicular"),
             "sketch.constraint.concentric" => assert!(centre("a").dist(centre("b")) < 1e-6, "{cmd}: common centre"),
+            "sketch.constraint.tangent" => {
+                let l = after.curve_index("a").unwrap();
+                let CurveKind::Line { a, b } = after.curves[l].kind else { panic!("{cmd}: missing line") };
+                let v = after.points[b].pos - after.points[a].pos;
+                let circle = after.curve_index("b").unwrap();
+                let CurveKind::Circle { c, r } = after.curves[circle].kind else { panic!("{cmd}: missing circle") };
+                let centre = after.points[c].pos;
+                let gap = (centre - after.points[a].pos).cross(v).abs() / v.dot(v).sqrt();
+                assert!((gap - r).abs() < 1e-4, "{cmd}: line-circle tangency");
+            }
+            "sketch.constraint.collinear" => {
+                let a = after.curve_index("a").unwrap();
+                let b = after.curve_index("b").unwrap();
+                let CurveKind::Line { a: a0, .. } = after.curves[a].kind else { panic!("{cmd}: missing first line") };
+                let CurveKind::Line { a: b0, .. } = after.curves[b].kind else { panic!("{cmd}: missing second line") };
+                let v = direction("a");
+                let w = direction("b");
+                let norm = v.dot(v).sqrt();
+                assert!(v.cross(w).abs() / (norm * w.dot(w).sqrt()) < 1e-5, "{cmd}: parallel lines");
+                assert!((after.points[b0].pos - after.points[a0].pos).cross(v).abs() / norm < 1e-4, "{cmd}: common line");
+            }
             "sketch.constraint.midpoint" => {
                 let i = after.curve_index("a").unwrap();
                 let CurveKind::Line { a, b } = after.curves[i].kind else { panic!("{cmd}: missing line") };
@@ -1426,6 +1460,8 @@ fn sheet_reviewer_constraints_refuse_cross_owner_targets_atomically() {
         ("sketch.constraint.parallel", json!({"sketch":-1,"a":"a","b":"a"})),
         ("sketch.constraint.perpendicular", json!({"sketch":-1,"a":"a","b":"a"})),
         ("sketch.constraint.concentric", json!({"sketch":-1,"a":"a","b":"a"})),
+        ("sketch.constraint.tangent", json!({"sketch":-1,"a":"a","b":"a"})),
+        ("sketch.constraint.collinear", json!({"sketch":-1,"a":"a","b":"a"})),
         ("sketch.constraint.midpoint", json!({"sketch":-1,"point":"marker","line":"a"})),
     ] {
         refused(&mut s, cmd, p);

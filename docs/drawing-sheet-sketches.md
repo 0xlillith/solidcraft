@@ -355,6 +355,23 @@ model `vertex`/`on_edge` projections refuse rather than implicitly reading
 the model's active sketch. Main's `x:` spelling is included proactively in
 this refusal, **not implemented** for sheet curves.
 
-Coincident, tangent, collinear, symmetry, dimensions and advanced constraints
-remain model-only pending dedicated qualification. Canonical Cancel and the
-shared receiver/locale merge are still prerequisites for a GUI-ready editor.
+Coincident, symmetry, dimensions and advanced constraints remain
+model-only pending dedicated qualification. Canonical Cancel and the shared
+receiver/locale merge are still prerequisites for a GUI-ready editor.
+
+### R9: tangent and collinear constraints on paper
+
+The existing `sketch.constraint.tangent` and
+`sketch.constraint.collinear` commands now also use the same sheet-local
+sketch receiver. No constraint formulation, solver, model handler or saved
+schema changes. Tangency remains the existing line/circle/arc geometry
+constraint; collinearity uses the existing straight-line relation. Both
+retain explicit sheet ownership and single-session publication, and refuse
+cross-owner targets without recording a command or changing model state.
+
+The expanded shared-constraint engine acceptance checks analytic
+line-to-circle tangency, two lines sharing one infinite supporting line,
+drawing-only undo/redo and file reopening, and atomic refusal of a model
+target. This does not qualify other constraint commands, interactive
+snap/picking, drawing-owned dimensions, the native/browser editor or the
+full workspace CI suite.
