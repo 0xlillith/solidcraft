@@ -2575,9 +2575,12 @@ impl SolveApp {
 
     fn issue_screenshots(&mut self, ctx: &egui::Context) {
         let now = now_ms();
+        // A view that just moved is drawn with fewer AO samples: shoot the full-quality frame
+        // that follows (#7165), or after half a second a view that keeps moving as it is.
+        let settled = viewport::ao_settled(self, ctx);
         self.queued_shots.retain_mut(|(token, at, frames)| {
             *frames += 1;
-            if now >= *at && *frames >= 3 {
+            if now >= *at && *frames >= 3 && (settled || now >= *at + 500.0) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(*token)));
                 false
             } else {
