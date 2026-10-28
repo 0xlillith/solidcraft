@@ -185,7 +185,8 @@ fn redefining_a_blend_replaces_persistent_edge_selection_and_survives_resize() {
 
 /// A redefine computes the features after the edited one once: its trial's results are kept
 /// for the session's own evaluation, though the cache holds only the last state (a large
-/// design's).
+/// design's). The reply reports that one rebuild (#5694): a session that had to compute the
+/// features again would count them twice.
 #[test]
 fn redefining_computes_the_later_features_once() {
     let mut s = Session::default();
@@ -196,9 +197,27 @@ fn redefining_computes_the_later_features_once() {
     *s.model.cache.lock().unwrap() = solidcraft_doc::EvalCache::with_budget(1);
     let reply =
         run(&mut s, "timeline.redefine", json!({"feature": "Base", "command": "solid.box", "params": {"length": 25, "width": 10, "height": 5}}));
-    assert_eq!(reply["recomputed"], 0, "{reply}");
+    assert_eq!((reply["recomputed"].as_u64(), reply["restored"].as_u64()), (Some(4), Some(0)), "{reply}");
     let volume = run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap();
     assert!((volume - (25.0 * 10.0 * 5.0 + 3.0 * 125.0)).abs() < 1e-6, "{volume}");
+}
+
+/// #5694: the reply reports what the redefine rebuilt — the edited feature and the features
+/// after it — not the session's reuse of the trial's own results, which read as "nothing was
+/// rebuilt" and did not match what the same change reports through `timeline.edit`.
+#[test]
+fn redefining_reports_the_features_it_rebuilt() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 40, "height": 20, "center": [0, 0, 10], "name": "Block"}));
+    run(&mut s, "solid.hole", json!({"position": [0, 0, 20], "diameter": 6, "depth": 12, "name": "H"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 5, "center": [30, 0, 2.5], "operation": "new", "name": "Other"}));
+    let reply = run(
+        &mut s,
+        "timeline.redefine",
+        json!({"feature": "H", "command": "solid.hole",
+               "params": {"position": [0, 0, 20], "type": "counterbore", "diameter": 6, "depth": 12, "cb_diameter": 10, "cb_depth": 4}}),
+    );
+    assert_eq!((reply["recomputed"].as_u64(), reply["restored"].as_u64()), (Some(2), Some(0)), "{reply}");
 }
 
 #[test]
