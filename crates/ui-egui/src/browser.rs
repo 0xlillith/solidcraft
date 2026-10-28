@@ -2478,10 +2478,7 @@ fn entry_row(
     }
     if r.double && folder == "sketches" {
         if let Ok(id) = e.key.parse() {
-            if let Some(path) = path {
-                let _ = app.run("component.activate", json!({"component": comp,"occurrence":path.last(),"path":path}));
-            }
-            app.edit_sketch(id);
+            app.edit_sketch_in(id, path.map(|path| (comp, path)));
         }
     } else if r.clicked {
         let shift = ui.input(|i| i.modifiers.shift);
