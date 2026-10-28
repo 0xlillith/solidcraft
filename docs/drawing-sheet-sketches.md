@@ -434,3 +434,29 @@ source-model identity, and wrong-owner/unsupported-value refusals. A reference
 constraint is not a driving sheet-sketch dimension definition, and it is not a
 drawing-view annotation (W19/#4896). No new solver, schema, locale, scene,
 desktop/browser interactive tool, or full-CI qualification is claimed here.
+
+### W38a R13: shared Coincident constraint on a sheet
+
+The existing `sketch.constraint.coincident` command now admits an active sheet
+sketch, without adding another sketcher or constraint algorithm. Its initial
+duplicate/endpoint preflight reads a solved candidate through
+`sketch_store::read_for_command`, resolving the exact drawing, sheet and sketch
+instead of looking up a model feature by the same local id. The same helper
+continues to resolve and read model sketches by their existing rules when no
+drawing is open.
+
+Point-to-point coincidence, a point on a curve (in either pick order) and the
+closest endpoints of two distinct straight lines retain the existing command
+semantics. A coincident point pair already constrained together returns its
+existing constraint id without a document write or undo step. A new relation
+continues through the shared constraint builder and solver, with one
+`Session::edit_drawing` publication, one drawing-local history step and no
+source-model mutation. There is no implicit switch to a second sheet.
+
+Original engine cases check local point coincidence and idempotence, point-on-
+curve selection, two-line endpoint selection, undo/redo, JSON reopening,
+model/parameter isolation and atomic refusal of foreign sketch ids or missing
+local entities. Their executed results and the exact tested commit belong in
+the PR. This does **not** complete sheet sketch driving dimensions, model
+projection, sheet editor UI, all-tool parity, canonical model/sheet Cancel
+composition or the full repository CI gate.

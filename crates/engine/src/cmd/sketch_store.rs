@@ -43,6 +43,17 @@ pub(super) fn read(doc: &Document, id: u64) -> Result<&Sketch> {
     Ok(doc.sketch(id)?)
 }
 
+/// Read the selected sketch for a command that needs an owned preflight before editing.
+/// Sheet identities are resolved against the open Drawing, never the model feature ids;
+/// resolving paper expressions and solving here does not publish either document.
+pub(super) fn read_for_command(s: &Session, p: &Value, cmd: &str) -> Result<Sketch> {
+    if s.open_drawing.is_some() {
+        let entry = sheet_target(s, p, cmd)?;
+        return Ok(s.drawing(cmd)?.solve_sheet_sketch(&s.doc, entry.sketch)?.sketch);
+    }
+    Ok(read(&s.doc, target(s, p, cmd)?)?.clone())
+}
+
 /// Keep `sk` as sketch `id`.
 pub(super) fn write(doc: &mut Document, id: u64, sk: Sketch) -> Result<()> {
     *doc.sketch_mut(id)? = sk;

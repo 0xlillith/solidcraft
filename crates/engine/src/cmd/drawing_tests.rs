@@ -1706,3 +1706,102 @@ fn sheet_reviewer_reference_dimensions_refuse_driving_values_and_wrong_owners_at
         assert!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.constraints.is_empty());
     }
 }
+
+// W38a R13: the existing Coincident command reads and edits the exact sheet sketch.
+#[test]
+fn sheet_reviewer_coincident_points_are_owned_idempotent_and_undoable() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.point", json!({"point": [15, 20], "id": "pin_a", "connect": false}));
+    run(&mut s, "sketch.point", json!({"point": [70, 45], "id": "pin_b", "connect": false}));
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let evaluations = s.evaluations;
+    let steps = s.undo.len();
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+
+    let added = run(&mut s, "sketch.constraint.coincident", json!({"a": "pin_a", "b": "pin_b"}));
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let a = after.resolve_point("pin_a").unwrap();
+    let b = after.resolve_point("pin_b").unwrap();
+    assert!(after.point(a).unwrap().dist(after.point(b).unwrap()) < 1e-7, "{added}");
+    assert_eq!(after.constraints.len(), before.constraints.len() + 1);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (steps + 1, Some(drawing)));
+    let published = s.doc.clone();
+
+    let again = run(&mut s, "sketch.constraint.coincident", json!({"a": "pin_b", "b": "pin_a"}));
+    assert_eq!(again["existing"], true);
+    assert_eq!(again["constraint"], added["constraint"]);
+    assert!(Arc::ptr_eq(&s.doc, &published), "an existing constraint is a read-only result");
+    assert_eq!(s.undo.len(), steps + 1);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(reopened.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluations);
+}
+
+#[test]
+fn sheet_reviewer_coincident_curve_preflight_refuses_foreign_targets_atomically() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points": [[10, 20], [50, 20]], "ids": ["wall"], "connect": false}));
+    run(&mut s, "sketch.point", json!({"point": [35, 40], "id": "peg", "connect": false}));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for params in [
+        json!({"sketch": -1, "a": "peg", "b": "wall"}),
+        json!({"sketch": ids::encode(drawing), "a": "peg", "b": "wall"}),
+        json!({"a": "not_here", "b": "wall"}),
+        json!({"a": "peg", "b": "missing_curve"}),
+        json!({"a": "wall", "b": "wall"}),
+    ] {
+        refused(&mut s, "sketch.constraint.coincident", params.clone());
+        assert!(Arc::ptr_eq(&s.doc, &before), "{params}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{params}");
+        assert_eq!(s.active_sheet_sketch, entry, "{params}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{params}");
+    }
+    let applied = run(&mut s, "sketch.constraint.coincident", json!({"a": "wall", "b": "peg"}));
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert_eq!(applied["constraint"], after.constraints.last().unwrap().id);
+    assert!(matches!(&after.constraints.last().unwrap().kind, solidcraft_sketch::ConstraintKind::PointOnCurve { .. }));
+    assert_eq!(s.undo.last().unwrap().part, Some(drawing));
+    assert_eq!((&s.doc.features, &s.doc.params), (&before.features, &before.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, history.2);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.constraints.len(), 0);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+}
+
+#[test]
+fn sheet_reviewer_coincident_lines_join_only_their_local_endpoints() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points": [[20, 20], [60, 20]], "ids": ["first"], "connect": false}));
+    run(&mut s, "sketch.line", json!({"points": [[70, 25], [70, 55]], "ids": ["second"], "connect": false}));
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let model = s.model.state();
+    let source = s.doc.clone();
+    let steps = s.undo.len();
+    let applied = run(&mut s, "sketch.constraint.coincident", json!({"a": "first", "b": "second"}));
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let matched = after.constraints.last().unwrap();
+    assert_eq!(applied["constraint"], matched.id);
+    let solidcraft_sketch::ConstraintKind::Coincident { p, q } = &matched.kind else {
+        panic!("joining two lines must join their nearest endpoints");
+    };
+    assert!(after.point(*p).unwrap().dist(after.point(*q).unwrap()) < 1e-7);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (steps + 1, Some(drawing)));
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+}
