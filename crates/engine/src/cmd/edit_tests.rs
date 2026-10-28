@@ -1301,3 +1301,34 @@ fn select_same_look_uses_resolved_looks_without_document_history_edits_and_refus
     assert!(std::sync::Arc::ptr_eq(&doc, &s.doc));
     assert_eq!(history, (s.undo.len(), s.redo.len(), s.evaluations));
 }
+
+/// A body changed by a few hundred features in a row whose names nothing asks for, then
+/// filleted: reordering or moving an earlier feature evaluates them all again, and the fillet
+/// finds its edge by the names of the body before it, which are worked out from the body before
+/// that, and so on back to the start. That walk recursed once per feature and overflowed the
+/// window thread's stack (1 MB on Windows), ending the app (#7587, #7926). On a thread with that
+/// stack, both moves are made.
+#[test]
+fn a_move_before_a_long_history_of_one_body_fits_a_window_threads_stack() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Peg"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [50, 0, 0], "body_name": "Other"}));
+    for i in 0..300 {
+        run(&mut s, "solid.move", json!({"bodies": ["Peg"], "translate": [0, 0, if i % 2 == 0 { 1 } else { -1 }]}));
+    }
+    run(&mut s, "solid.fillet", json!({"body": "Peg", "radius": 1, "edges": [[5, 0, 10]]}));
+    let other = s.doc.features.get(1).map(|f| f.id).unwrap();
+    let fillet = s.doc.features.last().map(|f| f.id).unwrap();
+    let moved = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            run(&mut s, "timeline.reorder", json!({"feature": other, "position": 0}));
+            assert!(s.model.result(fillet).is_some_and(|r| r.error.is_none()), "the fillet is made after the reorder");
+            run(&mut s, "timeline.move_many", json!({"features": [other], "position": 2}));
+            assert_eq!(s.doc.features.get(1).map(|f| f.id), Some(other));
+            assert!(s.model.result(fillet).is_some_and(|r| r.error.is_none()), "the fillet is made after the move");
+        })
+        .unwrap()
+        .join();
+    assert!(moved.is_ok());
+}
