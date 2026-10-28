@@ -1566,3 +1566,72 @@ fn sheet_reviewer_fix_and_symmetry_refuse_foreign_targets_atomically() {
         assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.curves.len(), 1);
     }
 }
+
+// W38a R11: construction and deletion are editing operations on the shared sheet sketch.
+#[test]
+fn sheet_reviewer_construction_toggle_is_one_drawing_edit() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points":[[10,20],[50,20]],"ids":["guide"]}));
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let (steps, evaluations) = (s.undo.len(), s.evaluations);
+
+    let changed = run(&mut s, "sketch.construction", json!({"curves":["guide"],"value":true}));
+    assert_eq!((changed["changed"].as_u64(), changed["construction"].as_bool()), (Some(1), Some(true)));
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert!(after.curves[after.curve_index("guide").unwrap()].construction);
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluations);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (steps + 1, Some(drawing)));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    assert_eq!(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap().drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    let back = run(&mut s, "sketch.construction", json!({"curves":["guide"],"value":false}));
+    assert_eq!((back["changed"].as_u64(), back["construction"].as_bool()), (Some(1), Some(false)));
+}
+
+#[test]
+fn sheet_reviewer_delete_keeps_source_and_refuses_foreign_or_missing_entities() {
+    let (mut s, drawing, sketch, _) = sheet_editor();
+    run(&mut s, "sketch.line", json!({"points":[[10,20],[30,20]],"ids":["remove_me"]}));
+    run(&mut s, "sketch.line", json!({"points":[[40,50],[60,50]],"ids":["keep_me"]}));
+    let source = s.doc.clone();
+    let model = s.model.state();
+    let (steps, evaluations) = (s.undo.len(), s.evaluations);
+    let before = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert!(before.curve_index("remove_me").is_some() && before.curve_index("keep_me").is_some());
+
+    let result = run(&mut s, "sketch.delete", json!({"entities":["remove_me"]}));
+    assert_eq!(result["deleted"], 1);
+    let after = s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch.clone();
+    assert!(after.curve_index("remove_me").is_none() && after.curve_index("keep_me").is_some());
+    assert_eq!((&s.doc.features, &s.doc.params), (&source.features, &source.params));
+    assert!(Arc::ptr_eq(&s.model.state(), &model));
+    assert_eq!(s.evaluations, evaluations);
+    assert_eq!((s.undo.len(), s.undo.last().unwrap().part), (steps + 1, Some(drawing)));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(s.doc.drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+    assert_eq!(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap().drawing(drawing).unwrap().sheet_sketch(sketch).unwrap().sketch, after);
+
+    let unchanged = s.doc.clone();
+    let entry = s.active_sheet_sketch.clone();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    for (command, args) in [
+        ("sketch.construction", json!({"sketch":-1,"curves":["keep_me"]})),
+        ("sketch.delete", json!({"sketch":-1,"entities":["keep_me"]})),
+        ("sketch.construction", json!({"curves":["not_here"]})),
+        ("sketch.delete", json!({"entities":["not_here"]})),
+    ] {
+        refused(&mut s, command, args);
+        assert!(Arc::ptr_eq(&s.doc, &unchanged), "{command}");
+        assert!(Arc::ptr_eq(&s.model.state(), &model), "{command}");
+        assert_eq!(s.active_sheet_sketch, entry, "{command}");
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history, "{command}");
+    }
+}

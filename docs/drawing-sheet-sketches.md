@@ -395,3 +395,17 @@ JSON save/reopen cases live in the existing engine Drawing tests.
 This is not shared annotation dimension support, pointer-driven UI integration,
 canonical sketch.cancel composition or full native/browser acceptance.
 Those remain separate dependencies and deliverables.
+
+
+### W38a R11: sheet-local construction and deletion
+
+The existing `sketch.construction` and `sketch.delete` commands now accept the active,
+exactly owned sheet sketch through the common sketch command receiver. Construction state
+and entity deletion publish only through `Session::edit_drawing`, with one per-drawing
+undo/redo step; the model and its parameters are read-only. In particular, deleting a
+sheet entity cannot invoke model-parameter pruning. Invalid local entity ids, a foreign
+sketch selector and malformed edits fail without a partial publication.
+
+These commands extend the **command-driven** subset, not an independently accepted
+native/browser interactive editor. Dimension constraints and annotations attached to
+drawing views are separate responsibilities; the latter belong to W19 (#4896).

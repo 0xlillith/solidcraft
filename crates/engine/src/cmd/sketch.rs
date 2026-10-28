@@ -201,12 +201,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params("a, b: two points or two curves (lines mirror their ends, circles/arcs their centres); line: symmetry line id, or x / y for the sketch's own axes (a curve with that id wins; an axis becomes a linked construction line on it, reported in created); or point (or a point id as line, \"origin\" too): symmetric about that point, each pair joined by a construction line it is the midpoint of"),
     CommandSpec::new("sketch.construction", "Normal/Construction", construction)
+        .in_sketch_part()
         .at("SKETCH", "CREATE")
         .icon("construction")
         .key("X")
         .enabled(in_sketch)
         .params("curves: [ids], value?: bool (default: construction unless all of them already are)"),
-    CommandSpec::new("sketch.delete", "Delete Sketch Entities", sketch_delete).icon("delete")
+    CommandSpec::new("sketch.delete", "Delete Sketch Entities", sketch_delete).in_sketch_part().icon("delete")
         .enabled(in_sketch)
         .params("entities: [curve, point or constraint ids]"),
     CommandSpec::new("sketch.move_point", "Drag Sketch Point", move_point).icon("sketch_move").enabled(in_sketch).params("point: ref, to: [x,y]"),
@@ -2581,6 +2582,9 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
     if ids.is_empty() {
         return Err(bad(cmd, "`entities` must list sketch entity ids"));
     }
+    // Sheet edits may remove sheet-local entities, never model parameter definitions.
+    // The model path retains its existing parameter-pruning behavior.
+    let model_edit = s.open_drawing.is_none();
     let (n, info) = edit(s, p, cmd, false, |sk, doc| {
         let mut curves = Vec::new();
         let mut points = Vec::new();
@@ -2636,11 +2640,15 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
         sk.remove_curves(&curves);
         let pidx: Vec<usize> = pids.iter().filter_map(|id| sk.point_index(id)).collect();
         sk.remove_points(&pidx);
-        doc.prune_model_params();
+        if model_edit {
+            doc.prune_model_params();
+        }
         Ok(ids.len())
     })?;
-    // Dimension parameters may have been dropped; prune again with the stored sketch.
-    s.doc_mut().prune_model_params();
+    // Model sketch dimensions may have retired parameters; a sheet sketch never can.
+    if model_edit {
+        s.doc_mut().prune_model_params();
+    }
     Ok(json!({"deleted": n, "sketch": info}))
 }
 
