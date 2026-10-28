@@ -409,3 +409,28 @@ sketch selector and malformed edits fail without a partial publication.
 These commands extend the **command-driven** subset, not an independently accepted
 native/browser interactive editor. Dimension constraints and annotations attached to
 drawing views are separate responsibilities; the latter belong to W19 (#4896).
+
+### W38a R12: reference-only dimensions on paper
+
+The existing `sketch.dimension` command now accepts **reference (driven) dimensions**
+on the active, exactly owned sheet sketch. Call it with `driven: true` and a
+sheet-local line, circle, arc or point pair in `entities`. It uses the same
+sketch constraint builder and solver, reports the stored solved measurement in
+physical paper millimetres or degrees, and publishes through the one
+`Session::edit_drawing` boundary. The existing `sketch.dimension_text`
+command places or resets the reference dimension label in paper coordinates,
+using the same drawing-local undo/redo history.
+
+The containing model is **read-only**: reference dimensions have no model
+parameter binding, never create named or generated source parameters, and
+cannot evaluate or edit model features. A sheet request that supplies a driving
+dimension, a dimension `value`, a parameter definition, or `scale_sketch: true`
+is refused explicitly instead of passing through the model-only parameter path.
+An incorrect drawing/sketch owner or unknown local entity is refused atomically.
+
+Original engine cases cover the 40 mm paper-length measurement when the source
+design displays inches, label placement, drawing-only undo/redo and JSON reopen,
+source-model identity, and wrong-owner/unsupported-value refusals. A reference
+constraint is not a driving sheet-sketch dimension definition, and it is not a
+drawing-view annotation (W19/#4896). No new solver, schema, locale, scene,
+desktop/browser interactive tool, or full-CI qualification is claimed here.

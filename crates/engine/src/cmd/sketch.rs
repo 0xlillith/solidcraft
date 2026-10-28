@@ -132,8 +132,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .enabled(in_sketch)
         .params(concat!("p0, p1: overall ends, width", connect_doc!(), created_doc!())),
     CommandSpec::new("sketch.point", "Point", draw_point).in_sketch_part().at("SKETCH", "CREATE").icon("point").enabled(in_sketch).params(concat!("point: [x,y] (each a number or an expression over the design's parameters: the point is then fixed where it comes to and follows them), id?", connect_doc!(), created_doc!())),
-    CommandSpec::new("sketch.dimension", "Sketch Dimension", dimension).at("SKETCH", "CREATE").icon("dimension").key("D").enabled(in_sketch).params(
-        "entities: [refs], type?: auto|distance|horizontal|vertical|length|radius|diameter|angle, value?: number or expression (default: current; a bare number is in the design's units, e.g. 2 means 2 in in an inch design; give a unit such as \"50 mm\" to override), or `name = expression` (e.g. \"width = 40\"), which adds the user parameter `name` with that expression and dimensions with `name` (refused when the name is taken or reserved; the reply's `defined` names it); text_at?: [x, y]. Two points or a line off the axes: with auto, text_at across from them is the distance between them, above or below them horizontal, beside them vertical. Two lines: the angle between them (acute, or 180° − it when the value is nearer that) unless text_at picks a sector. A line and a circle or arc: the distance from the line to its edge (the gap, or how far the edge reaches past a line that cuts it; 0 is tangent); dimension the centre point for the distance to the centre. A dimension the sketch already determines is refused (naming what determines it); if_redundant?: \"driven\" places it as a driven (reference) dimension instead. scale_sketch?: bool (the dimension tool sends true): when this is the sketch's first length dimension and nothing in the sketch fixes a size (no other driving length dimension, nothing fixed or projected), the whole sketch scales about its origin to the value instead of distorting. Returns measured in unit (mm or deg), and scaled: the factor when the sketch was scaled",
+    CommandSpec::new("sketch.dimension", "Sketch Dimension", dimension).in_sketch_part().at("SKETCH", "CREATE").icon("dimension").key("D").enabled(in_sketch).params(
+        "entities: [refs], type?: auto|distance|horizontal|vertical|length|radius|diameter|angle, value?: number or expression (default: current; a bare number is in the design's units, e.g. 2 means 2 in in an inch design; give a unit such as \"50 mm\" to override), or `name = expression` (e.g. \"width = 40\"), which adds the user parameter `name` with that expression and dimensions with `name` (refused when the name is taken or reserved; the reply's `defined` names it); text_at?: [x, y]. Two points or a line off the axes: with auto, text_at across from them is the distance between them, above or below them horizontal, beside them vertical. Two lines: the angle between them (acute, or 180° − it when the value is nearer that) unless text_at picks a sector. A line and a circle or arc: the distance from the line to its edge (the gap, or how far the edge reaches past a line that cuts it; 0 is tangent); dimension the centre point for the distance to the centre. A dimension the sketch already determines is refused (naming what determines it); if_redundant?: \"driven\" places it as a driven (reference) dimension instead. scale_sketch?: bool (the dimension tool sends true): when this is the sketch's first length dimension and nothing in the sketch fixes a size (no other driving length dimension, nothing fixed or projected), the whole sketch scales about its origin to the value instead of distorting. Returns measured in unit (mm or deg), and scaled: the factor when the sketch was scaled. On sheet sketches only driven: true reference dimensions without a value are supported: they measure paper millimetres or degrees, never add source-model parameters; driving values and scale_sketch are explicitly refused",
     ),
     CommandSpec::new("sketch.constraint.horizontal_vertical", "Horizontal/Vertical", c_horizontal_vertical)
         .in_sketch_part()
@@ -217,7 +217,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("sketch.drag_end", "End Sketch Drag", drag_end).icon("sketch_move").enabled(in_sketch).doc_only().params(
         "constraint?: {command: a sketch.constraint.* id, params}: ends a drag made of `sketch.drag` `live: true` frames: adds the constraint it let go on (not kept if it over-constrains the sketch), then evaluates the whole model once; returns the constraint's result and the sketch's solved state and degrees of freedom",
     ),
-    CommandSpec::new("sketch.dimension_text", "Move Dimension Text", dimension_text).icon("edit")
+    CommandSpec::new("sketch.dimension_text", "Move Dimension Text", dimension_text).in_sketch_part().icon("edit")
         .enabled(in_sketch)
         .params("dimension: constraint id or parameter name; at: [x,y] text centre (sketch coordinates) | reset: true (default place)"),
     CommandSpec::new("sketch.options", "Sketch Palette Options", sketch_options).icon("sketch").params(
@@ -2127,6 +2127,19 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
     let value = expr(p, "value");
     let text_at = p.get("text_at").and_then(vec2);
     let driven = bool_(p, "driven").unwrap_or(false);
+    // Sheet sketches may measure geometry without changing source parameters. Their
+    // driving dimensions need a drawing-owned value/parameter contract (W38a),
+    // so do not reuse the model command's parameter creation path.
+    let on_sheet = s.open_drawing.is_some();
+    if on_sheet && !driven {
+        return Err(bad(cmd, "sheet sketch driving dimensions are not supported yet; use `driven: true` for a reference dimension"));
+    }
+    if on_sheet && value.is_some() {
+        return Err(bad(cmd, "a sheet sketch reference dimension cannot define or take a value"));
+    }
+    if on_sheet && bool_(p, "scale_sketch").unwrap_or(false) {
+        return Err(bad(cmd, "scaling a sheet sketch through a reference dimension is not supported"));
+    }
     // `name = expression` defines the user parameter `name` and dimensions with it (#2916).
     let (defines, value) = match value.as_ref().and_then(|v| solidcraft_doc::expr::definition(v.as_str())) {
         Some((name, rhs)) => {
@@ -2353,7 +2366,17 @@ fn dimension(s: &mut Session, p: &Value) -> Result<Value> {
         Ok((pname, name, measured(is_angle, cur)))
     })?;
     // Report what the dimension measures once the sketch is solved, not the geometry before.
-    let current = solved_measure(s, p, cmd).unwrap_or(current);
+    // The model-only lookup cannot inspect the drawing-owned sketch.
+    let current = if on_sheet {
+        let entry = sketch_store::sheet_target(s, p, cmd)?;
+        let owner = s.drawing(cmd)?;
+        let sk = &owner.sheet_sketch(entry.sketch).ok_or_else(|| bad(cmd, "the edited sheet sketch no longer exists"))?.sketch;
+        let latest = sk.constraints.last().ok_or_else(|| bad(cmd, "the sheet dimension was not stored"))?;
+        let value = solidcraft_sketch::measure_dimension(sk, &latest.kind).ok_or_else(|| bad(cmd, "could not measure the sheet dimension"))?;
+        measured(latest.kind.is_angle(), value)
+    } else {
+        solved_measure(s, p, cmd).unwrap_or(current)
+    };
     if driven {
         return Ok(json!({"param": Value::Null, "driven": true, "type": kind_name, "measured": current.0, "unit": current.1, "sketch": info}));
     }
