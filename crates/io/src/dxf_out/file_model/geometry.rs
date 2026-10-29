@@ -12,7 +12,7 @@
 
 use solidcraft_geom::Vec2;
 
-use super::super::DxfShape;
+use super::super::{DxfShape, DxfVertex};
 use super::DxfFile;
 use crate::{IoError, Result};
 
@@ -189,6 +189,11 @@ where
     F: FnMut(&DxfShape) -> Result<DxfGeometryBounds>,
 {
     match shape {
+        DxfShape::BulgedPolyline { vertices, closed } => {
+            // The file-level length-only preflight already charged every
+            // entity's interval work cumulatively before this value scan.
+            super::bulges::bounds(vertices, *closed, super::super::path::MAX_PATH_ITEMS, crate::MAX_DRAWING_BYTES)
+        }
         DxfShape::Point(point) => {
             let point = finite_point(*point)?;
             DxfGeometryBounds::new(point, point)
@@ -230,6 +235,26 @@ fn transformed_point(point: Vec2, scale: f64, translation: Vec2) -> Result<Vec2>
 
 fn transformed_shape(shape: &DxfShape, scale: f64, translation: Vec2) -> Result<DxfShape> {
     match shape {
+        DxfShape::BulgedPolyline { vertices, closed } => {
+            super::super::admit_bulged(vertices, *closed)?;
+            let mut copied = Vec::new();
+            copied.try_reserve_exact(vertices.len()).map_err(|_| invalid("DXF bulged vertex allocation failed"))?;
+            let mut previous: Option<(Vec2, Vec2)> = None;
+            for vertex in vertices {
+                let at = transformed_point(vertex.at, scale, translation)?;
+                if let Some((old, last)) = previous {
+                    if old != vertex.at && last == at {
+                        return Err(invalid("DXF transform collapses adjacent distinct bulged vertices"));
+                    }
+                }
+                copied.push(DxfVertex { at, bulge: vertex.bulge });
+                previous = Some((vertex.at, at));
+            }
+            // This retains raw outgoing signs/zero bits and the original seam
+            // flag; it does not reconstruct/re-fit arcs or invoke strict bounds.
+            super::super::admit_bulged(&copied, *closed)?;
+            Ok(DxfShape::BulgedPolyline { vertices: copied, closed: *closed })
+        }
         DxfShape::Point(point) => Ok(DxfShape::Point(transformed_point(*point, scale, translation)?)),
         DxfShape::Line(a, b) => {
             let start = transformed_point(*a, scale, translation)?;
@@ -378,6 +403,21 @@ impl DxfFile<DxfShape> {
             // string comparison cost in layer declarations, or wall-clock time.
             budget.charge(0, 32, copy_limit, work_limit)?;
             match entity.geometry() {
+                DxfShape::BulgedPolyline { vertices, closed } => {
+                    let count = vertices.len();
+                    if !(2..=super::super::path::MAX_PATH_ITEMS).contains(&count) {
+                        return Err(invalid("bulged vertex count exceeds supported range"));
+                    }
+                    let edges = if *closed { count } else { count - 1 };
+                    // Mirrors the exact pinned d8b helper's n+512*edges cost;
+                    // array copy adds8*n. Charge globally BEFORE any values.
+                    let interval_work = edges
+                        .checked_mul(512)
+                        .and_then(|work| work.checked_add(count))
+                        .ok_or_else(|| invalid("DXF bulged interval work count overflow"))?;
+                    budget.array::<DxfVertex>(count, copy_limit, work_limit)?;
+                    budget.charge(0, interval_work, copy_limit, work_limit)?;
+                }
                 DxfShape::Text { text, .. } | DxfShape::AlignedText { text, .. } => {
                     text_bytes = accumulated_text_bytes(text_bytes, text.len(), copy_limit)?;
                     budget.charge(text.len(), text.len(), copy_limit, work_limit)?;
@@ -425,6 +465,110 @@ mod tests {
     use super::super::super::{DxfTextHorizontalAlignment, DxfTextVerticalAlignment};
 
     #[test]
+    fn bulged_copy_preserves_vertices_raw_signs_seams_and_custom_zero_metadata() {
+        let physical = StandardWeight::from_code(50).unwrap();
+        let mut file = DxfFile::with_layer_zero(3, DxfLinetype::Hidden, Some(physical)).unwrap();
+        let vertices = vec![
+            DxfVertex { at: Vec2::new(0.0, 0.0), bulge: 0.5 },
+            DxfVertex { at: Vec2::new(4.0, 0.0), bulge: -0.5 },
+            DxfVertex { at: Vec2::new(8.0, 0.0), bulge: -0.0 },
+        ];
+        file.push(file.default_layer(), DxfShape::BulgedPolyline { vertices: vertices.clone(), closed: false }, Some(EntityWeight::ByLayer)).unwrap();
+        let copied = file.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
+        let DxfShape::BulgedPolyline { vertices: result, closed } = copied.entities()[0].geometry() else { panic!("expected real bulged shape") };
+        assert!(!*closed);
+        assert_eq!(result.iter().map(|v| v.at).collect::<Vec<_>>(), [Vec2::new(10.0, -5.0), Vec2::new(18.0, -5.0), Vec2::new(26.0, -5.0)]);
+        assert_eq!(result.iter().map(|v| v.bulge.to_bits()).collect::<Vec<_>>(), vertices.iter().map(|v| v.bulge.to_bits()).collect::<Vec<_>>());
+        assert_eq!(copied.effective_weight(0).unwrap(), EntityWeight::Explicit(physical));
+        assert_eq!(copied.effective_linetype(0).unwrap(), DxfLinetype::Hidden);
+        assert!(copied.layer(file.default_layer()).is_err());
+        assert_eq!(file.entities()[0].geometry(), &DxfShape::BulgedPolyline { vertices, closed: false });
+    }
+
+    #[test]
+    fn bulged_closed_copy_uses_last_bulge_and_conservative_geometry_bounds() {
+        let mut file = DxfFile::new().unwrap();
+        file.push(
+            file.default_layer(),
+            DxfShape::BulgedPolyline {
+                vertices: vec![DxfVertex { at: Vec2::new(-1.0, 0.0), bulge: 1.0 }, DxfVertex { at: Vec2::new(1.0, 0.0), bulge: 1.0 }],
+                closed: true,
+            },
+            None,
+        )
+        .unwrap();
+        let copied = file.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
+        let DxfShape::BulgedPolyline { vertices, closed } = copied.entities()[0].geometry() else { panic!("expected real bulged shape") };
+        assert!(*closed);
+        assert_eq!(vertices.len(), 2);
+        assert_eq!((vertices[0].at, vertices[1].at), (Vec2::new(8.0, -5.0), Vec2::new(12.0, -5.0)));
+        assert_eq!((vertices[0].bulge, vertices[1].bulge), (1.0, 1.0));
+        let b = copied.extents().unwrap().unwrap();
+        for point in [Vec2::new(8.0, -5.0), Vec2::new(12.0, -5.0), Vec2::new(10.0, -7.0), Vec2::new(10.0, -3.0)] {
+            assert!(b.min.x <= point.x && point.x <= b.max.x && b.min.y <= point.y && point.y <= b.max.y);
+        }
+    }
+
+    #[test]
+    fn bulged_copy_and_bounds_preflight_cumulative_bytes_and_work_before_values() {
+        let mut file = DxfFile::new().unwrap();
+        file.push(
+            file.default_layer(),
+            DxfShape::BulgedPolyline {
+                vertices: vec![DxfVertex { at: Vec2::ZERO, bulge: 0.0 }, DxfVertex { at: Vec2::X, bulge: 0.0 }],
+                closed: false,
+            },
+            None,
+        )
+        .unwrap();
+        let bytes = 2 * std::mem::size_of::<DxfVertex>();
+        // Fixed32 + copy8*n + helper(n+512*edges) =562.
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, bytes, 562).is_ok());
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, bytes - 1, 562).is_err());
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, bytes, 561).is_err());
+        let mut hostile = DxfFile::new().unwrap();
+        hostile
+            .push(
+                hostile.default_layer(),
+                DxfShape::BulgedPolyline {
+                    vertices: vec![DxfVertex { at: Vec2::new(f64::NAN, 0.0), bulge: 0.0 }, DxfVertex { at: Vec2::X, bulge: 0.0 }],
+                    closed: false,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(hostile.translated_scaled_with_limits(Vec2::ZERO, 1.0, bytes, 561).unwrap_err().to_string().contains("work"));
+        let second = file.entities()[0].geometry().clone();
+        file.push(file.default_layer(), second, None).unwrap();
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, 2 * bytes, 1124).is_ok());
+        assert!(file.translated_scaled_with_limits(Vec2::ZERO, 1.0, 2 * bytes, 1123).is_err());
+    }
+
+    #[test]
+    fn strict_bulged_bounds_are_not_total_copy_admission_and_collapsed_vertices_refuse() {
+        let mut file = DxfFile::new().unwrap();
+        let original = DxfShape::BulgedPolyline {
+            vertices: vec![DxfVertex { at: Vec2::ZERO, bulge: 1e-200 }, DxfVertex { at: Vec2::new(1e-200, 0.0), bulge: 0.0 }],
+            closed: false,
+        };
+        file.push(file.default_layer(), original.clone(), None).unwrap();
+        assert!(file.extents().is_err()); // b*b underflows under interval policy.
+        assert_eq!(file.translated_scaled(Vec2::ZERO, 1.0).unwrap().entities()[0].geometry(), &original);
+        let mut line = DxfFile::new().unwrap();
+        line.push(
+            line.default_layer(),
+            DxfShape::BulgedPolyline {
+                vertices: vec![DxfVertex { at: Vec2::ZERO, bulge: 0.0 }, DxfVertex { at: Vec2::X, bulge: 0.0 }],
+                closed: false,
+            },
+            None,
+        )
+        .unwrap();
+        assert!(line.translated_scaled(Vec2::new(1e300, 0.0), 1.0).is_err());
+        assert_eq!(file.entities()[0].geometry(), &original);
+    }
+
+    #[test]
     fn identity_and_positive_copy_preserve_custom_layer_zero_and_remap_all_handles() {
         let physical_zero = StandardWeight::from_code(0).unwrap();
         let physical_50 = StandardWeight::from_code(50).unwrap();
@@ -432,14 +576,18 @@ mod tests {
         let explicit_13 = EntityWeight::Explicit(StandardWeight::from_code(13).unwrap());
         let original = [
             DxfShape::Line(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0)),
-            DxfShape::Point(Vec2::new(-1.0, 0.0)), DxfShape::Point(Vec2::new(0.0, 1.0)),
-            DxfShape::Point(Vec2::new(2.0, -1.0)), DxfShape::Point(Vec2::new(4.0, 2.0)),
+            DxfShape::Point(Vec2::new(-1.0, 0.0)),
+            DxfShape::Point(Vec2::new(0.0, 1.0)),
+            DxfShape::Point(Vec2::new(2.0, -1.0)),
+            DxfShape::Point(Vec2::new(4.0, 2.0)),
             DxfShape::Line(Vec2::new(0.0, -2.0), Vec2::new(2.0, -2.0)),
         ];
         let moved = [
             DxfShape::Line(Vec2::new(12.0, -1.0), Vec2::new(16.0, 3.0)),
-            DxfShape::Point(Vec2::new(8.0, -5.0)), DxfShape::Point(Vec2::new(10.0, -3.0)),
-            DxfShape::Point(Vec2::new(14.0, -7.0)), DxfShape::Point(Vec2::new(18.0, -1.0)),
+            DxfShape::Point(Vec2::new(8.0, -5.0)),
+            DxfShape::Point(Vec2::new(10.0, -3.0)),
+            DxfShape::Point(Vec2::new(14.0, -7.0)),
+            DxfShape::Point(Vec2::new(18.0, -1.0)),
             DxfShape::Line(Vec2::new(10.0, -9.0), Vec2::new(14.0, -9.0)),
         ];
         let weights = [None, Some(EntityWeight::ByLayer), Some(EntityWeight::ByBlock), Some(EntityWeight::Default), Some(explicit_13), None];
@@ -456,7 +604,10 @@ mod tests {
                 let new_zero = copied.layer(copied.default_layer()).unwrap();
                 assert_eq!((new_zero.color(), new_zero.linetype(), new_zero.weight()), (3, DxfLinetype::Hidden, zero_weight));
                 let new_cut = copied.layer(copied.entities()[5].layer()).unwrap();
-                assert_eq!((new_cut.name(), new_cut.color(), new_cut.linetype(), new_cut.weight()), ("CUT", 5, DxfLinetype::Dashed, Some(cut_weight)));
+                assert_eq!(
+                    (new_cut.name(), new_cut.color(), new_cut.linetype(), new_cut.weight()),
+                    ("CUT", 5, DxfLinetype::Dashed, Some(cut_weight))
+                );
                 assert!(copied.layer(zero).is_err() && copied.layer(cut).is_err());
                 assert!(source.layer(copied.default_layer()).is_err());
                 assert!(source.layer(copied.entities()[5].layer()).is_err());
@@ -464,7 +615,9 @@ mod tests {
                     assert_eq!(entity.geometry(), shape);
                     assert_eq!(entity.weight(), weights[index]);
                     assert_eq!(copied.effective_linetype(index).unwrap(), if index == 5 { DxfLinetype::Dashed } else { DxfLinetype::Hidden });
-                    if index < 5 { assert_eq!(entity.layer(), copied.default_layer()); }
+                    if index < 5 {
+                        assert_eq!(entity.layer(), copied.default_layer());
+                    }
                 }
                 let inherited = zero_weight.map_or(EntityWeight::Default, EntityWeight::Explicit);
                 assert_eq!(copied.effective_weight(0).unwrap(), inherited);
@@ -491,24 +644,35 @@ mod tests {
                 let mut file = DxfFile::new().unwrap();
                 let physical = StandardWeight::from_code(50).unwrap();
                 let layer = file.declare_layer("NOTES", 4, DxfLinetype::Hidden, Some(physical)).unwrap();
-                let original = DxfShape::AlignedText { at: Vec2::new(2.0, 3.0), height: 4.0, angle_deg: 90.0, text: "A".into(), horizontal, vertical };
+                let original =
+                    DxfShape::AlignedText { at: Vec2::new(2.0, 3.0), height: 4.0, angle_deg: 90.0, text: "A".into(), horizontal, vertical };
                 file.push(layer, original.clone(), Some(EntityWeight::ByLayer)).unwrap();
                 assert!(file.extents().is_err());
                 let provided = DxfGeometryBounds::new(Vec2::new(-2.0, 1.0), Vec2::new(3.0, 6.0)).unwrap();
-                assert_eq!(file.extents_with_text_bounds(|shape| {
-                    assert_eq!(shape, &original);
-                    Ok(provided)
-                }).unwrap(), Some(provided));
+                assert_eq!(
+                    file.extents_with_text_bounds(|shape| {
+                        assert_eq!(shape, &original);
+                        Ok(provided)
+                    })
+                    .unwrap(),
+                    Some(provided)
+                );
                 let copied = file.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
-                assert_eq!(copied.entities()[0].geometry(), &DxfShape::AlignedText {
-                    at: Vec2::new(14.0, 1.0), height: 8.0, angle_deg: 90.0, text: "A".into(), horizontal, vertical,
-                });
+                assert_eq!(
+                    copied.entities()[0].geometry(),
+                    &DxfShape::AlignedText { at: Vec2::new(14.0, 1.0), height: 8.0, angle_deg: 90.0, text: "A".into(), horizontal, vertical }
+                );
                 assert!(copied.extents().is_err());
                 let moved_bounds = DxfGeometryBounds::new(Vec2::new(6.0, -3.0), Vec2::new(16.0, 7.0)).unwrap();
-                assert_eq!(copied.extents_with_text_bounds(|shape| {
-                    assert_eq!(shape, copied.entities()[0].geometry());
-                    Ok(moved_bounds)
-                }).unwrap(), Some(moved_bounds));
+                assert_eq!(
+                    copied
+                        .extents_with_text_bounds(|shape| {
+                            assert_eq!(shape, copied.entities()[0].geometry());
+                            Ok(moved_bounds)
+                        })
+                        .unwrap(),
+                    Some(moved_bounds)
+                );
                 assert_eq!(copied.entities()[0].weight(), Some(EntityWeight::ByLayer));
                 assert_eq!(copied.effective_weight(0).unwrap(), EntityWeight::Explicit(physical));
                 assert_eq!(copied.effective_linetype(0).unwrap(), DxfLinetype::Hidden);
@@ -521,9 +685,19 @@ mod tests {
     fn aligned_payload_participates_in_existing_cumulative_text_budget() {
         let mut file = DxfFile::new().unwrap();
         file.push(file.default_layer(), DxfShape::Text { at: Vec2::ZERO, height: 1.0, angle_deg: 0.0, text: "é".into() }, None).unwrap();
-        file.push(file.default_layer(), DxfShape::AlignedText {
-            at: Vec2::ZERO, height: 1.0, angle_deg: 0.0, text: "abc".into(), horizontal: DxfTextHorizontalAlignment::Left, vertical: DxfTextVerticalAlignment::Top,
-        }, None).unwrap();
+        file.push(
+            file.default_layer(),
+            DxfShape::AlignedText {
+                at: Vec2::ZERO,
+                height: 1.0,
+                angle_deg: 0.0,
+                text: "abc".into(),
+                horizontal: DxfTextHorizontalAlignment::Left,
+                vertical: DxfTextVerticalAlignment::Top,
+            },
+            None,
+        )
+        .unwrap();
         assert!(file.translated_scaled_with_text_limit(Vec2::ZERO, 1.0, 5).is_ok());
         assert!(file.translated_scaled_with_text_limit(Vec2::ZERO, 1.0, 4).is_err());
         assert_eq!(file.entities().len(), 2);
@@ -532,7 +706,14 @@ mod tests {
     #[test]
     fn aligned_transform_and_callback_refusals_preserve_source() {
         let mut file = DxfFile::new().unwrap();
-        let original = DxfShape::AlignedText { at: Vec2::new(f64::MAX, 0.0), height: 1.0, angle_deg: 0.0, text: "A".into(), horizontal: DxfTextHorizontalAlignment::Right, vertical: DxfTextVerticalAlignment::Top };
+        let original = DxfShape::AlignedText {
+            at: Vec2::new(f64::MAX, 0.0),
+            height: 1.0,
+            angle_deg: 0.0,
+            text: "A".into(),
+            horizontal: DxfTextHorizontalAlignment::Right,
+            vertical: DxfTextVerticalAlignment::Top,
+        };
         file.push(file.default_layer(), original.clone(), Some(EntityWeight::Default)).unwrap();
         assert!(file.translated_scaled(Vec2::ZERO, 2.0).is_err());
         assert!(file.extents_with_text_bounds(|_| Ok(DxfGeometryBounds { min: Vec2::new(1.0, 1.0), max: Vec2::ZERO })).is_err());
@@ -842,5 +1023,248 @@ mod tests {
         )
         .unwrap();
         assert!(file.translated_scaled(Vec2::ZERO, 0.5).is_err());
+    }
+    #[test]
+    fn imported_nine_text_modes_keep_custom_zero_when_a_bulged_shape_is_added_and_copied() {
+        use crate::{
+            DxfEntityWeight as Weight, DxfLinetype as LineType, DxfShape as Shape, DxfStandardWeight as Standard, DxfTextHorizontalAlignment as H,
+            DxfTextVerticalAlignment as V, DxfVertex as Vertex, read_dxf_file,
+        };
+        use solidcraft_geom::Vec2;
+
+        let modes = [
+            (0, 0, H::Left, V::Baseline),
+            (1, 0, H::Centre, V::Baseline),
+            (2, 0, H::Right, V::Baseline),
+            (0, 2, H::Left, V::Middle),
+            (1, 2, H::Centre, V::Middle),
+            (2, 2, H::Right, V::Middle),
+            (0, 3, H::Left, V::Top),
+            (1, 3, H::Centre, V::Top),
+            (2, 3, H::Right, V::Top),
+        ];
+        // Literal millimetre DXF, with the canonical HIDDEN definition and a
+        // nondefault layer0. No generated writer output supplies these oracles.
+        let mut input = concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+            "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n",
+            "0\nLTYPE\n2\nHIDDEN\n72\n65\n73\n2\n40\n3\n49\n2\n74\n0\n49\n-1\n74\n0\n0\nENDTAB\n",
+            "0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n0\n62\n3\n6\nHIDDEN\n370\n50\n0\nENDTAB\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+        )
+        .to_string();
+        for (h, v, _, _) in modes {
+            input.push_str(&format!("0\nTEXT\n8\n0\n370\n-1\n10\n99\n20\n88\n11\n2\n21\n3\n40\n4\n50\n90\n72\n{h}\n73\n{v}\n1\n  %%d  \n"));
+        }
+        input.push_str("0\nENDSEC\n0\nEOF\n");
+        let mut source = read_dxf_file(&input).unwrap();
+        assert_eq!(source.entities().len(), 9);
+        let physical = Standard::from_code(50).unwrap();
+        let old_zero = source.default_layer();
+        let zero = source.layer(old_zero).unwrap();
+        assert_eq!((zero.name(), zero.color(), zero.linetype(), zero.weight()), ("0", 3, LineType::Hidden, Some(physical)));
+        source
+            .push(
+                old_zero,
+                Shape::BulgedPolyline {
+                    vertices: vec![
+                        Vertex { at: Vec2::ZERO, bulge: 0.5 },
+                        Vertex { at: Vec2::new(4.0, 0.0), bulge: -0.5 },
+                        Vertex { at: Vec2::new(8.0, 0.0), bulge: -0.0 },
+                    ],
+                    closed: false,
+                },
+                Some(Weight::ByBlock),
+            )
+            .unwrap();
+        let original: Vec<_> = source.entities().iter().map(|e| e.geometry().clone()).collect();
+        let copied = source.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
+        let zero = copied.layer(copied.default_layer()).unwrap();
+        assert_eq!((zero.name(), zero.color(), zero.linetype(), zero.weight()), ("0", 3, LineType::Hidden, Some(physical)));
+        assert_eq!(copied.layers().len(), 1);
+        assert_eq!(copied.entities().len(), 10);
+        assert!(copied.layer(old_zero).is_err());
+        assert!(source.layer(copied.default_layer()).is_err());
+        for (entity, (h, v, horizontal, vertical)) in copied.entities().iter().take(9).zip(modes) {
+            // Left/baseline selects group10; other modes select group11. The
+            // reader's centre/baseline canonical Text representation is retained.
+            let at = if h == 0 && v == 0 { Vec2::new(208.0, 171.0) } else { Vec2::new(14.0, 1.0) };
+            let expected = if h == 1 && v == 0 {
+                Shape::Text { at, height: 8.0, angle_deg: 90.0, text: "  °  ".into() }
+            } else {
+                Shape::AlignedText { at, height: 8.0, angle_deg: 90.0, text: "  °  ".into(), horizontal, vertical }
+            };
+            assert_eq!(entity.geometry(), &expected);
+            assert_eq!(entity.layer(), copied.default_layer());
+            assert_eq!(entity.weight(), Some(Weight::ByLayer));
+        }
+        let Shape::BulgedPolyline { vertices, closed } = copied.entities()[9].geometry() else { panic!("expected bulged geometry") };
+        assert!(!*closed);
+        assert_eq!(vertices.iter().map(|v| v.at).collect::<Vec<_>>(), [Vec2::new(10.0, -5.0), Vec2::new(18.0, -5.0), Vec2::new(26.0, -5.0)]);
+        assert_eq!(vertices.iter().map(|v| v.bulge.to_bits()).collect::<Vec<_>>(), [0.5f64.to_bits(), (-0.5f64).to_bits(), (-0.0f64).to_bits()]);
+        for index in 0..10 {
+            assert_eq!(copied.effective_linetype(index).unwrap(), LineType::Hidden);
+            assert_eq!(copied.effective_weight(index).unwrap(), if index == 9 { Weight::ByBlock } else { Weight::Explicit(physical) });
+            assert_eq!(source.entities()[index].geometry(), &original[index]);
+            assert_eq!(source.entities()[index].layer(), old_zero);
+            assert_eq!(source.entities()[index].weight(), Some(if index == 9 { Weight::ByBlock } else { Weight::ByLayer }));
+        }
+    }
+
+    #[test]
+    fn copied_mixed_bulges_and_empty_aligned_text_keep_zero_style_and_literal_writer_fields() {
+        use crate::{
+            DxfEntityWeight as Weight, DxfFile as File, DxfGeometryBounds as Bounds, DxfLinetype as LineType, DxfShape as Shape,
+            DxfStandardWeight as Standard, DxfTextHorizontalAlignment as H, DxfTextVerticalAlignment as V, DxfVertex as Vertex, write_dxf_file,
+            write_dxf_file_with_text_bounds,
+        };
+        use solidcraft_geom::Vec2;
+
+        fn records<'a>(pairs: &'a [(i32, &'a str)], kind: &str) -> Vec<&'a [(i32, &'a str)]> {
+            pairs
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (code, value))| {
+                    if *code != 0 || *value != kind {
+                        return None;
+                    }
+                    let tail = &pairs[index + 1..];
+                    let end = tail.iter().position(|(code, _)| *code == 0).unwrap_or(tail.len());
+                    Some(&tail[..end])
+                })
+                .collect()
+        }
+        fn values<'a>(record: &[(i32, &'a str)], code: i32) -> Vec<&'a str> {
+            record.iter().filter_map(|(field, value)| (*field == code).then_some(*value)).collect()
+        }
+
+        let modes = [
+            (H::Left, V::Baseline, "0", "0"),
+            (H::Centre, V::Baseline, "1", "0"),
+            (H::Right, V::Baseline, "2", "0"),
+            (H::Left, V::Middle, "0", "2"),
+            (H::Centre, V::Middle, "1", "2"),
+            (H::Right, V::Middle, "2", "2"),
+            (H::Left, V::Top, "0", "3"),
+            (H::Centre, V::Top, "1", "3"),
+            (H::Right, V::Top, "2", "3"),
+        ];
+        for weight_code in [None, Some(0), Some(50)] {
+            let weight = weight_code.map(|code| Standard::from_code(code).unwrap());
+            let mut source = File::with_layer_zero(3, LineType::Hidden, weight).unwrap();
+            source
+                .push(
+                    source.default_layer(),
+                    Shape::BulgedPolyline {
+                        vertices: vec![Vertex { at: Vec2::new(-1.0, 0.0), bulge: 1.0 }, Vertex { at: Vec2::new(1.0, 0.0), bulge: 1.0 }],
+                        closed: true,
+                    },
+                    Some(Weight::ByLayer),
+                )
+                .unwrap();
+            for (horizontal, vertical, _, _) in modes {
+                source
+                    .push(
+                        source.default_layer(),
+                        Shape::AlignedText { at: Vec2::new(2.0, 3.0), height: 4.0, angle_deg: 90.0, text: String::new(), horizontal, vertical },
+                        Some(Weight::ByLayer),
+                    )
+                    .unwrap();
+            }
+            let copied = source.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
+            assert!(copied.extents().is_err());
+            let mut bounds_calls = 0;
+            let bounds = copied
+                .extents_with_text_bounds(|shape| {
+                    let Shape::AlignedText { at, text, .. } = shape else { panic!("text bounds called for geometry") };
+                    assert_eq!(*at, Vec2::new(14.0, 1.0));
+                    assert!(text.is_empty());
+                    bounds_calls += 1;
+                    Bounds::new(Vec2::new(14.0, 1.0), Vec2::new(14.0, 1.0))
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(bounds_calls, 9);
+            // Conservative interval bounds may extend past the circle; the mixed
+            // union must include both its literal cardinal support and the TEXT.
+            assert!(bounds.min.x <= 8.0 && bounds.min.y <= -7.0);
+            assert!(bounds.max.x >= 14.0 && bounds.max.y >= 1.0);
+            assert!(write_dxf_file(&copied).is_err());
+            let mut calls = 0;
+            let output = write_dxf_file_with_text_bounds(&copied, |shape| {
+                let Shape::AlignedText { at, height, angle_deg, text, horizontal, vertical } = shape else { panic!("provider called for non-text") };
+                let (h, v, _, _) = modes[calls];
+                assert_eq!((*at, *height, *angle_deg, *horizontal, *vertical), (Vec2::new(14.0, 1.0), 8.0, 90.0, h, v));
+                assert!(text.is_empty());
+                calls += 1;
+                // Empty text has no glyph ink; this is a fixture-only provider,
+                // not an invented font bound for nonempty text.
+                Bounds::new(Vec2::new(14.0, 1.0), Vec2::new(14.0, 1.0))
+            })
+            .unwrap();
+            assert_eq!(calls, 9);
+            let mut lines = output.lines();
+            let mut pairs = Vec::new();
+            while let Some(code) = lines.next() {
+                pairs.push((code.trim().parse::<i32>().unwrap(), lines.next().unwrap()));
+            }
+            let layers = records(&pairs, "LAYER");
+            assert_eq!(layers.len(), 1);
+            assert_eq!(values(layers[0], 2), ["0"]);
+            assert_eq!(values(layers[0], 62), ["3"]);
+            assert_eq!(values(layers[0], 6), ["HIDDEN"]);
+            let expected_weight = match weight_code {
+                None => vec![],
+                Some(0) => vec!["0"],
+                Some(50) => vec!["50"],
+                _ => panic!("unexpected fixture weight"),
+            };
+            assert_eq!(values(layers[0], 370), expected_weight);
+            let bulges = records(&pairs, "LWPOLYLINE");
+            assert_eq!(bulges.len(), 1);
+            for (code, expected) in [
+                (8, vec!["0"]),
+                (370, vec!["-1"]),
+                (90, vec!["2"]),
+                (70, vec!["129"]),
+                (10, vec!["8", "12"]),
+                (20, vec!["-5", "-5"]),
+                (42, vec!["1", "1"]),
+            ] {
+                assert_eq!(values(bulges[0], code), expected);
+            }
+            let texts = records(&pairs, "TEXT");
+            assert_eq!(texts.len(), 9);
+            for (text, (_, _, h, v)) in texts.iter().zip(modes) {
+                for (code, expected) in [
+                    (8, "0"),
+                    (370, "-1"),
+                    (10, "14.0"),
+                    (20, "1.0"),
+                    (11, "14.0"),
+                    (21, "1.0"),
+                    (40, "8.0"),
+                    (50, "90.0"),
+                    (72, h),
+                    (73, v),
+                    (1, ""),
+                ] {
+                    assert_eq!(values(text, code), [expected]);
+                }
+            }
+            for (name, expected) in [("$EXTMIN", [(10, "8"), (20, "-7"), (30, "0.0")]), ("$EXTMAX", [(10, "14"), (20, "1"), (30, "0.0")])] {
+                let index = pairs.iter().position(|pair| *pair == (9, name)).unwrap();
+                assert_eq!(&pairs[index + 1..index + 4], &expected);
+            }
+            for (index, entity) in copied.entities().iter().enumerate() {
+                assert_eq!(entity.layer(), copied.default_layer());
+                assert_eq!(entity.weight(), Some(Weight::ByLayer));
+                assert_eq!(copied.effective_weight(index).unwrap(), weight.map_or(Weight::Default, Weight::Explicit));
+                assert_eq!(copied.effective_linetype(index).unwrap(), LineType::Hidden);
+            }
+            assert!(copied.layer(source.default_layer()).is_err());
+            assert_eq!(source.layers().len(), 1);
+            assert_eq!(source.entities().len(), 10);
+        }
     }
 }

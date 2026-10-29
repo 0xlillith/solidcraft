@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::DxfLinetype;
 use crate::{IoError, Result};
 
+mod bulges;
 mod geometry;
 pub use geometry::DxfGeometryBounds;
 
@@ -211,7 +212,13 @@ impl<G> DxfFile<G> {
         Self::with_layer_zero_limits(7, DxfLinetype::Continuous, None, max_layers, max_entities)
     }
 
-    fn with_layer_zero_limits(color: i16, linetype: DxfLinetype, weight: Option<StandardWeight>, max_layers: usize, max_entities: usize) -> Result<Self> {
+    fn with_layer_zero_limits(
+        color: i16,
+        linetype: DxfLinetype,
+        weight: Option<StandardWeight>,
+        max_layers: usize,
+        max_entities: usize,
+    ) -> Result<Self> {
         if !(1..=255).contains(&color) {
             return Err(invalid("DXF layer color must be an index from 1 to 255"));
         }
@@ -528,13 +535,20 @@ mod tests {
         source.push(cut, DxfShape::Line(Vec2::new(7.0, 0.0), Vec2::new(7.0, 4.0)), Some(EntityWeight::Default)).unwrap();
 
         let recovered = read_written_file(&source);
-        let layers: Vec<_> = recovered.layers().iter().map(|layer| (layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code))).collect();
-        assert_eq!(layers, [
-            ("0", 7, DxfLinetype::Continuous, None),
-            ("CUT", 1, DxfLinetype::Continuous, Some(50)),
-            ("HIDDEN", 8, DxfLinetype::Hidden, Some(0)),
-            ("UNUSED", 3, DxfLinetype::Dashed, None),
-        ]);
+        let layers: Vec<_> = recovered
+            .layers()
+            .iter()
+            .map(|layer| (layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)))
+            .collect();
+        assert_eq!(
+            layers,
+            [
+                ("0", 7, DxfLinetype::Continuous, None),
+                ("CUT", 1, DxfLinetype::Continuous, Some(50)),
+                ("HIDDEN", 8, DxfLinetype::Hidden, Some(0)),
+                ("UNUSED", 3, DxfLinetype::Dashed, None),
+            ]
+        );
         let names: Vec<_> = recovered.entities().iter().map(|entity| recovered.layer(entity.layer()).unwrap().name()).collect();
         assert_eq!(names, ["CUT", "0", "HIDDEN", "CUT"]);
         assert_eq!(recovered.entities().len(), 4);
@@ -542,7 +556,10 @@ mod tests {
         assert_eq!(recovered.entities()[1].geometry(), &DxfShape::Circle { c: Vec2::new(4.0, -1.0), r: 0.5 });
         assert_eq!(recovered.entities()[2].geometry(), &DxfShape::Arc { c: Vec2::new(-3.0, 2.0), r: 2.0, a0: 350.0, a1: 10.0 });
         assert_eq!(recovered.entities()[3].geometry(), &DxfShape::Line(Vec2::new(7.0, 0.0), Vec2::new(7.0, 4.0)));
-        assert_eq!(recovered.entities().iter().map(Entity::weight).collect::<Vec<_>>(), [None, Some(EntityWeight::ByBlock), Some(EntityWeight::ByLayer), Some(EntityWeight::Default)]);
+        assert_eq!(
+            recovered.entities().iter().map(Entity::weight).collect::<Vec<_>>(),
+            [None, Some(EntityWeight::ByBlock), Some(EntityWeight::ByLayer), Some(EntityWeight::Default)]
+        );
         // Imported handles belong to the new file; compare resolved metadata, not owner IDs.
         assert!(recovered.layer(cut).is_err());
         assert!(recovered.layer(source.default_layer()).is_err());
@@ -576,7 +593,10 @@ mod tests {
                 let index = style_index * 28 + weight_index;
                 let entity = &recovered.entities()[index];
                 let layer = recovered.layer(entity.layer()).unwrap();
-                assert_eq!((layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)), (*name, *color, *linetype, *layer_weight));
+                assert_eq!(
+                    (layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)),
+                    (*name, *color, *linetype, *layer_weight)
+                );
                 assert_eq!(entity.weight(), *expected_weight, "style={name} weight ordinal={weight_index}");
                 assert_eq!(entity.geometry(), &DxfShape::Line(Vec2::new(0.5, 0.75), Vec2::new(1.25, -0.5)));
             }
@@ -602,7 +622,10 @@ mod tests {
             assert_eq!(recovered.entities()[0].geometry(), &DxfShape::Line(Vec2::new(-1.25, 2.5), Vec2::new(3.75, -4.0)));
             assert_eq!(recovered.entities()[1].geometry(), &DxfShape::Circle { c: Vec2::new(8.0, -2.0), r: 1.25 });
             assert_eq!(recovered.entities()[2].geometry(), &DxfShape::Arc { c: Vec2::new(2.0, 3.0), r: 0.75, a0: 45.0, a1: 135.0 });
-            assert_eq!(recovered.entities()[3].geometry(), &DxfShape::Polyline { points: vec![Vec2::new(-2.0, 0.0), Vec2::new(0.0, 1.5), Vec2::new(0.0, 1.5), Vec2::new(4.0, -0.5)] });
+            assert_eq!(
+                recovered.entities()[3].geometry(),
+                &DxfShape::Polyline { points: vec![Vec2::new(-2.0, 0.0), Vec2::new(0.0, 1.5), Vec2::new(0.0, 1.5), Vec2::new(4.0, -0.5)] }
+            );
             for entity in recovered.entities() {
                 let layer = recovered.layer(entity.layer()).unwrap();
                 assert_eq!((layer.name(), layer.linetype()), (name, linetype));
@@ -617,19 +640,50 @@ mod tests {
             let mut source = DxfFile::new().unwrap();
             let layer = source.declare_layer("CURVE", 2, linetype, Some(StandardWeight::from_code(35).unwrap())).unwrap();
             for weights in [None, Some(vec![1.0; 10]), Some(vec![0.5, 1.0, 2.0, 4.0, 0.25, 0.5, 1.0, 2.0, 4.0, 1.0])] {
-                source.push(layer, DxfShape::Spline {
-                    degree: 9,
-                    knots: vec![-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
-                    ctrl: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 2.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 8.0), Vec2::new(4.0, 4.0), Vec2::new(5.0, 2.0), Vec2::new(6.0, 1.0), Vec2::new(7.0, 0.0), Vec2::new(8.0, -1.0), Vec2::new(9.0, -2.0)],
-                    weights,
-                }, Some(EntityWeight::Explicit(StandardWeight::from_code(0).unwrap()))).unwrap();
+                source
+                    .push(
+                        layer,
+                        DxfShape::Spline {
+                            degree: 9,
+                            knots: vec![-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
+                            ctrl: vec![
+                                Vec2::new(0.0, 0.0),
+                                Vec2::new(1.0, 2.0),
+                                Vec2::new(2.0, 4.0),
+                                Vec2::new(3.0, 8.0),
+                                Vec2::new(4.0, 4.0),
+                                Vec2::new(5.0, 2.0),
+                                Vec2::new(6.0, 1.0),
+                                Vec2::new(7.0, 0.0),
+                                Vec2::new(8.0, -1.0),
+                                Vec2::new(9.0, -2.0),
+                            ],
+                            weights,
+                        },
+                        Some(EntityWeight::Explicit(StandardWeight::from_code(0).unwrap())),
+                    )
+                    .unwrap();
             }
             let recovered = read_written_file(&source);
             assert_eq!(recovered.entities().len(), 3);
             for (index, entity) in recovered.entities().iter().enumerate() {
                 let DxfShape::Spline { degree, knots, ctrl, weights } = entity.geometry() else { panic!("expected degree-nine spline") };
                 assert_eq!(*degree, 9);
-                assert_eq!(ctrl, &[Vec2::new(0.0, 0.0), Vec2::new(1.0, 2.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 8.0), Vec2::new(4.0, 4.0), Vec2::new(5.0, 2.0), Vec2::new(6.0, 1.0), Vec2::new(7.0, 0.0), Vec2::new(8.0, -1.0), Vec2::new(9.0, -2.0)]);
+                assert_eq!(
+                    ctrl,
+                    &[
+                        Vec2::new(0.0, 0.0),
+                        Vec2::new(1.0, 2.0),
+                        Vec2::new(2.0, 4.0),
+                        Vec2::new(3.0, 8.0),
+                        Vec2::new(4.0, 4.0),
+                        Vec2::new(5.0, 2.0),
+                        Vec2::new(6.0, 1.0),
+                        Vec2::new(7.0, 0.0),
+                        Vec2::new(8.0, -1.0),
+                        Vec2::new(9.0, -2.0)
+                    ]
+                );
                 assert_eq!(knots, &[-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]);
                 match index {
                     0 => assert_eq!(weights, &None),
@@ -647,19 +701,56 @@ mod tests {
     #[test]
     fn writer_reader_keep_degree_nine_interior_knots_without_normalizing_the_domain() {
         let mut source = DxfFile::new().unwrap();
-        source.push(source.default_layer(), DxfShape::Spline {
-            degree: 9,
-            knots: vec![-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -0.5, 2.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0],
-            ctrl: vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 1.0), Vec2::new(4.0, 0.0), Vec2::new(5.0, -1.0), Vec2::new(6.0, -2.0), Vec2::new(7.0, -1.0), Vec2::new(8.0, 0.0), Vec2::new(9.0, 1.0), Vec2::new(10.0, 2.0), Vec2::new(11.0, 0.0)],
-            weights: Some(vec![1.0, 0.5, 2.0, 1.0, 0.25, 4.0, 1.0, 2.0, 0.5, 1.0, 4.0, 1.0]),
-        }, Some(EntityWeight::Default)).unwrap();
+        source
+            .push(
+                source.default_layer(),
+                DxfShape::Spline {
+                    degree: 9,
+                    knots: vec![
+                        -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -0.5, 2.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0,
+                    ],
+                    ctrl: vec![
+                        Vec2::new(0.0, 0.0),
+                        Vec2::new(1.0, 1.0),
+                        Vec2::new(2.0, 4.0),
+                        Vec2::new(3.0, 1.0),
+                        Vec2::new(4.0, 0.0),
+                        Vec2::new(5.0, -1.0),
+                        Vec2::new(6.0, -2.0),
+                        Vec2::new(7.0, -1.0),
+                        Vec2::new(8.0, 0.0),
+                        Vec2::new(9.0, 1.0),
+                        Vec2::new(10.0, 2.0),
+                        Vec2::new(11.0, 0.0),
+                    ],
+                    weights: Some(vec![1.0, 0.5, 2.0, 1.0, 0.25, 4.0, 1.0, 2.0, 0.5, 1.0, 4.0, 1.0]),
+                },
+                Some(EntityWeight::Default),
+            )
+            .unwrap();
         let recovered = read_written_file(&source);
         assert_eq!(recovered.entities().len(), 1);
         let entity = &recovered.entities()[0];
         let DxfShape::Spline { degree, knots, ctrl, weights } = entity.geometry() else { panic!("expected degree-nine spline") };
         assert_eq!(*degree, 9);
         assert_eq!(knots, &[-2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -0.5, 2.5, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 6.0]);
-        assert_eq!(ctrl, &[Vec2::new(0.0, 0.0), Vec2::new(1.0, 1.0), Vec2::new(2.0, 4.0), Vec2::new(3.0, 1.0), Vec2::new(4.0, 0.0), Vec2::new(5.0, -1.0), Vec2::new(6.0, -2.0), Vec2::new(7.0, -1.0), Vec2::new(8.0, 0.0), Vec2::new(9.0, 1.0), Vec2::new(10.0, 2.0), Vec2::new(11.0, 0.0)]);
+        assert_eq!(
+            ctrl,
+            &[
+                Vec2::new(0.0, 0.0),
+                Vec2::new(1.0, 1.0),
+                Vec2::new(2.0, 4.0),
+                Vec2::new(3.0, 1.0),
+                Vec2::new(4.0, 0.0),
+                Vec2::new(5.0, -1.0),
+                Vec2::new(6.0, -2.0),
+                Vec2::new(7.0, -1.0),
+                Vec2::new(8.0, 0.0),
+                Vec2::new(9.0, 1.0),
+                Vec2::new(10.0, 2.0),
+                Vec2::new(11.0, 0.0)
+            ]
+        );
         assert_eq!(weights.as_deref(), Some([1.0, 0.5, 2.0, 1.0, 0.25, 4.0, 1.0, 2.0, 0.5, 1.0, 4.0, 1.0].as_slice()));
         assert_eq!(recovered.layer(entity.layer()).unwrap().name(), "0");
         assert_eq!(entity.weight(), Some(EntityWeight::Default));
@@ -679,7 +770,10 @@ mod tests {
         assert_eq!(recovered.entities()[0].geometry(), &DxfShape::Point(Vec2::new(-0.5, 1.25)));
         assert_eq!(recovered.entities()[1].geometry(), &DxfShape::Point(Vec2::new(8.0, -2.0)));
         let layer = recovered.layer(recovered.entities()[0].layer()).unwrap();
-        assert_eq!((layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)), ("DATUM", 4, DxfLinetype::Hidden, Some(50)));
+        assert_eq!(
+            (layer.name(), layer.color(), layer.linetype(), layer.weight().map(StandardWeight::code)),
+            ("DATUM", 4, DxfLinetype::Hidden, Some(50))
+        );
         assert_eq!(recovered.entities()[0].weight(), Some(EntityWeight::ByBlock));
         assert_eq!(recovered.layer(recovered.entities()[1].layer()).unwrap().name(), "0");
         assert_eq!(recovered.entities()[1].weight(), None);
@@ -733,7 +827,13 @@ mod tests {
         for code in [None, Some(0), Some(50)] {
             let layer_weight = code.map(|value| StandardWeight::from_code(value).unwrap());
             let mut file = DxfFile::with_layer_zero(5, DxfLinetype::Dashed, layer_weight).unwrap();
-            for weight in [None, Some(EntityWeight::ByLayer), Some(EntityWeight::ByBlock), Some(EntityWeight::Default), Some(EntityWeight::Explicit(StandardWeight::from_code(13).unwrap()))] {
+            for weight in [
+                None,
+                Some(EntityWeight::ByLayer),
+                Some(EntityWeight::ByBlock),
+                Some(EntityWeight::Default),
+                Some(EntityWeight::Explicit(StandardWeight::from_code(13).unwrap())),
+            ] {
                 file.push(file.default_layer(), (), weight).unwrap();
             }
             let inherited = match code {
