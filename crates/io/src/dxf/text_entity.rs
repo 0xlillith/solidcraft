@@ -277,10 +277,13 @@ mod tests {
         assert!(read_text_entity(&entity, 1.0, 1, 1, &mut bytes, &mut work).is_ok());
         assert_eq!((bytes, work), (MAX_DRAWING_BYTES, MAX_WORK));
         assert!(read_text_entity(&entity, 1.0, 1, 1, &mut bytes, &mut work).is_err());
-        assert!(read_text_entity(&entity, 1.0, 1, 1, &mut MAX_DRAWING_BYTES, &mut 0).is_err());
+        let mut full_bytes = MAX_DRAWING_BYTES;
+        assert!(read_text_entity(&entity, 1.0, 1, 1, &mut full_bytes, &mut 0).is_err());
         assert!(read_text_entity(&entity, 1.0, 1, 1, &mut 0, &mut (MAX_WORK - 1)).is_err());
-        assert!(read_text_entity(&entity, 1.0, 1, 1, &mut usize::MAX, &mut 0).is_err());
-        assert!(read_text_entity(&entity, 1.0, 1, 1, &mut 0, &mut usize::MAX).is_err());
+        let mut invalid_bytes = usize::MAX;
+        assert!(read_text_entity(&entity, 1.0, 1, 1, &mut invalid_bytes, &mut 0).is_err());
+        let mut invalid_work = usize::MAX;
+        assert!(read_text_entity(&entity, 1.0, 1, 1, &mut 0, &mut invalid_work).is_err());
     }
 
     #[test]

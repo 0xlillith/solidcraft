@@ -1079,6 +1079,7 @@ mod tests {
             )
             .unwrap();
         let original: Vec<_> = source.entities().iter().map(|e| e.geometry().clone()).collect();
+        assert_eq!(original.len(), 10);
         let copied = source.translated_scaled(Vec2::new(10.0, -5.0), 2.0).unwrap();
         let zero = copied.layer(copied.default_layer()).unwrap();
         assert_eq!((zero.name(), zero.color(), zero.linetype(), zero.weight()), ("0", 3, LineType::Hidden, Some(physical)));
@@ -1103,10 +1104,10 @@ mod tests {
         assert!(!*closed);
         assert_eq!(vertices.iter().map(|v| v.at).collect::<Vec<_>>(), [Vec2::new(10.0, -5.0), Vec2::new(18.0, -5.0), Vec2::new(26.0, -5.0)]);
         assert_eq!(vertices.iter().map(|v| v.bulge.to_bits()).collect::<Vec<_>>(), [0.5f64.to_bits(), (-0.5f64).to_bits(), (-0.0f64).to_bits()]);
-        for index in 0..10 {
+        for (index, original_shape) in original.iter().enumerate() {
             assert_eq!(copied.effective_linetype(index).unwrap(), LineType::Hidden);
             assert_eq!(copied.effective_weight(index).unwrap(), if index == 9 { Weight::ByBlock } else { Weight::Explicit(physical) });
-            assert_eq!(source.entities()[index].geometry(), &original[index]);
+            assert_eq!(source.entities()[index].geometry(), original_shape);
             assert_eq!(source.entities()[index].layer(), old_zero);
             assert_eq!(source.entities()[index].weight(), Some(if index == 9 { Weight::ByBlock } else { Weight::ByLayer }));
         }
