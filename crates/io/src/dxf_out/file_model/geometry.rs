@@ -242,10 +242,11 @@ fn transformed_shape(shape: &DxfShape, scale: f64, translation: Vec2) -> Result<
             let mut previous: Option<(Vec2, Vec2)> = None;
             for vertex in vertices {
                 let at = transformed_point(vertex.at, scale, translation)?;
-                if let Some((old, last)) = previous {
-                    if old != vertex.at && last == at {
-                        return Err(invalid("DXF transform collapses adjacent distinct bulged vertices"));
-                    }
+                if let Some((old, last)) = previous
+                    && old != vertex.at
+                    && last == at
+                {
+                    return Err(invalid("DXF transform collapses adjacent distinct bulged vertices"));
                 }
                 copied.push(DxfVertex { at, bulge: vertex.bulge });
                 previous = Some((vertex.at, at));

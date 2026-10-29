@@ -37,10 +37,6 @@ impl Interval {
         Self::checked(value, value)
     }
 
-    fn is(self, value: f64) -> bool {
-        self.lo == value && self.hi == value
-    }
-
     fn rounded(value: f64) -> Result<Self> {
         if value == 0.0 || !value.is_normal() {
             return Err(invalid("support arithmetic overflow or underflow"));
