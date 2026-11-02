@@ -20,6 +20,8 @@
 //!   (first or third angle) every projected view follows.
 //! - **Dimensions** on its views, each measuring named corners or edges of the view's model
 //!   ([`dimension`]).
+//! - **Sketches** authored on sheets, in paper millimetres, stored with the shared sketch payload
+//!   ([`SheetSketch`]) and independent of every model sketch and view scale.
 //! - **Balloons** on its views, each pointing at a placed part by a named edge of it ([`balloon`]).
 //! - **Revisions**: one revision record for the whole drawing ([`RevisionRecord`]), its rows in the
 //!   order they were added, the newest last.
@@ -59,7 +61,10 @@ use crate::{DocError, Metadata, Result, expr};
 
 pub mod balloon;
 pub mod dimension;
+mod sketch;
 pub mod view;
+
+pub use sketch::{MAX_SHEET_SKETCHES, SheetSketch, SolvedSheetSketch};
 
 use balloon::Balloon;
 use dimension::Dimension;
@@ -125,6 +130,9 @@ pub struct Drawing {
     /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
     #[serde(default, skip_serializing_if = "no_revisions")]
     pub revisions: Arc<RevisionRecord>,
+    /// Authored sheet sketches, ordered by id on disk, with their original paper-mm payload.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", serialize_with = "sketch::serialize_sorted")]
+    pub sketches: Vec<Arc<SheetSketch>>,
 }
 
 /// A design the drawing draws: the design the drawing is in. Views and sheets name it by its id,
@@ -208,12 +216,14 @@ pub struct OnSheet {
     pub dimensions: Vec<u64>,
     /// The balloons in its views.
     pub balloons: Vec<u64>,
+    /// Authored sketches whose coordinates are in this sheet's paper frame.
+    pub sketches: Vec<u64>,
 }
 
 impl OnSheet {
     /// Nothing is on the sheet.
     pub fn is_empty(&self) -> bool {
-        self.views.is_empty() && self.dimensions.is_empty() && self.balloons.is_empty()
+        self.views.is_empty() && self.dimensions.is_empty() && self.balloons.is_empty() && self.sketches.is_empty()
     }
 }
 
@@ -253,6 +263,7 @@ impl Drawing {
             dimensions: Vec::new(),
             balloons: Vec::new(),
             revisions: Arc::default(),
+            sketches: Vec::new(),
         };
         drawing.validate()?;
         Ok(drawing)
@@ -274,11 +285,13 @@ impl Drawing {
         let (version, applied) = DRAWING.take_version(&mut v)?;
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
+        sketch::check_raw(&v).map_err(damaged)?;
         let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
         let (views, dimensions, balloons) = (std::mem::take(&mut d.views), std::mem::take(&mut d.dimensions), std::mem::take(&mut d.balloons));
         d.add_views(views);
         d.add_dimensions(dimensions);
         d.add_balloons(balloons);
+        d.sketches.sort_by_key(|record| record.id);
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
@@ -288,6 +301,7 @@ impl Drawing {
     /// properties are kept as they came, and indenting them can make a drawing that read in
     /// under the limit save over it.
     pub fn to_json(&self) -> Result<String> {
+        self.validate()?;
         let text = serde_json::to_string_pretty(self).map_err(|e| DocError::Invalid(format!("drawing not saved: {e}")))?;
         require(text.len() <= MAX_DRAWING_BYTES, || format!("drawing too large to save (at most {} MiB)", MAX_DRAWING_BYTES >> 20))?;
         Ok(text)
@@ -312,14 +326,16 @@ impl Drawing {
         }
     }
 
-    /// What is on sheet `id`: its views and the dimensions and balloons in them. Each later kind of record on a
+    /// What is on sheet `id`: its sketches, views and the dimensions and balloons in them. Each later kind of record on a
     /// sheet adds its own here, and goes with the sheet ([`Drawing::remove_sheet`]).
     pub fn on_sheet(&self, id: u64) -> OnSheet {
         let views: Vec<u64> = self.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect();
         // The views are listed by id, so the sheet's are too.
         let dimensions = self.dimensions.iter().filter(|d| views.binary_search(&d.view).is_ok()).map(|d| d.id).collect();
         let balloons = self.balloons.iter().filter(|b| views.binary_search(&b.view).is_ok()).map(|b| b.id).collect();
-        OnSheet { views, dimensions, balloons }
+        let mut sketches: Vec<u64> = self.sketches.iter().filter(|s| s.sheet == id).map(|s| s.id).collect();
+        sketches.sort_unstable();
+        OnSheet { views, dimensions, balloons, sketches }
     }
 
     /// Takes sheet `id` out with everything on it ([`Drawing::on_sheet`]), and answers what that
@@ -331,7 +347,13 @@ impl Drawing {
         self.views.retain(|v| v.sheet != id);
         self.dimensions.retain(|d| on.dimensions.binary_search(&d.id).is_err());
         self.balloons.retain(|b| on.balloons.binary_search(&b.id).is_err());
+        self.sketches.retain(|s| s.sheet != id);
         on
+    }
+
+    /// Read only this drawing's sketch. Identical local sketch ids in another drawing are unrelated.
+    pub fn sheet_sketch(&self, id: u64) -> Option<&Arc<SheetSketch>> {
+        self.sketches.iter().find(|record| record.id == id)
     }
 
     /// Every object's id, of every kind: what a new id must differ from. Each later kind adds its
@@ -344,11 +366,20 @@ impl Drawing {
             .chain(self.dimensions.iter().map(|d| d.id))
             .chain(self.balloons.iter().map(|b| b.id))
             .chain(self.revisions.ids())
+            .chain(self.sketches.iter().map(|s| s.id))
     }
 
     /// The record's rules (the module's notes): what reading a drawing checks, and what every edit
     /// keeps.
     pub fn validate(&self) -> Result<()> {
+        self.validate_structure()?;
+        sketch::check_drawing(self)
+    }
+
+    /// Ownership/header checks also used before staging one sketch edit. Deep
+    /// payload validation remains at the full publication and file boundaries.
+    fn validate_structure(&self) -> Result<()> {
+        require(self.sketches.len() <= MAX_SHEET_SKETCHES, || "too many sheet sketches".into())?;
         require((1..=MAX_SHEETS).contains(&self.sheets.len()), || format!("a drawing has 1 to {MAX_SHEETS} sheets"))?;
         require(self.sources.len() <= 1, || "a drawing draws only the design it is in".into())?;
         check_name(&self.name, "the drawing's")?;
@@ -359,6 +390,10 @@ impl Drawing {
             // A length unit of the expression unit table, written as the table writes it.
             let length = unit.trim() == unit.as_str() && expr::unit_info(unit).is_some_and(|(kind, _)| kind == expr::Kind::Length);
             require(length, || "the drawing's unit is not a length unit (such as `mm` or `in`)".into())?;
+        }
+        let sheets: BTreeSet<_> = self.sheets.iter().map(|sheet| sheet.id).collect();
+        for record in &self.sketches {
+            require(sheets.contains(&record.sheet), || "sheet sketch owner does not exist in this drawing".into())?;
         }
         let mut seen = BTreeSet::new();
         for id in self.ids() {
