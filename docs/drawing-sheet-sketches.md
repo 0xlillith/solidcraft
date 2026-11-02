@@ -12,7 +12,7 @@ with the actual delivered K receiver and shared store, current drawing views,
 dimensions, balloons and revisions, and merged font/text records retained. It
 reconciles published R17 and its paper-input/compound-history corrections with
 those current sources. The native/browser workspace scaffold is present;
-sheet-sketch paper-scene painting, picking, pointer routing and editor acceptance
+sheet-sketch canvas painting, picking, pointer routing and editor acceptance
 remain unfinished. No second sketcher, command registry or UI host is introduced.
 
 The integration keeps one canonical model/sheet `sketch.cancel`, including the
@@ -160,7 +160,7 @@ PR rather than being asserted as performance thresholds in correctness tests.
 
 ## Acceptance and remaining work
 
-The next independent engine slice is `drawing_scene::sketch::paper_group`. It
+The pure engine adapter is `drawing_scene::sketch::paper_group`. It
 accepts an already solved `SolvedSheetSketch` and an explicit paper line width;
 it does not read a Session, resolve expressions, solve, publish or evaluate a
 model. One `Sketch` group on `SKETCH` retains the stored sketch id and authored
@@ -185,15 +185,35 @@ Endpoint join tolerance validates continuity; it does not close an authored open
 curve merely because its endpoints are close.
 
 Exact scene data does not imply support in every current writer. In particular,
-the SVG writer still refuses ellipses, hyperbolas and Béziers above degree three
-until A3b. The adapter retains those exact primitives; a consumer must propagate
-the writer's refusal and cannot substitute sampled lines or drop authored curves.
+both SVG and PNG writers still refuse ellipses, hyperbolas and Béziers above degree
+three through their shared export grid until A3b. The adapter retains those exact
+primitives; a consumer must propagate the writer's refusal and cannot substitute
+sampled lines or drop authored curves. This does not add PNG command support.
 
-This helper is not yet wired into `drawing.scene`, `drawing.export` or the cached
-provider. Those paths must be connected together, with source-aware sketch cache
-keys, separate sketch statuses, exact freeform output schemas and export refusal
-for failed sketches. Cam's object sidecar and Nathan's canvas/pointer host remain
-their integration seams. These adapter tests do not accept a paper editor.
+`drawing.scene`, `drawing.export` and the cached provider now share that adapter.
+Sheet sketches paint after views, in stored id order, before future tables/title
+blocks. Their `sketches` status list is separate from `views`; a valid exact group
+is `drawn` even when a later writer cannot represent it. The sheet output schema
+admits exact cubic, conic and higher-degree Bézier records; projected-view schemas
+keep their existing line/arc contract. Export refuses failed sketches by id before
+preparing or writing the scene, and writer refusals leave an existing file intact.
+
+Provider extraction neither solves nor evaluates expressions or a model. Each
+step performs one stale view projection or one read-only sketch solve/conversion;
+its return value says whether further work remains after that step.
+`stale` remains view-only; `stale_sketches` names pending sketches. The last strokes
+remain visible until replaced. Source freshness compares document units and all
+unevaluated parameter definitions, including named feature inputs; unchanged
+metadata reuses its key across unrelated document edits. Sketch ownership and
+declared sources and complete drawing admission inputs also participate. Because
+solve admission checks cumulative budgets and drawing structure, changing a stored
+sketch record or other admission metadata conservatively invalidates sketch solves;
+a valid numeric view move does not. Failed solves are cached until their inputs change.
+Deleted entries and a closed drawing are retired, and unchanged entries can be
+reused when switching sheets.
+
+Cam's object sidecar and Nathan's canvas/pointer host remain their integration
+seams. This provider work does not accept a native or browser paper editor.
 
 The record tests live in the existing `crates/doc/src/drawing_tests.rs`. Original
 fixtures cover a paper rectangle and stored expressions; deterministic ordering;
@@ -310,10 +330,9 @@ explicit contents deletion. The existing sheet-deletion policy and drawing-local
 undo apply; tests cover refusal, deletion and undo/redo. This does not establish
 native/browser sheet-deletion UI acceptance.
 
-For future shared-scene integration, sheet sketches use the same lower-left
-frame and the proposed paint band after views and before tables/title blocks.
-The paper ObjectKind/scene implementation remains with the shared-scene owner;
-this review change adds neither a second scene nor an exporter.
+Sheet sketches use the shared scene's lower-left frame and paint after views,
+before future tables/title blocks. The shared object-sidecar contract remains
+with its owner; this change adds neither a second scene nor an exporter.
 
 
 ## R6: more shared geometry tools and sheet-safe snap input

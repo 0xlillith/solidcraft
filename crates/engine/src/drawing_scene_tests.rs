@@ -354,7 +354,7 @@ fn sheet_sketch_strokes_respect_the_exact_paper_record_limit() {
 #[test]
 fn a_sheet_is_its_border_then_its_views_by_id() {
     let (mut s, sheet, [front, top]) = front_and_top();
-    let SheetScene { scene, views } = built(&s, sheet);
+    let SheetScene { scene, views, .. } = built(&s, sheet);
     let border = border(&s, sheet);
     assert_eq!(border.len(), 3);
     assert_eq!(serde_json::to_string(&scene.groups[..3]).unwrap(), serde_json::to_string(&border).unwrap());
@@ -425,7 +425,7 @@ fn a_view_of_many_lines_draws_as_its_snapshot() {
 fn a_sheet_with_no_views_is_its_border() {
     let (mut s, _, _) = front_and_top();
     let second = run(&mut s, "drawing.sheet.add", json!({}))["sheet"].as_str().and_then(ids::decode).unwrap();
-    let SheetScene { scene, views } = built(&s, second);
+    let SheetScene { scene, views, .. } = built(&s, second);
     assert_eq!((serde_json::to_string(&scene.groups).unwrap(), views.len()), (serde_json::to_string(&border(&s, second)).unwrap(), 0));
 }
 
@@ -778,6 +778,321 @@ fn a_saved_views_reference_shown_percent_grows_only_what_it_should() {
     assert_eq!(bytes(&built(&s, sheet).scene), bytes(&after.scene), "the provider and a build draw one thing");
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(bytes(&settled(&mut s, sheet).scene), bytes(&before.scene));
+}
+
+fn cached_sketch_group(scene: &Scene, id: u64) -> &Group {
+    scene.groups.iter().find(|group| group.kind == ObjectKind::Sketch && group.object == id).unwrap()
+}
+
+#[test]
+fn sheet_sketch_provider_extract_is_read_only_and_steps_one_sketch_at_a_time() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    let model_sketch = s.active_sketch.unwrap();
+    let line = run(&mut s, "sketch.line", json!({"points":[[0,0],[40,0]]}))["curves"][0].as_str().unwrap().to_string();
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.box", json!({"length":5,"width":5,"height":5}));
+    run(&mut s, "sketch.edit", json!({"sketch":model_sketch}));
+    run(&mut s, "sketch.drag", json!({"entity":format!("{line}.end"),"from":[40,0],"to":[45,3],"live":true}));
+    assert!(s.model.is_stale(), "the source model has an unfinished live gesture");
+    let drawing = run(&mut s, "drawing.create", json!({}));
+    let first = run(&mut s, "drawing.sketch.create", json!({"owner":drawing["sheets"][0]["id"]}));
+    let first = ids::decode(first["sketch"].as_str().unwrap()).unwrap();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    run(&mut s, "sketch.line", json!({"points":[[15,10],[55,10]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    let second = run(&mut s, "drawing.sketch.create", json!({"owner":ids::encode(sheet)}));
+    let second = ids::decode(second["sketch"].as_str().unwrap()).unwrap();
+    run(&mut s, "sketch.line", json!({"points":[[20,30],[60,30]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    let doc = s.doc.clone();
+    let model = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations, s.revision);
+    let mut order = vec![first, second];
+    order.sort_unstable();
+    let initial = extract(&mut s, sheet).unwrap();
+    assert_eq!(initial.stale_sketches, order);
+    assert!(initial.sketches.is_empty() && initial.scene.groups.iter().all(|group| group.kind != ObjectKind::Sketch));
+    assert_eq!((s.drawing_scenes.sketch_solves, s.drawing_scenes.projections), (0, 0));
+    assert!(step(&mut s));
+    let one = extract(&mut s, sheet).unwrap();
+    assert_eq!(one.stale_sketches, [order[1]]);
+    assert_eq!(one.sketches.iter().map(|state| state.sketch).collect::<Vec<_>>(), [order[0]]);
+    assert_eq!(s.drawing_scenes.sketch_solves, 1);
+    assert!(!step(&mut s));
+    let complete = extract(&mut s, sheet).unwrap();
+    assert!(complete.stale_sketches.is_empty() && complete.stale.is_empty());
+    assert_eq!(
+        complete.sketches.iter().map(|state| (state.sketch, state.status.name())).collect::<Vec<_>>(),
+        order.iter().map(|id| (*id, "drawn")).collect::<Vec<_>>()
+    );
+    assert_eq!(bytes(&complete.scene), bytes(&built(&s, sheet).scene));
+    let again = extract(&mut s, sheet).unwrap();
+    assert!(Arc::ptr_eq(&again.scene, &complete.scene) && again.generation == complete.generation);
+    assert!(!step(&mut s));
+    assert_eq!((s.drawing_scenes.sketch_solves, s.drawing_scenes.projections), (2, 0));
+    assert!(Arc::ptr_eq(&doc, &s.doc) && Arc::ptr_eq(&model, &s.model.state()));
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations, s.revision), history);
+    assert!(s.model.is_stale() && s.active_sketch == Some(model_sketch));
+}
+
+#[test]
+fn sheet_sketch_provider_source_key_reads_parameters_feature_inputs_and_units_without_model_evaluation() {
+    let (mut s, drawing, id) = stroke_editor();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    // This unitless ratio depends on document length defaults while its ParamDef stays the same:
+    // (2 inches + 1 mm) / 1 mm = 51.8; in a millimetre design it is 3.
+    s.doc_mut().set_param("Ratio", "(2 + 1 mm) / 1 mm", Some(""), None).unwrap();
+    let feature = s.doc.features.iter().find(|feature| !feature.param_names.is_empty()).unwrap();
+    let feature_id = feature.id;
+    let feature_param = feature.param_names[0].clone();
+    assert!(s.doc.params.iter().all(|param| param.name != feature_param));
+    run(&mut s, "sketch.line", json!({"points":[["Inset + 5","10"],["Inset + 20","10"]],"infer":false}));
+    run(&mut s, "sketch.line", json!({"points":[[format!("{feature_param} + 5"),"20"],[format!("{feature_param} + 20"),"20"]],"infer":false}));
+    run(&mut s, "sketch.line", json!({"points":[["Ratio * 1 mm","30"],["Ratio * 1 mm + 10 mm","30"]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    let record = s.drawing("test").unwrap().sheet_sketch(id).unwrap().clone();
+    let owner = s.drawing("test").unwrap().clone();
+    let model = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations, s.revision);
+    let was_stale = s.model.is_stale();
+    let positions = |scene: &Scene| cached_sketch_group(scene, id).items.iter().map(|item| stroke_path(item).0[0].start().x).collect::<Vec<_>>();
+    let mut previous = settled(&mut s, sheet);
+    assert_eq!(positions(&previous.scene), [30.4, 45.0, 51.8]);
+    for stage in 0..3 {
+        match stage {
+            0 => s.doc_mut().set_param("Inset", "2 in", Some("in"), None).unwrap(),
+            1 => {
+                let params = s.doc.params.clone();
+                let feature = s.doc_mut().features.iter_mut().find(|feature| feature.id == feature_id).unwrap();
+                let (_, expression, _) = feature.kind.inputs_mut().into_iter().next().unwrap();
+                *expression = "60".into();
+                assert_eq!(s.doc.params, params, "named feature inputs are not stored in doc.params");
+            }
+            _ => {
+                let defs = s.doc.param_defs();
+                s.doc_mut().units = "mm".into();
+                assert_eq!(s.doc.param_defs(), defs, "this change needs the separate document-unit key");
+            }
+        }
+        assert!(Arc::ptr_eq(s.doc.drawing(drawing).unwrap(), &owner));
+        assert!(Arc::ptr_eq(s.doc.drawing(drawing).unwrap().sheet_sketch(id).unwrap(), &record));
+        let doc = s.doc.clone();
+        let count = s.drawing_scenes.sketch_solves;
+        let pending = extract(&mut s, sheet).unwrap();
+        assert_eq!(pending.stale_sketches, [id]);
+        assert!(Arc::ptr_eq(&pending.scene, &previous.scene) && pending.generation == previous.generation);
+        assert_eq!(s.drawing_scenes.sketch_solves, count, "extract only records stale work");
+        assert!(!step(&mut s));
+        previous = extract(&mut s, sheet).unwrap();
+        assert!(previous.stale_sketches.is_empty());
+        assert_eq!(s.drawing_scenes.sketch_solves, count + 1);
+        assert_eq!(bytes(&previous.scene), bytes(&built(&s, sheet).scene));
+        let expected = match stage {
+            0 => [55.8, 45.0, 51.8],
+            1 => [55.8, 65.0, 51.8],
+            _ => [55.8, 65.0, 3.0],
+        };
+        for (actual, expected) in positions(&previous.scene).iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-9, "stage {stage}: {actual} != {expected}");
+        }
+        assert!(Arc::ptr_eq(&doc, &s.doc) && Arc::ptr_eq(&model, &s.model.state()));
+        assert_eq!((s.undo.len(), s.redo.len(), s.evaluations, s.revision), history);
+        assert_eq!(s.drawing_scenes.projections, 0);
+        assert_eq!(s.model.is_stale(), was_stale, "paper resolution preserves the source model's evaluation state");
+    }
+}
+
+#[test]
+fn sheet_sketch_provider_keeps_mixed_paper_order_and_reuses_view_moves_and_editor_state() {
+    let mut design = Session::default();
+    run(&mut design, "solid.box", json!({"length":100,"width":50,"height":20,"body_name":"Block"}));
+    run(&mut design, "document.units", json!({"units":"in"}));
+    let (mut s, sheet, [front, top]) = front_and_top_of(design);
+    run(&mut s, "drawing.view.edit", json!({"view":ids::encode(top),"set":{"scale":"1:4"}}));
+    let made = run(&mut s, "drawing.sketch.create", json!({"owner":ids::encode(sheet)}));
+    let id = ids::decode(made["sketch"].as_str().unwrap()).unwrap();
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[15,10],"p1":[55,30]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let before = settled(&mut s, sheet);
+    let expected = built(&s, sheet);
+    assert_eq!(bytes(&before.scene), bytes(&expected.scene));
+    let mut views = [front, top];
+    views.sort_unstable();
+    assert_eq!(
+        before.scene.groups.iter().skip(3).map(|group| (group.object, group.kind)).collect::<Vec<_>>(),
+        [(views[0], ObjectKind::View), (views[1], ObjectKind::View), (id, ObjectKind::Sketch)]
+    );
+    let (lo, hi, perimeter) = reach(cached_sketch_group(&before.scene, id));
+    assert!(lo.dist(Vec2::new(15.0, 10.0)) < 1e-9 && hi.dist(Vec2::new(55.0, 30.0)) < 1e-9 && (perimeter - 120.0).abs() < 1e-9);
+    let counts = (s.drawing_scenes.projections, s.drawing_scenes.sketch_solves);
+    let sketch_bytes = serde_json::to_string(cached_sketch_group(&before.scene, id)).unwrap();
+    run(&mut s, "drawing.view.edit", json!({"view":ids::encode(front),"set":{"place":{"at":[200,150]}}}));
+    let moved = extract(&mut s, sheet).unwrap();
+    assert!(moved.stale.is_empty() && moved.stale_sketches.is_empty());
+    assert_eq!((s.drawing_scenes.projections, s.drawing_scenes.sketch_solves), counts);
+    assert_eq!(serde_json::to_string(cached_sketch_group(&moved.scene, id)).unwrap(), sketch_bytes);
+    assert_eq!(bytes(&moved.scene), bytes(&built(&s, sheet).scene));
+    run(&mut s, "drawing.sketch.edit", json!({"sketch":ids::encode(id)}));
+    run(&mut s, "sketch.finish", json!({}));
+    let editing_ended = extract(&mut s, sheet).unwrap();
+    assert!(editing_ended.stale_sketches.is_empty() && Arc::ptr_eq(&editing_ended.scene, &moved.scene));
+    assert_eq!((s.drawing_scenes.projections, s.drawing_scenes.sketch_solves), counts);
+}
+
+#[test]
+fn sheet_sketch_provider_reuses_sheets_and_retires_deleted_undone_and_closed_owners() {
+    let (mut s, drawing, first) = stroke_editor();
+    let first_sheet = s.drawing("test").unwrap().sheets[0].id;
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    let second_sheet = run(&mut s, "drawing.sheet.add", json!({"name":"Second"}));
+    let second_sheet = ids::decode(second_sheet["sheet"].as_str().unwrap()).unwrap();
+    let second = run(&mut s, "drawing.sketch.create", json!({"owner":ids::encode(second_sheet)}));
+    let second = ids::decode(second["sketch"].as_str().unwrap()).unwrap();
+    run(&mut s, "sketch.line", json!({"points":[[60,60],[90,60]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    let first_scene = settled(&mut s, first_sheet);
+    let second_scene = settled(&mut s, second_sheet);
+    assert_eq!(s.drawing_scenes.sketch_solves, 2);
+    let again = extract(&mut s, first_sheet).unwrap();
+    assert!(again.stale_sketches.is_empty());
+    assert_eq!(bytes(&again.scene), bytes(&first_scene.scene));
+    assert_eq!(s.drawing_scenes.sketch_solves, 2, "switching sheets retains settled drawing entries");
+    assert!(again.scene.groups.iter().all(|group| group.kind != ObjectKind::Sketch || group.object == first));
+    extract(&mut s, second_sheet).unwrap();
+    run(&mut s, "drawing.sheet.delete", json!({"sheet":ids::encode(second_sheet),"contents":"delete"}));
+    assert!(!step(&mut s), "a deleted extracted sheet supplies no work");
+    assert!(extract(&mut s, second_sheet).is_err());
+    let remaining = settled(&mut s, first_sheet);
+    assert!(remaining.scene.groups.iter().all(|group| group.object != second));
+    assert!(!s.drawing_scenes.sketches.contains_key(&second));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(extract(&mut s, second_sheet).unwrap().stale_sketches, [second]);
+    assert_eq!(bytes(&settled(&mut s, second_sheet).scene), bytes(&second_scene.scene));
+    run(&mut s, "drawing.close", json!({}));
+    assert!(s.drawing_scenes.sketches.is_empty() && s.drawing_scenes.source.is_none() && s.drawing_scenes.context.is_none());
+    assert!(!step(&mut s));
+    run(&mut s, "drawing.open", json!({"drawing":ids::encode(drawing)}));
+    assert_eq!(extract(&mut s, first_sheet).unwrap().stale_sketches, [first]);
+    assert_eq!(bytes(&settled(&mut s, first_sheet).scene), bytes(&first_scene.scene));
+    let document = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    let mut reopened = Session::new(document);
+    run(&mut reopened, "drawing.open", json!({"drawing":ids::encode(drawing)}));
+    assert_eq!(bytes(&settled(&mut reopened, second_sheet).scene), bytes(&second_scene.scene));
+}
+
+#[test]
+fn sheet_sketch_provider_caches_named_source_failures_and_recovers_without_global_error_blocking() {
+    let (mut s, drawing, id) = stroke_editor();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    run(&mut s, "sketch.line", json!({"points":[["Inset + 5","10"],["Inset + 20","10"]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    s.doc_mut().params.iter_mut().find(|param| param.name == "Inset").unwrap().expr = "Missing + 1 mm".into();
+    let doc = s.doc.clone();
+    let model = s.model.state();
+    let history = (s.evaluations, s.undo.len(), s.redo.len());
+    let pending = extract(&mut s, sheet).unwrap();
+    assert_eq!(pending.stale_sketches, [id]);
+    assert!(pending.sketches.is_empty() && s.drawing_scenes.sketch_solves == 0);
+    assert!(!step(&mut s));
+    let failed = extract(&mut s, sheet).unwrap();
+    assert!(failed.stale_sketches.is_empty());
+    assert!(matches!(&failed.sketches[0].status, SketchStatus::Failed(why) if why.contains(&ids::encode(id)) && why.contains("Inset")));
+    assert!(failed.scene.groups.iter().all(|group| group.kind != ObjectKind::Sketch));
+    for _ in 0..3 {
+        assert!(!step(&mut s));
+        let cached = extract(&mut s, sheet).unwrap();
+        assert!(Arc::ptr_eq(&cached.scene, &failed.scene) && cached.generation == failed.generation);
+    }
+    assert_eq!(s.drawing_scenes.sketch_solves, 1);
+    assert!(Arc::ptr_eq(&doc, &s.doc) && Arc::ptr_eq(&model, &s.model.state()));
+    assert_eq!((s.evaluations, s.undo.len(), s.redo.len()), history);
+    s.doc_mut().set_param("Inset", "1 in", Some("in"), None).unwrap();
+    let restored = settled(&mut s, sheet);
+    assert_eq!(restored.sketches[0].status, SketchStatus::Drawn);
+    s.doc_mut().params.push(solidcraft_doc::Param {
+        name: "Unrelated".into(),
+        expr: "NoSuchParameter".into(),
+        unit: "mm".into(),
+        comment: String::new(),
+        model: false,
+    });
+    assert!(s.doc.param_values().1.contains_key("Unrelated"));
+    assert_eq!(settled(&mut s, sheet).sketches[0].status, SketchStatus::Drawn);
+    let mut no_source = (**s.drawing("test").unwrap()).clone();
+    let sources = std::mem::take(&mut no_source.sources);
+    no_source.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(no_source));
+    let failed = settled(&mut s, sheet);
+    assert!(
+        matches!(&failed.sketches[0].status, SketchStatus::Failed(why) if why.contains("declared design source") && why.contains(&ids::encode(id)))
+    );
+    let count = s.drawing_scenes.sketch_solves;
+    assert!(!step(&mut s));
+    assert_eq!(s.drawing_scenes.sketch_solves, count);
+    let mut repaired = (**s.doc.drawing(drawing).unwrap()).clone();
+    repaired.sources = sources;
+    s.doc_mut().put_drawing(Arc::new(repaired));
+    assert_eq!(settled(&mut s, sheet).sketches[0].status, SketchStatus::Drawn);
+}
+
+#[test]
+fn sheet_sketch_provider_invalid_header_failures_follow_repairs_with_the_same_sketch_arc() {
+    let (mut s, _, id) = stroke_editor();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false}));
+    run(&mut s, "sketch.finish", json!({}));
+    let record = s.drawing("test").unwrap().sheet_sketch(id).unwrap().clone();
+    let before = settled(&mut s, sheet);
+    let mut invalid = (**s.drawing("test").unwrap()).clone();
+    let name = std::mem::take(&mut invalid.name);
+    s.doc_mut().put_drawing(Arc::new(invalid));
+    let failed = settled(&mut s, sheet);
+    assert!(matches!(&failed.sketches[0].status, SketchStatus::Failed(why) if why.contains(&ids::encode(id))));
+    assert!(failed.scene.groups.iter().all(|group| group.kind != ObjectKind::Sketch));
+    let count = s.drawing_scenes.sketch_solves;
+    assert!(!step(&mut s));
+    assert_eq!(s.drawing_scenes.sketch_solves, count);
+    let mut repaired = (**s.drawing("test").unwrap()).clone();
+    repaired.name = name;
+    assert!(Arc::ptr_eq(repaired.sheet_sketch(id).unwrap(), &record));
+    s.doc_mut().put_drawing(Arc::new(repaired));
+    let after = settled(&mut s, sheet);
+    assert_eq!(after.sketches[0].status, SketchStatus::Drawn);
+    assert_eq!(bytes(&after.scene), bytes(&before.scene));
+    assert_eq!(s.drawing_scenes.sketch_solves, count + 1);
+}
+
+#[test]
+fn sheet_sketch_assembly_budget_names_only_the_excluded_sketch_and_can_recover() {
+    let (s, sheet, _) = front_and_top();
+    let d = s.drawing("test").unwrap();
+    let record = d.sheets.iter().find(|record| record.id == sheet).unwrap();
+    let group = |id, kind, n: usize| Group {
+        object: id,
+        kind,
+        items: vec![Item::Stroke {
+            path: (0..n).map(|i| Seg2::Line { a: Vec2::new(i as f64 * 1e-3, 0.0), b: Vec2::new((i + 1) as f64 * 1e-3, 0.0) }).collect(),
+            closed: false,
+            width_mm: 0.5,
+        }],
+    };
+    let left = MAX_RECORDS - border(&s, sheet).iter().map(Group::records).sum::<usize>();
+    let view = Drawn { group: Some(group(10, ObjectKind::View, left - 12)), status: Status::Drawn, stats: None };
+    let sketches = [
+        DrawnSketch { group: Some(group(101, ObjectKind::Sketch, 10)), status: SketchStatus::Drawn },
+        DrawnSketch { group: Some(group(102, ObjectKind::Sketch, 8)), status: SketchStatus::Drawn },
+    ];
+    let drawn = || sketches.iter().enumerate().map(|(i, drawn)| (101 + i as u64, drawn));
+    let (scene, views, states) = assemble_with_sketches(record, std::iter::once((10, Vec2::ZERO, &view)), drawn()).unwrap();
+    assert_eq!(views[0].status, Status::Drawn);
+    assert!(matches!(&states[0].status, SketchStatus::Failed(why) if why.contains(&ids::encode(101)) && why.contains(&MAX_RECORDS.to_string())));
+    assert_eq!(states[1].status, SketchStatus::Drawn);
+    assert_eq!(scene.groups.iter().map(Group::records).sum::<usize>(), MAX_RECORDS);
+    assert_eq!(scene.groups.iter().skip(3).map(|group| group.object).collect::<Vec<_>>(), [10, 102]);
+    let (_, _, recovered) = assemble_with_sketches(record, std::iter::empty::<(u64, Vec2, Drawn)>(), drawn()).unwrap();
+    assert!(recovered.iter().all(|state| state.status == SketchStatus::Drawn), "composition budget failures are not permanent geometry failures");
 }
 
 #[test]
