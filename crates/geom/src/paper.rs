@@ -121,6 +121,8 @@ pub enum ObjectKind {
     RevisionTable,
     /// A drawing view's lines.
     View,
+    /// A sheet-owned sketch's printable curves.
+    Sketch,
 }
 
 impl ObjectKind {
@@ -134,6 +136,7 @@ impl ObjectKind {
             ObjectKind::PartsList => "PARTS_LIST",
             ObjectKind::RevisionTable => "REVISION_TABLE",
             ObjectKind::View => "VIEW",
+            ObjectKind::Sketch => "SKETCH",
         }
     }
 }

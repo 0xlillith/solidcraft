@@ -34,6 +34,8 @@ use crate::drawing_view::{CHORD_MM, LineRequest, MIN_MODEL_CHORD_MM, ShownSet, S
 use crate::params::bad;
 use crate::{EngineError, Result, Session};
 
+pub mod sketch;
+
 /// The command the sheet scene answers for, in its errors.
 pub const CMD: &str = "drawing.scene";
 

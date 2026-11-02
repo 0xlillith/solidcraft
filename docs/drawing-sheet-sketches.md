@@ -160,6 +160,41 @@ PR rather than being asserted as performance thresholds in correctness tests.
 
 ## Acceptance and remaining work
 
+The next independent engine slice is `drawing_scene::sketch::paper_group`. It
+accepts an already solved `SolvedSheetSketch` and an explicit paper line width;
+it does not read a Session, resolve expressions, solve, publish or evaluate a
+model. One `Sketch` group on `SKETCH` retains the stored sketch id and authored
+curve order, in physical paper millimetres. No view scale or border translation
+is applied. Lines, circles and arcs retain their analytic forms; ellipses and
+conics use rational quadratics, and fit and admitted control splines retain exact
+Bézier pieces. Clockwise travel is retained. Conversion cannot silently fall back
+to sampled lines or omit an unconvertible curve.
+
+Construction geometry, including infinite construction lines, is omitted.
+Centre lines are explicitly refused until paper strokes can carry their style.
+The adapter also refuses unsupported auxiliary metadata, including equation
+curves, and near-one conic weights that the shared conversion would clamp.
+Analytic arcs must retain their authored endpoints within the existing paper
+endpoint tolerance, which is stricter than solver acceptance. Tiny positive arc
+sweeps that the shared converter would widen into a full turn are refused by
+name; exact coincident endpoints still represent a full circle.
+Input sizes and predicted output records are bounded before exact conversion;
+each curve and the complete group must pass the existing paper-scene checks.
+Errors name the owning drawing, sheet, sketch and, where applicable, local curve.
+Endpoint join tolerance validates continuity; it does not close an authored open
+curve merely because its endpoints are close.
+
+Exact scene data does not imply support in every current writer. In particular,
+the SVG writer still refuses ellipses, hyperbolas and Béziers above degree three
+until A3b. The adapter retains those exact primitives; a consumer must propagate
+the writer's refusal and cannot substitute sampled lines or drop authored curves.
+
+This helper is not yet wired into `drawing.scene`, `drawing.export` or the cached
+provider. Those paths must be connected together, with source-aware sketch cache
+keys, separate sketch statuses, exact freeform output schemas and export refusal
+for failed sketches. Cam's object sidecar and Nathan's canvas/pointer host remain
+their integration seams. These adapter tests do not accept a paper editor.
+
 The record tests live in the existing `crates/doc/src/drawing_tests.rs`. Original
 fixtures cover a paper rectangle and stored expressions; deterministic ordering;
 drawing/local identity separation; unknown owners; absent/empty sketches; size

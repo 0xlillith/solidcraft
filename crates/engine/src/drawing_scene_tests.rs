@@ -109,6 +109,243 @@ fn same_within(a: &Group, b: &Group, tol: f64) -> bool {
         })
 }
 
+/// A real sheet editor under inch display units; command coordinates still mean paper mm.
+fn stroke_editor() -> (Session, u64, u64) {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":40,"width":30,"height":5,"body_name":"Source plate"}));
+    run(&mut s, "document.units", json!({"units":"in"}));
+    run(&mut s, "parameters.add", json!({"name":"Inset","expression":"1 in"}));
+    let drawing = run(&mut s, "drawing.create", json!({"name":"Strokes","units":"in"}));
+    let made = run(&mut s, "drawing.sketch.create", json!({"owner":drawing["sheets"][0]["id"]}));
+    let owner = ids::decode(made["drawing"].as_str().unwrap()).unwrap();
+    let sketch = ids::decode(made["sketch"].as_str().unwrap()).unwrap();
+    (s, owner, sketch)
+}
+
+fn stroke_path(item: &Item) -> (&[Seg2], bool, f64) {
+    let Item::Stroke { path, closed, width_mm } = item else { panic!("not a stroke: {item:?}") };
+    (path, *closed, *width_mm)
+}
+
+#[test]
+fn sheet_sketch_strokes_keep_paper_coordinates_and_read_only_source() {
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0":[15,10],"p1":[55,30]}));
+    run(&mut s, "sketch.line", json!({"points":[["Inset + 5","40"],["Inset + 20","40"]],"infer":false}));
+    let before = s.doc.clone();
+    let model = s.model.state();
+    let history = (s.undo.len(), s.redo.len(), s.evaluations);
+    let solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    let group = sketch::paper_group(&solved, 0.35).unwrap();
+    assert_eq!((group.object, group.kind, group.items.len()), (id, ObjectKind::Sketch, 5));
+    assert_eq!(group.kind.layer(), "SKETCH");
+    let mut rectangle = group.clone();
+    rectangle.items.truncate(4);
+    let (lo, hi, perimeter) = reach(&rectangle);
+    assert!(lo.dist(Vec2::new(15.0, 10.0)) < 1e-9 && hi.dist(Vec2::new(55.0, 30.0)) < 1e-9);
+    assert!((perimeter - 120.0).abs() < 1e-9);
+    let (line, closed, width) = stroke_path(&group.items[4]);
+    assert!(!closed && width == 0.35 && line.len() == 1);
+    assert!(line[0].start().dist(Vec2::new(30.4, 40.0)) < 1e-9);
+    assert!(line[0].end().dist(Vec2::new(45.4, 40.0)) < 1e-9);
+    assert!(Arc::ptr_eq(&before, &s.doc) && Arc::ptr_eq(&model, &s.model.state()));
+    assert_eq!((s.undo.len(), s.redo.len(), s.evaluations), history);
+    assert_eq!(s.doc.drawing(owner).unwrap().sheet_sketch(id).unwrap().sketch, solved.sketch);
+
+    // Reopening and solving through the same read-only boundary gives the same writer input.
+    let reopened = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    let again = sketch::paper_group(&reopened.solve_sheet_sketch(owner, id).unwrap(), 0.35).unwrap();
+    assert_eq!(again, group);
+    let scene = Scene::new(Vec2::new(420.0, 297.0), vec![group]);
+    let svg = || solidcraft_io::paper::paper_svg(&scene.prepare().unwrap(), &NoPictures, DEFAULT_DPI).unwrap().0;
+    assert_eq!(svg(), svg());
+    assert!(String::from_utf8(svg()).unwrap().contains("data-kind=\"sketch\""));
+}
+
+#[test]
+fn sheet_sketch_strokes_preserve_analytic_curves_and_clockwise_travel() {
+    let (mut s, owner, id) = stroke_editor();
+    for (cmd, params) in [
+        ("sketch.line", json!({"points":[[5,5],[15,5]],"infer":false})),
+        ("sketch.circle.center", json!({"center":[30,40],"radius":5})),
+        ("sketch.arc.center_point", json!({"center":[30,40],"start":[35,40],"sweep":-90})),
+        ("sketch.ellipse", json!({"center":[80,50],"major":[100,50],"minor_radius":10})),
+        ("sketch.conic", json!({"start":[40,80],"end":[90,80],"apex":[65,105],"rho":0.4,"connect":false})),
+    ] {
+        run(&mut s, cmd, params);
+    }
+    let solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    let group = sketch::paper_group(&solved, 0.5).unwrap();
+    assert_eq!(group.items.len(), 5);
+    assert!(matches!(stroke_path(&group.items[0]).0, [Seg2::Line { .. }]));
+    let (circle, closed, _) = stroke_path(&group.items[1]);
+    assert!(closed && circle.len() == 2);
+    for seg in circle {
+        let Seg2::Arc { center, radius, sweep, .. } = seg else { panic!("sampled circle: {seg:?}") };
+        assert_eq!((*center, *radius), (Vec2::new(30.0, 40.0), 5.0));
+        assert!((sweep - std::f64::consts::PI).abs() < 1e-12);
+    }
+    let (arc, closed, _) = stroke_path(&group.items[2]);
+    let [Seg2::Arc { radius, sweep, .. }] = arc else { panic!("sampled arc: {arc:?}") };
+    assert!(!closed && *radius == 5.0 && (*sweep + std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    assert!(arc[0].start().dist(Vec2::new(35.0, 40.0)) < 1e-9 && arc[0].end().dist(Vec2::new(30.0, 35.0)) < 1e-9);
+    let (ellipse, closed, _) = stroke_path(&group.items[3]);
+    assert!(closed && ellipse.len() == 4);
+    for seg in ellipse {
+        assert!(matches!(seg, Seg2::Conic { w, .. } if (*w - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-15));
+        for t in [0.0, 0.2, 0.5, 0.8, 1.0] {
+            let p = seg.point_at(t) - Vec2::new(80.0, 50.0);
+            assert!((p.x * p.x / 400.0 + p.y * p.y / 100.0 - 1.0).abs() < 1e-12, "{p:?}");
+        }
+    }
+    let (conic, closed, _) = stroke_path(&group.items[4]);
+    let [Seg2::Conic { a, apex, b, w }] = conic else { panic!("sampled conic: {conic:?}") };
+    assert!(!closed && (*w - 2.0 / 3.0).abs() < 1e-12);
+    assert_eq!((*a, *apex, *b), (Vec2::new(40.0, 80.0), Vec2::new(65.0, 105.0), Vec2::new(90.0, 80.0)));
+    assert!(conic[0].point_at(0.5).dist(Vec2::new(65.0, 90.0)) < 1e-9);
+}
+
+#[test]
+fn sheet_sketch_strokes_keep_fit_periodic_and_quintic_splines_exact() {
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.spline.fit_point", json!({"points":[[10,10],[12,12],[14,10]],"connect":false}));
+    run(&mut s, "sketch.spline.fit_point", json!({"points":[[80,30],[100,50],[120,30],[100,10]],"periodic":true,"connect":false}));
+    let controls = [[140, 10], [150, 30], [160, 35], [170, 35], [180, 30], [190, 10]];
+    run(&mut s, "sketch.spline.control_point_5", json!({"points":controls,"connect":false}));
+    let group = sketch::paper_group(&s.doc.solve_sheet_sketch(owner, id).unwrap(), 0.5).unwrap();
+    assert_eq!(group.items.len(), 3);
+    let (fit, closed, _) = stroke_path(&group.items[0]);
+    assert!(!closed && fit.len() == 2 && fit.iter().all(|seg| matches!(seg, Seg2::Cubic { .. })));
+    let Seg2::Cubic { p0, p1, p2, p3 } = fit[0] else { panic!("lost cubic") };
+    for (actual, expected) in [p0, p1, p2, p3].into_iter().zip([[10.0, 10.0], [10.0 + 2.0 / 3.0, 11.0], [10.0 + 4.0 / 3.0, 12.0], [12.0, 12.0]]) {
+        assert!(actual.dist(Vec2::from(expected)) < 1e-9, "{actual:?} {expected:?}");
+    }
+    assert!(fit[0].point_at(0.5).dist(Vec2::new(11.0, 11.375)) < 1e-9);
+    for (seg, a, b) in fit.iter().zip([[10.0, 10.0], [12.0, 12.0]]).zip([[12.0, 12.0], [14.0, 10.0]]).map(|((s, a), b)| (s, a, b)) {
+        assert!(seg.start().dist(Vec2::from(a)) < 1e-9 && seg.end().dist(Vec2::from(b)) < 1e-9);
+    }
+    let (periodic, closed, _) = stroke_path(&group.items[1]);
+    assert!(closed && periodic.len() == 4 && periodic.iter().all(|seg| matches!(seg, Seg2::Cubic { .. })));
+    for i in 0..periodic.len() {
+        let next = &periodic[(i + 1) % periodic.len()];
+        assert!(periodic[i].end().dist(next.start()) < 1e-9);
+        let end = periodic[i].derivatives(1.0, 2).unwrap();
+        let start = next.derivatives(0.0, 2).unwrap();
+        assert!(end[0].dist(start[0]) < 1e-8 && end[1].dist(start[1]) < 1e-8);
+    }
+    let (quintic, closed, _) = stroke_path(&group.items[2]);
+    let [Seg2::Bezier { n: 5, p }] = quintic else { panic!("lost quintic: {quintic:?}") };
+    assert!(!closed);
+    for (actual, expected) in p.iter().zip(controls) {
+        assert!(actual.dist(Vec2::new(expected[0] as f64, expected[1] as f64)) < 1e-9);
+    }
+}
+
+#[test]
+fn sheet_sketch_strokes_omit_construction_and_refuse_centerlines_by_name() {
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false}));
+    let mut solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    let curve = solved.sketch.curves[0].id.clone();
+    let original = sketch::paper_group(&solved, 0.5).unwrap();
+    solved.sketch.view.hide_grid = true;
+    solved.sketch.view.no_snap = true;
+    assert_eq!(sketch::paper_group(&solved, 0.5).unwrap(), original, "editor visibility is not print state");
+    solved.sketch.curves[0].construction = true;
+    solved.sketch.curves[0].infinite = true;
+    assert!(sketch::paper_group(&solved, 0.5).unwrap().items.is_empty());
+    for construction in [false, true] {
+        solved.sketch.curves[0].infinite = false;
+        solved.sketch.curves[0].construction = construction;
+        solved.sketch.curves[0].centerline = true;
+        let why = sketch::paper_group(&solved, 0.5).unwrap_err().to_string();
+        assert!(
+            why.contains(&ids::encode(owner)) && why.contains(&ids::encode(solved.sheet)) && why.contains(&ids::encode(id)) && why.contains(&curve),
+            "{why}"
+        );
+        assert!(why.contains("centerline"), "{why}");
+    }
+}
+
+#[test]
+fn sheet_sketch_strokes_do_not_close_a_short_open_curve_by_tolerance() {
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false}));
+    let mut solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    solved.sketch.points[2].pos = solved.sketch.points[1].pos + Vec2::new(solidcraft_geom::EPS / 2.0, 0.0);
+    let group = sketch::paper_group(&solved, 0.5).unwrap();
+    let (path, closed, _) = stroke_path(&group.items[0]);
+    assert!(!closed && path[0].start() != path[0].end());
+    assert!(path[0].start().dist(path[0].end()) < solidcraft_geom::EPS);
+}
+
+#[test]
+fn sheet_sketch_strokes_refuse_hostile_geometry_without_a_polyline_fallback() {
+    use solidcraft_sketch::{CurveKind, SolveStatus};
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false}));
+    let original = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    for width in [0.0, -1.0, 10.0001, f64::NAN, f64::INFINITY] {
+        assert!(sketch::paper_group(&original, width).is_err(), "width {width}");
+    }
+    let mut cases = Vec::new();
+    let mut add = |change: fn(&mut solidcraft_doc::drawing::SolvedSheetSketch)| {
+        let mut bad = original.clone();
+        change(&mut bad);
+        cases.push(bad);
+    };
+    add(|s| s.id = 0);
+    add(|s| s.report.status = SolveStatus::Failed);
+    add(|s| s.sketch.points[1].pos.x = f64::NAN);
+    add(|s| s.sketch.points[1].pos.x = 100_001.0);
+    add(|s| s.sketch.curves[0].kind = CurveKind::Line { a: 1, b: usize::MAX });
+    add(|s| s.sketch.curves[0].kind = CurveKind::Spline { pts: vec![1, 2], control: true, degree: 10, periodic: false });
+    add(|s| s.sketch.curves[0].kind = CurveKind::Ellipse { c: 1, m: 1, r: 5.0 });
+    add(|s| s.sketch.curves[0].kind = CurveKind::Conic { a: 1, b: 2, apex: 0, rho: 1.0 - 1e-10 });
+    add(|s| s.sketch.curves[0].kind = CurveKind::Arc { c: 0, a: 1, b: 2 });
+    add(|s| s.sketch.curves[0].infinite = true);
+    add(|s| s.sketch.view.three_d = true);
+    add(|s| s.sketch.curves[0].link = Some("unresolved".into()));
+    add(|s| {
+        s.sketch.equations.push(solidcraft_sketch::EquationCurve {
+            curve: s.sketch.curves[0].id.clone(),
+            x: None,
+            y: "x".into(),
+            start: "0".into(),
+            end: "1".into(),
+            tolerance: 0.01,
+        })
+    });
+    for bad in cases {
+        let why = sketch::paper_group(&bad, 0.5).unwrap_err().to_string();
+        assert!(why.contains("sheet sketch"), "{why}");
+    }
+    assert_eq!(sketch::paper_group(&original, 0.5).unwrap().items.len(), 1, "no partial output or mutation after errors");
+}
+
+#[test]
+fn sheet_sketch_strokes_respect_the_exact_paper_record_limit() {
+    use solidcraft_sketch::{CurveKind, Sketch};
+    let (s, owner, id) = stroke_editor();
+    let mut solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    let mut geometry = Sketch::new();
+    let centre = geometry.add_point(Vec2::new(100.0, 100.0), None).unwrap();
+    let major = geometry.add_point(Vec2::new(110.0, 100.0), None).unwrap();
+    // 19,998 ellipse strokes at 5 records each, plus the group itself: 99,991.
+    let ellipse = geometry.add_curve(CurveKind::Ellipse { c: centre, m: major, r: 5.0 }, None).unwrap();
+    let template = geometry.curves[ellipse].clone();
+    geometry.curves = (0..19_998).map(|i| solidcraft_sketch::Curve { id: format!("ellipse{i}"), ..template.clone() }).collect();
+    let pts = (0..9).map(|i| geometry.add_point(Vec2::new(20.0 + i as f64, 20.0 + (i % 2) as f64), None).unwrap()).collect();
+    geometry.add_curve(CurveKind::Spline { pts, control: false, degree: 3, periodic: false }, None).unwrap();
+    solved.sketch = geometry;
+    let full = sketch::paper_group(&solved, 0.5).unwrap();
+    assert_eq!(full.records(), MAX_RECORDS, "eight cubic pieces plus their stroke consume the remaining nine records");
+    solved.sketch.add_curve(CurveKind::Line { a: centre, b: major }, None).unwrap();
+    let why = sketch::paper_group(&solved, 0.5).unwrap_err().to_string();
+    assert!(why.contains(&MAX_RECORDS.to_string()), "{why}");
+    assert_eq!(full.records(), MAX_RECORDS);
+}
+
 /// The scene is the sheet's three border groups as its layout draws them, byte for byte, then the
 /// two views in id order: the front view round its 50 x 10 mm outline centred at (150, 150), 120 mm
 /// of line in all, the top view round 50 x 25 mm centred at (150, 220), 150 mm. The command answers
@@ -541,4 +778,56 @@ fn a_saved_views_reference_shown_percent_grows_only_what_it_should() {
     assert_eq!(bytes(&built(&s, sheet).scene), bytes(&after.scene), "the provider and a build draw one thing");
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(bytes(&settled(&mut s, sheet).scene), bytes(&before.scene));
+}
+
+#[test]
+fn sheet_sketch_strokes_refuse_tiny_arcs_that_shared_pieces_widen() {
+    use solidcraft_sketch::CurveKind;
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.line", json!({"points":[[10,10],[30,10]],"infer":false}));
+    let mut solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    solved.sketch.curves[0].kind = CurveKind::Arc { c: 0, a: 1, b: 2 };
+    for (a, b) in [(Vec2::new(1000.0, 0.0), Vec2::new(1000.0, 5e-10)), (Vec2::new(-1000.0, 2.5e-10), Vec2::new(-1000.0, -2.5e-10))] {
+        solved.sketch.points[1].pos = a;
+        solved.sketch.points[2].pos = b;
+        let why = sketch::paper_group(&solved, 0.5).unwrap_err().to_string();
+        assert!(why.contains("sweep") && why.contains(&solved.sketch.curves[0].id), "{why}");
+        // The opposite travel is a real almost-full turn, which must remain printable.
+        solved.sketch.points[1].pos = b;
+        solved.sketch.points[2].pos = a;
+        let group = sketch::paper_group(&solved, 0.5).unwrap();
+        let (path, closed, _) = stroke_path(&group.items[0]);
+        assert!(!closed);
+        assert!(matches!(path,[Seg2::Arc{sweep,..}] if *sweep > std::f64::consts::TAU-1e-10 && *sweep <=std::f64::consts::TAU));
+    }
+    solved.sketch.points[1].pos = Vec2::new(1000.0, 0.0);
+    solved.sketch.points[2].pos = solved.sketch.points[1].pos;
+    let group = sketch::paper_group(&solved, 0.5).unwrap();
+    let (path, closed, _) = stroke_path(&group.items[0]);
+    assert!(closed && matches!(path,[Seg2::Arc{sweep,..}] if *sweep == std::f64::consts::TAU));
+}
+
+#[test]
+fn sheet_sketch_strokes_name_an_arc_past_paper_tolerance_even_when_solved() {
+    use solidcraft_sketch::CurveKind;
+    let (mut s, owner, id) = stroke_editor();
+    run(&mut s, "sketch.arc.center_point", json!({"center":[30,40],"start":[40,40],"sweep":90}));
+    let mut drawing = (**s.doc.drawing(owner).unwrap()).clone();
+    let record = Arc::make_mut(&mut drawing.sketches[0]);
+    let CurveKind::Arc { b, .. } = record.sketch.curves[0].kind else { panic!("not an arc") };
+    record.sketch.points[b].pos.y += 5e-8;
+    for point in &mut record.sketch.points {
+        point.fixed = true;
+    }
+    record.sketch.curves[0].fixed = true;
+    drawing.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(drawing));
+    let before = s.doc.clone();
+    let solved = s.doc.solve_sheet_sketch(owner, id).unwrap();
+    assert!(solved.report.keeps_orientation());
+    assert!(solved.report.max_residual > solidcraft_geom::EPS && solved.report.max_residual < 1e-6, "{:?}", solved.report);
+    assert_eq!(solved.sketch.points, before.drawing(owner).unwrap().sheet_sketch(id).unwrap().sketch.points);
+    let why = sketch::paper_group(&solved, 0.5).unwrap_err().to_string();
+    assert!(why.contains("paper endpoint tolerance") && why.contains(&solved.sketch.curves[0].id), "{why}");
+    assert!(Arc::ptr_eq(&before, &s.doc));
 }
