@@ -859,6 +859,16 @@ fn dropdown_menu_width(
         .show_ui(ui, add)
         .response;
     publish(ui, &response, egui::WidgetType::ComboBox);
+    // Kit chrome publishes the row label after egui's selected-text metadata.
+    // Keep that label when present, and the visible action/value for a bare
+    // dropdown, without losing its full current value in the final announcement.
+    response.widget_info(|| {
+        let row_label = label(ui);
+        let name = if row_label.trim().is_empty() { current } else { crate::i18n::tr_label(row_label) };
+        let mut info = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), name);
+        info.current_text_value = Some(current.to_owned());
+        info
+    });
     response
 }
 

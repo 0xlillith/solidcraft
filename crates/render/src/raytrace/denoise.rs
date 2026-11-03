@@ -4,7 +4,8 @@ use super::image::{error, invalid, primary_ray};
 use super::prepared::PreparedScene;
 use super::{Hit, Ray, WorkBudget};
 use crate::job::{CancelToken, ImageRequest, RaytraceOptions, Result, denoise::Guide};
-use solidcraft_geom::Vec3;
+use solidcore_record::Vec3;
+use solidcraft_geom::prelude::*;
 
 pub(super) struct Guides {
     pixels: Vec<Guide>,
@@ -93,6 +94,8 @@ impl Guides {
         options: &RaytraceOptions,
         clip: (f64, f64),
         effects: &[(usize, crate::surface_patterns::PreparedEffect)],
+        mut maps: Option<&mut crate::job::textures::cpu_cache::CpuTextureCache>,
+        mut aging: Option<&mut super::aging::Task>,
         work: &mut WorkBudget,
         cancel: &CancelToken,
     ) -> Result<()> {
@@ -108,6 +111,12 @@ impl Guides {
             let pixel = self.pixels.len();
             let width = request.width as usize;
             let ray = primary_ray(request, (pixel % width) as f64 + 0.5, (pixel / width) as f64 + 0.5, clip).map_err(error)?;
+            if let Some(maps) = &mut maps {
+                maps.reset_hit();
+            }
+            if let Some(aging) = &mut aging {
+                aging.reset();
+            }
             self.ray = Some(ray);
             self.cursor = Some(TraceCursor::new(ray, false));
             return Ok(());
@@ -156,6 +165,51 @@ impl Guides {
         if let Some(index) = self.effect {
             let (_, effect) = effects.get(index).ok_or_else(|| invalid("CPU guide effect disappeared"))?;
             let changed = effect.apply(shared.surface, shared.shading_normal, shared.oriented_geometric_normal(), shared.position)?;
+            shared.surface = changed.surface;
+            shared.shading_normal = changed.shading_normal;
+        }
+        let has_aging = aging.is_some();
+        if let Some(maps) = maps {
+            if !maps.hit_started() {
+                maps.begin_hit(
+                    crate::surface_patterns::ShadingSurface { surface: shared.surface, shading_normal: shared.shading_normal },
+                    shared.body_index,
+                    crate::job::textures::cpu_preparation::MapPoint {
+                        position: shared.position,
+                        geometric_normal: shared.oriented_geometric_normal(),
+                        view_direction: -ray.direction(),
+                    },
+                )?;
+            }
+            if !maps.hit_ready() {
+                let ready = maps.advance_hit()?;
+                // One map-role transition owns this debit. Aging starts on a
+                // subsequent continuation, after the complete mapped closure.
+                if !ready || has_aging {
+                    return Ok(());
+                }
+            }
+            let mapped = maps.surface()?;
+            shared.surface = mapped.surface;
+            shared.shading_normal = mapped.shading_normal;
+        }
+        if let Some(aging) = aging {
+            if !aging.started() {
+                aging.begin(
+                    crate::surface_patterns::ShadingSurface { surface: shared.surface, shading_normal: shared.shading_normal },
+                    shared.position,
+                    shared.geometric_normal,
+                    shared.body_index,
+                    super::aging::eligible(options, shared.body_index, shared.body_name),
+                )?;
+            }
+            if !aging.ready() {
+                let stack = options.aging.as_deref().ok_or_else(|| invalid("CPU guide aging stack disappeared"))?;
+                if !aging.advance(stack)? {
+                    return Ok(());
+                }
+            }
+            let changed = aging.surface()?;
             shared.surface = changed.surface;
             shared.shading_normal = changed.shading_normal;
         }

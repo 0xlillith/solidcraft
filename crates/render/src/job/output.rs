@@ -3,6 +3,7 @@
 use super::denoise::{DenoiseTask, Guide};
 use super::{CancelToken, ErrorCode, JobError, Phase, Progress, Result, TaskPoll};
 use super::{bloom::BloomTask, encoding::PngEncoding, linear_exr::ExrTask, photographic::PhotographicTask, presentation::Presentation};
+use crate::film::adaptive::CountsPlane;
 
 fn invalid(message: &str) -> JobError {
     JobError::new(ErrorCode::InvalidRequest, message)
@@ -143,7 +144,12 @@ impl OutputTask {
         Ok(())
     }
     /// One bounded row/column or at most 256 pixels. The CPU caller limits calls per quantum.
-    pub(crate) fn step(&mut self, guides: Option<&[Guide]>, charge: &mut impl FnMut(u64) -> Result<()>) -> Result<TaskPoll> {
+    pub(crate) fn step(
+        &mut self,
+        guides: Option<&[Guide]>,
+        counts: Option<&CountsPlane>,
+        charge: &mut impl FnMut(u64) -> Result<()>,
+    ) -> Result<TaskPoll> {
         self.cancel.check()?;
         let stage = self.stage.take().ok_or_else(|| invalid("CPU output stage disappeared"))?;
         match stage {
@@ -199,8 +205,17 @@ impl OutputTask {
                 if self.presentation.transparent_background {
                     // Canonical fully clear pixels cannot carry lifted-black RGB into
                     // edge filtering. Raw linear coverage/radiance remains unchanged.
-                    for (pixel, rgba) in input.iter().zip(output.as_chunks_mut::<4>().0) {
-                        rgba[3] = coverage_alpha(pixel[3], self.coverage_samples)?;
+                    for (offset, (pixel, rgba)) in input.iter().zip(output.as_chunks_mut::<4>().0).enumerate() {
+                        rgba[3] = match counts {
+                            Some(counts) => {
+                                let exact = counts.pixel(at + offset)?;
+                                if exact.samples() == 0 || (f64::from(exact.covered()) / f64::from(exact.samples())) as f32 != pixel[3] {
+                                    return Err(invalid("CPU adaptive coverage disagrees with its complete count plane"));
+                                }
+                                exact.alpha8()?
+                            }
+                            None => coverage_alpha(pixel[3], self.coverage_samples)?,
+                        };
                         if rgba[3] == 0 {
                             *rgba = [0; 4];
                         }

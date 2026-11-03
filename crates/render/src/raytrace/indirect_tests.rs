@@ -213,3 +213,35 @@ fn opaque_path_source_strata_are_open_at_both_floating_point_endpoints() {
         assert!(open_stratum(raw, cell, side).is_err());
     }
 }
+
+#[test]
+fn authored_point_zero_two_base_and_coated_path_pdf_use_the_exact_unclamped_finish() {
+    let original = white();
+    let finish = original.with_authored_finish(Vec3::new(1.0, 1.0, 1.0), 1.0, 0.02).unwrap();
+    for coat_weight in [0.0, 0.6] {
+        let coat = crate::clear_coat::ClearCoat::new(coat_weight, 0.2, 1.5).unwrap();
+        let surface = finish.with_clear_coat(coat);
+        let a2 = 0.02_f64.powi(4);
+        let ca2 = 0.2_f64.powi(4);
+        let c = 0.8;
+        let h2 = (1.0 + c) / 2.0;
+        let density = |alpha2: f64| {
+            let d = (1.0 - h2) + h2 * alpha2;
+            alpha2 / (std::f64::consts::PI * d * d) / 4.0
+        };
+        let p = coat_weight / 2.0;
+        let expected = (1.0 - p) * (0.5 * c / std::f64::consts::PI + 0.5 * density(a2)) + p * density(ca2);
+        let l = Vec3::new(0.6, 0.0, c);
+        let actual = surface_pdf(surface, Vec3::Z, Vec3::Z, l).unwrap();
+        assert!((actual - expected).abs() < 1e-14);
+        for u in [[0.1, 0.2, 0.3], [0.8, 0.2, 0.3], [0.99, 0.9, 0.7]] {
+            if let Some(sample) = sample(surface, Vec3::Z, Vec3::Z, Vec3::Z, u).unwrap() {
+                assert!(sample.pdf.is_finite() && sample.pdf > 0.0);
+                let pdf = surface_pdf(surface, Vec3::Z, Vec3::Z, sample.direction).unwrap();
+                assert_eq!(sample.pdf, pdf);
+                let brdf = surface.brdf(Vec3::Z, Vec3::Z, sample.direction).unwrap();
+                assert_eq!(sample.weight, brdf * (sample.direction.z / pdf));
+            }
+        }
+    }
+}

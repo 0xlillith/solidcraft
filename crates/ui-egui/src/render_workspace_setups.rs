@@ -6,13 +6,19 @@ use solidcraft_engine::render::job::{AreaLights, RaytraceEnvironmentOptions, Ray
 use super::{ImageMethod, cpu, hdr, materials, studio};
 use crate::SolveApp;
 
-/// Unsaved files and temporary bindings use the runtime request route. Embedded sources
-/// use the typed job route unless a binding also needs the runtime schema.
+/// Unsaved inputs protect local shot edits and independent navigation. A portable
+/// coat draft is still unsaved, even though it can use the typed capture route.
 pub(super) fn has_runtime_inputs(app: &SolveApp) -> bool {
+    requires_runtime_request(app) || app.render_workspace.view.materials.bindings.iter().any(super::materials::Binding::has_unsaved_coat_intent)
+}
+
+/// File sources and ordinal Glass/maps use the runtime request schema. Portable
+/// coat-only edits instead overlay stable targets into typed captured settings.
+pub(super) fn requires_runtime_request(app: &SolveApp) -> bool {
     has_runtime_bindings(app) || hdr::active(app).is_some_and(|target| !hdr::input(app, target).embedded())
 }
 
-fn has_unportable_bindings(app: &SolveApp) -> bool {
+pub(super) fn has_unportable_bindings(app: &SolveApp) -> bool {
     !app.render_workspace.view.materials.bindings.is_empty() || has_runtime_bindings(app)
 }
 
@@ -30,6 +36,10 @@ fn has_runtime_bindings(app: &SolveApp) -> bool {
                 || !options.dielectrics.is_empty()
                 || options.surface_effects.is_some()
                 || options.emissions.is_some()
+                || options.aging.is_some()
+                || options.sky.is_some()
+                || (options.sun.is_some() && !view.studio.sun_enabled)
+                || (options.volume.is_some() && view.studio.volume.is_none())
         }
     }
 }
@@ -97,6 +107,15 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
             RenderJob::CpuRaytrace {
                 transparent_background: view.transparent,
                 options: Box::new(CpuJob {
+                    volume: view.studio.volume,
+                    sun: view.studio.sun_enabled.then_some(view.studio.sun),
+                    sky: (view.cpu.environment == cpu::Environment::Sky).then_some(SkyEnvironment::Sky {
+                        gradient: view.cpu.gradient,
+                        rotation_rad: view.cpu.rotation_rad,
+                        intensity: view.cpu.intensity,
+                    }),
+                    aging: view.studio.aging.clone(),
+                    adaptive: view.studio.adaptive,
                     denoise: view.studio.denoise,
                     path: options.path,
                     lens: view.studio.lens_enabled.then_some(view.studio.lens),
@@ -113,7 +132,7 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     shadows: options.shadows,
                     environment: match view.cpu.environment {
                         cpu::Environment::Constant => Some(RaytraceEnvironmentOptions { color: view.cpu.color, intensity: view.cpu.intensity }),
-                        cpu::Environment::Hdr => None,
+                        cpu::Environment::Hdr | cpu::Environment::Sky => None,
                         cpu::Environment::None => options.environment,
                     },
                     hdr: if view.cpu.environment == cpu::Environment::Hdr {
@@ -150,6 +169,8 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     lens: studio.lens_enabled.then_some(studio.lens),
                     lighting: if studio.lighting_enabled {
                         Some(StudioLighting {
+                            punctual_lights: studio.punctual_lights,
+                            directional_lights: studio.directional_lights,
                             environment: studio.ambient,
                             sun: studio.sun_enabled.then_some(studio.sun),
                             area_lights: AreaLights::new(&studio.area_lights).map_err(|error| error.to_string())?,
@@ -228,6 +249,7 @@ pub(super) fn persist_editor(app: &mut SolveApp, before: &RenderSetup) -> Result
             app.render_workspace.view.raytrace.denoise = options.denoise;
             app.render_workspace.view.raytrace.lens = options.lens;
             app.render_workspace.view.raytrace.path = options.path;
+            app.render_workspace.view.raytrace.volume = options.volume;
         }
         let mut saved = saved.clone();
         saved.camera = after.camera;
@@ -291,8 +313,19 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
             view.method = ImageMethod::CpuRaytrace;
             view.transparent = *transparent_background;
             view.cpu_sampling_initialized = true;
+            view.studio.volume = options.volume;
             view.studio.denoise = options.denoise;
+            view.studio.aging = options.aging.clone();
+            view.studio.adaptive = options.adaptive;
+            view.studio.sun_enabled = options.sun.is_some();
+            if let Some(sun) = options.sun {
+                view.studio.sun = sun;
+                view.studio.lighting_enabled = true;
+            }
             view.raytrace = RaytraceOptions {
+                sun: options.sun.map(Box::new),
+                volume: options.volume,
+                adaptive: options.adaptive.map(Box::new),
                 denoise: options.denoise,
                 path: options.path,
                 lens: options.lens,
@@ -319,6 +352,12 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                 view.studio.backdrop_enabled = output.backdrop.is_some();
                 view.studio.backdrop = output.backdrop.unwrap_or_default();
                 view.studio.linear_exr = output.linear_exr;
+            }
+            if let Some(SkyEnvironment::Sky { gradient, rotation_rad, intensity }) = options.sky {
+                view.cpu.environment = cpu::Environment::Sky;
+                view.cpu.gradient = gradient;
+                view.cpu.rotation_rad = rotation_rad;
+                view.cpu.intensity = intensity;
             }
             if let Some(environment) = options.environment {
                 view.cpu.environment = cpu::Environment::Constant;
@@ -362,6 +401,8 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                     view.studio.sun = sun;
                 }
                 view.studio.area_lights = lighting.area_lights.iter().copied().collect();
+                view.studio.directional_lights = lighting.directional_lights;
+                view.studio.punctual_lights = lighting.punctual_lights;
             }
             if let Some(SkyEnvironment::Sky { gradient, rotation_rad, intensity }) = &options.environment {
                 view.studio.environment = studio::Environment::Sky;
@@ -518,14 +559,19 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         draft.job,
         draft.surfaces,
         draft.optics,
+        draft.coats,
         draft.stage,
         raytrace.budget,
         raytrace.denoise,
         raytrace.output,
         raytrace.lens,
         raytrace.path,
+        raytrace.sun,
+        raytrace.sky,
+        raytrace.volume,
         raytrace.primary_samples,
         raytrace.progressive,
+        raytrace.adaptive,
         raytrace.preset,
         raytrace.lights,
         raytrace.punctual_lights,
@@ -535,6 +581,7 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         raytrace.shadows,
         cpu.environment,
         cpu.color,
+        cpu.gradient,
         cpu.intensity,
         cpu.rotation_rad,
         cpu.samples,
@@ -556,6 +603,8 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         studio.sun_enabled,
         studio.sun,
         studio.area_lights,
+        studio.directional_lights,
+        studio.punctual_lights,
         studio.environment,
         studio.gradient,
         studio.rotation_rad,
@@ -574,6 +623,7 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
     app.render_workspace.revision = app.session.revision;
     materials::refresh_render_revision(app);
     cpu::refresh_render_revision(app);
+    super::light::loaded(app);
     refresh_dirty(app);
 }
 
@@ -584,6 +634,36 @@ pub(super) fn refresh_dirty(app: &mut SolveApp) {
 }
 
 pub(super) fn save(app: &mut SolveApp) -> Result<(), String> {
+    save_with_camera(app, true)
+}
+
+/// Numerical source edits capture bytes/intent atomically without updating the shot camera.
+pub(super) fn save_numerical(app: &mut SolveApp) -> Result<(), String> {
+    save_with_camera(app, false)
+}
+
+fn setup_patch(setup: RenderSetup, save_camera: bool) -> Result<serde_json::Value, String> {
+    let mut value = serde_json::to_value(setup).map_err(|error| error.to_string())?;
+    if !save_camera && let Some(fields) = value.as_object_mut() {
+        fields.remove("camera");
+    }
+    Ok(value)
+}
+
+/// Numeric reloads keep both the live camera and its previous dirty baseline.
+pub(super) fn reload_numerical(app: &mut SolveApp) {
+    let camera = app.render_workspace.view.clean_setup.as_ref().map(|clean| clean.camera);
+    load(app);
+    if let Some(camera) = camera
+        && let Some(clean) = &mut app.render_workspace.view.clean_setup
+    {
+        clean.camera = camera;
+    }
+    refresh_dirty(app);
+}
+
+fn save_with_camera(app: &mut SolveApp, save_camera: bool) -> Result<(), String> {
+    let clean_camera = app.render_workspace.view.clean_setup.as_ref().map_or(app.cam, |clean| clean.camera);
     let mut setup = snapshot(app)?;
     let name = app.render_workspace.view.name.clone();
     let capture = hdr::active(app).and_then(|target| match hdr::input(app, target) {
@@ -607,11 +687,11 @@ pub(super) fn save(app: &mut SolveApp) -> Result<(), String> {
             }
             _ => return Err(app.tr("render.hdr_inspect_required").to_string()),
         }
-        params["set"] = serde_json::json!(setup);
+        params["set"] = setup_patch(setup, save_camera)?;
         // The expected digest rejects an externally changed file before any resource/setup edit.
         app.run("render.settings.capture_hdr", params)?;
     } else {
-        app.run("render.settings.set", serde_json::json!({"name":name,"set":setup}))?;
+        app.run("render.settings.set", serde_json::json!({"name":name,"set":setup_patch(setup, save_camera)?}))?;
     }
     let setup = app.session.doc.render.setups.get(&name).cloned().ok_or_else(|| app.tr("render.setup_save_missing").to_string())?;
     if let Some((target, _, resource)) = capture {
@@ -625,12 +705,16 @@ pub(super) fn save(app: &mut SolveApp) -> Result<(), String> {
         app.render_workspace.view.raytrace.denoise = options.denoise;
         app.render_workspace.view.raytrace.lens = options.lens;
         app.render_workspace.view.raytrace.path = options.path;
+        app.render_workspace.view.raytrace.volume = options.volume;
     }
     app.render_workspace.view.draft = setup.clone();
-    app.render_workspace.view.clean_setup = Some(setup);
+    app.render_workspace.view.clean_setup = Some(if save_camera { setup } else { RenderSetup { camera: clean_camera, ..setup } });
     app.render_workspace.view.clean_persisted = true;
     app.render_workspace.view.clean_name = app.render_workspace.view.name.clone();
     app.render_workspace.view.dirty = false;
     app.render_workspace.revision = app.session.revision;
+    if !save_camera {
+        refresh_dirty(app);
+    }
     Ok(())
 }

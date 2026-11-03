@@ -1,13 +1,14 @@
 //! Grouped preferences composed with the shared UI kit. Changes apply immediately; Cancel
 //! restores the opening snapshot, Apply keeps editing, and Defaults affects the current page.
 
+use solidcraft_engine::geom::prelude::*;
 use std::collections::BTreeMap;
 
 use egui::{Modifiers, Pos2};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use solidcore_record::Vec3;
 pub use solidcraft_engine::doc::display_units::{format_length, length_number, length_precision, unit_scale};
-use solidcraft_engine::geom::Vec3;
 use solidcraft_engine::render::Camera;
 
 /// The key the apps keep the preferences under in eframe's storage.
@@ -4369,8 +4370,13 @@ mod tests {
     #[test]
     fn saved_preferences_with_a_removed_setting_still_load() {
         use serde_json::json;
-        for removed in ["metric_tap_drill_major_less_pitch", "surface_extrude_symmetric_per_side"] {
-            let saved = json!({"length_decimals": 4, removed: true});
+        for (removed, value) in [
+            ("geometry_kernel", json!("smlib")),
+            ("geometry_kernel", json!("solidcore")),
+            ("metric_tap_drill_major_less_pitch", json!(true)),
+            ("surface_extrude_symmetric_per_side", json!(true)),
+        ] {
+            let saved = json!({"length_decimals": 4, removed: value});
             let p = serde_json::from_value::<super::Prefs>(saved.clone()).unwrap();
             assert_eq!(p.length_decimals, 4, "{removed}");
             assert_eq!(super::lenient(&saved).length_decimals, 4, "{removed}");
@@ -9709,9 +9715,9 @@ mod tests {
 
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         app.preferences.orbit_around = OrbitAround::Cursor;
-        app.cam.target = solidcraft_engine::geom::Vec3::new(5.0, -3.0, 2.0);
+        app.cam.target = solidcore_record::Vec3::new(5.0, -3.0, 2.0);
         orbit(&mut app, rect, 40.0, 25.0, Some(corner));
-        assert_eq!(app.viewport.orbit_pivot, Some(solidcraft_engine::geom::Vec3::new(5.0, -3.0, 2.0)));
+        assert_eq!(app.viewport.orbit_pivot, Some(solidcore_record::Vec3::new(5.0, -3.0, 2.0)));
     }
 
     /// The Y up preference turns the view: the camera's up axis follows it, startup included.

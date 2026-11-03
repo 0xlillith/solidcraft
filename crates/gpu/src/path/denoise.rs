@@ -176,7 +176,7 @@ impl Resources {
         while offset < pixels {
             task.cancel.check()?;
             let count = budget.count(pixels - offset);
-            let mut parameters = task.parameters(count);
+            let mut parameters = task.parameters(count)?;
             if let Some(bytes) = parameters.get_mut(12..16) {
                 bytes.copy_from_slice(&offset.to_le_bytes());
             }

@@ -1,6 +1,7 @@
 //! Native progressive product rendering. Software BVH traversal needs no ray-query
 //! features. Small measured quanta adapt to the device, then check cancellation.
-use solidcraft_geom::Vec3;
+use solidcore_record::Vec3;
+use solidcraft_geom::Vec3Geom;
 #[cfg(test)]
 use solidcraft_render::job::ToneMap;
 use solidcraft_render::{
@@ -39,19 +40,28 @@ const SHADER: &str = concat!(
     include_str!("volume.wgsl"),
     "
 ",
-    include_str!("aging.wgsl")
+    include_str!("aging.wgsl"),
+    "\n",
+    include_str!("punctual.wgsl")
 );
 const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
-const PARAMETER_BYTES: usize = 1184;
+const PARAMETER_BYTES: usize = 2080;
+// Five vec4s per source; exact device+upload growth is additional to v2's budget.
+const PUNCTUAL_PARAMETER_BYTES: u64 = 8 * 80;
+// Eight inline 32-byte hard directions: device uniform plus host upload bytes.
+const DIRECTIONAL_PARAMETER_BYTES: u64 = 8 * 32;
 // Use 32 invocations per production workgroup: the physical Radeon produced
 // nonfinite samples with 64. The structural and actual-tail tests
 // lock this host/shader contract; counter-based per-pixel RNG is group independent.
 const PATH_WORKGROUP_SIZE: u32 = 32;
 // Eight u32 words: count low, pixel, bounce, sample, code, count high, first-writer flag, spare.
-const FAILURE_BYTES: u64 = 32;
+const FAILURE_BYTES: u64 = 56;
+// Original medium words0..7 remain unchanged; three low/high punctual counters
+// occupy words8..13. Both device storage and complete-pass readback are prepaid.
+const PUNCTUAL_COUNTER_BYTES: u64 = 24;
 // A path that cannot classify its glass medium ends there. Isolated paths at the
 // limits of f32 geometry are tolerated and logged; more than this fraction of all
-// paths (any systematic error such as a camera inside glass) fails the job.
+// paths (any systematic error such as an ambiguous boundary origin) fails the job.
 const FAILURE_FRACTION: f64 = 1e-6;
 const TIMEOUT: Duration = Duration::from_secs(30);
 // Software Vulkan drivers can compile a pipeline at its first dispatch, which on a cold
@@ -364,6 +374,7 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         ));
     }
     let camera = request.camera;
+    validate_punctual_origin(options, camera.target)?;
     if options.lens.is_some_and(|lens| lens.aperture_radius_mm > 0.0)
         && (camera.distance < 1e-6 || !(1e-6..=1e6).contains(&(camera.half_height() / camera.distance)) || camera.fov == 0.0)
     {
@@ -399,7 +410,10 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8)
         .max(admission.triangles * 264 + vertex_bytes * 2 + pixels * 32 + denoise_bytes)
         .max(admission.triangles * 132 + vertex_bytes + admission.pixel_scratch_bytes)
-        + 1_048_576;
+        + 1_048_576
+        + 2 * DIRECTIONAL_PARAMETER_BYTES
+        + 2 * PUNCTUAL_PARAMETER_BYTES
+        + 2 * PUNCTUAL_COUNTER_BYTES;
     admission.preparation_bytes += request.environment.as_ref().map_or(0, |source| source.admitted_bytes());
     if let Some(textures) = &request.textures {
         textures.validate_scene(scene)?;
@@ -482,7 +496,14 @@ impl ImageExecutor for Executor {
     fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
         self.context.ensure_available()?;
         let a = admission(scene, request, options)?;
-        let limit = self.context.device.limits().max_storage_buffer_binding_size;
+        let device_limits = self.context.device.limits();
+        if PARAMETER_BYTES as u64 > device_limits.max_uniform_buffer_binding_size
+            || PARAMETER_BYTES as u64 > device_limits.max_buffer_size
+            || FAILURE_BYTES > device_limits.max_storage_buffer_binding_size
+        {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "GPU light parameters or diagnostic storage exceed device buffer limits"));
+        }
+        let limit = device_limits.max_storage_buffer_binding_size;
         let geometry_bytes = 16 + a.triangles.max(1) * 100 + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
         let texture_bytes = request
             .textures
@@ -537,6 +558,39 @@ fn prepare_environment(request: &ImageRequest, cancel: &CancelToken) -> Result<V
     Ok(environment_bytes)
 }
 
+fn punctual_parameters(light: &solidcraft_render::job::PunctualLightOptions, origin: Vec3) -> [[f32; 4]; 5] {
+    let p = Vec3::new(light.position_mm[0], light.position_mm[1], light.position_mm[2]) - origin;
+    let hi = [p.x as f32, p.y as f32, p.z as f32];
+    let lo = [(p.x - f64::from(hi[0])) as f32, (p.y - f64::from(hi[1])) as f32, (p.z - f64::from(hi[2])) as f32];
+    let (axis, inner, outer, enabled) = if let Some(cone) = light.cone {
+        let [x, y, z] = cone.emitted_axis;
+        let scale = x.abs().max(y.abs()).max(z.abs());
+        let v = Vec3::new(x / scale, y / scale, z / scale);
+        let v = v / v.len();
+        ([v.x as f32, v.y as f32, v.z as f32], cone.inner_half_angle_radians.cos() as f32, cone.outer_half_angle_radians.cos() as f32, 1.0)
+    } else {
+        ([0.0; 3], 0.0, 0.0, 0.0)
+    };
+    [
+        [hi[0], hi[1], hi[2], light.reference_distance_mm as f32],
+        [lo[0], lo[1], lo[2], light.minimum_distance_mm as f32],
+        [light.color[0] as f32, light.color[1] as f32, light.color[2] as f32, light.intensity as f32],
+        [axis[0], axis[1], axis[2], inner],
+        [outer, enabled, 0.0, 0.0],
+    ]
+}
+fn validate_punctual_origin(options: JobOptions, origin: Vec3) -> Result<()> {
+    if let Some(lighting) = options.lighting {
+        for light in lighting.punctual_lights.iter() {
+            light.validate_gpu()?;
+            if punctual_parameters(light, origin).iter().flatten().any(|v| !v.is_finite()) {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "point or spot position is outside the GPU camera-relative range"));
+            }
+        }
+    }
+    Ok(())
+}
+
 struct Task {
     dispatch_budget: dispatch::Budget,
     context: Arc<Context>,
@@ -552,6 +606,7 @@ struct Task {
     sample: u32,
     lane: u32,
     sampling_report: Option<solidcraft_render::job::adaptive::SamplingReport>,
+    punctual_diagnostics: std::cell::Cell<solidcraft_render::job::PunctualDiagnostics>,
     volume: [[f32; 4]; 3],
     aging: [[f32; 20]; 8],
     photographic: Option<solidcraft_render::job::photographic::PhotographicTask>,
@@ -575,6 +630,8 @@ struct Task {
 impl Task {
     fn new(context: Arc<Context>, scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
         cancel.check()?;
+        options.validate()?;
+        validate_punctual_origin(options, request.camera.target)?;
         let start = Instant::now();
         let aging = options.aging.gpu_layers([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
         let volume = if let Some(v) = options.volume.filter(|v| v.active()) {
@@ -672,6 +729,7 @@ impl Task {
             sample: 0,
             lane: 0,
             sampling_report: None,
+            punctual_diagnostics: Default::default(),
             volume,
             aging,
             photographic: None,
@@ -692,8 +750,11 @@ impl Task {
             metrics: (bvh_ms, upload_bytes, upload_ms),
         })
     }
-    fn parameters(&self, count: u32) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(PARAMETER_BYTES);
+    fn parameters(&self, count: u32) -> Result<Vec<u8>> {
+        let mut bytes = scene::reserved(PARAMETER_BYTES)?;
+        if bytes.capacity() != PARAMETER_BYTES {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "GPU parameter upload exceeds its prepaid capacity"));
+        }
         for x in [
             self.request.width,
             self.request.height,
@@ -729,7 +790,11 @@ impl Task {
             Vec3::new(lighting.environment[0], lighting.environment[1], lighting.environment[2]),
             if self.options.lighting.is_some() || self.request.environment.is_some() { 1.0 } else { 0.0 },
         );
-        scene::vector(&mut bytes, Vec3::ZERO, lighting.area_lights.iter().count() as f32);
+        scene::vector(
+            &mut bytes,
+            Vec3::new(lighting.directional_lights.iter().count() as f64, lighting.punctual_lights.iter().count() as f64, 0.0),
+            lighting.area_lights.iter().count() as f32,
+        );
         for light in lighting.area_lights.iter() {
             let vector = |[x, y, z]: [f64; 3]| Vec3::new(x, y, z);
             scene::vector(&mut bytes, vector(light.center) - camera.target, light.area() as f32);
@@ -776,11 +841,30 @@ impl Task {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
         }
+        for light in lighting.directional_lights.iter() {
+            // Validation rejects zero/nonfinite input; scaled normalization preserves
+            // every bounded CPU directional intent, including tiny finite vectors.
+            let [x, y, z] = light.direction;
+            let scale = x.abs().max(y.abs()).max(z.abs());
+            let direction = Vec3::new(x / scale, y / scale, z / scale);
+            scene::vector(&mut bytes, direction / direction.len(), light.intensity as f32);
+            let [r, g, b] = light.color;
+            scene::vector(&mut bytes, Vec3::new(r, g, b), 0.0);
+        }
+        bytes.resize(PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 16, 0);
+        for light in lighting.punctual_lights.iter() {
+            for vector in punctual_parameters(light, camera.target) {
+                for value in vector {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        bytes.resize(PARAMETER_BYTES - 16, 0);
         let weights = self.request.studio_weights.unwrap_or([1.0; 3]);
         for value in [weights[0] as f32, weights[1] as f32, weights[2] as f32, 0.0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes
+        Ok(bytes)
     }
     fn normalization_samples(&self) -> u32 {
         if self.options.adaptive.is_some() { 1 } else { self.sample }
@@ -796,7 +880,7 @@ impl Task {
         let count = self.dispatch_budget.count(pixels - self.offset);
         let context = &self.context;
         let scopes = scopes(&context.device);
-        context.queue.write_buffer(&self.uniform, 0, &self.parameters(count));
+        context.queue.write_buffer(&self.uniform, 0, &self.parameters(count)?);
         let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path tile") });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("path tile"), timestamp_writes: None });
@@ -880,6 +964,11 @@ impl Task {
             if word(7) != 0 {
                 return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative pilot/production path radiance"));
             }
+            self.punctual_diagnostics.set(solidcraft_render::job::PunctualDiagnostics {
+                near_source: u64::from(word(8)) | (u64::from(word(9)) << 32),
+                radiance_limit: u64::from(word(10)) | (u64::from(word(11)) << 32),
+                shadow_offset_crossed: u64::from(word(12)) | (u64::from(word(13)) << 32),
+            });
             let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
             if failed > 0 {
                 let pixels = u64::from(self.request.width) * u64::from(self.request.height);
@@ -899,7 +988,7 @@ impl Task {
                     return Err(JobError::new(
                         ErrorCode::InvalidScene,
                         format!(
-                            "inconsistent glass medium paths ({detail}): camera must start outside volumes; overlapping solids or more than 16 nested media are unsupported"
+                            "inconsistent glass medium paths ({detail}): ambiguous boundary origin or invalid containment; overlapping solids or more than 16 nested media are unsupported"
                         ),
                     ));
                 }
@@ -935,6 +1024,10 @@ impl Task {
 use solidcraft_render::job::presentation::Display;
 
 impl ImageWork for Task {
+    fn punctual_diagnostics(&self) -> Option<solidcraft_render::job::PunctualDiagnostics> {
+        self.options.lighting.filter(|l| !l.punctual_lights.is_empty()).map(|_| self.punctual_diagnostics.get())
+    }
+
     fn take_preview(&mut self) -> Option<solidcraft_render::job::ImageWorkPreview> {
         self.preview.take()
     }

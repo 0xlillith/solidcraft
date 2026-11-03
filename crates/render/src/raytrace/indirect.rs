@@ -5,7 +5,8 @@ use crate::{
     job::RectangleLightOptions,
     surface::{OpaqueSurface, unit_direction},
 };
-use solidcraft_geom::Vec3;
+use solidcore_record::Vec3;
+use solidcraft_geom::prelude::*;
 use std::f64::consts::{PI, TAU};
 
 fn invalid(message: &'static str) -> TraceError {
@@ -107,6 +108,10 @@ pub(super) struct LightSample {
     pub pdf: f64,
 }
 impl Rectangle {
+    /// Use the actual analytic consumer's plane arithmetic for event precision.
+    pub(super) fn on_plane(&self, point: Vec3) -> bool {
+        self.normal.dot(self.center - point) == 0.0
+    }
     pub(super) fn new(input: &RectangleLightOptions) -> Result<Self> {
         // Reuse the existing bounds/units, including corners and orthogonal side vectors.
         let checked = super::area::RectangleLight::new(

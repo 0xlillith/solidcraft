@@ -1,11 +1,11 @@
-//! Explicit finite-depth CPU opaque path transport. Absence preserves the legacy producer.
+//! Explicit finite-depth CPU opaque and certified dielectric path transport. Absence preserves the legacy producer.
 use super::{ErrorCode, JobError, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CpuPathOptions {
-    /// Number of shaded surface vertices, including the camera's first hit.
+    /// Number of shaded opaque surfaces, Glass boundaries and medium collisions, including the first event.
     pub max_depth: u8,
 }
 impl Default for CpuPathOptions {
@@ -16,7 +16,7 @@ impl Default for CpuPathOptions {
 impl CpuPathOptions {
     pub fn validate(self) -> Result<()> {
         if !(1..=16).contains(&self.max_depth) {
-            return Err(JobError::new(ErrorCode::InvalidRequest, "CPU opaque path max_depth must be 1..16 surface vertices"));
+            return Err(JobError::new(ErrorCode::InvalidRequest, "CPU path depth must be 1..16 surfaces, Glass boundaries or medium collisions"));
         }
         Ok(())
     }
@@ -26,7 +26,8 @@ impl CpuPathOptions {
 /// by a single closest-emitter label with separate per-emitter NEE. Refuse before
 /// capture, rather than lose radiance or add an inconsistent MIS estimator.
 pub(crate) fn validate_emitters(lights: &[super::RectangleLightOptions]) -> Result<()> {
-    use solidcraft_geom::Vec3;
+    use solidcore_record::Vec3;
+    use solidcraft_geom::prelude::*;
     let invalid = || {
         JobError::new(
             ErrorCode::InvalidRequest,

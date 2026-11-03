@@ -1918,7 +1918,7 @@
   "render.appearance_editor.replace": "이 바디의 저장된 광학 설정 교체",
   "render.appearance_editor.revalidate": "이 바디 다시 검증",
   "render.appearance_editor.save": "이 광학 설정 저장",
-  "render.appearance_editor.save_reason": "광학 설정을 저장하려면 현재 CPU 또는 GPU 바디에 물리 유리가 필요합니다. 클리어 코트와 로컬 이미지 맵은 임시 설정으로 유지됩니다.",
+  "render.appearance_editor.save_reason": "유리를 저장하려면 현재 CPU 또는 GPU 바디에서 활성화하세요. 클리어 코트는 샷에 코트 저장을 사용하세요. 로컬 이미지 파일은 임시 설정으로 유지됩니다.",
   "render.appearance_editor.saved": "이 샷에 저장됨",
   "render.appearance_editor.saved_state": "이 광학 설정은 이 샷과 함께 저장되어 있습니다.",
   "render.appearance_editor.scatter_reason": "내부 산란에는 닫힌 솔리드 경계가 필요합니다.",

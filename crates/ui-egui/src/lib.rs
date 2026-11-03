@@ -596,7 +596,7 @@ pub struct SolveApp {
     pub edit_in_place: edit_in_place::EditInPlace,
     pub(crate) pending_feature_edit: Option<feature_edit::PendingFeatureEdit>,
     /// The feature being reopened from a click and where, until its dialog opens (UI state only).
-    edit_anchor_hint: Option<(u64, solidcraft_engine::geom::Vec3)>,
+    edit_anchor_hint: Option<(u64, solidcore_record::Vec3)>,
     /// The open feature window's check of what its material does (#6901).
     pub op_check: op_auto::OpCheck,
     /// A command recomputing the history (the marker moved, undo) computing off the window
@@ -613,6 +613,8 @@ pub struct SolveApp {
     /// How long OK waits for a feature before computing it off the window thread, saying so;
     /// `None`: it waits as long as it takes (headless use, tests). The desktop app sets it.
     pub apply_off_thread: Option<std::time::Duration>,
+    /// One bounded native render proof/retirement owner, independent of tab state.
+    pub(crate) render_preparation: render_workspace::prepare::State,
     /// Tests: the off-thread evaluation waits for this before it reports done.
     #[cfg(test)]
     pub(crate) apply_gate: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>>,
@@ -841,6 +843,7 @@ impl SolveApp {
             timeline_playback: None,
             delete_check: None,
             apply_off_thread: None,
+            render_preparation: Default::default(),
             #[cfg(test)]
             apply_gate: None,
             last_command: None,
@@ -1189,6 +1192,34 @@ impl SolveApp {
             Ok(reply)
         });
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;
+        self.after_command(id, &params, revision, selected_before, r)
+    }
+
+    /// Commit already prepared rendering through the same window post-hooks,
+    /// without executing capture or admission again on the window.
+    pub(crate) fn finish_render_preparation(
+        &mut self,
+        id: &str,
+        params: &Value,
+        finish: impl FnOnce(&mut Session) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let revision = self.session.revision;
+        let selected_before = self.session.selection.clone();
+        let result = finish(&mut self.session).and_then(|reply| {
+            render_workspace::apply_command(self, id, &reply)?;
+            Ok(reply)
+        });
+        self.after_command(id, params, revision, selected_before, result)
+    }
+
+    fn after_command(
+        &mut self,
+        id: &str,
+        params: &Value,
+        revision: u64,
+        selected_before: Vec<solidcraft_engine::Sel>,
+        r: Result<Value, String>,
+    ) -> Result<Value, String> {
         // An Undo offered by the last toast is stale once another command changed the design.
         if self.status_undo && revision != self.session.revision {
             self.status_undo = false;
@@ -1217,7 +1248,7 @@ impl SolveApp {
                 render_workspace::light::apply_visibility(self, id, v);
             }
             if matches!(id, "render.lights.set" | "render.lights.add" | "render.lights.duplicate" | "render.lights.remove") {
-                render_workspace::light::edited(self, &params, v);
+                render_workspace::light::edited(self, id, params, v);
             }
         }
         done
@@ -2079,7 +2110,7 @@ impl SolveApp {
 
     /// [`Self::edit_feature`] opened from a click at `at` on what the feature made: the dialog's
     /// arrow sits by that point (a fillet's or chamfer's edge nearest it).
-    pub(crate) fn edit_feature_at(&mut self, id: u64, at: Option<solidcraft_engine::geom::Vec3>) {
+    pub(crate) fn edit_feature_at(&mut self, id: u64, at: Option<solidcore_record::Vec3>) {
         use solidcraft_engine::doc::FeatureKind;
         // A non-finite point (over the control channel) keeps the first edge.
         self.edit_anchor_hint = at.filter(|p| p.is_finite()).map(|p| (id, p));
@@ -2518,7 +2549,7 @@ impl SolveApp {
     pub fn fitted(&self, mut cam: Camera) -> Camera {
         let b = viewport::view_bounds(self);
         if b.is_empty() {
-            cam.target = solidcraft_engine::geom::Vec3::ZERO;
+            cam.target = solidcore_record::Vec3::ZERO;
             cam.distance = 150.0;
         } else {
             cam = self.fitted_bounds(cam, &b);
@@ -2556,7 +2587,7 @@ impl SolveApp {
         let radius = (bounds.diagonal() * 0.5).max(0.5);
         // A cube around the sphere, seen square-on from any axis, projects to the sphere's own
         // square, so the layout fit of that cube is the sphere's.
-        let offset = solidcraft_engine::geom::Vec3::new(radius, radius, radius);
+        let offset = solidcore_record::Vec3::new(radius, radius, radius);
         let sphere = solidcraft_engine::geom::Aabb3 { min: centre - offset, max: centre + offset };
         let mut probe = Camera::default();
         probe.set_view(StandardView::Front);
@@ -2959,6 +2990,7 @@ impl SolveApp {
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        render_workspace::displayed::begin(self);
         let blur_source = !self.home.open && !render_workspace::result_active(self);
         let _blur_scope = self.blur.begin(ui.ctx(), blur_source);
         value_step::set_enabled(ui.ctx(), self.preferences.step_values);
@@ -3004,6 +3036,7 @@ impl SolveApp {
         control::publish_design(self, &control::DESIGN_WATCH);
         self.frame_ms = now_ms() - t0;
         frame_watch::end(self);
+        render_workspace::displayed::finish(self, ui.ctx());
     }
 
     fn cad_ui(&mut self, ui: &mut egui::Ui, report_input: &mut Option<issue_report::CadInput>) {
@@ -3261,6 +3294,10 @@ impl SolveApp {
         if req.refuse_cancelled_chat() {
             return;
         }
+        let Some(req) = render_workspace::prepare::control(self, req) else {
+            ctx.request_repaint();
+            return;
+        };
         let reply = req.reply.clone();
         match control::handle(self, ctx, &req) {
             control::Outcome::Done(v) => {

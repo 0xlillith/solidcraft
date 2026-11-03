@@ -382,3 +382,30 @@ fn progressive_equal_anisotropic_axes_keep_every_isotropic_image_byte() {
         assert_eq!(isotropic.1, explicit.1);
     }
 }
+
+#[test]
+fn adaptive_planar_anisotropy_keeps_real_reflection_and_equal_axes_through_independent_production() {
+    use crate::job::adaptive::AdaptiveSampling;
+    let build = |orientation, equal_axes| {
+        let original = progressive_anisotropic_fixture(16, orientation, equal_axes);
+        let options = RaytraceOptions {
+            adaptive: Some(Box::new(AdaptiveSampling { pilot_samples: 16, min_samples: 16, ..Default::default() })),
+            ..original.options
+        };
+        let request = ImageRequest { raytrace: Some(options.clone()), ..original.request };
+        ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap()
+    };
+    let a = progressive_anisotropic_complete(build(AnisotropicOrientation::Zero, None), 1);
+    assert_eq!(a, progressive_anisotropic_complete(build(AnisotropicOrientation::Zero, None), 16384));
+    assert_eq!(a.0.iter().map(|p| p.0).collect::<Vec<_>>(), (1..32).collect::<Vec<_>>());
+    let ordinary = progressive_anisotropic_complete(progressive_anisotropic_fixture(16, AnisotropicOrientation::Zero, None), 1);
+    assert_eq!(a.1, ordinary.1, "the separate pilot stream cannot alter original production VNDF keys or PDFs");
+    let rotated = progressive_anisotropic_complete(build(AnisotropicOrientation::QuarterTurn, None), 3);
+    assert_ne!(a.1, rotated.1, "the actual reflected geometry must respond to anisotropic orientation");
+    let isotropic = progressive_anisotropic_complete(build(AnisotropicOrientation::Zero, Some(false)), 1);
+    for orientation in [AnisotropicOrientation::Zero, AnisotropicOrientation::QuarterTurn] {
+        let equal = progressive_anisotropic_complete(build(orientation, Some(true)), 3);
+        assert_eq!(equal.0, isotropic.0);
+        assert_eq!(equal.1, isotropic.1);
+    }
+}

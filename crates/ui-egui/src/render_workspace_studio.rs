@@ -1,6 +1,6 @@
 //! GPU studio editors. Numeric intent is portable; HDR resources cross the engine capture boundary.
 use serde_json::{Value, json};
-use solidcraft_engine::render::job::{AreaLight, AreaLights, StudioLighting, Sun, ThinLens, ToneMap};
+use solidcraft_engine::render::job::{AreaLight, AreaLights, DirectionalLights, PunctualLights, StudioLighting, Sun, ThinLens, ToneMap};
 use solidcraft_engine::render::lighting::environment::SkyGradient;
 
 use super::hdr;
@@ -41,6 +41,8 @@ pub(super) struct View {
     pub sun_enabled: bool,
     pub sun: Sun,
     pub area_lights: Vec<AreaLight>,
+    pub directional_lights: DirectionalLights,
+    pub punctual_lights: PunctualLights,
 }
 
 impl Default for View {
@@ -71,6 +73,8 @@ impl Default for View {
             sun_enabled: false,
             sun: Sun { direction: [-0.4, -0.6, 0.7], angular_radius_rad: 0.02, radiance: [1000.0, 950.0, 850.0] },
             area_lights: Vec::new(),
+            directional_lights: Default::default(),
+            punctual_lights: Default::default(),
         }
     }
 }
@@ -108,6 +112,8 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     }
     if view.lighting_enabled {
         let lighting = StudioLighting {
+            punctual_lights: view.punctual_lights,
+            directional_lights: view.directional_lights,
             environment: view.ambient,
             sun: view.sun_enabled.then_some(view.sun),
             area_lights: AreaLights::new(&view.area_lights).map_err(|error| error.to_string())?,

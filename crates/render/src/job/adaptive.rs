@@ -87,21 +87,31 @@ impl AdaptivePreview {
     /// Derived only from captured sampling options and an absolute completed pass.
     pub fn at(options: super::JobOptions, completed: u32) -> Result<Option<Self>> {
         let Some(adaptive) = options.adaptive else { return Ok(None) };
-        let target = options.preview_target()?;
+        options.preview_target()?;
+        Ok(Some(Self::captured(adaptive, options.samples, completed)?))
+    }
+    /// The same captured statistical policy is shared by native CPU and GPU jobs.
+    /// The completed ordinal spans pilots plus production; it is not a per-pixel count.
+    pub fn captured(adaptive: AdaptiveSampling, maximum: u32, completed: u32) -> Result<Self> {
+        adaptive.validate(maximum)?;
+        let target = adaptive
+            .pilot_samples
+            .checked_add(maximum)
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "adaptive checkpoint target overflow"))?;
         if completed == 0 || completed > target {
             return Err(JobError::new(ErrorCode::InvalidRequest, "checkpoint exceeds captured sampling passes"));
         }
-        Ok(Some({
+        Ok({
             let pilot = completed <= adaptive.pilot_samples;
             Self {
                 stage: if pilot { PreviewStage::Pilot } else { PreviewStage::Production },
                 completed: if pilot { completed } else { completed - adaptive.pilot_samples },
-                target: if pilot { adaptive.pilot_samples } else { options.samples },
+                target: if pilot { adaptive.pilot_samples } else { maximum },
                 pilot_samples: adaptive.pilot_samples,
                 minimum_production_samples: adaptive.min_samples,
-                maximum_production_samples: options.samples,
+                maximum_production_samples: maximum,
             }
-        }))
+        })
     }
 }
 

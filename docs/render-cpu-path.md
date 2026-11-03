@@ -1,11 +1,10 @@
-# CPU indirect lighting for opaque surfaces
+# CPU indirect lighting
 
-The CPU-feature renderer build and numerical regressions have executed on the
-combined source. Current combined document, engine, UI and native workflow
+The original opaque CPU-feature renderer build and numerical regressions have executed on an earlier combined source. The prepared [general Glass extension](render-cpu-general-glass.md) has not been compiled or run. Current combined document, engine, UI and native workflow
 qualification remains separate and pending; this is not full-project or release
 acceptance.
 
-CPU Sampling can explicitly enable **Indirect lighting (opaque surfaces)**. Runtime intent is `raytrace.path: {"max_depth": 8}`; saved CPU intent is `job.options.path` with the same contract. Omission preserves the existing direct/selected-reflection algorithm, pixels and work. It adds no path allocation when omitted; the fixed task metadata remains within the existing allowance, subject to compilation guards. Path depth is 1–16 shaded surfaces, starting with the first visible surface. A depth of 1 uses direct lighting only; higher values allow more light bounces and may take longer. Finite depth truncates longer paths; this is not a certified convergence or speed guarantee. No automatic quality, profile, size, seed, camera, default or method change is made.
+CPU Sampling can explicitly enable **Indirect lighting**. Runtime intent is `raytrace.path: {"max_depth": 8}`; saved CPU intent is `job.options.path` with the same contract. Omission preserves the existing direct/selected-reflection algorithm, pixels and work. It adds no path allocation when omitted; the fixed task metadata remains within the existing allowance, subject to compilation guards. Path depth is 1–16 shaded opaque surfaces or Glass boundaries, starting with the first hit. A depth of 1 uses direct lighting only; higher values allow more light bounces and may take longer. Finite depth truncates longer paths; this is not a certified convergence or speed guarantee. No automatic quality, profile, size, seed, camera, default or method change is made.
 
 The mode requires progressive camera sampling, primary_samples1 and traced shadows. It evaluates the complete existing isotropic opaque BRDF, including its existing clear-coat approximation, and uses an exactly matched cosine/GGX-NDF/coat mixture. Null proposals retain their probability mass. Secondary hits preserve captured body/face appearance and existing surface effects; visible surface emission can illuminate diffuse neighbors through actual path continuation. Small mesh emitters have no next-event sampling and may remain noisy.
 
@@ -16,11 +15,20 @@ transport without entering raw EXR radiance or changing primary coverage.
 Composition regressions check an analytic partial-coverage emitter, every
 checkpoint, worker quanta and unchanged raw masters; these renderer regressions have executed.
 
-This first opaque producer refuses selected reflection, certified anisotropy and
-dielectric overrides rather than silently ignoring authored values. Stable saved
-optical bindings also refuse at pure setup validation before HDR resource reads
-or scene capture; temporary overrides refuse at runtime option validation.
-Removing path lighting explicitly restores those existing optical routes. General glass, layered/nested media, volume, subsurface transport, emissive-mesh next-event sampling, adaptive CPU sampling and multithreading remain separate work. The CPU Sampling checkbox keeps fixed/saved optical choices intact; adopt progressive sampling explicitly first when required. Disabling path lighting preserves the existing settings and returns to their original transport.
+The original opaque-only producer refused optical overrides. The prepared
+[general Glass route](render-cpu-general-glass.md) now has a conditional certified
+closed-mesh, medium and delta continuation in source; its new numerical, resource,
+engine and UI tests remain uncompiled and unrun. Selected reflection overrides and
+certified anisotropy still refuse without dropping values. Prepared selected-medium
+[subsurface scattering](render-cpu-general-glass.md) and independent bounded
+[Atmosphere](render-cpu-volume.md) are now composed with Sun/Sky in source, with
+all new compilation/numerical/UI/native qualification still pending. Active
+Atmosphere cannot combine with Glass/SSS or surface Denoise. Emissive-mesh next-event
+sampling and multithreading remain separate work. The prepared adaptive CPU
+producer also retains its own qualification requirements.
+The CPU Sampling control and CPU Glass transport entry point require explicit
+progressive adoption for saved fixed choices. Disabling path lighting preserves
+existing settings and returns to the original sheet/box or opaque transports.
 
 Memory is one exact-capacity fallible path continuation, prepaid in CPU job admission. There is no second film, ray queue, worker, host pool or raised cap. Sampler/source/emitter scans, traversal, shading and the final film commit are separate bounded work continuations sharing the original cumulative budget and cancel token. The unchanged fixed host metadata/task-state bounds remain integration gates.
 
@@ -44,3 +52,5 @@ debit and cancellation check. Its scalar continuation state is prepaid in the
 existing exact guide-state size, with no additional image plane. The absent-path
 guide algorithm performs no new source scans. Combined numerical and lifecycle
 renderer tests for these invariants have executed; native image-quality acceptance remains pending.
+
+The optional finite Sun and gradient Sky use the shared saved radiance domains, separate emitter MIS and bounded cooperative stages. They require explicit Path transport and preserve default-absent behavior; see [CPU celestial lighting](render-cpu-celestial.md) for the source contract and pending qualification.

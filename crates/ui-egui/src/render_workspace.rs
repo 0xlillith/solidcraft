@@ -1,5 +1,6 @@
 //! Integrated product preview. Shares the installed device/pipelines, not Design's scene policy.
 
+use solidcraft_engine::geom::prelude::*;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
@@ -48,10 +49,14 @@ mod library;
 
 #[path = "render_ui/assign.rs"]
 pub(crate) mod assign;
+#[path = "render_workspace_displayed.rs"]
+pub(crate) mod displayed;
 #[path = "render_workspace_light.rs"]
 pub(crate) mod light;
 #[path = "render_workspace_live.rs"]
 pub(crate) mod live;
+#[path = "render_workspace_prepare.rs"]
+pub(crate) mod prepare;
 
 #[path = "render_workspace_materials.rs"]
 mod materials;
@@ -139,6 +144,7 @@ pub struct State {
     pub upload_error: crate::gpu::UploadError,
     pub image_host: Option<solidcraft_engine::render::job::CpuHost>,
     live: live::State,
+    displayed: displayed::State,
     pub view: ViewState,
     revision: u64,
     design_camera: Option<(Camera, bool)>,
@@ -193,6 +199,15 @@ pub enum PathHost {
 }
 
 impl PathHost {
+    /// Setup is a temporary readiness state, not a failed device or request.
+    fn pending_message_key(&self) -> Option<&'static str> {
+        match self {
+            Self::NotStarted => Some("render.gpu_path_not_started"),
+            Self::Preparing(..) => Some("render.gpu_path_preparing"),
+            Self::Ready(_) | Self::Failed(_) => None,
+        }
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start(&mut self, create: impl FnOnce() -> Result<ImageHost, String> + Send + 'static) {
         if !matches!(self, Self::NotStarted) {
@@ -510,6 +525,7 @@ impl Default for State {
             upload_error: Arc::new(Mutex::new(None)),
             image_host: None,
             live: Default::default(),
+            displayed: Default::default(),
             view: Default::default(),
             revision: u64::MAX,
             design_camera: None,
@@ -587,8 +603,9 @@ pub(crate) fn inspect_state(app: &SolveApp) -> serde_json::Value {
         "active": active(app), "stage": view.stage.key(), "setup": view.name, "draft_dirty": view.dirty,
         "method": method, "job": view.job, "completed": view.completed,
         "results": view.retained,
+        "displayed_receipt": displayed::inspect(app),
         "comparison": view.compare,
-        "live": live::inspect(app),
+        "live": live::inspect(app), "preparation": prepare::inspect(app), "batch_preparation": prepare::inspect_batches(app),
         "queue": app.session.render_queue_state(),
         "showing_result": view.result, "export_format": if view.studio.export_exr {"exr"} else {"png"},
     })
@@ -690,10 +707,13 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     if app.render_workspace.view.job.is_some() {
         cache_render_images(app, ctx);
     }
+    prepare::tick(app, ctx);
     live::tick(app, ctx);
 }
 
 pub fn reset_document(app: &mut SolveApp) {
+    // The app-global preparation owner drains across this document replacement.
+    prepare::cancel(app);
     crate::render_ui::reset_shell(app);
     app.ui.ribbon_context = None;
     let host = app.render_workspace.host.clone();
@@ -716,6 +736,7 @@ pub fn reset_document(app: &mut SolveApp) {
 }
 
 pub(crate) fn invalidate_images(app: &mut SolveApp) {
+    app.render_workspace.displayed.clear();
     app.render_workspace.image = None;
     app.render_workspace.image_info = None;
     app.render_workspace.preview_image = None;
@@ -743,6 +764,7 @@ pub fn enter(app: &mut SolveApp, render: bool) -> Result<(), String> {
         app.run("render.scene", json!({}))?;
         let entering = !active(app);
         if entering {
+            app.render_workspace.displayed.clear();
             app.render_workspace.design_camera = Some((app.cam, app.ui.perspective));
             app.ui.tab = "RENDER".into();
             select_stage(app, app.render_workspace.view.stage.key());
@@ -797,6 +819,7 @@ pub fn enter(app: &mut SolveApp, render: bool) -> Result<(), String> {
             app.render_workspace.start_deferred_path_host();
         }
     } else {
+        app.render_workspace.displayed.clear();
         assign::stop(app);
         if active(app) {
             app.render_workspace.view.render_camera = (!app.preferences.render_legacy_image_defaults).then_some(app.cam);
@@ -1000,8 +1023,11 @@ pub(crate) fn appearances_card(app: &mut SolveApp, ui: &mut egui::Ui, bounds: eg
 
 fn image_host(app: &SolveApp, method: ImageMethod) -> Result<&ImageHost, String> {
     if method == ImageMethod::GpuRaytrace {
-        let PathHost::Ready(host) = &app.render_workspace.path_host else {
-            return Err(app.tr("render.gpu_unavailable").to_string());
+        let host = match &app.render_workspace.path_host {
+            PathHost::NotStarted => return Err(app.tr("render.gpu_path_not_started").to_string()),
+            PathHost::Preparing(..) => return Err(app.tr("render.gpu_path_preparing").to_string()),
+            PathHost::Failed(error) => return Err(format!("{}: {error}", app.tr("render.gpu_path_failed"))),
+            PathHost::Ready(host) => host,
         };
         let descriptor = host.descriptor().map_err(|error| error.to_string())?;
         if !host.is_available()
@@ -1035,7 +1061,7 @@ fn image_request(app: &SolveApp) -> Result<serde_json::Value, String> {
 
 fn raw_image_request(app: &SolveApp) -> Result<serde_json::Value, String> {
     cpu::validate_progressive_image(app)?;
-    if !setups::has_runtime_inputs(app) {
+    if !setups::requires_runtime_request(app) {
         return Ok(json!({"settings":setups::image_snapshot(app)?}));
     }
     let view = &app.render_workspace.view;
@@ -1044,12 +1070,14 @@ fn raw_image_request(app: &SolveApp) -> Result<serde_json::Value, String> {
     if !view.draft.surfaces.is_empty() {
         return Err(app.tr("render.saved_maps_runtime_conflict").to_string());
     }
-    let settings = RenderSetup { camera: app.cam, job: None, ..view.draft.clone() };
+    let mut settings = RenderSetup { camera: app.cam, job: None, ..view.draft.clone() };
+    materials::overlay_coats(app, &mut settings)?;
     let mut params = json!({"settings":settings,"transparent_background":view.transparent});
     match view.method {
         ImageMethod::Raster => {}
         ImageMethod::CpuRaytrace => {
             cpu::params(app, &mut params)?;
+            params["aging"] = json!(view.studio.aging);
         }
         ImageMethod::GpuRaytrace => {
             params["progressive"] = json!(true);
@@ -1063,7 +1091,129 @@ fn raw_image_request(app: &SolveApp) -> Result<serde_json::Value, String> {
     Ok(params)
 }
 
+fn celestial_switch_active(app: &SolveApp) -> bool {
+    let view = &app.render_workspace.view;
+    view.studio.sun_enabled
+        || match view.method {
+            ImageMethod::CpuRaytrace => view.cpu.environment == cpu::Environment::Sky,
+            ImageMethod::GpuRaytrace => view.studio.environment == studio::Environment::Sky,
+            ImageMethod::Raster => false,
+        }
+}
+
+/// One prospective numerical command transfers every shared physical effect.
+/// Failure restores the full draft; navigation and saved camera stay untouched.
+fn switch_celestial_method(app: &mut SolveApp, method: ImageMethod, enable_indirect: bool) -> Result<(), String> {
+    if setups::has_unportable_bindings(app) {
+        return Err(app.tr("render.setup_runtime_unsupported").into());
+    }
+    let before = setups::draft(app)?;
+    let before_render = std::sync::Arc::downgrade(&app.session.doc.render);
+    let previous = app.render_workspace.view.clone();
+    if previous.studio.transmission_samples != 1 {
+        return Err(app.tr("render.cpu_celestial_unportable").into());
+    }
+    let mut next = previous.clone();
+    if method == ImageMethod::CpuRaytrace {
+        if enable_indirect {
+            let depth = u8::try_from(next.max_depth).map_err(|_| app.tr("render.cpu_celestial_switch").to_string())?;
+            let path = solidcraft_engine::render::job::CpuPathOptions { max_depth: depth };
+            path.validate().map_err(|error| error.to_string())?;
+            next.raytrace.path = Some(path);
+            next.raytrace.progressive.get_or_insert_default();
+            next.raytrace.primary_samples = 1;
+            next.raytrace.shadows = true;
+            next.cpu_sampling_initialized = true;
+        }
+        if next.raytrace.path.is_none() {
+            if next.studio.volume.is_some_and(|volume| volume.active()) {
+                return Err(app.tr("render.cpu_volume_path_required").into());
+            }
+            if celestial_switch_active(app) {
+                return Err(app.tr("render.cpu_celestial_switch").into());
+            }
+        }
+        next.cpu.environment = match previous.studio.environment {
+            studio::Environment::Sky => cpu::Environment::Sky,
+            studio::Environment::Hdr => cpu::Environment::Hdr,
+            studio::Environment::None => {
+                let ambient = if previous.studio.lighting_enabled { previous.studio.ambient } else { [0.0; 3] };
+                let intensity = ambient.into_iter().fold(0.0_f64, f64::max);
+                if intensity > 64.0 {
+                    return Err(app.tr("render.cpu_environment_bounds").into());
+                }
+                next.cpu.color = if intensity > 0.0 { ambient.map(|value| value / intensity) } else { [1.0; 3] };
+                next.cpu.intensity = intensity;
+                if intensity > 0.0 { cpu::Environment::Constant } else { cpu::Environment::None }
+            }
+        };
+        if previous.studio.environment != studio::Environment::None {
+            if previous.studio.environment == studio::Environment::Hdr && previous.studio.assume_linear_srgb {
+                return Err(app.tr("render.environment.primaries_gpu").into());
+            }
+            next.cpu.gradient = previous.studio.gradient;
+            next.cpu.rotation_rad = previous.studio.rotation_rad;
+            next.cpu.intensity = previous.studio.intensity;
+            next.cpu.hdr = previous.studio.hdr.clone();
+        }
+    } else if method == ImageMethod::GpuRaytrace {
+        next.studio.environment = match previous.cpu.environment {
+            cpu::Environment::Sky => studio::Environment::Sky,
+            cpu::Environment::Hdr => studio::Environment::Hdr,
+            cpu::Environment::None | cpu::Environment::Constant => studio::Environment::None,
+        };
+        next.studio.ambient = if previous.cpu.environment == cpu::Environment::Constant {
+            previous.cpu.color.map(|value| value * previous.cpu.intensity)
+        } else {
+            [0.0; 3]
+        };
+        if previous.cpu.environment != cpu::Environment::None && previous.cpu.environment != cpu::Environment::Constant {
+            next.studio.gradient = previous.cpu.gradient;
+            next.studio.rotation_rad = previous.cpu.rotation_rad;
+            next.studio.intensity = previous.cpu.intensity;
+            next.studio.hdr = previous.cpu.hdr.clone();
+            next.studio.assume_linear_srgb = false;
+        }
+    } else {
+        return Err(app.tr("render.output_raytrace_only").into());
+    }
+    light::celestial_method(app, &mut next, method)?;
+    next.method = method;
+    next.dirty = true;
+    app.render_workspace.view = next;
+    let result = environment::validate_atmosphere(app)
+        .and_then(|()| setups::snapshot(app).map(|_| ()))
+        .and_then(|()| cpu::validate_progressive_image(app))
+        .and_then(|()| setups::persist_editor(app, &before));
+    if let Err(error) = result {
+        app.render_workspace.view = previous;
+        return Err(error);
+    }
+    light::celestial_method_applied(app, &before_render, previous.method);
+    Ok(())
+}
+
+/// Volume and celestial choices share one atomic transaction, including both.
+fn switch_volume_method(app: &mut SolveApp, method: ImageMethod, enable_indirect: bool) -> Result<(), String> {
+    switch_celestial_method(app, method, enable_indirect)
+}
+
 fn select_image_method(app: &mut SolveApp, method: ImageMethod) {
+    if method != app.render_workspace.view.method
+        && method != ImageMethod::Raster
+        && app.render_workspace.view.method != ImageMethod::Raster
+        && (celestial_switch_active(app) || app.render_workspace.view.studio.volume.is_some())
+    {
+        let result = if app.render_workspace.view.studio.volume.is_some() {
+            switch_volume_method(app, method, false)
+        } else {
+            switch_celestial_method(app, method, false)
+        };
+        if let Err(error) = result {
+            app.set_status(error, true);
+        }
+        return;
+    }
     app.render_workspace.view.method = method;
     if method == ImageMethod::CpuRaytrace && !app.render_workspace.view.cpu_sampling_initialized {
         let options = &mut app.render_workspace.view.raytrace;
@@ -1096,7 +1246,9 @@ fn method_selector(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn method_dropdown(app: &mut SolveApp, ui: &mut egui::Ui) -> egui::Response {
     let current = app.render_workspace.view.method;
     let label = app.tr(current.label()).to_string();
-    let response = crate::ui_kit::dropdown_menu(ui, "render_image_method", &label, |ui| {
+    let bounded = celestial_switch_active(app) || app.render_workspace.view.studio.volume.is_some();
+    let width = ui.available_width().min(crate::theme::Tokens::get().form_card_width);
+    let choices = |ui: &mut egui::Ui| {
         for (method, handle) in [
             (ImageMethod::Raster, "render:method-raster"),
             (ImageMethod::CpuRaytrace, "render:method-cpu"),
@@ -1114,7 +1266,36 @@ fn method_dropdown(app: &mut SolveApp, ui: &mut egui::Ui) -> egui::Response {
                 response.on_hover_text(reason);
             }
         }
-    });
+        let volume_path = app.render_workspace.view.studio.volume.is_some_and(|volume| volume.active());
+        if current == ImageMethod::GpuRaytrace && (celestial_switch_active(app) || volume_path) && app.render_workspace.view.raytrace.path.is_none() {
+            let sampling = app.render_workspace.view.raytrace.progressive.unwrap_or_default();
+            let detail = crate::i18n::format(
+                if volume_path { "render.cpu_volume_enable_path_plan" } else { "render.cpu_celestial_adopt" },
+                &[
+                    ("depth", &app.render_workspace.view.max_depth.to_string()),
+                    ("spp", &sampling.samples_per_pixel.to_string()),
+                    ("seed", &sampling.seed.to_string()),
+                ],
+            );
+            let short = app.tr(if volume_path { "render.cpu_volume_method_adopt" } else { "render.cpu_celestial_adopt_label" }).to_string();
+            let action = crate::ui_kit::list_picker(ui, "render:method-cpu-indirect", &short, false).on_hover_text(detail);
+            crate::scenario::publish_handle("render:method-cpu-indirect", action.rect.center());
+            if volume_path {
+                crate::scenario::publish_handle("render:method-cpu-volume", action.rect.center());
+            }
+            if action.clicked() {
+                if let Err(error) = switch_celestial_method(app, ImageMethod::CpuRaytrace, true) {
+                    app.set_status(error, true);
+                }
+                ui.close();
+            }
+        }
+    };
+    let response = if bounded {
+        crate::ui_kit::bounded_dropdown_menu(ui, "render_image_method", &label, width, choices)
+    } else {
+        crate::ui_kit::dropdown_menu(ui, "render_image_method", &label, choices)
+    };
     crate::scenario::publish_handle("render:method", response.rect.center());
     response
 }
@@ -1479,6 +1660,26 @@ fn displayed_image(app: &SolveApp) -> Option<DisplayImage<'_>> {
     Some(DisplayImage { info: state.image_info.as_ref()?, image: &state.image.as_ref()?.1, preview: None })
 }
 
+fn captured_adaptive_preview(
+    status: &solidcraft_engine::render::job::JobStatus,
+    completed: u32,
+) -> Result<Option<solidcraft_engine::render::job::adaptive::AdaptivePreview>, String> {
+    use solidcraft_engine::render::job::adaptive::AdaptivePreview;
+    if status.request.integrator == Integrator::Raytrace && status.resolved.executor.as_str() != "gpu-path" {
+        let Some(options) = &status.request.raytrace else { return Ok(None) };
+        options
+            .adaptive
+            .as_deref()
+            .map(|adaptive| {
+                let maximum = options.progressive.ok_or_else(|| crate::i18n::tr("render.error_provisional_identity").to_string())?.samples_per_pixel;
+                AdaptivePreview::captured(*adaptive, maximum, completed).map_err(|error| error.to_string())
+            })
+            .transpose()
+    } else {
+        AdaptivePreview::at(status.options, completed).map_err(|error| error.to_string())
+    }
+}
+
 fn cache_preview_frame(app: &mut SolveApp, ctx: &egui::Context, info: &PreviewInfo, png: &[u8]) {
     if app.render_workspace.view.job != Some(info.frame.job) {
         return;
@@ -1512,7 +1713,11 @@ fn cache_preview_frame(app: &mut SolveApp, ctx: &egui::Context, info: &PreviewIn
             }
             solidcraft_engine::render::job::GPU_PATH_LIMITS
         } else {
-            if info.adaptive.is_some() {
+            let adaptive = captured_adaptive_preview(&captured, info.samples_per_pixel)?;
+            let exceeds_target = adaptive.is_some()
+                && info.samples_per_pixel
+                    >= captured.request.raytrace.as_ref().map_or(Ok(0), RaytraceOptions::preview_target).map_err(|e| e.to_string())?;
+            if exceeds_target || info.adaptive != adaptive {
                 return Err(crate::i18n::tr("render.error_provisional_identity").into());
             }
             let options = solidcraft_engine::render::job::CpuProgressiveOptions { samples_per_pixel: info.samples_per_pixel, seed: 0 };
@@ -1623,12 +1828,15 @@ fn sync_results(app: &mut SolveApp) {
 
 fn follow_batch(app: &mut SolveApp) {
     let queue = app.session.render_queue_state();
+    follow_batch_view(&mut app.render_workspace.view, queue);
+}
+fn follow_batch_view(view: &mut ViewState, queue: solidcraft_engine::render_jobs::RenderQueueState) {
     if let Some(job) = queue.job {
-        if app.render_workspace.view.job != Some(job) {
-            app.render_workspace.view.follow_job = app.render_workspace.view.compare.is_none();
+        if view.job != Some(job) {
+            view.follow_job = view.compare.is_none();
         }
-        app.render_workspace.view.job = Some(job);
-        app.render_workspace.view.job_shot = queue.shot;
+        view.job = Some(job);
+        view.job_shot = queue.shot;
     }
 }
 
@@ -1890,12 +2098,7 @@ fn show_result(app: &mut SolveApp, ui: &mut egui::Ui) {
                     if preview.frame.executor.as_str() == "gpu-path" {
                         status.options.samples
                     } else {
-                        status
-                            .request
-                            .raytrace
-                            .as_ref()
-                            .and_then(|options| options.progressive)
-                            .map_or(preview.samples_per_pixel, |options| options.samples_per_pixel)
+                        status.request.raytrace.as_ref().and_then(|options| options.preview_target().ok()).unwrap_or(preview.samples_per_pixel)
                     }
                 })
                 .unwrap_or(preview.samples_per_pixel);
@@ -1995,7 +2198,9 @@ fn show_result(app: &mut SolveApp, ui: &mut egui::Ui) {
         if let Some(display) = displayed_image(app)
             && let Ok(texture) = display.image
         {
+            let source = displayed::Source::image(display.info, display.preview);
             painter.image(texture.id(), image_rect, egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), Tokens::get().file_image_tint);
+            app.render_workspace.displayed.record(&painter, image_rect, source);
         }
         painter.rect_stroke(image_rect, 0.0, egui::Stroke::new(1.0, t.border), egui::StrokeKind::Outside);
     }
@@ -2575,6 +2780,9 @@ fn paint_product_kind(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::Rect, c
 
 /// Apply validated UI requests after the same registry call used by automation.
 pub(crate) fn apply_command(app: &mut SolveApp, id: &str, reply: &serde_json::Value) -> Result<(), String> {
+    if matches!(id, "render.result.view" | "render.result.close" | "render.result.select" | "render.result.discard" | "render.compare") {
+        app.render_workspace.displayed.clear();
+    }
     if matches!(
         id,
         "render.start"
@@ -2681,6 +2889,9 @@ pub(crate) fn apply_command(app: &mut SolveApp, id: &str, reply: &serde_json::Va
 }
 
 pub(crate) fn progress_pill(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
+    if prepare::progress(app, ui) {
+        return true;
+    }
     if live::final_pending(app) {
         crate::ui_kit::text(ui, app.tr("render.live.final_waiting"), crate::ui_kit::Text::Inline);
         let cancel = crate::ui_kit::button(ui, app.tr("cmd.render_cancel"), crate::ui_kit::Button::Normal);

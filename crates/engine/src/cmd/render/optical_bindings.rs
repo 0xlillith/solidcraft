@@ -40,14 +40,26 @@ pub(super) fn resolve(s: &Session, scene: &ProductScene, bindings: &OpticalBindi
     })
 }
 
+#[cfg(test)]
 pub(super) fn resolve_cpu(
     s: &Session,
     scene: &ProductScene,
     bindings: &OpticalBindings,
     command: &str,
 ) -> Result<Vec<solidcraft_render::job::DielectricOptions>> {
-    bindings.validate_for_cpu().map_err(|e| bad(command, e.to_string()))?;
-    resolve_each(s, scene, bindings, command, |index, name, optics| optics.to_cpu(index, name).map_err(|e| bad(command, e.to_string())))
+    resolve_cpu_path(s, scene, bindings, false, command)
+}
+pub(super) fn resolve_cpu_path(
+    s: &Session,
+    scene: &ProductScene,
+    bindings: &OpticalBindings,
+    path: bool,
+    command: &str,
+) -> Result<Vec<solidcraft_render::job::DielectricOptions>> {
+    bindings.validate_for_cpu_path(path).map_err(|e| bad(command, e.to_string()))?;
+    resolve_each(s, scene, bindings, command, |index, name, optics| {
+        optics.to_cpu_for_path(index, name, path).map_err(|e| bad(command, e.to_string()))
+    })
 }
 
 fn empty() -> Value {
@@ -98,7 +110,8 @@ pub(super) fn bind(s: &mut Session, params: &Value) -> Result<Value> {
     if matches!(setup.job, Some(RenderJob::CpuRaytrace { .. })) {
         // Offline saving resolves identity and numerical compatibility. The selected
         // CPU image producer still certifies actual geometry before any transport.
-        resolve_cpu(s, &scene, &setup.optics, command)?;
+        let path = matches!(&setup.job,Some(RenderJob::CpuRaytrace{options,..}) if options.path.is_some());
+        resolve_cpu_path(s, &scene, &setup.optics, path, command)?;
     } else {
         let resolved = resolve(s, &scene, &setup.optics, command)?;
         super::transmission::apply(&mut scene, &resolved, command)?;

@@ -33,7 +33,7 @@ model without applying or saving anything. An unsaved client draft can instead
 pass `{settings: <complete RenderSetup>}`; `{}` inspects the default setup.
 Neither form selects a UI shot. Unknown parameters, null selectors, both selectors,
 missing setup names and invalid settings refuse without mutation or evaluation.
-CPU directional/point/spot/rectangle sources and GPU sun/rectangle sources expose
+CPU/GPU hard-directional/sun/point/spot/rectangle sources expose
 `id`, `kind`, `name`, `name_key`, `number`, `implicit`, `intensity`, `colour` and
 their world-space geometry. Background and environment illumination are separate
 from this source list. Implicit fixed studios and CPU presets are expanded;
@@ -47,13 +47,30 @@ document identities. Unnamed lights display Key, Fill, Rim, then Light 4, etc.;
 clients translate `name_key`, substituting `number` for later lights. Names are
 not persisted by this command.
 
-Colour is linear RGB. CPU colour/intensity retain their saved values. GPU RGB
+Successful light edits additionally return bounded `id_remap` entries
+`{before: Light, after_id}` for each surviving original source. The engine uses
+original slot identity, not numerical-value matching: a duplicate is a new source
+even when its values equal its parent. CPU/GPU canonicalization puts the finite Sun
+first. The UI verifies each before record against its current draft, then remaps
+mute, solo and surviving unrelated selection; unmatched identities from a different
+settings override are cleared. Add/set/duplicate still select their actual result.
+Numeric editor drafts are invalidated. A source RenderSettings Arc tracks verified
+authoring provenance. Unverified structural Undo/Redo, checkpoint, replacement or
+same-shape reorder clears mute/solo, Light selection and parameter drafts, rather
+than guessing identity from ordinals or equal values. One bounded before/after
+Weak-Arc proof preserves the latest verified numerical light-set Undo/Redo; older
+or otherwise unproved transitions clear. Fallback labels remain ordinal (Key, Fill,
+etc.) and may change after insertion; this adds no persistent custom naming.
+Untouched original Sun/area rows retain their raw authored RGB rather than an
+unrelated common-editor divide/multiply round trip.
+
+Colour is linear RGB. CPU colour/intensity retain their saved values. GPU hard directional colour/intensity also retain their exact saved values. Finite Sun RGB and GPU area RGB
 radiance is factored into its largest channel as intensity and normalized colour
 (black uses intensity zero and white colour). Their product recovers radiance;
 no photometric equivalence between methods is implied. All rectangle edges are
 full side vectors in millimetres, including GPU half-edges multiplied by two.
 Directional vectors point towards a source; spot axes point from it. The optional
-directional `angular_radius_rad` identifies a finite GPU sun.
+directional `angular_radius_rad` identifies a finite Sun (CPU requires explicit Indirect lighting).
 
 `render.lights.add`, `.set`, `.duplicate` and `.remove` edit a named setup in one
 undo step. They accept `name`, `id` except for add, optional complete `settings`
@@ -64,11 +81,18 @@ as an unsaved starting point, and optional `expected_revision`. Add/set accept
 `reference_distance_mm` and `minimum_distance_mm`. These lower into the existing
 light fields; there is no new saved light metadata. Temperature is an original
 three-band, 6500 K white-balanced Planck tint approximation stored as linear RGB.
-Area softness changes emitter size; GPU Sun softness changes angular radius.
+Area softness changes emitter size; finite Sun softness changes angular radius.
 Hard CPU directional and point/spot sources refuse unsupported emitter softness.
-CPU admits 8 directional, 8 point/spot and 4 areas; GPU admits one Sun and four
-areas. GPU Point/Spot controls and the legacy three-directional GPU studio editor
-remain unavailable with reasons, rather than silently losing light sources.
+CPU and GPU each admit 8 directional, 8 point/spot and 4 areas. Directional
+sources include at most one finite Sun; CPU finite Sun requires explicit Indirect lighting. Point and Spot share eight slots. Both
+methods expose Spot emission axis and inner/outer half angles; the UI displays
+degrees while saved/runtime fields retain radians. A GPU feather needs
+`cos(inner) - cos(outer) >= 1/1024`; narrower authored CPU cones explicitly refuse
+on GPU rather than being widened or ignored. Materializing or duplicating the implicit GPU
+studio preserves all three hard source values; it does not replace them with a Sun.
+A directional source without angular_radius_rad is hard on either method. GPU
+Add offers both Directional and the existing Sun (.02-radian radius). Finite Sun
+duplication refuses; hard sources duplicate until the combined eight-source cap.
 
 `render.lights.solo {id?, solo}` and `render.lights.mute {id, mute}` validate and
 echo view requests. Enabling solo requires an id; disabling solo clears it.
@@ -88,8 +112,9 @@ CPU ray tracing and explicit GPU rigs refuse these fixed-studio weights.
 The selectable Lights group runs `view.render_select {kind: "lighting"}` and opens
 Lighting: Light source, Shadows and sampling, then Budget. Its + still adds a
 light. CPU presets require review and consent before replacing directional lights;
-Custom materialises their existing values. GPU budgets show one Sun and four
-Areas; CPU eight directional and eight point/spot plus four Areas. Counts are
+Custom materialises their existing values. GPU budgets show eight directional
+sources including the optional Sun and four Areas; CPU eight directional and
+eight point/spot plus four Areas. Counts are
 read-only sliders. Unsupported controls stay faded with a reason. No rig identity
 is saved, so there is no Rig row.
 
@@ -187,8 +212,12 @@ retains a raw master. The shared output envelope is 8192 per side and 16,777,216
 pixels, independently of a larger CPU resource profile. See
 [CPU output presentation](render-cpu-output.md).
 
-GPU `lighting` retains the complete RGB ambient radiance, optional sun and at most
-four rectangular lights. Omitted/null lighting keeps the renderer's legacy studio;
+GPU `lighting` retains the complete RGB ambient radiance, optional sun, at most
+four rectangular lights and a bounded `directional_lights` array of
+`{direction:[x,y,z], color:[r,g,b], intensity}`. Hard directions share the CPU
+contract: finite nonzero vectors with components within +/-1e9, linear RGB0..1,
+relative intensity0..64. The hard list and optional Sun total at most eight sources.
+Empty hard lists are omitted when saving; existing designs preserve their meaning. Omitted/null lighting keeps the renderer's legacy studio;
 an explicit all-zero lighting object means a black studio. Those values are not
 interchangeable. `lens` retains aperture radius and axial focus distance; nonzero
 aperture requires a perspective camera. An explicit zero-aperture lens remains
@@ -323,11 +352,11 @@ for bypasses, bias, cancellation/work units and retained-master regrade limits.
 ### CPU consumer of portable optics
 
 Stable `optics` rows remain the same saved contract for CPU and GPU. An explicit
-CPU job validates at most eight IOR/Beer targets offline, refuses authored
-transmissive shadows/subsurface and applies its existing strict thin-sheet or
-axis-aligned-box geometry certificate at image admission. A saved general closed
-boundary stays authored as `closed_mesh`; CPU execution requires that exact mesh
-to prove the box subset. No boundary, target, effect or material is silently
+CPU job validates at most eight IOR/Beer targets offline. Without explicit Path it
+refuses authored transmitted shadows/subsurface and keeps its strict sheet/box
+certificate. The separately prepared Path route adds general closed Glass and
+selected-medium scattering; its new source still needs qualification. On the original absent-Path route, a saved general closed boundary stays authored
+as `closed_mesh` and must prove the box subset. No boundary, target, effect or material is silently
 removed to make a job run. See [CPU certified glass](render-raytrace-dielectrics.md).
 Common Glass controls hydrate actual saved numbers without creating a runtime
 override on paint. Their unsaved edits overlay only the selected stable rows in
@@ -336,4 +365,31 @@ commands with one undo. This consumes existing portable fields and adds no forma
 number or new design metadata.
 
 
-The optional [CPU opaque path lighting](render-cpu-path.md) consumer is part of the combined source and has executed renderer regressions. It adds bounded progressive diffuse/specular GI only when `path` is authored; existing restrictions and bytes above describe the absent-path route. Mixed glass/anisotropy/volume parity and combined document/engine/UI/native qualification remain incomplete.
+The optional [CPU opaque path lighting](render-cpu-path.md) consumer is part of the combined source and has executed renderer regressions. It adds bounded progressive diffuse/specular GI only when `path` is authored; existing restrictions and bytes above describe the absent-path route. Prepared general Glass/SSS, independent bounded Atmosphere and Sun/Sky have separate source/qualification notes. Mixing active Atmosphere with Glass/SSS, selected anisotropy and combined document/engine/UI/native qualification remain incomplete.
+
+
+GPU `lighting.punctual_lights` preserves each existing `PunctualLightOptions` field.
+Intensity is the relative on-axis incident value at `reference_distance_mm` and
+falls by inverse square distance, multiplied by the cosine-space Spot smoothstep.
+This does not imply lumen/lux/IES calibration. Nearer-than-minimum or excessive
+(above1e12 linear RGB) samples contribute zero and increment typed diagnostics;
+no inverse-square clamp is applied. Re-aimed finite shadow connections exclude
+the source, and offset crossings increment a separate omission count.
+
+The registered worker publishes `punctual_diagnostics` through the existing job
+status. GPU counters are cumulative through the most recent complete image
+readback, including adaptive pilots and production Fresnel strata; an interrupted
+partial dispatch need not appear in that last snapshot. Each counter is64-bit
+via two carry words, separate from unchanged medium-failure words0..7. The
+existing host metadata/work-release lifetimes and retained-options lease apply.
+
+CPU canonical quality chips use a separate `render.quality.prepare` projection,
+`cpu_progressive_png`, from the same three Q-* entries. It returns only size,
+progressive production count/seed and a bounded CPU profile; it does not enable
+GI, change denoise or replace authored optics/effects. Optional `cpu` context
+contains `minimum_budget` and the preserved `adaptive` policy. Profile selection
+includes pilot+production camera work and never lowers that minimum profile.
+The existing `fixed_samples_png` GPU and acknowledged imported-review contracts
+remain unchanged. These projections are read-only and do not certify convergence.
+
+CPU saved `sun` and `sky` preserve the shared numerical domains and explicit method-switch/adoption policy described in [CPU celestial lighting](render-cpu-celestial.md). Sun/Sky support in this source preparation remains uncompiled and unqualified.

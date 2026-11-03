@@ -1013,6 +1013,8 @@ fn dielectric_triangle_task(cancel: CancelToken) -> ImageTask {
     let mut request = task.request;
     let options = RaytraceOptions {
         dielectrics: vec![job::DielectricOptions {
+            shadow_transmission: false,
+            subsurface: None,
             body_index: 0,
             body_name: "work fixture".into(),
             boundary: job::DielectricBoundary::ThinSheet,
@@ -1127,6 +1129,8 @@ fn optical_sheet(name: &str, x: f64, z: f64) -> crate::ProductMesh {
 
 fn optical_input(body_index: usize, body_name: &str, ior: f64) -> job::DielectricOptions {
     job::DielectricOptions {
+        shadow_transmission: false,
+        subsurface: None,
         body_index,
         body_name: body_name.into(),
         boundary: job::DielectricBoundary::ThinSheet,
@@ -1391,7 +1395,11 @@ fn optical_admission_bills_capacity_and_refuses_ambiguous_effect_and_environment
     let without_optics = admit(&scene, &plain_request, &plain).unwrap();
     assert_eq!(
         with_optics.estimated_total_bytes - without_optics.estimated_total_bytes,
-        bytes + request.raytrace.as_ref().unwrap().retained_dielectric_bytes().unwrap() + std::mem::size_of::<OpticalTask>() as u64
+        bytes
+            + request.raytrace.as_ref().unwrap().retained_dielectric_bytes().unwrap()
+            + std::mem::size_of::<OpticalTask>() as u64
+            + super::super::legacy_certificates::Task::required_bytes(&scene, &options).unwrap()
+            + std::mem::size_of::<super::super::legacy_certificates::CertifiedOptics>() as u64
     );
     options.surface_effects = Some(vec![crate::surface_patterns::SurfaceEffect {
         body: name,
@@ -1934,6 +1942,8 @@ fn cpu_denoise_production_guides_use_exact_body_and_material_bypass_policy() {
                     .iter()
                     .enumerate()
                     .map(|(body_index, body)| job::DielectricOptions {
+                        shadow_transmission: false,
+                        subsurface: None,
                         body_index,
                         body_name: body.name.clone(),
                         boundary: job::DielectricBoundary::ThinSheet,
@@ -2082,4 +2092,118 @@ fn cpu_denoise_hit_and_miss_guide_continuations_charge_one_unit_before_each_stor
             }
         }
     }
+}
+
+#[test]
+fn adaptive_certified_optics_drain_pilot_branches_and_keep_exact_independent_production_beer_energy() {
+    use crate::job::adaptive::AdaptiveSampling;
+    for thin in [false, true] {
+        for ior in [1.0, 1.5] {
+            let build = || {
+                let original = progressive_optics_fixture(16, thin, ior, CancelToken::default());
+                let options = RaytraceOptions {
+                    adaptive: Some(Box::new(AdaptiveSampling { pilot_samples: 16, min_samples: 16, ..Default::default() })),
+                    ..original.options
+                };
+                let request = ImageRequest { raytrace: Some(options.clone()), ..original.request };
+                ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap()
+            };
+            let actual = progressive_optics_complete(build(), 1);
+            assert_eq!(actual, progressive_optics_complete(build(), 16384));
+            assert_eq!(actual.0.iter().map(|p| p.0).collect::<Vec<_>>(), (1..32).collect::<Vec<_>>());
+            let production = progressive_optics_complete(progressive_optics_fixture(16, thin, ior, CancelToken::default()), 3);
+            assert_eq!(actual.1, production.1, "discarded pilots cannot alter the existing16-sample production optical estimator");
+            if ior == 1.0 {
+                let mapped = map_to_display(Vec3::new((-0.8_f64).exp(), (-1.6_f64).exp(), 1.0), 0.0).unwrap();
+                let expected = [encode8(mapped.x), encode8(mapped.y), encode8(mapped.z), 255];
+                for (_, png) in actual.0.iter().chain(std::iter::once(&(32, actual.1.clone()))) {
+                    assert_eq!(
+                        ::image::load_from_memory(png).unwrap().to_rgba8().get_pixel(0, 0).0,
+                        expected,
+                        "all pilot/production prefixes retain the independent8mm Beer oracle"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn prepaid_legacy_certificate_and_standalone_cursor_share_cumulative_work_and_exact_output() {
+    let scene = dielectric::tests::scene(dielectric::tests::box_body(2.0));
+    let options = RaytraceOptions {
+        dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)],
+        lights: Some(Vec::new()),
+        environment: Some(job::RaytraceEnvironmentOptions { color: [1.0; 3], intensity: 1.0 }),
+        output: Some(Box::new(job::OutputOptions { linear_exr: true, ..Default::default() })),
+        ..Default::default()
+    };
+    let request = dielectric::tests::request(options.clone());
+    let cancel = CancelToken::default();
+    let proof = certify_for_request(&scene, &request, &options, &cancel).unwrap().unwrap();
+    let prepared_work = proof.work_used();
+    assert!(prepared_work > 12, "the complete tiled-boundary proof is real work");
+    let mut prepared = ImageTask::new_prepared(scene.clone(), request.clone(), cancel, options.clone(), None, Some(proof)).unwrap();
+    let mut standalone = ImageTask::new(scene, request, CancelToken::default(), options).unwrap();
+    assert!(prepared.optical[0].preparation.is_empty(), "the factory consumes the proof instead of certifying again");
+    assert!(!standalone.optical[0].preparation.is_empty());
+    assert_eq!(prepared.work.used(), prepared_work);
+    while !standalone.optical[0].preparation.is_empty() {
+        let before = standalone.work.used();
+        assert!(matches!(standalone.step(1).unwrap(), TaskPoll::Pending(_)));
+        assert_eq!(standalone.work.used() - before, 1);
+        assert!(standalone.triangles.is_empty() && standalone.pixels.is_empty(), "proof precedes geometry/pixels");
+    }
+    assert_eq!(standalone.work.used(), prepared.work.used(), "background proof/store credit transfers into the one cumulative budget");
+    let complete = |task: &mut ImageTask| {
+        for _ in 0..100_000 {
+            if let TaskPoll::Complete(png) = task.step(1).unwrap() {
+                return png;
+            }
+        }
+        panic!("tiny certified image did not complete");
+    };
+    let a = complete(&mut prepared);
+    let b = complete(&mut standalone);
+    assert_eq!(a, b);
+    let raw = prepared.take_linear_exr().expect("final raw EXR");
+    assert_eq!(Some(raw.as_slice()), standalone.take_linear_exr().as_deref(), "prepared proof does not alter raw master bytes");
+    assert_eq!(prepared.work.used(), standalone.work.used());
+    // Independent native uncompressed FLOAT EXR scanline: one1×1 chunk stores
+    // the four A/B/G/R channels, all exactly1 for this lossless white furnace.
+    assert_eq!(&raw[..8], &[0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0]);
+    let mut header = 8;
+    while raw[header] != 0 {
+        header += raw[header..].iter().position(|byte| *byte == 0).unwrap() + 1;
+        header += raw[header..].iter().position(|byte| *byte == 0).unwrap() + 1;
+        let count = u32::from_le_bytes(raw[header..header + 4].try_into().unwrap()) as usize;
+        header += 4 + count;
+    }
+    header += 1;
+    let chunk = u64::from_le_bytes(raw[header..header + 8].try_into().unwrap()) as usize;
+    assert_eq!(chunk, header + 8);
+    assert_eq!(i32::from_le_bytes(raw[chunk..chunk + 4].try_into().unwrap()), 0);
+    assert_eq!(u32::from_le_bytes(raw[chunk + 4..chunk + 8].try_into().unwrap()), 16);
+    let channels: [f32; 4] = std::array::from_fn(|i| f32::from_le_bytes(raw[chunk + 8 + i * 4..chunk + 12 + i * 4].try_into().unwrap()));
+    assert_eq!(channels, [1.0; 4], "lossless raw radiance/coverage remains exactly1 before presentation");
+    // Default Reinhard maps linear1 to.5; standard sRGB encoding rounds to188.
+    assert_eq!(
+        ::image::load_from_memory(&a).unwrap().to_rgba8().get_pixel(0, 0).0,
+        [188, 188, 188, 255],
+        "white furnace follows the existing presentation contract"
+    );
+}
+
+#[test]
+fn standalone_legacy_preparation_cancellation_never_advances_or_allocates_pixels() {
+    let scene = dielectric::tests::scene(dielectric::tests::box_body(2.0));
+    let options = RaytraceOptions { dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)], ..Default::default() };
+    let request = dielectric::tests::request(options.clone());
+    let cancel = CancelToken::default();
+    let mut task = ImageTask::new(scene, request, cancel.clone(), options).unwrap();
+    assert!(matches!(task.step(1).unwrap(), TaskPoll::Pending(_)));
+    let before = (task.work.used(), task.optical[0].preparation.len(), task.triangles.len(), task.pixels.len());
+    cancel.cancel();
+    assert_eq!(task.step(1).err().unwrap().code, ErrorCode::Cancelled);
+    assert_eq!((task.work.used(), task.optical[0].preparation.len(), task.triangles.len(), task.pixels.len()), before);
 }

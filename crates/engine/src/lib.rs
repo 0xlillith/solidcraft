@@ -26,6 +26,7 @@ pub mod product_scene;
 pub mod recovery;
 pub mod render_jobs;
 pub mod render_lights;
+pub mod render_preparation;
 pub mod sample;
 pub mod schema;
 #[cfg(not(target_arch = "wasm32"))]
@@ -38,12 +39,13 @@ pub mod status_items;
 pub mod timing;
 pub mod view;
 
+use solidcraft_geom::prelude::*;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solidcore_record::Vec3;
 use solidcraft_doc::{Document, Model, ModelState};
-use solidcraft_geom::Vec3;
 
 pub use cmd::settings::{MAX_PROFILE_NAME, profile_name};
 pub use cmd::{
@@ -84,7 +86,10 @@ pub enum EngineError {
 
 impl From<solidcraft_doc::DocError> for EngineError {
     fn from(e: solidcraft_doc::DocError) -> Self {
-        EngineError::Other(e.to_string())
+        match e {
+            solidcraft_doc::DocError::Kernel(e) => e.into(),
+            e => EngineError::Other(e.to_string()),
+        }
     }
 }
 impl From<solidcraft_sketch::SketchError> for EngineError {
@@ -94,7 +99,19 @@ impl From<solidcraft_sketch::SketchError> for EngineError {
 }
 impl From<solidcraft_kernel::KernelError> for EngineError {
     fn from(e: solidcraft_kernel::KernelError) -> Self {
-        EngineError::Other(e.to_string())
+        match e {
+            // A panic the kernel caught: internal, as one in the command would be. The command's id
+            // is filled in where the command is run (`Session::execute`).
+            solidcraft_kernel::KernelError::Internal(m) => EngineError::Internal(String::new(), m),
+            e => EngineError::Other(e.to_string()),
+        }
+    }
+}
+
+impl EngineError {
+    /// The error a failed feature's result reports: internal when the kernel caught a panic.
+    pub(crate) fn of_feature(r: &solidcraft_doc::FeatureResult, error: String) -> EngineError {
+        if r.internal { EngineError::Internal(String::new(), error) } else { EngineError::Other(error) }
     }
 }
 impl From<solidcraft_io::IoError> for EngineError {
@@ -1159,7 +1176,7 @@ impl Session {
                 for sketch in w.sketches.iter_mut().filter(|sk| self.doc.feature(sk.feature).is_some_and(|f| f.component == self.active_component)) {
                     let sketch = Arc::make_mut(sketch);
                     let plane = sketch.plane;
-                    sketch.plane = solidcraft_geom::Plane::new(
+                    sketch.plane = solidcore_record::Plane::new(
                         solidcraft_doc::apply_point(&delta, plane.origin),
                         solidcraft_doc::apply_vector(&delta, plane.x),
                         solidcraft_doc::apply_vector(&delta, plane.y),
@@ -1648,6 +1665,11 @@ impl Session {
                 Err(EngineError::Internal(spec.id.to_string(), msg))
             }
         };
+        // The kernel's internal errors come up without the command's id.
+        let r = r.map_err(|e| match e {
+            EngineError::Internal(id, msg) if id.is_empty() => EngineError::Internal(spec.id.to_string(), msg),
+            e => e,
+        });
         // A value typed as `name = expression` defines the user parameter `name` (#4071), in the
         // same undo step; a refused definition fails the command, which leaves the design as it was.
         let r = match r {
@@ -2174,8 +2196,10 @@ impl Session {
             {
                 self.doc_mut().marker = Some(idx + 1);
                 self.refresh();
-                if let Some(e) = self.model.result(fid).and_then(|r| r.error.clone()) {
-                    return Err(EngineError::Other(e));
+                if let Some(r) = self.model.result(fid)
+                    && let Some(e) = r.error.clone()
+                {
+                    return Err(EngineError::of_feature(r, e));
                 }
             }
         }

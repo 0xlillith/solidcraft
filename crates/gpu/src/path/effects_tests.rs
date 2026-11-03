@@ -154,7 +154,7 @@ fn weathering_reference(@builtin(global_invocation_id) gid:vec3<u32>){
         let mut task =
             Task::new(context.clone(), sphere(white()), request(2), JobOptions { aging: stack, ..Default::default() }, CancelToken::default())
                 .unwrap();
-        context.queue.write_buffer(&task.uniform, 0, &task.parameters(4));
+        context.queue.write_buffer(&task.uniform, 0, &task.parameters(4).unwrap());
         let mut encoder = context.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -364,10 +364,10 @@ fn scratch_world_reference(@builtin(global_invocation_id) gid:vec3<u32>){{
             cache: None,
         });
         let mut req = request(4);
-        req.camera.target = solidcraft_geom::Vec3::new(0.0, target_y, 0.0);
+        req.camera.target = solidcore_record::Vec3::new(0.0, target_y, 0.0);
         let mut task =
             Task::new(context.clone(), sphere(white()), req, JobOptions { aging: stack, ..Default::default() }, CancelToken::default()).unwrap();
-        context.queue.write_buffer(&task.uniform, 0, &task.parameters(16));
+        context.queue.write_buffer(&task.uniform, 0, &task.parameters(16).unwrap());
         let mut encoder = context.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_compute_pass(&Default::default());
@@ -586,7 +586,7 @@ fn scratch_geometry_reference(@builtin(global_invocation_id) gid:vec3<u32>){
                     let mut task =
                         Task::new(context.clone(), scene.clone(), req, JobOptions { aging: stack, ..Default::default() }, CancelToken::default())
                             .unwrap();
-                    let parameters = task.parameters(64);
+                    let parameters = task.parameters(64).unwrap();
                     assert_eq!(parameters.len(), PARAMETER_BYTES);
                     // Thirty-three aligned vec4s precede the aging array. This
                     // asserts actual host serialization, not just gpu_layers().
@@ -675,7 +675,12 @@ fn scratch_keeps_visible_analytic_emission_and_its_raw_master_exact() {
             seed: 21026,
             linear_exr: true,
             aging,
-            lighting: Some(StudioLighting { environment: [0.0; 3], sun: None, area_lights: AreaLights::new(&[light]).unwrap() }),
+            lighting: Some(StudioLighting {
+                environment: [0.0; 3],
+                sun: None,
+                area_lights: AreaLights::new(&[light]).unwrap(),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let mut task = Task::new(executor.context.clone(), source.clone(), request(8), options, CancelToken::default()).unwrap();
@@ -693,4 +698,217 @@ fn scratch_keeps_visible_analytic_emission_and_its_raw_master_exact() {
     let mut aging = AgingStack::default();
     aging.push(AgingLayer { kind: AgingKind::Scratches, scale_mm: 2.0, strength: 1.0, coverage: 1.0, ..Default::default() }).unwrap();
     assert_eq!(complete(aging), baseline, "an optical surface layer cannot alter visible analytic emission, PNG/raw identity or its sample stream");
+}
+
+#[test]
+fn saved_coat_gpu_capture_reopen_and_actual_render_match_independent_normal_incidence_layer() {
+    // Independent OpenEXR scanline/FLOAT reader for this fully covered1×1 oracle.
+    // No production encoder/decoder or optional image codec participates.
+    fn raw_pixel(bytes: &[u8]) -> [f32; 4] {
+        fn word(bytes: &[u8], at: usize) -> u32 {
+            u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+        }
+        fn string<'a>(bytes: &'a [u8], at: &mut usize) -> &'a [u8] {
+            let start = *at;
+            *at += bytes[start..].iter().position(|b| *b == 0).unwrap() + 1;
+            &bytes[start..*at - 1]
+        }
+        assert_eq!(word(bytes, 0), 20_000_630);
+        assert_eq!(word(bytes, 4), 2);
+        let mut at = 8;
+        let (mut channels, mut window, mut compression) = (false, false, false);
+        while bytes[at] != 0 {
+            let name = string(bytes, &mut at);
+            let kind = string(bytes, &mut at);
+            let length = word(bytes, at) as usize;
+            at += 4;
+            let data = &bytes[at..at + length];
+            at += length;
+            match name {
+                b"channels" => {
+                    assert_eq!(kind, b"chlist");
+                    let mut c = 0;
+                    for expected in [b"A", b"B", b"G", b"R"] {
+                        assert_eq!(string(data, &mut c), expected);
+                        assert_eq!(word(data, c), 2); // FLOAT, never HALF
+                        assert_eq!(&data[c + 4..c + 8], &[0; 4]);
+                        assert_eq!((word(data, c + 8), word(data, c + 12)), (1, 1));
+                        c += 16;
+                    }
+                    assert_eq!(&data[c..], &[0]);
+                    channels = true;
+                }
+                b"dataWindow" => {
+                    assert_eq!(kind, b"box2i");
+                    assert_eq!(data, &[0; 16]);
+                    window = true;
+                }
+                b"compression" => {
+                    assert_eq!(kind, b"compression");
+                    assert_eq!(data, &[0]);
+                    compression = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(channels && window && compression);
+        at += 1;
+        let offset = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) as usize;
+        assert_eq!((word(bytes, offset), word(bytes, offset + 4)), (0, 16));
+        let channel = |i: usize| f32::from_bits(word(bytes, offset + 8 + i * 4));
+        [channel(3), channel(2), channel(1), channel(0)]
+    }
+    use std::f64::consts::{FRAC_PI_2, PI, SQRT_2};
+    let Some(executor) = executor() else { return };
+    let mut session = solidcraft_engine::Session::default();
+    session.execute("solid.box", &json!({"body_name":"Panel","corner":[-10,-10,-2],"length":20,"width":20,"height":2})).unwrap();
+    session
+        .execute(
+            "appearance.assign",
+            &json!({"bodies":["Panel"],"name":"Analytic substrate","color":[128,64,32],
+        "pbr":{"metallic":0,"roughness":0.5,"dielectric_ior":1}}),
+        )
+        .unwrap();
+    let camera = Camera { target: Vec3::ZERO, distance: 1.0, yaw: 0.0, pitch: FRAC_PI_2, roll: 0.0, fov: 0.0, ..Default::default() };
+    session
+        .execute(
+            "render.coat.bind",
+            &json!({"name":"Coat","body_index":0,"body_name":"Panel","expected_revision":session.revision,
+        "coat":{"weight":0.63,"roughness":0.61,"ior":1.7},"set":{"camera":camera,"width":1,"height":1,"job":{"method":"gpu_path","options":{
+            "samples":4,"seed":81,"max_depth":1,"linear_exr":true,"lighting":{"environment":[0,0,0],"sun":null,"area_lights":[],
+                "directional_lights":[{"direction":[0,0,1],"color":[1,1,1],"intensity":PI}]}}}}}),
+        )
+        .unwrap();
+    let container = solidcraft_io::write_design_container(&session.doc).unwrap();
+    session = solidcraft_engine::Session::new(solidcraft_io::read_design(&container).unwrap());
+    session.execute("render.scene", &json!({})).unwrap();
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    session.register_render_job_host(host.clone()).unwrap();
+    let document = session.doc.clone();
+    let model = session.model.state();
+    let evaluation_cache = session.model.cache.clone();
+    let world = session.world_state().unwrap();
+    let session_camera = session.camera;
+    let history = (session.revision, session.model.recomputed, session.undo.len(), session.redo.len());
+    let checked = session.execute("render.preflight", &json!({"setup":"Coat"})).unwrap();
+    assert_eq!(checked["coats"], json!(session.doc.render.setups["Coat"].coats));
+    assert_eq!(checked["resolved"]["executor"], "gpu-path");
+    assert_eq!(host.admitted_bytes(), 0);
+    let complete = |session: &mut solidcraft_engine::Session, settings: serde_json::Value| {
+        let start = session.execute("render.start", &json!({"settings":settings})).unwrap();
+        let id: JobId = serde_json::from_value(start["job"].clone()).unwrap();
+        let handle = session.render_job_handle(id).unwrap();
+        let status = handle.wait_timeout(Duration::from_secs(60)).unwrap();
+        assert_eq!(status.progress.phase, Phase::Completed, "{status:?}");
+        handle.frame().unwrap().unwrap()
+    };
+    let saved = session.doc.render.setups["Coat"].clone();
+    let coated = complete(&mut session, json!(saved));
+    let raw = raw_pixel(coated.linear_exr().unwrap());
+    assert_eq!(raw[3], 1.0);
+    // Independent normal-incidence dielectric GGX coat and its documented
+    // conservative entry/exit attenuation, over an IOR1 Lambert substrate.
+    let f0 = ((1.7_f64 - 1.0) / (1.7 + 1.0)).powi(2);
+    let bound = f0 + (1.0 - f0) * (1.0 - 1.0 / SQRT_2).powi(5);
+    let attenuation = (1.0 - 0.63 * bound).powi(2);
+    let highlight = 0.63 * f0 / (4.0 * 0.61_f64.powi(4));
+    let expected = [128_u8, 64, 32].map(|code| {
+        let encoded = f64::from(code) / 255.0;
+        let linear = if encoded <= 0.04045 { encoded / 12.92 } else { ((encoded + 0.055) / 1.055).powf(2.4) };
+        linear * attenuation + highlight
+    });
+    for (actual, expected) in raw[..3].iter().zip(expected) {
+        assert!((f64::from(*actual) - expected).abs() < 2e-6, "GPU coat radiance {actual} vs independent {expected}");
+    }
+    let mut plain = saved.clone();
+    plain.coats = Default::default();
+    let baseline_check = session.execute("render.preflight", &json!({"settings":plain})).unwrap();
+    assert_eq!(checked["admission"], baseline_check["admission"]);
+    assert_eq!(checked["retained_options_bytes"], baseline_check["retained_options_bytes"]);
+    let mut zero = saved;
+    let row = zero.coats.iter().next().unwrap().clone();
+    zero.coats
+        .set(
+            solidcraft_engine::doc::render_coat::SavedCoat {
+                coat: solidcraft_engine::doc::render_coat::CoatMaterial { weight: 0.0, ..row.coat },
+                ..row
+            },
+            true,
+        )
+        .unwrap();
+    let baseline = complete(&mut session, json!(plain));
+    let identity = complete(&mut session, json!(zero));
+    assert_eq!(baseline.png(), identity.png());
+    assert_eq!(baseline.linear_exr().unwrap(), identity.linear_exr().unwrap());
+    assert_ne!(coated.linear_exr().unwrap(), baseline.linear_exr().unwrap());
+    assert!(Arc::ptr_eq(&document, &session.doc));
+    assert!(Arc::ptr_eq(&model, &session.model.state()));
+    assert!(Arc::ptr_eq(&evaluation_cache, &session.model.cache));
+    assert!(Arc::ptr_eq(&world, &session.world_state().unwrap()));
+    assert_eq!(session.camera, session_camera);
+    assert_eq!((session.revision, session.model.recomputed, session.undo.len(), session.redo.len()), history);
+}
+
+#[test]
+fn saved_gpu_coat_survives_builtin_maps_aging_and_guided_filter_without_changing_the_raw_master() {
+    let Some(executor) = executor() else { return };
+    let mut session = solidcraft_engine::Session::default();
+    session.execute("solid.box", &json!({"body_name":"Panel","corner":[-10,-10,-2],"length":20,"width":20,"height":2})).unwrap();
+    session
+        .execute("appearance.assign", &json!({"bodies":["Panel"],"color":[128,64,32],"pbr":{"metallic":0,"roughness":0.5,"dielectric_ior":1}}))
+        .unwrap();
+    let camera = Camera { distance: 10.0, yaw: 0.0, pitch: std::f64::consts::FRAC_PI_2, roll: 0.0, fov: 0.0, ..Default::default() };
+    session.execute("render.coat.bind",&json!({"name":"Coat","body_index":0,"body_name":"Panel","expected_revision":session.revision,
+        "coat":{"weight":0.63,"roughness":0.61,"ior":1.7},"set":{"camera":camera,"width":16,"height":16,"job":{"method":"gpu_path","options":{
+            "samples":4,"seed":81,"max_depth":2,"linear_exr":true,"denoise":true,"lighting":{"environment":[0,0,0],"sun":null,"area_lights":[],
+                "directional_lights":[{"direction":[0,0,1],"color":[1,1,1],"intensity":3}]},"aging":[{"kind":"dust","strength":0.2,"coverage":1}]}}}})).unwrap();
+    session
+        .execute("render.library.surface.bind", &json!({"name":"Coat","surface":{"id":"SURF-001","body_index":0,"body_name":"Panel","scale":10}}))
+        .unwrap();
+    let bytes = solidcraft_io::write_design_container(&session.doc).unwrap();
+    session = solidcraft_engine::Session::new(solidcraft_io::read_design(&bytes).unwrap());
+    session.execute("render.scene", &json!({})).unwrap();
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    session.register_render_job_host(host).unwrap();
+    let document = session.doc.clone();
+    let model = session.model.state();
+    let evaluation_cache = session.model.cache.clone();
+    let world = session.world_state().unwrap();
+    let session_camera = session.camera;
+    let history = (session.revision, session.model.recomputed, session.undo.len(), session.redo.len());
+    let complete = |session: &mut solidcraft_engine::Session, setup: solidcraft_engine::doc::render_settings::RenderSetup| {
+        let reply = session.execute("render.start", &json!({"settings":setup})).unwrap();
+        let id: JobId = serde_json::from_value(reply["job"].clone()).unwrap();
+        let handle = session.render_job_handle(id).unwrap();
+        let status = handle.wait_timeout(Duration::from_secs(60)).unwrap();
+        assert_eq!(status.progress.phase, Phase::Completed, "{status:?}");
+        handle.frame().unwrap().unwrap()
+    };
+    let saved = session.doc.render.setups["Coat"].clone();
+    let actual = complete(&mut session, saved.clone());
+    let mut uncoated = saved.clone();
+    uncoated.coats = Default::default();
+    let plain = complete(&mut session, uncoated);
+    assert_ne!(actual.linear_exr().unwrap(), plain.linear_exr().unwrap(), "maps and aging cannot erase the captured coat");
+    let mut unmapped = saved.clone();
+    unmapped.surfaces = Default::default();
+    let no_map = complete(&mut session, unmapped);
+    assert_ne!(actual.linear_exr().unwrap(), no_map.linear_exr().unwrap(), "maps still modify the coated substrate");
+    let mut unaged = saved.clone();
+    let Some(solidcraft_engine::doc::render_settings::RenderJob::GpuPath { options, .. }) = &mut unaged.job else { panic!("GPU") };
+    options.aging = Default::default();
+    let no_age = complete(&mut session, unaged);
+    assert_ne!(actual.linear_exr().unwrap(), no_age.linear_exr().unwrap(), "aging still modifies the mapped coat/substrate");
+    let mut unfiltered = saved.clone();
+    let Some(solidcraft_engine::doc::render_settings::RenderJob::GpuPath { options, .. }) = &mut unfiltered.job else { panic!("GPU") };
+    options.denoise = false;
+    let raw = complete(&mut session, unfiltered);
+    assert_eq!(actual.linear_exr().unwrap(), raw.linear_exr().unwrap(), "denoising cannot enter coated raw transport");
+    assert_eq!(session.doc.render.setups["Coat"], saved);
+    assert!(Arc::ptr_eq(&document, &session.doc));
+    assert!(Arc::ptr_eq(&model, &session.model.state()));
+    assert!(Arc::ptr_eq(&evaluation_cache, &session.model.cache));
+    assert!(Arc::ptr_eq(&world, &session.world_state().unwrap()));
+    assert_eq!(session.camera, session_camera);
+    assert_eq!((session.revision, session.model.recomputed, session.undo.len(), session.redo.len()), history);
 }

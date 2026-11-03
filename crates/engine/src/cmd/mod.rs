@@ -34,7 +34,7 @@ mod component_clone;
 mod component_clone_assembly;
 mod construct;
 mod delete;
-mod diagnostics;
+pub(crate) mod diagnostics;
 mod edit;
 mod face;
 mod features;
@@ -92,6 +92,8 @@ mod parameters;
 mod plastic;
 mod print_face;
 mod render;
+pub(crate) use render::{PreparedCapture, prepare_capture_with_metadata, render_cancel_params};
+pub(crate) use render_ui::batch_request;
 mod render_ui;
 #[cfg(test)]
 mod script_tests;

@@ -13,7 +13,7 @@ This mode uses the native `cpu-raytrace` executor. With `raytrace.path` absent i
 keeps the existing direct-light, selected-reflection and certified sheet/box
 optical transport. Explicit [opaque path lighting](render-cpu-path.md) adds bounded
 diffuse/specular continuation. Guided noise reduction is a separate saved option
-applied to completed passes. Caustics, adaptive convergence, subsurface transport
+applied to completed passes. Caustics, certified adaptive convergence, subsurface transport
 and general glass path tracing remain unsupported.
 
 ## Request and saved intent
@@ -223,3 +223,45 @@ premultiplied radiance/coverage is independent of this display choice. See
 
 
 The optional [CPU opaque path lighting](render-cpu-path.md) consumer is part of the combined source and has executed renderer regressions. It adds bounded progressive diffuse/specular GI only when `path` is authored; existing restrictions and bytes above describe the absent-path route. Mixed glass/anisotropy/volume parity and combined document/engine/UI/native qualification remain incomplete.
+
+## Optional independent-pilot allocation
+
+CPU `raytrace.adaptive` (saved `CpuJob.options.adaptive`) uses the shared
+`AdaptiveSampling` policy. It requires an explicit progressive production cap of
+at least 16 samples. Pilots use an independent seed domain; their RGB and coverage
+Welford statistics allocate each pixel a fixed 16..production-cap budget. Pilot
+radiance is discarded through a cooperative reset. Production preserves the
+ordinary CPU seed and zero-based sample ordinals, and stopped pixels consume no
+more transport variates or rays. Every complete pilot and production sweep still
+passes through the same two-slot checkpoint publication; the UI can coalesce
+physical paints, and externally pinned slots can cause retention skips.
+
+All existing CPU profile limits include **pilot_samples + samples_per_pixel**;
+no cap or profile is raised automatically. At most 256 pilots and 4096 total
+pilot/production passes are possible in the largest selected profile. Compact
+retains its 64-pass and 16,777,216 camera-sample bounds. A 32-pilot/64-production
+request therefore needs an explicit profile that admits 96 total passes. The
+cumulative work budget also includes initialization, reset, skipped-pixel cursors,
+finishing and publication. Statistical allocation can miss rare paths and does
+not certify a noise level or completion time.
+
+Per-pixel sums, coverage and sample counts remain f64/u16 until complete-pass
+resolve. RGB and raw FLOAT32 EXR coverage are divided by each pixel's own
+production count; no uniform denominator or PNG alpha quantization enters the
+raw master. Shared finishing borrows the film's exact count plane and rounds
+straight-alpha PNG bytes from the integer covered/sample ratio. It allocates no
+additional count snapshot. The raw EXR remains final-only and unfiltered.
+`JobStatus.sampling` records the actual production count range, evaluations and
+pixels at the cap; `PreviewInfo.adaptive` distinguishes pilot and production
+ordinals. A production sweep ordinal is not a promise of uniform per-pixel work.
+
+The existing certified optical/aniso route, physical lens, direct lights/HDR,
+opaque path lighting and completed-pass denoiser use the same adaptive camera
+identity. Their existing geometry, coat, optical/HDR and path-combination guards
+remain in force. Omission preserves the ordinary film allocation, random keys,
+sample order and debits; actual new inline metadata is billed by size rather
+than hidden behind the historical memory estimate.
+
+This implementation artifact has not been compiled or run in its outside staging
+copy. Its numerical, host ownership, saved-request and UI regressions require the
+normal serial repository checks before a CPU adaptive capability claim.

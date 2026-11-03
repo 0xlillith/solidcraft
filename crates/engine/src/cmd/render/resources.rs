@@ -68,8 +68,11 @@ pub(super) fn capture_settings(s: &mut Session, params: &Value) -> Result<Value>
     // Every numerical and method-dependent rejection happens before touching the source.
     match &setup.job {
         Some(RenderJob::CpuRaytrace { options, .. }) => {
-            if options.hdr.is_some() || options.environment.is_some() || params.get("assume_linear_srgb").is_some() {
-                return Err(bad(command, "CPU HDR capture requires hdr/environment unset and declared primaries; assume_linear_srgb is GPU-only"));
+            if options.hdr.is_some() || options.environment.is_some() || options.sky.is_some() || params.get("assume_linear_srgb").is_some() {
+                return Err(bad(
+                    command,
+                    "CPU HDR capture requires hdr/environment/sky unset and declared primaries; assume_linear_srgb is GPU-only",
+                ));
             }
             CpuHdrEnvironment::check_controls(input.rotation_rad, input.intensity, input.samples.unwrap_or(16))
                 .map_err(|e| bad(command, e.to_string()))?;

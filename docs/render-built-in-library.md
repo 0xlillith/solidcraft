@@ -62,3 +62,31 @@ A saved HDR with an authored solar disk cannot also retain an analytic sun. Appl
 ## Prepared verification
 
 Regression sources cover catalog counts/pagination, blocked concepts, exact hashes and channel roles, absent-file HDR persistence, orientation conversion, explicit appearance approximation, unchanged engineering metadata, body identity, scalar channels, positive normal basis, actual shared source storage, GPU buffer deduplication and GPU scalar output against a linear reference. Execution results are recorded separately after the batch is frozen.
+
+## Reviewed CPU studios and rigs
+
+Native studio reviews accept the explicitly selected CPU or GPU method. The CPU
+projection preserves sampling, adaptive allocation, profile, camera, lens, optical
+bindings, maps, aging, volume and output choices. It installs the same embedded
+HDR identity/rotation/intensity, passive stage and explicit exposure. Existing CPU
+HDR sample count is retained, or starts at16 when none was authored. Native
+three-light compositions keep their existing1/16 radiance gain; it is not added to
+direct rig imports.
+
+Direct CPU rigs keep exact authored achromatic area radiance and world-mm full
+edges. They never retain the implicit three studio lights. The unchanged CPU area
+intensity ceiling64 means16 of the19 currently executable direct rigs refuse;
+RIG-007, RIG-020 (Sun) and RIG-022 (black) fit this numerical projection. World,
+clearance, feature and resource checks still apply. A refusal never clamps a light,
+splits it, changes method or removes authored settings.
+
+A CPU Sun review without indirect lighting offers an explicit adoption action.
+It adds path depth8, progressive16/seed0 only if absent, one camera sample per
+pass and traced shadows. Existing progressive/adaptive/profile intent is kept;
+the complete prospective setup must validate before adoption plus rig replacement
+publishes as one undo. Preparing, cancelling or painting a review does not save,
+start a job or save unrelated viewport navigation.
+
+This CPU authoring increment is source preparation only. Its new engine, pointer,
+cold-reopen and native-render regressions have not yet been compiled or executed;
+existing GPU or renderer evidence does not qualify this bridge automatically.

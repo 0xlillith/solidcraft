@@ -113,3 +113,11 @@ No additional image plane, ray, reservation envelope or work limit is introduced
 Only the completed final PNG is exportable; previews remain nonexportable and
 cancellation retains the existing publication barrier. Export writes the exact
 retained straight-alpha PNG bytes.
+
+For explicit CPU independent-pilot allocation, raw linear means and coverage use
+each pixel's production sample count. Completed-pass presentation borrows the
+film's exact count plane for integer PNG alpha rounding; it does not copy a new
+image-sized count plane or write pilot radiance to the final raw EXR. Captured
+sampling metadata remains in the existing job report rather than a second,
+conflicting linear-master schema. This outside integration requires compilation
+and numerical/export qualification before advertising the CPU adaptive route.

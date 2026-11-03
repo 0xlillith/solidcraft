@@ -1,11 +1,11 @@
 //! `cargo xtask kernel-cases`: the kernel regression rig. Runs every case in
-//! `tests/kernel-cases/<area>/<id>/` through `solidcraft-cli kernel-cases` on SMLib, one process
-//! per case (so a crash or a hang is that case's result, not the run's), and writes
+//! `tests/kernel-cases/<area>/<id>/` through `solidcraft-cli kernel-cases`, one process per case
+//! (so a crash or a hang is that case's result, not the run's), and writes its report,
 //! `docs/kernel-cases.md`: results per case, coverage per area and per source, and the issues and
 //! PRs looked at and skipped. Each case is graded against its own answer.
 //!
 //! The run's output folder (`--out`, default `target/kernel-cases`) holds `results.json`, every
-//! case's full result, and `dumps/<area>-<case>/`, the inputs of each SMLib call a case's run
+//! case's full result, and `dumps/<area>-<case>/`, the inputs of each kernel call a case's run
 //! failed in (`solidcraft-cli kernel-cases --dumps`), for replay.
 
 use std::collections::BTreeMap;
@@ -28,13 +28,16 @@ pub(crate) struct Options {
     area: Option<String>,
     timeout: Duration,
     pub(crate) jobs: usize,
-    /// The run's output folder: `results.json` and the SMLib dumps (`dumps/`).
+    /// The run's output folder: `results.json` and the kernel's dumps (`dumps/`).
     out: PathBuf,
     /// `--known-failing FILE`: run as a regression gate against that baseline (see [`gate`]).
     known_failing: Option<PathBuf>,
     /// `--validation MODE`: when SMLib's full check runs on the cases' features (each_step,
     /// each_feature, off; the CLI's default, each_feature, when not given).
     validation: Option<String>,
+    /// `--export DIR`: each case's corpus entry for solidcore's rig into DIR (`solidcraft-cli
+    /// kernel-cases --export`), then DIR/manifest.json; no report is written.
+    pub(crate) export: Option<PathBuf>,
 }
 
 /// The run's options; `out` is its output folder unless `--out` gives one.
@@ -43,6 +46,9 @@ pub(crate) fn options(rest: &[&str], out: &str) -> Result<Options, String> {
     let secs = arg("--timeout").map(|t| t.parse::<u64>().map_err(|e| format!("--timeout: {e}"))).transpose()?.unwrap_or(DEFAULT_TIMEOUT_S);
     let jobs = arg("--jobs").map(|j| j.parse::<usize>().map_err(|e| format!("--jobs: {e}"))).transpose()?.unwrap_or(4).clamp(1, 32);
     let out = arg("--out").map_or_else(|| root().join(out), PathBuf::from);
+    if rest.contains(&"--route") || rest.contains(&"--kernel") {
+        return Err("--route and --kernel are gone: the cases run on solidcore, the only kernel".into());
+    }
     let known_failing = arg("--known-failing").map(|p| {
         let p = PathBuf::from(p);
         if p.is_absolute() { p } else { root().join(p) }
@@ -51,14 +57,23 @@ pub(crate) fn options(rest: &[&str], out: &str) -> Result<Options, String> {
     if let Some(v) = validation.as_deref().filter(|v| !["each_step", "each_feature", "off"].contains(v)) {
         return Err(format!("--validation must be each_step, each_feature or off, not `{v}`"));
     }
-    Ok(Options { cli: arg("--cli"), area: arg("--area"), timeout: Duration::from_secs(secs), jobs, out, known_failing, validation })
+    let export = arg("--export").map(|p| {
+        let p = PathBuf::from(p);
+        if p.is_absolute() { p } else { root().join(p) }
+    });
+    Ok(Options { cli: arg("--cli"), area: arg("--area"), timeout: Duration::from_secs(secs), jobs, out, known_failing, validation, export })
 }
 
 /// Every case's full result as JSON, into the run's output folder.
 pub(crate) fn save_results(o: &Options, results: &[Value]) -> Result<(), String> {
-    std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
-    let path = o.out.join("results.json");
-    let text = serde_json::to_string_pretty(results).map_err(|e| e.to_string())?;
+    save_json(&o.out, "results.json", results)
+}
+
+/// `value` as pretty JSON into `dir/name`.
+fn save_json<T: serde::Serialize + ?Sized>(dir: &Path, name: &str, value: &T) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(name);
+    let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
@@ -94,13 +109,46 @@ fn run_one(o: &Options, case: &Path) -> Value {
     r
 }
 
+/// Waits for `child` for at most `timeout` while reading its stdout and stderr, so a child that
+/// writes more than the pipe buffer (64 KiB on Linux) is not blocked in `write` and taken for a
+/// hang. `None`: the child was still running at the timeout and has been killed.
+fn wait_draining(mut child: std::process::Child, timeout: Duration) -> Result<Option<std::process::Output>, String> {
+    fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if start.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // The readers are left to finish on their own: a grandchild (`cargo run`'s CLI)
+                // may still hold the pipes open.
+                return Ok(None);
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(format!("wait: {e}")),
+        }
+    };
+    let join = |h: std::thread::JoinHandle<Vec<u8>>| h.join().map_err(|_| "output: a pipe reader stopped".to_string());
+    Ok(Some(std::process::Output { status, stdout: join(stdout)?, stderr: join(stderr)? }))
+}
+
 fn run_case(o: &Options, case: &Path) -> Value {
     let rel = case.strip_prefix(root()).unwrap_or(case).to_path_buf();
     let mut cmd = match &o.cli {
         Some(bin) => Command::new(bin),
         None => {
             let mut c = cargo();
-            c.args(["run", "-q", "--release", "-p", "solidcraft-cli", "--features", "smlib", "--"]);
+            c.args(["run", "-q", "--release", "-p", "solidcraft-cli", "--"]);
             c
         }
     };
@@ -110,34 +158,42 @@ fn run_case(o: &Options, case: &Path) -> Value {
     if let Some(v) = &o.validation {
         cmd.arg(format!("--validation={v}"));
     }
+    if let Some(d) = &o.export {
+        // This run's entry replaces the last one's; a case that hangs or crashes now leaves none,
+        // so the manifest marks it, never an entry from an earlier run.
+        if let Ok(under) = case.strip_prefix(root().join("tests/kernel-cases")) {
+            // Case ids hold dots (`m5x0.7`): the names are built whole, never by extension.
+            let entry = d.join(under);
+            let id = entry.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            for stale in [entry.with_file_name(format!("{id}.json")), entry.with_file_name(format!("{id}.bodies.json.gz"))] {
+                if let Err(e) = std::fs::remove_file(&stale)
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    eprintln!("kernel-cases: {}: {e}", stale.display());
+                }
+            }
+        }
+        let mut export = std::ffi::OsString::from("--export=");
+        export.push(d);
+        cmd.arg(export);
+    }
     cmd.arg(&rel).stdout(Stdio::piped()).stderr(Stdio::piped());
     let base = |status: &str, error: String| {
         let area = case.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let id = case.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         json!({"case": id, "area": area, "status": status, "error": error})
     };
-    let mut child = match cmd.spawn() {
+    let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return base("fail", format!("solidcraft-cli: {e}")),
     };
     // A case may need longer than the run's timeout (`timeout_s`, at most 30 min).
     let timeout = read(&case.join("expected.json"))["timeout_s"].as_u64().map_or(o.timeout, |s| Duration::from_secs(s.min(1800)).max(o.timeout));
     let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if start.elapsed() > timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return base("hang", format!("no result after {} s", timeout.as_secs()));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(e) => return base("fail", format!("wait: {e}")),
-        }
-    }
-    let out = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(e) => return base("fail", format!("output: {e}")),
+    let out = match wait_draining(child, timeout) {
+        Ok(Some(out)) => out,
+        Ok(None) => return base("hang", format!("no result after {} s", timeout.as_secs())),
+        Err(e) => return base("fail", e),
     };
     match serde_json::from_slice::<Value>(&out.stdout).ok().and_then(|v| v.as_array().and_then(|a| a.first().cloned())) {
         Some(mut r) => {
@@ -154,7 +210,17 @@ fn run_case(o: &Options, case: &Path) -> Value {
     }
 }
 
+/// Every case, one job pool for them all; the results in order.
 pub(crate) fn run_all(o: &Options, list: &[PathBuf]) -> Vec<Value> {
+    // Without --cli each case is `cargo run`: build the CLI once first, so the first cases don't
+    // spend their timeout compiling it.
+    if o.cli.is_none() {
+        let mut c = cargo();
+        c.args(["build", "-q", "--release", "-p", "solidcraft-cli"]);
+        if let Err(e) = c.status().map_err(|e| e.to_string()).and_then(|s| if s.success() { Ok(()) } else { Err(s.to_string()) }) {
+            eprintln!("kernel-cases: building solidcraft-cli failed ({e}); each case will say why");
+        }
+    }
     let next = Arc::new(Mutex::new(0usize));
     let results = Arc::new(Mutex::new(vec![Value::Null; list.len()]));
     std::thread::scope(|s| {
@@ -183,9 +249,8 @@ pub(crate) fn run_all(o: &Options, list: &[PathBuf]) -> Vec<Value> {
     Arc::try_unwrap(results).ok().and_then(|m| m.into_inner().ok()).unwrap_or_default()
 }
 
-pub(crate) fn cell(r: Option<&Value>) -> String {
-    let Some(r) = r else { return String::new() };
-    let status = r["status"].as_str().unwrap_or("?");
+/// What went wrong in a result: its failed checks, then its error.
+fn notes(r: &Value) -> Vec<String> {
     let mut notes: Vec<String> = r["checks"]
         .as_array()
         .into_iter()
@@ -196,6 +261,13 @@ pub(crate) fn cell(r: Option<&Value>) -> String {
     if let Some(e) = r["error"].as_str() {
         notes.push(e.chars().take(160).collect());
     }
+    notes
+}
+
+pub(crate) fn cell(r: Option<&Value>) -> String {
+    let Some(r) = r else { return String::new() };
+    let status = r["status"].as_str().unwrap_or("?");
+    let notes = notes(r);
     let s = match status {
         "pass" => "pass".to_string(),
         "unsupported" => "not supported yet".to_string(),
@@ -256,7 +328,8 @@ fn source_kinds(dir: &Path, cited: &BTreeMap<String, Vec<String>>) -> Result<Str
     Ok(md)
 }
 
-fn write_report(dir: &Path, list: &[PathBuf], results: &[Value]) -> Result<String, String> {
+/// The run's report into `to` (relative to the repository root, or absolute).
+fn write_report(dir: &Path, list: &[PathBuf], results: &[Value], to: &Path) -> Result<String, String> {
     let key = |r: &Value| (r["area"].as_str().unwrap_or("").to_string(), r["case"].as_str().unwrap_or("").to_string());
     let by_case: BTreeMap<(String, String), &Value> = results.iter().map(|r| (key(r), r)).collect();
     // Coverage: per area, cases and their statuses; per source, its cases.
@@ -287,7 +360,7 @@ fn write_report(dir: &Path, list: &[PathBuf], results: &[Value]) -> Result<Strin
         );
     }
     let mut md = String::from(
-        "# Kernel regression rig\n\nGenerated by `cargo xtask kernel-cases`. Every geometry case the old kernel (truck) got wrong, as an issue, a PR or a crash report recorded it, is a use case in [`tests/kernel-cases/`](../tests/kernel-cases/) with its own right answer: numbers from analysis or a hand calculation (**analytic**) where the geometry has them, and otherwise the invariants (**invariants**): the operation succeeds, or refuses cleanly where that is the right answer; each body is one closed shell that passes the record's structure and geometry checks and SMLib's own check; the expected face, edge and vertex counts. Never a kernel's output, and never a commercial kernel's.\n\nThe cases run on SMLib, SolidCraft's kernel. A failing case stays failing until the kernel is fixed; there is no workaround on SolidCraft's side. A failed SMLib call leaves its inputs for replay in the run's output folder (`target/kernel-cases/dumps/<area>-<case>/`). See [`tests/kernel-cases/README.md`](../tests/kernel-cases/README.md) for the format. Every area is also a regression gate: CI's Kernel rig workflow runs them on every pull request that touches the kernel and fails on a case that fails and its area's `KNOWN_FAILING` (such as [`fillets/KNOWN_FAILING`](../tests/kernel-cases/fillets/KNOWN_FAILING)) does not list, or a listed case that passes.\n\n",
+        "# Kernel regression rig\n\nGenerated by `cargo xtask kernel-cases`. Every geometry case the old kernel (truck) got wrong, as an issue, a PR or a crash report recorded it, is a use case in [`tests/kernel-cases/`](../tests/kernel-cases/) with its own right answer: numbers from analysis or a hand calculation (**analytic**) where the geometry has them, and otherwise the invariants (**invariants**): the operation succeeds, or refuses cleanly where that is the right answer; each body is one closed shell that passes the record's structure and geometry checks and the kernel's own check; the expected face, edge and vertex counts. Never a kernel's output, and never a commercial kernel's.\n\nThe cases run on solidcore, SolidCraft's kernel. A failing case stays failing until the kernel is fixed; there is no workaround on SolidCraft's side. A failed kernel call leaves its inputs for replay in the run's output folder (`target/kernel-cases/dumps/<area>-<case>/`). See [`tests/kernel-cases/README.md`](../tests/kernel-cases/README.md) for the format. Every area is also a regression gate: CI's Kernel rig workflow runs them on every pull request that touches the kernel and fails on a case that fails and its area's `KNOWN_FAILING` (such as [`fillets/KNOWN_FAILING`](../tests/kernel-cases/fillets/KNOWN_FAILING)) does not list, or a listed case that passes.\n\n",
     );
     md += "## Coverage\n\n| Area | Cases | Results |\n|---|---|---|\n";
     for (area, (n, statuses)) in &areas {
@@ -335,9 +408,11 @@ fn write_report(dir: &Path, list: &[PathBuf], results: &[Value]) -> Result<Strin
     if skipped == 0 {
         md += "None yet.\n";
     }
-    std::fs::write(root().join("docs/kernel-cases.md"), md).map_err(|e| format!("docs/kernel-cases.md: {e}"))?;
+    let path = root().join(to);
+    let shown = path.strip_prefix(root()).unwrap_or(&path).display().to_string();
+    std::fs::write(&path, md).map_err(|e| format!("{shown}: {e}"))?;
     let pass = results.iter().filter(|r| r["status"] == "pass").count();
-    Ok(format!("kernel-cases: {pass}/{} pass → docs/kernel-cases.md ({skipped} skipped sources listed)", list.len()))
+    Ok(format!("kernel-cases: {pass}/{} pass → {shown} ({skipped} skipped sources listed)", list.len()))
 }
 
 pub fn run(rest: &[&str]) -> Result<(), String> {
@@ -356,8 +431,13 @@ pub fn run(rest: &[&str]) -> Result<(), String> {
     }
     let results = run_all(&o, &list);
     save_results(&o, &results)?;
+    if let Some(d) = &o.export {
+        println!("{}", crate::kernel_corpus::manifest(d, &results, None)?);
+        return Ok(());
+    }
     if let Some(file) = &o.known_failing {
-        // A gate run grades one set against its baseline; the report stays the full run's.
+        // A gate run grades the run against its baseline, and writes no report; its results.json
+        // is still saved above.
         let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
         let base = file.parent().unwrap_or(&dir);
         let paths: Vec<String> = list.iter().map(|c| c.strip_prefix(base).unwrap_or(c).to_string_lossy().replace('\\', "/")).collect();
@@ -365,7 +445,7 @@ pub fn run(rest: &[&str]) -> Result<(), String> {
         println!("{}", gate(&text, &paths, &statuses).map_err(|e| format!("{}: {e}", file.display()))?);
         return Ok(());
     }
-    println!("{}", write_report(&dir, &list, &results)?);
+    println!("{}", write_report(&dir, &list, &results, Path::new("docs/kernel-cases.md"))?);
     Ok(())
 }
 
@@ -563,9 +643,39 @@ fn run_coverage(o: &Options, dir: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Exempt, coverage, exempt, gate, recipe_commands};
+    use super::*;
 
-    fn run(text: &str, cases: &[(&str, &str)]) -> Result<String, String> {
+    /// A child that writes more than the pipe buffer still finishes, with all its output.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_writing_more_than_the_pipe_buffer_is_not_a_hang() {
+        let child = Command::new("sh")
+            .args(["-c", "head -c 200000 /dev/zero; head -c 100000 /dev/zero >&2"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = wait_draining(child, Duration::from_secs(60)).unwrap().unwrap();
+        assert!(out.status.success());
+        assert_eq!((out.stdout.len(), out.stderr.len()), (200_000, 100_000));
+        let slow = Command::new("sh").args(["-c", "sleep 30"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let t = Instant::now();
+        assert!(wait_draining(slow, Duration::from_millis(200)).unwrap().is_none());
+        assert!(t.elapsed() < Duration::from_secs(20));
+    }
+
+    /// `--route`, the old per-family run, and `--kernel`, the old choice of kernel, are no options:
+    /// passed anyway, they are refused rather than run as something else.
+    #[test]
+    fn route_and_kernel_are_refused() {
+        assert!(options(&["--route", "boolean=solidcore"], "x").is_err());
+        assert!(options(&["--kernel", "smlib"], "x").is_err());
+        assert!(options(&["--kernel", "solidcore", "--known-failing", "/k"], "x").is_err());
+        let o = options(&["--known-failing", "/k", "--out", "/r"], "x").unwrap();
+        assert_eq!((o.known_failing, o.out), (Some(PathBuf::from("/k")), PathBuf::from("/r")));
+    }
+
+    fn gate_on(text: &str, cases: &[(&str, &str)]) -> Result<String, String> {
         let names: Vec<String> = cases.iter().map(|(c, _)| c.to_string()).collect();
         let statuses: Vec<&str> = cases.iter().map(|(_, s)| *s).collect();
         gate(text, &names, &statuses)
@@ -574,20 +684,20 @@ mod tests {
     #[test]
     fn the_gate_fails_on_a_regression_and_on_a_fixed_case_still_listed() {
         let list = "# today\na-case SMLib refuses the corner\nb-case G1 at the corner point\n";
-        assert!(run(list, &[("a-case", "fail"), ("b-case", "crash"), ("c-case", "pass")]).is_ok());
-        let regression = run(list, &[("a-case", "fail"), ("b-case", "fail"), ("c-case", "hang")]).unwrap_err();
+        assert!(gate_on(list, &[("a-case", "fail"), ("b-case", "crash"), ("c-case", "pass")]).is_ok());
+        let regression = gate_on(list, &[("a-case", "fail"), ("b-case", "fail"), ("c-case", "hang")]).unwrap_err();
         assert!(regression.contains("REGRESSION (hang): c-case"), "{regression}");
-        let fixed = run(list, &[("a-case", "pass"), ("b-case", "fail"), ("c-case", "pass")]).unwrap_err();
+        let fixed = gate_on(list, &[("a-case", "pass"), ("b-case", "fail"), ("c-case", "pass")]).unwrap_err();
         assert!(fixed.contains("FIXED, remove it from the known-failing list: a-case"), "{fixed}");
-        let stale = run(list, &[("a-case", "fail"), ("c-case", "pass")]).unwrap_err();
+        let stale = gate_on(list, &[("a-case", "fail"), ("c-case", "pass")]).unwrap_err();
         assert!(stale.contains("not a case of this set: b-case"), "{stale}");
     }
 
     #[test]
     fn the_known_failing_list_is_sorted_with_a_cause_each() {
-        assert!(run("b x\na y\n", &[("a", "fail"), ("b", "fail")]).unwrap_err().contains("out of order"));
-        assert!(run("a x\na y\n", &[("a", "fail")]).unwrap_err().contains("a repeat of"));
-        assert!(run("a\n", &[("a", "fail")]).unwrap_err().contains("gives no cause"));
+        assert!(gate_on("b x\na y\n", &[("a", "fail"), ("b", "fail")]).unwrap_err().contains("out of order"));
+        assert!(gate_on("a x\na y\n", &[("a", "fail")]).unwrap_err().contains("a repeat of"));
+        assert!(gate_on("a\n", &[("a", "fail")]).unwrap_err().contains("gives no cause"));
     }
 
     #[test]

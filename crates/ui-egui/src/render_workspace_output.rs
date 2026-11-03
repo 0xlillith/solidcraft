@@ -17,6 +17,7 @@ pub(super) struct View {
     pending: Option<Pending>,
     pub checked: Option<Review>,
     quality_plans: Option<[Result<Value, String>; 3]>,
+    quality_source: Option<QualitySource>,
     scene_info: Option<Review>,
     selection_appearance: selection_appearance::View,
     pub(super) resolution: Resolution,
@@ -643,20 +644,56 @@ pub(super) fn sampling_editor(app: &mut SolveApp, ui: &mut egui::Ui) {
             let summary = quality_summary(app, view.draft.width, view.draft.height, view.samples, view.max_depth, view.seed, view.studio.denoise);
             ui_kit::text(ui, &summary, ui_kit::Text::Note("render:quality:summary"));
         }
-        ui_kit::text(ui, app.tr("render.quality_budget_help"), ui_kit::Text::Note("render.quality_budget_help"));
-        browse_button(app, ui, "quality", "render.children.review_quality");
-        library::inspect_kinds(app, ui, &["quality"]);
+        if app.render_workspace.view.method == ImageMethod::CpuRaytrace {
+            let view = &app.render_workspace.view;
+            if let Some(sampling) = view.raytrace.progressive {
+                let summary =
+                    cpu_quality_summary(app, view.draft.width, view.draft.height, sampling.samples_per_pixel, sampling.seed, view.raytrace.budget);
+                ui_kit::text(ui, &summary, ui_kit::Text::Note("render:quality:summary"));
+            }
+            ui_kit::text(ui, app.tr("render.cpu_quality_budget_help"), ui_kit::Text::Note("render.cpu_quality_budget_help"));
+        } else {
+            ui_kit::text(ui, app.tr("render.quality_budget_help"), ui_kit::Text::Note("render.quality_budget_help"));
+            if app.render_workspace.view.method == ImageMethod::GpuRaytrace {
+                browse_button(app, ui, "quality", "render.children.review_quality");
+                library::inspect_kinds(app, ui, &["quality"]);
+            }
+        }
     });
     for (id, key, method, draw) in [
         ("render_sampling_path", "render.children.path", ImageMethod::GpuRaytrace, path_controls as fn(&mut SolveApp, &mut egui::Ui)),
-        ("render_sampling_adaptive", "render.children.adaptive", ImageMethod::GpuRaytrace, super::transport::adaptive_controls),
         ("render_sampling_glass", "render.children.glass", ImageMethod::GpuRaytrace, super::transport::glass_controls),
         ("render_sampling_cpu", "render.children.cpu", ImageMethod::CpuRaytrace, cpu_sampling),
     ] {
         let title = app.tr(key).to_string();
-        let reason = (app.render_workspace.view.method != method)
-            .then(|| app.tr(if method == ImageMethod::GpuRaytrace { "render.effects_gpu_only" } else { "render.children.needs_cpu" }).to_string());
-        ui_kit::method_section(ui, id, &title, if method == ImageMethod::GpuRaytrace { "GPU" } else { "CPU" }, reason.as_deref(), |ui| draw(app, ui));
+        let glass = id == "render_sampling_glass";
+        let reason = if glass {
+            (app.render_workspace.view.method == ImageMethod::Raster).then(|| app.tr("render.method_limit_raster").to_string())
+        } else {
+            (app.render_workspace.view.method != method)
+                .then(|| app.tr(if method == ImageMethod::GpuRaytrace { "render.effects_gpu_only" } else { "render.children.needs_cpu" }).to_string())
+        };
+        ui_kit::method_section(
+            ui,
+            id,
+            &title,
+            if glass {
+                "CPU / GPU"
+            } else if method == ImageMethod::GpuRaytrace {
+                "GPU"
+            } else {
+                "CPU"
+            },
+            reason.as_deref(),
+            |ui| draw(app, ui),
+        );
+        if id == "render_sampling_path" {
+            let title = app.tr("render.children.adaptive").to_string();
+            let reason = (app.render_workspace.view.method == ImageMethod::Raster).then(|| app.tr("render.method_limit_raster").to_string());
+            ui_kit::method_section(ui, "render_sampling_adaptive", &title, "CPU / GPU", reason.as_deref(), |ui| {
+                super::transport::adaptive_controls(app, ui)
+            });
+        }
     }
 }
 fn path_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -741,7 +778,7 @@ fn check_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 fn check_note_link(app: &mut SolveApp, ui: &mut egui::Ui, index: usize, line: &CheckLine) {
-    if line.status == ui_kit::CheckStatus::Ok {
+    if line.status == ui_kit::CheckStatus::Ok || line.key == "backend_pending" {
         return;
     }
     let message = line.label.to_ascii_lowercase();
@@ -855,23 +892,60 @@ pub(super) fn largest_output(app: &SolveApp) -> Option<(u64, u64)> {
     limits.fit(u64::from(draft.width).checked_mul(limits.max_dimension)?, u64::from(draft.height).checked_mul(limits.max_dimension)?, None)
 }
 const QUALITY_IDS: [&str; 3] = ["Q-001", "Q-002", "Q-003"];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QualitySource {
+    method: ImageMethod,
+    progressive: bool,
+    budget: solidcraft_engine::render::job::CpuBudget,
+    adaptive: Option<(u32, u32, [u64; 3])>,
+}
+fn quality_source(app: &SolveApp) -> QualitySource {
+    let view = &app.render_workspace.view;
+    let cpu = view.method == ImageMethod::CpuRaytrace;
+    QualitySource {
+        method: view.method,
+        progressive: cpu && view.raytrace.progressive.is_some(),
+        budget: if cpu { view.raytrace.budget } else { Default::default() },
+        adaptive: if cpu {
+            view.studio
+                .adaptive
+                .map(|a| (a.pilot_samples, a.min_samples, [a.relative_error.to_bits(), a.absolute_error.to_bits(), a.coverage_error.to_bits()]))
+        } else {
+            None
+        },
+    }
+}
+fn quality_request(app: &SolveApp, id: &str) -> Result<Value, String> {
+    let view = &app.render_workspace.view;
+    match view.method {
+        ImageMethod::GpuRaytrace => Ok(json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true})),
+        ImageMethod::CpuRaytrace => {
+            if view.raytrace.progressive.is_none() {
+                return Err(app.tr("render.cpu_quality_progressive_required").to_string());
+            }
+            Ok(json!({"id":id,"variant":"cpu_progressive_png","acknowledge_omissions":true,
+                "cpu":{"minimum_budget":view.raytrace.budget,"adaptive":view.studio.adaptive}}))
+        }
+        ImageMethod::Raster => Err(app.tr("render.method_limit_raster").to_string()),
+    }
+}
 
 /// Immutable catalogue budgets are cached for comparison and hover summaries only.
 /// An actual preset click prepares and applies a fresh canonical plan.
 fn prepare_quality_choices(app: &mut SolveApp) {
-    if app.render_workspace.view.method == ImageMethod::GpuRaytrace && app.render_workspace.view.inspector.quality_plans.is_none() {
+    let source = quality_source(app);
+    if app.render_workspace.view.inspector.quality_source != Some(source) || app.render_workspace.view.inspector.quality_plans.is_none() {
         let plans = QUALITY_IDS.map(|id| {
-            app.session
-                .execute("render.quality.prepare", &json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true}))
-                .map_err(|error| error.to_string())
+            quality_request(app, id).and_then(|params| app.session.execute("render.quality.prepare", &params).map_err(|error| error.to_string()))
         });
         app.render_workspace.view.inspector.quality_plans = Some(plans);
+        app.render_workspace.view.inspector.quality_source = Some(source);
     }
 }
 
 fn quality_selection(app: &SolveApp) -> usize {
     let view = &app.render_workspace.view;
-    if view.method != ImageMethod::GpuRaytrace {
+    if view.method == ImageMethod::Raster || (view.method == ImageMethod::CpuRaytrace && view.raytrace.progressive.is_none()) {
         return 3;
     }
     view.inspector
@@ -882,10 +956,22 @@ fn quality_selection(app: &SolveApp) -> usize {
                 plan.as_ref().is_ok_and(|plan| {
                     plan["settings"]["width"].as_u64() == Some(u64::from(view.draft.width))
                         && plan["settings"]["height"].as_u64() == Some(u64::from(view.draft.height))
-                        && plan["gpu_options"]["samples"].as_u64() == Some(u64::from(view.samples))
-                        && plan["gpu_options"]["max_depth"].as_u64() == Some(u64::from(view.max_depth))
-                        && plan["gpu_options"]["seed"].as_u64() == Some(u64::from(view.seed))
-                        && plan["gpu_options"]["denoise"].as_bool() == Some(view.studio.denoise)
+                        && match view.method {
+                            ImageMethod::GpuRaytrace => {
+                                plan["variant"] == "fixed_samples_png"
+                                    && plan["gpu_options"]["samples"].as_u64() == Some(u64::from(view.samples))
+                                    && plan["gpu_options"]["max_depth"].as_u64() == Some(u64::from(view.max_depth))
+                                    && plan["gpu_options"]["seed"].as_u64() == Some(u64::from(view.seed))
+                                    && plan["gpu_options"]["denoise"].as_bool() == Some(view.studio.denoise)
+                            }
+                            ImageMethod::CpuRaytrace => view.raytrace.progressive.is_some_and(|sampling| {
+                                plan["variant"] == "cpu_progressive_png"
+                                    && plan["cpu_options"]["progressive"]["samples_per_pixel"].as_u64() == Some(u64::from(sampling.samples_per_pixel))
+                                    && plan["cpu_options"]["progressive"]["seed"].as_u64() == Some(u64::from(sampling.seed))
+                                    && plan["cpu_options"]["budget"] == json!(view.raytrace.budget)
+                            }),
+                            ImageMethod::Raster => false,
+                        }
                 })
             })
         })
@@ -896,8 +982,11 @@ fn quality_reason(app: &SolveApp, index: usize) -> Option<&str> {
     if index == 3 {
         return None;
     }
-    if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
-        return Some(app.tr("render.stage_panels.gpu_required"));
+    if app.render_workspace.view.method == ImageMethod::Raster {
+        return Some(app.tr("render.method_limit_raster"));
+    }
+    if app.render_workspace.view.method == ImageMethod::CpuRaytrace && app.render_workspace.view.raytrace.progressive.is_none() {
+        return Some(app.tr("render.cpu_quality_progressive_required"));
     }
     match app.render_workspace.view.inspector.quality_plans.as_ref().and_then(|plans| plans.get(index)) {
         Some(Ok(_)) => None,
@@ -911,12 +1000,10 @@ fn choose_quality(app: &mut SolveApp, index: usize) -> Result<(), String> {
         return app.run("view.render_select", json!({"kind":"sampling"})).map(|_| ());
     }
     let id = QUALITY_IDS.get(index).ok_or_else(|| app.tr("render.error_quality_projection").to_string())?;
-    if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
-        return Err(app.tr("render.stage_panels.gpu_required").into());
-    }
+    let request = quality_request(app, id)?;
     // Canonical chips are reversible numerical presets. Imported library plans keep
     // their separate acknowledged review; comparison caches never author an edit.
-    let plan = app.run("render.quality.prepare", json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true}))?;
+    let plan = app.run("render.quality.prepare", request)?;
     apply_quality_transaction(app, &plan)
 }
 
@@ -934,6 +1021,25 @@ fn quality_summary(app: &SolveApp, width: u32, height: u32, samples: u32, depth:
     )
 }
 
+fn cpu_quality_summary(
+    app: &SolveApp,
+    width: u32,
+    height: u32,
+    samples: u32,
+    seed: u32,
+    budget: solidcraft_engine::render::job::CpuBudget,
+) -> String {
+    crate::i18n::format(
+        "render.cpu_quality_summary",
+        &[
+            ("width", &width.to_string()),
+            ("height", &height.to_string()),
+            ("samples", &samples.to_string()),
+            ("seed", &seed.to_string()),
+            ("profile", cpu::budget_name(app, budget)),
+        ],
+    )
+}
 fn quality_hover(app: &SolveApp) -> String {
     let labels = ["render.quality_draft", "render.quality_balanced", "render.quality_high"];
     app.render_workspace.view.inspector.quality_plans.as_ref().map_or_else(String::new, |plans| {
@@ -943,6 +1049,14 @@ fn quality_hover(app: &SolveApp) -> String {
             .filter_map(|(plan, label)| {
                 let plan = plan.as_ref().ok()?;
                 let field = |section: &str, key: &str| plan[section][key].as_u64().and_then(|n| u32::try_from(n).ok());
+                if plan["variant"] == "cpu_progressive_png" {
+                    let sampling = &plan["cpu_options"]["progressive"];
+                    let samples = sampling["samples_per_pixel"].as_u64().and_then(|n| u32::try_from(n).ok())?;
+                    let seed = sampling["seed"].as_u64().and_then(|n| u32::try_from(n).ok())?;
+                    let budget = serde_json::from_value(plan["cpu_options"]["budget"].clone()).ok()?;
+                    let summary = cpu_quality_summary(app, field("settings", "width")?, field("settings", "height")?, samples, seed, budget);
+                    return Some(format!("{}: {summary}", app.tr(label)));
+                }
                 let summary = quality_summary(
                     app,
                     field("settings", "width")?,
@@ -1144,6 +1258,11 @@ struct CheckLine {
 }
 fn check_lines(app: &SolveApp) -> Vec<CheckLine> {
     use ui_kit::CheckStatus::{Error, Ok, Warning};
+    if app.render_workspace.view.method == ImageMethod::GpuRaytrace
+        && let Some(key) = app.render_workspace.path_host.pending_message_key()
+    {
+        return vec![CheckLine { key: "backend_pending", label: app.tr(key).into(), status: Warning }];
+    }
     if let Err(error) = super::image_params(app) {
         return vec![CheckLine { key: "error", label: error, status: Error }];
     }
@@ -1233,9 +1352,7 @@ fn check_report(app: &SolveApp) -> Option<String> {
 }
 
 pub(super) fn scene_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) {
-    if ui_kit::button(ui, app.tr("render.scene_review"), ui_kit::Button::Enabled(app.render_workspace.view.method == ImageMethod::GpuRaytrace))
-        .clicked()
-    {
+    if ui_kit::button(ui, app.tr("render.scene_review"), ui_kit::Button::Enabled(app.render_workspace.view.method != ImageMethod::Raster)).clicked() {
         let mut view = library::View::default();
         if let Err(error) = library::choose(app, &mut view, "native_scenes", id).and_then(|()| library::review::light(app, &view, id)) {
             app.set_status(error, true);
@@ -1264,6 +1381,9 @@ pub(super) fn apply_quality_transaction(app: &mut SolveApp, plan: &Value) -> Res
 }
 
 pub(super) fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
+    if app.render_workspace.view.method == ImageMethod::CpuRaytrace {
+        return apply_cpu_quality(app, plan);
+    }
     if app.render_workspace.view.method != ImageMethod::GpuRaytrace || plan["variant"] != "fixed_samples_png" {
         return Err(crate::i18n::tr("render.error_quality_method").into());
     }
@@ -1292,6 +1412,38 @@ pub(super) fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), Stri
     view.max_depth = depth;
     view.seed = seed;
     view.studio.denoise = denoise;
+    view.dirty = true;
+    Ok(())
+}
+fn apply_cpu_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
+    use solidcraft_engine::render::job::{CpuBudget, CpuProgressiveOptions, cpu_camera_sampling};
+    let view = &app.render_workspace.view;
+    if view.raytrace.progressive.is_none() {
+        return Err(app.tr("render.cpu_quality_progressive_required").to_string());
+    }
+    if plan["variant"] != "cpu_progressive_png"
+        || plan["cpu_context"] != json!({"minimum_budget":view.raytrace.budget,"adaptive":view.studio.adaptive})
+    {
+        return Err(app.tr("render.error_quality_projection").to_string());
+    }
+    let integer = |v: &Value| v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| app.tr("render.error_quality_projection").to_string());
+    let width = integer(&plan["settings"]["width"])?;
+    let height = integer(&plan["settings"]["height"])?;
+    let progressive: CpuProgressiveOptions = serde_json::from_value(plan["cpu_options"]["progressive"].clone()).map_err(|error| error.to_string())?;
+    let budget: CpuBudget = serde_json::from_value(plan["cpu_options"]["budget"].clone()).map_err(|error| error.to_string())?;
+    if !CpuBudget::ALL.into_iter().skip_while(|b| *b != view.raytrace.budget).any(|b| b == budget) {
+        return Err(app.tr("render.error_quality_bounds").to_string());
+    }
+    let sampling = cpu_camera_sampling(Some(progressive), view.studio.adaptive, budget).map_err(|error| error.to_string())?;
+    budget.validate_image(width, height, sampling).map_err(|error| error.to_string())?;
+    if view.studio.denoise {
+        solidcraft_engine::render::job::validate_cpu_denoise_image(width, height).map_err(|error| error.to_string())?;
+    }
+    let view = &mut app.render_workspace.view;
+    view.draft.width = width;
+    view.draft.height = height;
+    view.raytrace.progressive = Some(progressive);
+    view.raytrace.budget = budget;
     view.dirty = true;
     Ok(())
 }
@@ -1411,7 +1563,7 @@ fn gpu_status(app: &SolveApp, ui: &mut egui::Ui) {
             ui_kit::text(ui, &format!("{}: {error}", app.tr("render.gpu_path_failed")), ui_kit::Text::Error("render.gpu_path_failed"));
         }
         super::PathHost::NotStarted if app.render_workspace.view.method == ImageMethod::GpuRaytrace => {
-            ui_kit::text(ui, app.tr("render.gpu_unavailable"), ui_kit::Text::Note("render.gpu_unavailable"));
+            ui_kit::text(ui, app.tr("render.gpu_path_not_started"), ui_kit::Text::Note("render.gpu_path_not_started"));
         }
         super::PathHost::NotStarted | super::PathHost::Ready(_) => {}
     }

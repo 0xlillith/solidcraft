@@ -7,7 +7,7 @@ use std::sync::{
     mpsc,
 };
 
-use egui::{Context, Rect, TextureHandle};
+use egui::{Context, Rect, TextureHandle, emath::GuiRounding as _};
 use serde_json::{Value, json};
 use solidcraft_engine::{
     Session,
@@ -64,6 +64,8 @@ struct Picture {
     complete: bool,
     adaptive: Option<solidcraft_engine::render::job::adaptive::AdaptivePreview>,
     executor: solidcraft_engine::render::ExecutorId,
+    /// Captured alongside this texture from the same validated immutable frame.
+    scene_generation: u64,
     size: [u32; 2],
     texture: TextureHandle,
 }
@@ -152,7 +154,7 @@ impl State {
             if status.job != job.handle.id() || status.scene_generation != job.revision {
                 return Err(crate::i18n::tr("render.error_provisional_identity").into());
             }
-            if let Some(error) = status.error {
+            if let Some(error) = &status.error {
                 return Err(error.to_string());
             }
             let limits = if status.resolved.executor.as_str() == "gpu-path" {
@@ -178,6 +180,7 @@ impl State {
                     complete,
                     adaptive,
                     executor: info.executor.clone(),
+                    scene_generation: info.scene_generation,
                     size: [info.width, info.height],
                     texture: ctx.load_texture("sc_render_live", image, egui::TextureOptions::LINEAR),
                 })
@@ -186,16 +189,14 @@ impl State {
                 if current.is_some_and(|picture| picture.complete) {
                     return Ok(None);
                 }
-                let adaptive =
-                    solidcraft_engine::render::job::adaptive::AdaptivePreview::at(status.options, job.target).map_err(|e| e.to_string())?;
+                let adaptive = super::captured_adaptive_preview(&status, job.target)?;
                 return load(&frame.info, frame.png(), current.map_or(1, |picture| picture.sequence), job.target, true, adaptive).map(Some);
             }
             if let Some(preview) = job.handle.preview().map_err(|e| e.to_string())? {
                 if current.is_some_and(|picture| picture.sequence >= preview.info.frame_sequence) {
                     return Ok(None);
                 }
-                let adaptive = solidcraft_engine::render::job::adaptive::AdaptivePreview::at(status.options, preview.info.samples_per_pixel)
-                    .map_err(|e| e.to_string())?;
+                let adaptive = super::captured_adaptive_preview(&status, preview.info.samples_per_pixel)?;
                 if preview.info.frame_sequence == 0
                     || preview.info.samples_per_pixel == 0
                     || preview.info.samples_per_pixel >= job.target
@@ -333,6 +334,7 @@ fn target(request: &Value) -> u32 {
         .unwrap_or(1);
     let pilots = request
         .pointer("/settings/job/options/adaptive/pilot_samples")
+        .or_else(|| request.pointer("/raytrace/adaptive/pilot_samples"))
         .or_else(|| request.pointer("/adaptive/pilot_samples"))
         .and_then(Value::as_u64)
         .and_then(|n| u32::try_from(n).ok())
@@ -350,8 +352,7 @@ fn capture(app: &SolveApp, identity: &Identity, generation: u64) -> Result<Pendi
     let cancelled = Arc::new(AtomicBool::new(false));
     let stop = cancelled.clone();
     let (sender, receiver) = mpsc::channel();
-    std::thread::Builder::new()
-        .name("render-live-capture".into())
+    solidcraft_engine::kernel::kernel_thread("render-live-capture")
         .spawn(move || {
             let result = solidcraft_engine::io::vfs::scoped(scope, || {
                 if stop.load(Ordering::Acquire) {
@@ -478,6 +479,21 @@ pub(crate) fn set_paused(app: &mut SolveApp, paused: bool) {
         app.render_workspace.live.attempted = false;
     }
 }
+/// Preparation owns the same live-release priority as an explicit final. The
+/// original pending/running owners stay here until their release acknowledgements.
+pub(super) fn suspend_for_preparation(app: &mut SolveApp) {
+    let state = &mut app.render_workspace.live;
+    state.cancel_work();
+    state.suspended = true;
+    state.identity = None;
+    state.attempted = false;
+    state.poll_capture();
+    state.reap_draining();
+}
+pub(super) fn preparation_ready(app: &SolveApp) -> bool {
+    let state = &app.render_workspace.live;
+    state.pending.is_none() && state.running.is_none() && state.draining.is_empty()
+}
 pub(super) fn defer_final(app: &mut SolveApp, request: ribbon::PendingFinal) -> bool {
     let state = &mut app.render_workspace.live;
     state.cancel_work();
@@ -530,14 +546,26 @@ pub(super) fn drain_final(app: &mut SolveApp, handle: JobHandle) {
         app.render_workspace.live.draining.push(handle);
     }
 }
-pub(crate) fn paint(app: &SolveApp, ui: &egui::Ui, rect: Rect) {
+pub(crate) fn paint(app: &mut SolveApp, ui: &egui::Ui, rect: Rect) {
     if !enabled(app) {
         return;
     }
     if let Some(picture) = &app.render_workspace.live.picture {
         let aspect = f64::from(picture.size[0]) / f64::from(picture.size[1].max(1));
         if let Some(image) = super::shot::frame_rect(aspect, rect) {
+            let source = super::displayed::Source {
+                job: picture.job,
+                scene_generation: picture.scene_generation,
+                width: picture.size[0],
+                height: picture.size[1],
+                kind: if picture.complete { super::displayed::Kind::LiveFinal } else { super::displayed::Kind::LivePreview },
+                frame_sequence: Some(picture.sequence),
+                samples_per_pixel: Some(picture.samples),
+                adaptive: picture.adaptive,
+            };
             egui::Image::new(&picture.texture).paint_at(ui, image);
+            // Image::paint_at rounds to physical pixels before emitting its image shape.
+            app.render_workspace.displayed.record(ui.painter(), image.round_to_pixels(ui.pixels_per_point()), source);
         }
     }
 }

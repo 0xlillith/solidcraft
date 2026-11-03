@@ -14,11 +14,17 @@ pub(super) fn validate_progressive_image(app: &SolveApp) -> Result<(), String> {
     // methods stop here, before the English refusals of the render and document crates.
     let (width, height) = (view.draft.width, view.draft.height);
     let size = (u64::from(width), u64::from(height));
+    let camera_sampling = if view.method == super::ImageMethod::CpuRaytrace {
+        solidcraft_engine::render::job::cpu_camera_sampling(view.raytrace.progressive, view.studio.adaptive, view.raytrace.budget)
+            .map_err(|error| error.to_string())?
+    } else {
+        None
+    };
     if width > 0 && height > 0 && image_limits(app).fit(size.0, size.1, None) != Some(size) {
         return Err(super::inspector::size_limit_reason(app, width, height));
     }
     if view.method == super::ImageMethod::CpuRaytrace {
-        view.raytrace.budget.validate_image(width, height, view.raytrace.progressive).map_err(|error| error.to_string())?;
+        view.raytrace.budget.validate_image(width, height, camera_sampling).map_err(|error| error.to_string())?;
         if view.studio.denoise {
             solidcraft_engine::render::job::validate_cpu_denoise_image(width, height).map_err(|error| error.to_string())?;
         }
@@ -42,7 +48,10 @@ pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderL
         limits.max_dimension = limits.max_dimension.min(8192);
         limits.max_pixels = limits.max_pixels.min(16_777_216);
     }
-    if let Some(progressive) = options.progressive {
+    let sampling =
+        solidcraft_engine::render::job::cpu_camera_sampling(options.progressive, app.render_workspace.view.studio.adaptive, options.budget)
+            .unwrap_or(options.progressive);
+    if let Some(progressive) = sampling {
         limits.max_pixels = limits.max_pixels.min(options.budget.limits().max_camera_samples / u64::from(progressive.samples_per_pixel.max(1)));
     }
     limits
@@ -53,10 +62,25 @@ pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderL
 /// raster has no profiles of its own, so its hint also names CPU ray tracing. Neither the method
 /// nor the profile is switched here: they and the resolution change only when chosen.
 pub(super) fn profile_for_size(app: &SolveApp, width: u64, height: u64) -> Option<CpuBudget> {
-    if app.render_workspace.view.method == super::ImageMethod::GpuRaytrace || image_limits(app).fit(width, height, None) == Some((width, height)) {
+    if app.render_workspace.view.method == super::ImageMethod::GpuRaytrace {
         return None;
     }
-    CpuBudget::smallest_admitting(u32::try_from(width).ok()?, u32::try_from(height).ok()?, app.render_workspace.view.raytrace.progressive)
+    let view = &app.render_workspace.view;
+    if image_limits(app).fit(width, height, None) == Some((width, height))
+        && solidcraft_engine::render::job::cpu_camera_sampling(view.raytrace.progressive, view.studio.adaptive, view.raytrace.budget).is_ok()
+    {
+        return None;
+    }
+    let width = u32::try_from(width).ok()?;
+    let height = u32::try_from(height).ok()?;
+    CpuBudget::ALL.into_iter().find(|budget| {
+        solidcraft_engine::render::job::cpu_camera_sampling(
+            app.render_workspace.view.raytrace.progressive,
+            app.render_workspace.view.studio.adaptive,
+            *budget,
+        )
+        .is_ok_and(|sampling| budget.validate_image(width, height, sampling).is_ok())
+    })
 }
 
 /// The translated name of a profile, as the profile selector shows it.
@@ -144,16 +168,7 @@ pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> boo
                 ui_kit::text(ui, app.tr(key), ui_kit::Text::Inline);
             });
             if selected == 0 {
-                let options = &app.render_workspace.view.raytrace;
-                let reason = if options.reflections.as_ref().is_some_and(|r| !r.bodies.is_empty() && r.samples != 1) {
-                    Some(app.tr("render.cpu_progressive_reflection_adopt").to_string())
-                } else {
-                    options
-                        .budget
-                        .validate_image(app.render_workspace.view.draft.width, app.render_workspace.view.draft.height, Some(Default::default()))
-                        .err()
-                        .map(|error| error.to_string())
-                };
+                let reason = progressive_adoption_reason(app);
                 let button = ui_kit::button(ui, app.tr("render.cpu_progressive_adopt"), ui_kit::Button::Enabled(reason.is_none()));
                 crate::scenario::publish_target("render:cpu-adopt-progressive", button.rect);
                 crate::scenario::publish_target("render:cpu-progressive", button.rect);
@@ -180,8 +195,19 @@ pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> boo
     }
     ui.add_enabled_ui(enabled, |ui| {
         let maximum = app.render_workspace.view.raytrace.budget.limits().max_samples_per_pixel;
+        let range = app
+            .render_workspace
+            .view
+            .studio
+            .adaptive
+            .and_then(|adaptive| {
+                let minimum = adaptive.min_samples.max(16);
+                let cap = maximum.checked_sub(adaptive.pilot_samples)?;
+                (minimum <= cap).then_some(minimum..=cap)
+            })
+            .unwrap_or(1..=maximum);
         let response = ui_kit::row(ui, app.tr("render.cpu_progressive_spp"), |ui| {
-            let field = ui_kit::number_field_preserving(ui, &mut options.samples_per_pixel, 1..=maximum, 1.0, "");
+            let field = ui_kit::number_field_preserving(ui, &mut options.samples_per_pixel, range, 1.0, "");
             crate::scenario::publish_target("render:cpu-spp-field", field.rect);
             field
         });
@@ -201,10 +227,31 @@ pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> boo
     ui_kit::text(ui, app.tr("render.cpu_progressive_help"), ui_kit::Text::Note("render.cpu_progressive_help"));
     enabled
 }
+/// Shared explicit adoption for Sampling and the CPU Glass transport entry point.
+pub(super) fn progressive_adoption_reason(app: &SolveApp) -> Option<String> {
+    let options = &app.render_workspace.view.raytrace;
+    if options.reflections.as_ref().is_some_and(|r| !r.bodies.is_empty() && r.samples != 1) {
+        Some(app.tr("render.cpu_progressive_reflection_adopt").into())
+    } else {
+        options
+            .budget
+            .validate_image(app.render_workspace.view.draft.width, app.render_workspace.view.draft.height, Some(Default::default()))
+            .err()
+            .map(|e| e.to_string())
+    }
+}
+pub(super) fn adopt_progressive(app: &mut SolveApp) -> Result<(), String> {
+    if let Some(reason) = progressive_adoption_reason(app) {
+        return Err(reason);
+    }
+    set_progressive(app, true);
+    app.render_workspace.view.dirty = true;
+    Ok(())
+}
 /// A prospective opt-in never changes old fixed sampling or removes optical bindings.
 pub(super) fn path_reason(app: &SolveApp) -> Option<String> {
-    if !app.render_workspace.view.draft.optics.is_empty() || !app.render_workspace.view.materials.bindings.is_empty() {
-        return Some(app.tr("render.cpu_path_optics_reason").into());
+    if let Err(reason) = super::materials::path_compatibility(app) {
+        return Some(reason);
     }
     let mut options = app.render_workspace.view.raytrace.clone();
     options.path.get_or_insert_default();
@@ -241,6 +288,7 @@ pub(super) enum Environment {
     #[default]
     None,
     Constant,
+    Sky,
     Hdr,
 }
 
@@ -256,6 +304,7 @@ pub(super) struct View {
     pub intensity: f64,
     pub samples: u32,
     pub color: [f64; 3],
+    pub gradient: solidcraft_engine::render::lighting::environment::SkyGradient,
     pub checked: Option<Checked>,
     bindings: std::collections::BTreeMap<String, Binding>,
 }
@@ -295,6 +344,7 @@ impl Default for View {
             intensity: 1.0,
             samples: 16,
             color: [1.0; 3],
+            gradient: Default::default(),
             checked: None,
             bindings: Default::default(),
         }
@@ -422,6 +472,9 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     if base.anisotropic_faces.iter().any(Option::is_some)
         || !base.dielectrics.is_empty()
         || base.environment.is_some()
+        || base.sky.is_some()
+        || (base.sun.is_some() && !app.render_workspace.view.studio.sun_enabled)
+        || (base.volume.is_some() && app.render_workspace.view.studio.volume.is_none())
         || base.surface_effects.is_some()
         || base.emissions.is_some()
     {
@@ -435,7 +488,11 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     }
     let view = &app.render_workspace.view.cpu;
     let mut options = base.clone();
+    options.sun = app.render_workspace.view.studio.sun_enabled.then(|| Box::new(app.render_workspace.view.studio.sun));
+    options.sky = None;
+    options.volume = app.render_workspace.view.studio.volume;
     options.output = super::studio::cpu_output(&app.render_workspace.view);
+    options.adaptive = app.render_workspace.view.studio.adaptive.map(Box::new);
     options.denoise = app.render_workspace.view.studio.denoise;
     options.lens = app.render_workspace.view.studio.lens_enabled.then_some(app.render_workspace.view.studio.lens);
     if let Some(lens) = options.lens {
@@ -452,11 +509,21 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     // Runtime CPU requests keep the same single saved EV authority as typed jobs.
     params["settings"]["exposure_ev"] = json!(0.0);
     if view.environment != Environment::None {
-        if !view.intensity.is_finite() || !(0.0..=64.0).contains(&view.intensity) {
-            return Err(app.tr("render.cpu_environment_bounds").to_string());
+        let maximum = if view.environment == Environment::Sky { 100.0 } else { 64.0 };
+        if !view.intensity.is_finite() || !(0.0..=maximum).contains(&view.intensity) {
+            return Err(app
+                .tr(if view.environment == Environment::Sky { "render.cpu_sky_bounds" } else { "render.cpu_environment_bounds" })
+                .to_string());
         }
         match view.environment {
             Environment::Constant => options.environment = Some(RaytraceEnvironmentOptions { color: view.color, intensity: view.intensity }),
+            Environment::Sky => {
+                options.sky = Some(Box::new(solidcraft_engine::render::job::CpuSky {
+                    gradient: view.gradient,
+                    rotation_rad: view.rotation_rad,
+                    intensity: view.intensity,
+                }));
+            }
             Environment::Hdr => {
                 if !view.rotation_rad.is_finite() || view.rotation_rad.abs() > 1e6 || !matches!(view.samples, 1 | 4 | 16 | 64) {
                     return Err(app.tr("render.cpu_environment_bounds").to_string());
@@ -590,6 +657,7 @@ pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let key = match selected {
         Environment::None => "render.cpu_environment_none",
         Environment::Constant => "render.cpu_environment_constant",
+        Environment::Sky => "render.studio_sky",
         Environment::Hdr => "render.studio_hdr",
     };
     let label = app.tr(key).to_string();
@@ -597,6 +665,7 @@ pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         for (value, key) in [
             (Environment::None, "render.cpu_environment_none"),
             (Environment::Constant, "render.cpu_environment_constant"),
+            (Environment::Sky, "render.studio_sky"),
             (Environment::Hdr, "render.studio_hdr"),
         ] {
             if ui_kit::list_picker(ui, key, app.tr(key), value == selected).clicked() {

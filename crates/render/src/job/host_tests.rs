@@ -1,6 +1,10 @@
 use super::*;
 use solidcraft_geom::{Aabb3, Mesh};
 
+fn fixed_request_metadata_bytes() -> u64 {
+    request().retained_resource_metadata_bytes()
+}
+
 #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
 mod progressive_checkpoints {
     use super::*;
@@ -27,7 +31,7 @@ mod progressive_checkpoints {
             height: 4,
             ..request()
         };
-        let expected = admit(&empty(), &request).unwrap().estimated_total_bytes;
+        let expected = admit(&empty(), &request).unwrap().estimated_total_bytes + request.retained_resource_metadata_bytes();
         let job = host.submit(id(7300, 1), 19, empty(), request).unwrap();
         assert_eq!(host.admitted_bytes(), expected);
         let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
@@ -80,7 +84,7 @@ mod progressive_checkpoints {
         let frame = job.frame().unwrap().unwrap();
         assert_eq!(frame.info.job, job.id());
         let retained: u64 = held.iter().map(|p| p._reservation.bytes).sum();
-        assert_eq!(host.admitted_bytes(), retained + frame._reservation.bytes);
+        assert_eq!(host.admitted_bytes(), retained + frame._reservation.bytes + fixed_request_metadata_bytes());
         drop(running);
         drop(job);
         drop(frame);
@@ -112,7 +116,7 @@ mod progressive_checkpoints {
         let frame = job.frame().unwrap().unwrap();
         assert_eq!(frame.info.job, job.id());
         assert_eq!(preview.png(), before, "the sole retained checkpoint remains immutable");
-        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + preview._reservation.bytes);
+        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + preview._reservation.bytes + fixed_request_metadata_bytes());
         drop(running);
         drop(job);
         drop(frame);
@@ -160,7 +164,7 @@ mod progressive_checkpoints {
         let frame = job.frame().unwrap().unwrap();
         assert_eq!(frame.info.job, job.id());
         assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
-        assert_eq!(host.admitted_bytes(), frame._reservation.bytes);
+        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + fixed_request_metadata_bytes());
         assert_eq!(prefixes.len(), 7);
         drop(running);
         drop(job);
@@ -204,7 +208,7 @@ mod progressive_checkpoints {
         assert!(job.preview().unwrap().is_none());
         assert_eq!(second.png(), second_bytes, "old snapshots remain immutable through final publication");
         let frame = job.frame().unwrap().unwrap();
-        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + second._reservation.bytes);
+        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + second._reservation.bytes + fixed_request_metadata_bytes());
         drop(running);
         drop(job);
         drop(frame);
@@ -402,6 +406,8 @@ fn queue_is_bounded_and_cancelled_entries_release_their_reservations() {
     drop(c);
     assert!(host.admitted_bytes() > 0, "an externally retained frame retains its lease");
     drop(frame);
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(a);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -421,6 +427,8 @@ fn cancellation_while_encoding_cannot_publish_a_late_frame() {
     drain(&host);
     assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
     assert!(job.frame().unwrap().is_none());
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -458,6 +466,9 @@ fn closing_the_host_cancels_active_and_queued_work() {
     drop(host);
     assert_eq!(active.status().unwrap().progress.phase, Phase::Cancelled);
     assert_eq!(queued.status().unwrap().progress.phase, Phase::Cancelled);
+    assert_eq!(budget.used.load(Ordering::Acquire), 2 * fixed_request_metadata_bytes());
+    drop(active);
+    drop(queued);
     assert_eq!(budget.used.load(Ordering::Acquire), 0);
 }
 
@@ -589,7 +600,7 @@ fn png_digest_is_incremental_and_keeps_the_original_allocation_and_lease_until_c
     let actual_metadata =
         std::mem::size_of::<Running>() + std::mem::size_of::<RenderFrame>() + frame.info.png_sha256.capacity() + 2 * crate::MAX_RENDER_ID_BYTES + 32;
     assert!(actual_metadata <= FRAME_METADATA_BYTES as usize, "digest Vec/offset/state and actual hex allocation must be admitted");
-    assert_eq!(host.admitted_bytes(), frame.png.capacity() as u64 + FRAME_METADATA_BYTES);
+    assert_eq!(host.admitted_bytes(), frame.png.capacity() as u64 + FRAME_METADATA_BYTES + fixed_request_metadata_bytes());
     for _ in 0..3 {
         let current = job.status().unwrap();
         assert_eq!(current.frame.unwrap().png_sha256, frame.info.png_sha256);
@@ -621,6 +632,8 @@ fn cancellation_during_png_hashing_and_host_disposal_cannot_publish_a_frame() {
         }
         assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
         assert!(job.frame().unwrap().is_none());
+        assert_eq!(budget.used.load(Ordering::Acquire), fixed_request_metadata_bytes());
+        drop(job);
         assert_eq!(budget.used.load(Ordering::Acquire), 0);
     }
 }
@@ -636,6 +649,8 @@ fn a_cancel_after_the_last_digest_chunk_still_wins_the_publication_lock() {
     assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
     assert!(job.frame().unwrap().is_none());
     drop(running);
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -656,6 +671,7 @@ fn png_and_exr_reuse_one_sha_state_without_mixing_chunk_boundaries() {
     let metadata = std::mem::size_of::<Running>()
         + std::mem::size_of::<RenderFrame>()
         + std::mem::size_of::<RenderPreview>()
+        + PREPARED_PROOF_HEADER_BYTES
         + 64
         + 2 * crate::MAX_RENDER_ID_BYTES
         + 32;
@@ -677,6 +693,7 @@ fn png_digest_metadata_fits_the_existing_allowance_without_changing_admission() 
     for linear_master in [false, true] {
         let metadata = std::mem::size_of::<Running>()
             + std::mem::size_of::<RenderFrame>()
+            + PREPARED_PROOF_HEADER_BYTES
             + 64
             + u32::from(linear_master) as usize * 64
             + 2 * crate::MAX_RENDER_ID_BYTES
@@ -690,12 +707,14 @@ fn png_digest_metadata_fits_the_existing_allowance_without_changing_admission() 
         );
     }
     let host = CpuHost::cooperative();
-    let expected = admit(&empty(), &request()).unwrap().estimated_total_bytes;
+    let expected = admit(&empty(), &request()).unwrap().estimated_total_bytes + fixed_request_metadata_bytes();
     let job = host.submit(id(70, 1), 1, empty(), request()).unwrap();
     assert_eq!(host.admitted_bytes(), expected);
     assert!(job.status().unwrap().frame.is_none());
     job.cancel().unwrap();
     drain(&host);
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -763,7 +782,7 @@ fn a_completed_task_is_dropped_while_its_full_reservation_still_pays_for_it() {
     drain(&host);
     assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
     // While the task (and its scratch) was being dropped, its whole charge was still held.
-    assert_eq!(admitted_at_drop.load(Ordering::Acquire), estimated);
+    assert_eq!(admitted_at_drop.load(Ordering::Acquire), estimated + fixed_request_metadata_bytes());
     // Afterwards only the PNG's lease remains, and the frame keeps it.
     let frame = job.frame().unwrap().unwrap();
     assert!(host.admitted_bytes() > 0 && host.admitted_bytes() < estimated, "{}", host.admitted_bytes());
@@ -784,7 +803,9 @@ fn a_cancel_on_the_final_step_publishes_no_frame_and_drops_the_task() {
     drain(&host);
     assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
     assert!(job.frame().unwrap().is_none());
-    assert_eq!(admitted_at_drop.load(Ordering::Acquire), estimated, "the task went before its charge");
+    assert_eq!(admitted_at_drop.load(Ordering::Acquire), estimated + fixed_request_metadata_bytes(), "the task went before its charge");
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -1127,6 +1148,8 @@ fn cancellation_phase_precedes_the_actual_work_release_barrier() {
     assert!(host.admitted_bytes() > 0, "the Running owner still holds its work reservation");
     drop(running);
     assert!(job.work_released());
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -1139,6 +1162,8 @@ fn queued_cancellation_releases_only_when_its_capture_and_reservation_drop() {
     assert!(host.admitted_bytes() > 0);
     assert!(!host.pump(1).unwrap());
     assert!(job.work_released());
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -1169,6 +1194,9 @@ fn host_shutdown_releases_both_queued_and_active_work_before_signalling() {
     drop(host);
     assert!(active.work_released());
     assert!(queued.work_released());
+    assert_eq!(budget.used.load(Ordering::Acquire), 2 * fixed_request_metadata_bytes());
+    drop(active);
+    drop(queued);
     assert_eq!(budget.used.load(Ordering::Acquire), 0);
 }
 
@@ -1189,8 +1217,8 @@ impl ImageExecutor for FailingBeginExecutor {
 fn failed_begin_releases_captured_scene_and_reservation_before_signalling() {
     let host = ImageHost::cooperative_with(Arc::new(FailingBeginExecutor));
     let mesh = Arc::new(Mesh {
-        positions: vec![solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::X, solidcraft_geom::Vec3::Y],
-        normals: vec![solidcraft_geom::Vec3::Z; 3],
+        positions: vec![solidcore_record::Vec3::ZERO, solidcore_record::Vec3::X, solidcore_record::Vec3::Y],
+        normals: vec![solidcore_record::Vec3::Z; 3],
         triangles: vec![[0, 1, 2]],
         ..Default::default()
     });
@@ -1217,6 +1245,8 @@ fn failed_begin_releases_captured_scene_and_reservation_before_signalling() {
     assert_eq!(status.progress.phase, Phase::Failed);
     assert_eq!(status.error.unwrap().message, "original failing executor fixture", "the fixture must reach executor begin");
     assert!(job.work_released());
+    assert_eq!(host.admitted_bytes(), fixed_request_metadata_bytes());
+    drop(job);
     assert_eq!(host.admitted_bytes(), 0);
 }
 
@@ -1325,6 +1355,834 @@ mod cpu_output_masters {
         drop(final_frame);
         assert_eq!(host.admitted_bytes(), preview_bytes);
         drop(held);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+}
+
+#[test]
+fn registered_punctual_diagnostics_survive_work_release_and_retained_status_handles() {
+    struct DiagnosticExecutor;
+    struct DiagnosticWork(ImageTask);
+    let counts = super::super::PunctualDiagnostics { near_source: 1_u64 << 33, radiance_limit: 7, shadow_offset_crossed: 11 };
+    impl ImageWork for DiagnosticWork {
+        fn punctual_diagnostics(&self) -> Option<super::super::PunctualDiagnostics> {
+            Some(super::super::PunctualDiagnostics { near_source: 1_u64 << 33, radiance_limit: 7, shadow_offset_crossed: 11 })
+        }
+        fn step(&mut self, units: usize) -> Result<TaskPoll> {
+            self.0.step(units)
+        }
+    }
+    impl ImageExecutor for DiagnosticExecutor {
+        fn descriptor(&self) -> Result<ExecutorDescriptor> {
+            CpuExecutor.descriptor()
+        }
+        fn admit(&self, scene: &ProductScene, request: &ImageRequest, _: JobOptions) -> Result<Admission> {
+            admit(scene, request)
+        }
+        fn begin(&self, scene: ProductScene, request: ImageRequest, _: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+            Ok(Box::new(DiagnosticWork(ImageTask::new(scene, request, cancel)?)))
+        }
+    }
+    let host = CpuHost::cooperative_with(Arc::new(DiagnosticExecutor));
+    let job = host.submit(id(9027, 1), 71, empty(), request()).unwrap();
+    let retained = job.clone();
+    drain(&host);
+    assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+    assert_eq!(job.status().unwrap().punctual_diagnostics, Some(counts));
+    assert!(job.work_released());
+    assert!(job.frame().unwrap().is_some());
+    drop(job);
+    assert_eq!(retained.status().unwrap().punctual_diagnostics, Some(counts));
+    drop(retained);
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+mod cpu_adaptive_checkpoints {
+    use super::*;
+    use crate::job::{
+        CpuProgressiveOptions, OutputOptions, RaytraceOptions,
+        adaptive::{AdaptiveSampling, PreviewStage},
+    };
+    #[test]
+    fn cpu_adaptive_bounded_snapshots_span_pilot_reset_and_production_without_lending_the_final_master() {
+        let host = ImageHost(Arc::new(Owner {
+            executor: None,
+            shared: CpuHost::shared(MEMORY_LIMIT),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }));
+        let request = ImageRequest {
+            width: 1,
+            height: 1,
+            integrator: Integrator::Raytrace,
+            raytrace: Some(RaytraceOptions {
+                progressive: Some(CpuProgressiveOptions { samples_per_pixel: 48, seed: 81 }),
+                adaptive: Some(Box::new(AdaptiveSampling { pilot_samples: 16, min_samples: 16, ..Default::default() })),
+                output: Some(Box::new(OutputOptions { linear_exr: true, ..Default::default() })),
+                lights: Some(Vec::new()),
+                ..Default::default()
+            }),
+            ..request()
+        };
+        let request_bytes = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
+        assert_eq!(
+            request_bytes,
+            (std::mem::size_of::<AdaptiveSampling>() + std::mem::size_of::<OutputOptions>()) as u64 + fixed_request_metadata_bytes()
+        );
+        let expected = admit(&empty(), &request).unwrap().estimated_total_bytes + request_bytes;
+        let job = host.submit(id(9120, 1), 91, empty(), request).unwrap();
+        assert_eq!(host.admitted_bytes(), expected);
+        let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+        let mut running = Running::begin(work).unwrap();
+        assert_eq!(running.checkpoint_target, 64);
+        let credits = running.checkpoints.as_ref().unwrap();
+        assert_eq!(credits.capacity, 2 * credits.slot_bytes + FRAME_METADATA_BYTES);
+        let mut held = Vec::new();
+        let mut saw_reset_production = false;
+        let mut published = Vec::new();
+        for _ in 0..200_000 {
+            if let Some(png) = running.pending_png.as_ref()
+                && let Some(absolute) = png.preview_samples
+            {
+                assert!(job.frame().unwrap().is_none());
+                if absolute == 17 {
+                    drop(held.remove(0));
+                }
+                assert!(running.advance(1).unwrap());
+                if let Some(preview) = job.preview().unwrap() {
+                    let metadata = preview.info.adaptive.unwrap();
+                    assert_eq!(preview.info.samples_per_pixel, absolute);
+                    assert_eq!(metadata.pilot_samples, 16);
+                    assert_eq!((metadata.minimum_production_samples, metadata.maximum_production_samples), (16, 48));
+                    assert_eq!(preview.info.frame.png_sha256, format!("{:x}", Sha256::digest(preview.png())));
+                    if absolute <= 16 {
+                        assert_eq!((metadata.stage, metadata.completed, metadata.target), (PreviewStage::Pilot, absolute, 16));
+                    } else {
+                        assert_eq!((metadata.stage, metadata.completed, metadata.target), (PreviewStage::Production, absolute - 16, 48));
+                        saw_reset_production = true;
+                    }
+                    published.push(absolute);
+                    if absolute <= 2 {
+                        held.push(preview);
+                    }
+                }
+                assert_eq!(host.admitted_bytes(), expected);
+                continue;
+            }
+            if !running.advance(1).unwrap() {
+                break;
+            }
+        }
+        assert!(saw_reset_production);
+        assert_eq!(&published[..2], &[1, 2]);
+        assert!(published.contains(&17) && published.contains(&63));
+        let status = job.status().unwrap();
+        assert_eq!(status.progress.phase, Phase::Completed, "{:?}", status.error);
+        assert!(status.preview_retention_skips >= 14);
+        assert!(job.preview().unwrap().is_none());
+        let report = status.sampling.unwrap();
+        assert_eq!((report.pilot_samples_per_pixel, report.minimum_production_samples, report.maximum_production_samples), (16, 16, 16));
+        assert_eq!((report.production_samples, report.primary_path_evaluations, report.pixels_at_cap), (16, 32, 0));
+        drop(running);
+        assert!(job.work_released());
+        let frame = job.frame().unwrap().unwrap();
+        assert!(frame.linear_exr().is_some());
+        let retained = held.iter().map(|p| p._reservation.bytes).sum::<u64>();
+        assert_eq!(
+            host.admitted_bytes(),
+            retained + frame._reservation.bytes + request_bytes,
+            "the original captured adaptive/output boxes retain their independent request lease"
+        );
+        drop(job);
+        drop(frame);
+        assert_eq!(host.admitted_bytes(), retained);
+        drop(held);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+}
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+#[test]
+fn celestial_cancelled_capture_retains_only_exact_boxes_and_fixed_header_until_last_handle_drop() {
+    use super::super::{CpuPathOptions, CpuProgressiveOptions, CpuSky, RaytraceOptions, Sun};
+    let host = ImageHost(Arc::new(Owner {
+        executor: None,
+        shared: CpuHost::shared(MEMORY_LIMIT),
+        kind: HostKind::NativeWorker,
+        running: Mutex::new(None),
+        _worker: None,
+    }));
+    let options = RaytraceOptions {
+        path: Some(CpuPathOptions { max_depth: 2 }),
+        progressive: Some(CpuProgressiveOptions { samples_per_pixel: 3, seed: 81 }),
+        sun: Some(Box::new(Sun { direction: [0.0, 0.0, 1.0], angular_radius_rad: 0.02, radiance: [3.0, 2.0, 1.0] })),
+        sky: Some(Box::new(CpuSky::default())),
+        ..Default::default()
+    };
+    let fixed = ImageRequest::fixed_cpu_metadata_bytes();
+    assert_eq!(
+        fixed,
+        (std::mem::size_of::<Option<Box<Sun>>>()
+            + std::mem::size_of::<Option<Box<CpuSky>>>()
+            + std::mem::size_of::<Option<super::super::volume::HomogeneousVolume>>()) as u64
+    );
+    let captured = ImageRequest { integrator: Integrator::Raytrace, raytrace: Some(options.clone()), ..request() };
+    assert_eq!(captured.retained_resource_metadata_bytes(), fixed);
+    let retained = options.retained_bytes().unwrap() + fixed;
+    let job = host.submit(id(9170, 1), 101, empty(), captured).unwrap();
+    let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+    job.cancel().unwrap();
+    assert!(!job.work_released());
+    drop(work);
+    assert!(job.work_released());
+    assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
+    assert!(job.frame().unwrap().is_none());
+    assert_eq!(host.admitted_bytes(), retained, "fixed request headers cannot borrow a released Work or absent final-frame lease");
+    assert_eq!(job.0._request_reservation.as_ref().unwrap().bytes, retained);
+    let held = job.clone();
+    drop(job);
+    assert_eq!(host.admitted_bytes(), retained);
+    drop(held);
+    assert_eq!(host.admitted_bytes(), 0);
+    // Omitted boxes introduce no source buffer, but their actual inline header
+    // growth remains explicitly billed even for the embedded None variant.
+    let plain = request();
+    assert!(plain.raytrace.is_none());
+    assert_eq!(plain.retained_resource_metadata_bytes(), fixed);
+}
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+mod prepared_optical_submission {
+    use super::*;
+    use crate::job::{DielectricBoundary, DielectricOptions, RaytraceOptions};
+    use solidcore_record::Vec3;
+
+    fn host(limit: u64) -> CpuHost {
+        ImageHost(Arc::new(Owner {
+            executor: None,
+            shared: CpuHost::shared(limit),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }))
+    }
+    fn capture() -> (ProductScene, ImageRequest) {
+        let mesh = Arc::new(Mesh {
+            positions: (0..8)
+                .map(|i| Vec3::new(if i & 1 == 0 { -1.0 } else { 1.0 }, if i & 2 == 0 { -1.0 } else { 1.0 }, if i & 4 == 0 { 0.0 } else { 2.0 }))
+                .collect(),
+            triangles: vec![
+                [0, 2, 3],
+                [0, 3, 1],
+                [4, 5, 7],
+                [4, 7, 6],
+                [0, 4, 6],
+                [0, 6, 2],
+                [1, 3, 7],
+                [1, 7, 5],
+                [0, 1, 5],
+                [0, 5, 4],
+                [2, 6, 7],
+                [2, 7, 3],
+            ],
+            ..Default::default()
+        });
+        let scene = ProductScene {
+            bounds: mesh.bounds(),
+            meshes: vec![crate::ProductMesh {
+                name: "captured box".into(),
+                mesh,
+                color: [255; 3],
+                opacity: 1.0,
+                surface: None,
+                faces: Vec::new(),
+                transmission: None,
+            }],
+        };
+        let mut request = ImageRequest { integrator: Integrator::Raytrace, width: 1, height: 1, ..request() };
+        request.camera.set_view(crate::StandardView::Top);
+        request.raytrace = Some(RaytraceOptions {
+            lights: Some(Vec::new()),
+            environment: Some(crate::job::RaytraceEnvironmentOptions { color: [1.0; 3], intensity: 1.0 }),
+            dielectrics: vec![DielectricOptions {
+                body_index: 0,
+                body_name: "captured box".into(),
+                boundary: DielectricBoundary::ClosedBox,
+                ior: 1.5,
+                absorption_per_mm: [0.0; 3],
+                thickness_mm: 0.0,
+                shadow_transmission: false,
+                subsurface: None,
+            }],
+            ..Default::default()
+        });
+        (scene, request)
+    }
+
+    #[test]
+    fn prepared_optics_debit_once_and_transfer_work_and_retained_leases_without_enqueuing_early() {
+        let host = host(MEMORY_LIMIT);
+        let (scene, request) = capture();
+        let source = Arc::downgrade(&scene.meshes[0].mesh);
+        let retained = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
+        let prepared = host.prepare_submission(scene, request, JobOptions::default(), None, CancelToken::default()).unwrap();
+        assert_eq!(prepared.proof.len(), 1);
+        assert!(prepared.options.is_none());
+        assert!(host.0.shared.queue.lock().unwrap().is_empty(), "preparation has no job identity or queued work");
+        let expected = prepared.admission().estimated_total_bytes + retained;
+        assert_eq!(host.admitted_bytes(), expected);
+        assert_eq!(prepared.reservation.bytes, prepared.admission().estimated_total_bytes);
+        assert_eq!(prepared.request_reservation.as_ref().unwrap().bytes, retained);
+        let job = host.submit_prepared(id(801, 1), 99, prepared).unwrap();
+        assert_eq!(host.admitted_bytes(), expected, "enqueue moves rather than reserves credit");
+        let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+        assert_eq!(work.proof.len(), 1);
+        let mut running = Running::begin(work).unwrap();
+        for _ in 0..100_000 {
+            if !running.advance(1).unwrap() {
+                break;
+            }
+        }
+        assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+        assert_eq!(job.id(), id(801, 1));
+        drop(running);
+        assert!(source.upgrade().is_none(), "certified source drops with actual work");
+        let frame = job.frame().unwrap().unwrap();
+        assert_eq!(host.admitted_bytes(), retained + frame._reservation.bytes);
+        job.0.data.lock().unwrap().frame = None;
+        drop(frame);
+        assert_eq!(host.admitted_bytes(), retained, "captured option names/capacities outlive frame eviction");
+        let clone = job.clone();
+        drop(job);
+        assert_eq!(host.admitted_bytes(), retained);
+        drop(clone);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[test]
+    fn preparation_drop_cancel_wrong_host_and_exact_pool_boundary_release_all_captures() {
+        let original = host(MEMORY_LIMIT);
+        let (scene, request) = capture();
+        let prepared = original.prepare_submission(scene, request, JobOptions::default(), None, CancelToken::default()).unwrap();
+        let required = original.admitted_bytes();
+        drop(prepared);
+        assert_eq!(original.admitted_bytes(), 0);
+        for limit in [required - 1, required] {
+            let host = host(limit);
+            let (scene, request) = capture();
+            let source = Arc::downgrade(&scene.meshes[0].mesh);
+            let result = host.prepare_submission(scene, request, JobOptions::default(), None, CancelToken::default());
+            assert_eq!(result.is_ok(), limit == required);
+            drop(result);
+            assert_eq!(host.admitted_bytes(), 0);
+            assert!(source.upgrade().is_none());
+        }
+        let cancel = CancelToken::default();
+        let (scene, request) = capture();
+        let prepared = original.prepare_submission(scene, request, JobOptions::default(), None, cancel.clone()).unwrap();
+        cancel.cancel();
+        assert_eq!(original.submit_prepared(id(802, 1), 0, prepared).err().unwrap().code, ErrorCode::Cancelled);
+        assert_eq!(original.admitted_bytes(), 0);
+        let (scene, request) = capture();
+        let prepared = original.prepare_submission(scene, request, JobOptions::default(), None, CancelToken::default()).unwrap();
+        let other = host(MEMORY_LIMIT);
+        assert_eq!(other.submit_prepared(id(802, 2), 0, prepared).err().unwrap().code, ErrorCode::WrongOwner);
+        assert_eq!((original.admitted_bytes(), other.admitted_bytes()), (0, 0));
+        assert!(original.0.shared.queue.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strict_host_and_preparation_keep_precise_geometry_refusal_without_pool_or_queue_leaks() {
+        let host = host(MEMORY_LIMIT);
+        let (mut scene, request) = capture();
+        Arc::make_mut(&mut scene.meshes[0].mesh).positions[0].z += 0.125;
+        for error in [
+            host.admit(&scene, &request, JobOptions::default()).err().unwrap(),
+            host.prepare_submission(scene, request, JobOptions::default(), None, CancelToken::default()).err().unwrap(),
+        ] {
+            assert_eq!(error.code, ErrorCode::InvalidScene);
+            assert!(error.message.contains("box face is not axis aligned"), "{}", error.message);
+        }
+        assert_eq!(host.admitted_bytes(), 0);
+        assert!(host.0.shared.queue.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn borrowed_enqueue_keeps_failed_capsule_credit_and_source_until_worker_retirement() {
+        let host = host(MEMORY_LIMIT);
+        let (scene, request) = capture();
+        let source = Arc::downgrade(&scene.meshes[0].mesh);
+        let cancel = CancelToken::default();
+        let prepared = host.prepare_submission(scene, request, JobOptions::default(), None, cancel.clone()).unwrap();
+        let mut slot = Some(prepared);
+        let own_bytes = host.admitted_bytes();
+        let first = host.submit(id(803, 1), 0, empty(), super::request()).unwrap();
+        let second = host.submit(id(803, 2), 0, empty(), super::request()).unwrap();
+        let queued_bytes = host.admitted_bytes() - own_bytes;
+        let error = host.try_submit_prepared(id(804, 1), 0, &mut slot).err().unwrap();
+        assert_eq!(error.code, ErrorCode::QueueFull);
+        assert!(slot.is_some() && source.upgrade().is_some());
+        assert_eq!(host.admitted_bytes(), own_bytes + queued_bytes);
+        // A racing cancellation does not make UI completion destroy queued
+        // captures. Background draining will reclaim their work later.
+        first.cancel().unwrap();
+        assert_eq!(host.try_submit_prepared(id(804, 1), 0, &mut slot).err().unwrap().code, ErrorCode::QueueFull);
+        assert_eq!(host.0.shared.queue.lock().unwrap().len(), 2);
+        cancel.cancel();
+        assert_eq!(host.try_submit_prepared(id(804, 1), 0, &mut slot).err().unwrap().code, ErrorCode::Cancelled);
+        assert!(slot.is_some());
+        let other = self::host(MEMORY_LIMIT);
+        assert_eq!(other.try_submit_prepared(id(804, 1), 0, &mut slot).err().unwrap().code, ErrorCode::WrongOwner);
+        assert_eq!(host.admitted_bytes(), own_bytes + queued_bytes);
+        let (retire, receiver) = std::sync::mpsc::sync_channel(1);
+        let (ack, released) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            drop(receiver.recv().unwrap());
+            ack.send(()).unwrap();
+        });
+        retire.send(slot.take().unwrap()).unwrap();
+        released.recv().unwrap();
+        worker.join().unwrap();
+        assert!(slot.is_none() && source.upgrade().is_none());
+        assert_eq!(host.admitted_bytes(), queued_bytes, "retirement ack follows actual owner/lease disposal");
+        second.cancel().unwrap();
+        drop(host.0.shared.queue.lock().unwrap().drain(..).collect::<Vec<_>>());
+        drop((first, second));
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+    #[test]
+    fn absent_optics_preserves_admission_and_has_no_proof_or_options_backing() {
+        let host = host(MEMORY_LIMIT);
+        for integrator in [Integrator::Raster, Integrator::Raytrace] {
+            let request = ImageRequest { integrator, ..super::request() };
+            let expected = super::admit(&empty(), &request).unwrap();
+            let fixed = request.retained_resource_metadata_bytes();
+            let prepared = host.prepare_submission(empty(), request, JobOptions::default(), None, CancelToken::default()).unwrap();
+            assert_eq!(serde_json::to_value(prepared.admission()).unwrap(), serde_json::to_value(expected).unwrap());
+            assert_eq!((prepared.proof.len(), prepared.proof.capacity()), (0, 0));
+            assert!(prepared.options.is_none());
+            assert_eq!(
+                prepared.request_reservation.as_ref().unwrap().bytes,
+                fixed,
+                "None source paths still retain the exact CPU9 fixed header independently of Work"
+            );
+            assert_eq!(host.admitted_bytes(), expected.estimated_total_bytes + fixed);
+            drop(prepared);
+            assert_eq!(host.admitted_bytes(), 0);
+        }
+    }
+}
+
+#[test]
+fn independently_retained_metadata_never_borrows_work_credit_and_rejects_a_different_host_pool() {
+    let host = CpuHost::cooperative();
+    let first = host.prepare_submission(empty(), request(), JobOptions::default(), None, CancelToken::default()).unwrap();
+    let work = host.admitted_bytes();
+    let lease = first.reserve_retained_metadata(257).unwrap();
+    assert_eq!(lease.bytes(), 257);
+    assert_eq!(host.admitted_bytes(), work + 257);
+    drop(first);
+    assert_eq!(host.admitted_bytes(), 257, "independent backing survives actual Work capsule release");
+    let second =
+        host.prepare_submission_with_metadata(empty(), request(), JobOptions::default(), None, CancelToken::default(), Some(&lease)).unwrap();
+    assert_eq!(host.admitted_bytes(), work + 257, "existing retained credit is counted but not reserved twice");
+    let other = CpuHost::cooperative();
+    assert_eq!(
+        other
+            .prepare_submission_with_metadata(empty(), request(), JobOptions::default(), None, CancelToken::default(), Some(&lease))
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::WrongOwner
+    );
+    assert_eq!(other.admitted_bytes(), 0);
+    drop(second);
+    assert_eq!(host.admitted_bytes(), 257);
+    drop(lease);
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+mod capture_credit {
+    use super::*;
+
+    struct MetadataExecutor(Arc<AtomicU64>);
+    impl ImageExecutor for MetadataExecutor {
+        fn descriptor(&self) -> Result<ExecutorDescriptor> {
+            let mut descriptor = CpuExecutor.descriptor()?;
+            // Deliberately noncanonical order: resolution sorts both lists.
+            // The full raw descriptor still must remain exactly pinned.
+            descriptor.profiles[0].features.push(crate::RenderFeature::Hdri);
+            descriptor.profiles[0].formats.insert(0, RenderFormat::Exr);
+            let state = self.0.load(Ordering::Acquire);
+            descriptor.id = ExecutorId::new(if state == 1 { "changed-capture-map" } else { "capture-map" }).unwrap();
+            if state == 3 {
+                descriptor.scratch.sample_bytes_per_pixel += 1;
+            }
+            Ok(descriptor)
+        }
+        fn admit(&self, scene: &ProductScene, request: &ImageRequest, _options: JobOptions) -> Result<Admission> {
+            let mut clean = request.clone();
+            clean.textures = None;
+            let mut result = admit(scene, &clean)?;
+            if let Some(maps) = &request.textures {
+                result.estimated_total_bytes += maps.working_bytes();
+            }
+            // Deliberately change layout metadata after the first pre-submit
+            // check, without changing executor identity or profile.
+            if self.0.load(Ordering::Acquire) == 2 {
+                self.0.store(3, Ordering::Release);
+            }
+            Ok(result)
+        }
+        fn begin(&self, _scene: ProductScene, _request: ImageRequest, _options: JobOptions, _cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+            Err(JobError::new(ErrorCode::InvalidRequest, "controlled capture factory failure"))
+        }
+    }
+    fn registered(limit: u64, changed: Arc<AtomicU64>) -> ImageHost {
+        ImageHost(Arc::new(Owner {
+            executor: Some(Arc::new(MetadataExecutor(changed))),
+            shared: ImageHost::shared(limit),
+            kind: HostKind::Cooperative,
+            running: Mutex::new(None),
+            #[cfg(not(target_arch = "wasm32"))]
+            _worker: None,
+        }))
+    }
+    #[test]
+    fn capture_registered_credit_has_actual_host_cap_and_pins_descriptor_token_and_retained_context() {
+        let changed = Arc::new(AtomicU64::new(0));
+        let host = registered(MEMORY_LIMIT, changed.clone());
+        let cancel = CancelToken::default();
+        let bytes = super::super::super::image::MAX_JOB_BYTES + 1;
+        let lease = host.reserve_capture(bytes, CaptureProfile::Registered, &cancel, None).unwrap();
+        assert_eq!(host.admitted_bytes(), bytes, "registered capture must not inherit Compact's smaller CPU cap");
+        drop(lease);
+        assert_eq!(host.admitted_bytes(), 0);
+        assert!(
+            matches!(host.reserve_capture(1,CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact),&cancel,None),Err(e) if e.code==ErrorCode::WrongOwner)
+        );
+        let retained = RetainedMetadata(host.0.shared.budget.reserve(123).unwrap());
+        let mut lease = host.reserve_capture(100, CaptureProfile::Registered, &cancel, Some(&retained)).unwrap();
+        assert_eq!(host.admitted_bytes(), 223);
+        lease.try_extend(70, &cancel).unwrap();
+        assert_eq!(lease.bytes(), 170);
+        assert_eq!(host.admitted_bytes(), 293);
+        let foreign = registered(MEMORY_LIMIT, Arc::new(AtomicU64::new(0)));
+        let foreign_retained = RetainedMetadata(foreign.0.shared.budget.reserve(123).unwrap());
+        assert!(matches!(host.reserve_capture(1,CaptureProfile::Registered,&cancel,Some(&foreign_retained)),Err(e) if e.code==ErrorCode::WrongOwner));
+        let other = CancelToken::default();
+        assert_eq!(lease.try_extend(1, &other).unwrap_err().code, ErrorCode::WrongOwner);
+        assert_eq!(host.admitted_bytes(), 293);
+        changed.store(1, Ordering::Release);
+        assert_eq!(lease.try_extend(1, &cancel).unwrap_err().code, ErrorCode::HostUnavailable);
+        assert_eq!(host.admitted_bytes(), 293);
+        changed.store(0, Ordering::Release);
+        cancel.cancel();
+        assert_eq!(lease.try_extend(1, &cancel).unwrap_err().code, ErrorCode::Cancelled);
+        drop(lease);
+        assert_eq!(host.admitted_bytes(), 123);
+        drop(retained);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    fn cpu(limit: u64) -> ImageHost {
+        ImageHost(Arc::new(Owner {
+            executor: None,
+            shared: ImageHost::shared(limit),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }))
+    }
+    fn mapped() -> (ProductScene, ImageRequest, Weak<Vec<u8>>) {
+        use crate::{
+            job::{
+                CpuProgressiveOptions, DirectionalLightOptions, OutputOptions, RaytraceOptions,
+                textures::{BaseColorMode, PlanarFrame, RuntimeTextures, TextureBinding, TextureMap},
+            },
+            surface::OpaqueSurface,
+            texture_input::MapRole,
+        };
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut bytes).write_image(&[128, 64, 32, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+        let map = TextureMap::new(bytes, MapRole::BaseColor).unwrap();
+        let weak = map.source().encoded_weak();
+        let binding = TextureBinding {
+            body_index: 0,
+            body_name: "Mapped receiver".into(),
+            frame: PlanarFrame { origin: [0.; 3], u: [1., 0., 0.], v: [0., 1., 0.] },
+            base_color: Some(map),
+            normal: None,
+            roughness: None,
+            metallic: None,
+            base_color_mode: BaseColorMode::Replace,
+            flip_v: false,
+            normal_strength: 1.0,
+        };
+        let maps = Arc::new(RuntimeTextures::new(vec![binding]).unwrap());
+        let mesh = Mesh {
+            positions: vec![
+                solidcore_record::Vec3::new(-10., -10., 0.),
+                solidcore_record::Vec3::new(10., -10., 0.),
+                solidcore_record::Vec3::new(10., 10., 0.),
+                solidcore_record::Vec3::new(-10., 10., 0.),
+            ],
+            normals: vec![solidcore_record::Vec3::Z; 4],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            tri_face: vec![0, 0],
+            ..Default::default()
+        };
+        let source = ProductScene {
+            bounds: mesh.bounds(),
+            meshes: vec![crate::ProductMesh {
+                name: "Mapped receiver".into(),
+                mesh: Arc::new(mesh),
+                color: [255; 3],
+                opacity: 1.0,
+                surface: Some(OpaqueSurface::new(solidcore_record::Vec3::new(1., 1., 1.), 0., 0.5, 1.).unwrap()),
+                transmission: None,
+                faces: Vec::new(),
+            }],
+        };
+        let mut image = request();
+        image.width = 2;
+        image.height = 2;
+        image.camera.distance = 4.;
+        image.camera.set_view(crate::StandardView::Top);
+        image.integrator = Integrator::Raytrace;
+        image.textures = Some(maps);
+        image.raytrace = Some(RaytraceOptions {
+            progressive: Some(CpuProgressiveOptions { samples_per_pixel: 2, seed: 17 }),
+            lights: Some(vec![DirectionalLightOptions { direction: [0., 0., 1.], color: [1.; 3], intensity: std::f64::consts::PI }]),
+            shadows: false,
+            output: Some(Box::new(OutputOptions { linear_exr: true, ..Default::default() })),
+            ..Default::default()
+        });
+        (source, image, weak)
+    }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn capture_cpu_exact_cap_transfer_keeps_real_map_png_raw_and_releases_only_work_backing() {
+        let render = |capture_excess: Option<u64>| {
+            let (scene, image, weak) = mapped();
+            let probe = cpu(MEMORY_LIMIT);
+            let admission = probe.admit(&scene, &image, JobOptions::default()).unwrap();
+            let retained = retained_request_bytes(&image).unwrap() + image.retained_resource_metadata_bytes();
+            let total = admission.estimated_total_bytes + retained;
+            drop(probe);
+            let extra = capture_excess.unwrap_or(0);
+            let host = cpu(total + extra + 123);
+            let plan = RetainedMetadata(host.0.shared.budget.reserve(123).unwrap());
+            let cancel = CancelToken::default();
+            let prepared = if capture_excess.is_some() {
+                let bytes = if extra == 0 { image.textures.as_ref().unwrap().captured_bytes().unwrap() } else { total + extra };
+                let mut credit = host
+                    .reserve_capture(bytes / 2, CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact), &cancel, Some(&plan))
+                    .unwrap();
+                credit.try_extend(bytes - bytes / 2, &cancel).unwrap();
+                assert_eq!(host.admitted_bytes(), bytes + 123);
+                host.prepare_submission_with_capture(scene, image, JobOptions::default(), None, cancel, Some(&plan), credit).unwrap()
+            } else {
+                host.prepare_submission_with_metadata(scene, image, JobOptions::default(), None, cancel, Some(&plan)).unwrap()
+            };
+            assert_eq!(prepared.admission().estimated_total_bytes, admission.estimated_total_bytes + extra);
+            assert_eq!(prepared.admission().preparation_bytes, admission.preparation_bytes + extra);
+            assert_eq!(host.admitted_bytes(), total + extra + 123, "exact pool leaves no room for a second combined reserve");
+            let job = host.submit_prepared(id(9510, if capture_excess.is_some() { 2 } else { 1 }), 1, prepared).unwrap();
+            assert!(job.0.request.textures.is_none(), "Record owns summary only, never captured map backing");
+            let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+            let mut running = Running::begin(work).unwrap();
+            assert!(weak.upgrade().is_some(), "the actual CPU factory received the full captured map source");
+            for _ in 0..200000 {
+                if !running.guarded_step(16384) {
+                    break;
+                }
+            }
+            assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+            let frame = job.frame().unwrap().unwrap();
+            let png = frame.png().to_vec();
+            let raw = frame.linear_exr().unwrap().to_vec();
+            let pixels = image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(pixels.dimensions(), (2, 2));
+            assert!(
+                pixels.pixels().all(|p| p[0] > p[1] && p[1] > p[2] && p[2] > 0 && p[3] == 255),
+                "the actual PNG must show the red>green>blue map; the unmapped receiver and sole source are achromatic"
+            );
+            assert!(weak.upgrade().is_none(), "the completed CPU producer releases encoded maps before publishing a final image");
+            drop(running);
+            assert!(job.work_released());
+            assert!(weak.upgrade().is_none(), "observed final handle/frame cannot pin encoded map backing");
+            assert_eq!(host.admitted_bytes(), frame._reservation.bytes + retained + 123);
+            job.0.data.lock().unwrap().frame = None;
+            drop(frame);
+            assert_eq!(host.admitted_bytes(), retained + 123);
+            drop(job);
+            assert_eq!(host.admitted_bytes(), 123);
+            drop(plan);
+            assert_eq!(host.admitted_bytes(), 0);
+            (png, raw)
+        };
+        let original = render(None);
+        assert_eq!(original, render(Some(0)), "new transfer must preserve actual CPU mapped PNG/raw bytes and sample stream");
+        assert_eq!(original, render(Some(4096)), "retired capture scratch must not alter the actual mapped image or retained lease split");
+    }
+
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn capture_errors_drop_typed_resources_before_outer_credit_and_reject_context_changes() {
+        let (scene, image, weak) = mapped();
+        let host = cpu(MEMORY_LIMIT);
+        let cancel = CancelToken::default();
+        let bytes = image.textures.as_ref().unwrap().captured_bytes().unwrap();
+        let retained = RetainedMetadata(host.0.shared.budget.reserve(123).unwrap());
+        let mut credit =
+            host.reserve_capture(bytes, CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact), &cancel, Some(&retained)).unwrap();
+        // Observe the exact inner refusal boundary used by the consuming public
+        // wrapper: parameters have died, but the enclosing credit is still alive.
+        let result = host.prepare_submission_inner(scene, image, JobOptions::default(), None, cancel.clone(), None, Some(&mut credit));
+        assert!(matches!(result,Err(e) if e.code==ErrorCode::WrongOwner));
+        assert!(weak.upgrade().is_none());
+        assert_eq!(host.admitted_bytes(), bytes + 123);
+        drop(credit);
+        assert_eq!(host.admitted_bytes(), 123);
+        drop(retained);
+        assert_eq!(host.admitted_bytes(), 0);
+        let (scene, image, weak) = mapped();
+        let cancel = CancelToken::default();
+        let bytes = image.textures.as_ref().unwrap().captured_bytes().unwrap();
+        let original = RetainedMetadata(host.0.shared.budget.reserve(123).unwrap());
+        let same_sized = RetainedMetadata(host.0.shared.budget.reserve(123).unwrap());
+        let mut credit =
+            host.reserve_capture(bytes, CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact), &cancel, Some(&original)).unwrap();
+        let error =
+            host.prepare_submission_inner(scene, image, JobOptions::default(), None, cancel, Some(&same_sized), Some(&mut credit)).err().unwrap();
+        assert_eq!(error.code, ErrorCode::WrongOwner, "equal byte count cannot substitute a different retained Plan owner");
+        assert!(weak.upgrade().is_none());
+        assert_eq!(host.admitted_bytes(), bytes + 246);
+        drop(credit);
+        drop(original);
+        drop(same_sized);
+        assert_eq!(host.admitted_bytes(), 0);
+        for variant in 0..3 {
+            let (scene, mut image, weak) = mapped();
+            let cancel = CancelToken::default();
+            let bytes = image.textures.as_ref().unwrap().captured_bytes().unwrap();
+            let credit = host
+                .reserve_capture(
+                    if variant == 2 { bytes - 1 } else { bytes },
+                    CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact),
+                    &cancel,
+                    None,
+                )
+                .unwrap();
+            let other = cpu(MEMORY_LIMIT);
+            if variant == 1 {
+                image.raytrace.as_mut().unwrap().budget = super::super::super::CpuBudget::Studio;
+            }
+            let owner = if variant == 0 { &other } else { &host };
+            let error = owner.prepare_submission_with_capture(scene, image, JobOptions::default(), None, cancel, None, credit).err().unwrap();
+            assert_eq!(error.code, if variant == 2 { ErrorCode::LimitExceeded } else { ErrorCode::WrongOwner });
+            assert!(weak.upgrade().is_none());
+            assert_eq!(host.admitted_bytes(), 0);
+            assert_eq!(other.admitted_bytes(), 0);
+        }
+    }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn capture_extension_counts_independent_retained_owner_at_exact_cpu_profile_boundary() {
+        let host = cpu(MEMORY_LIMIT);
+        let cancel = CancelToken::default();
+        let plan = RetainedMetadata(host.0.shared.budget.reserve(123).unwrap());
+        let maximum = super::super::super::CpuBudget::Compact.limits().max_job_bytes;
+        let mut credit =
+            host.reserve_capture(maximum - 123, CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact), &cancel, Some(&plan)).unwrap();
+        assert_eq!(host.admitted_bytes(), maximum);
+        assert_eq!(credit.try_extend(1, &cancel).unwrap_err().code, ErrorCode::LimitExceeded);
+        assert_eq!(host.admitted_bytes(), maximum);
+        drop(credit);
+        assert_eq!(host.admitted_bytes(), 123);
+        drop(plan);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn capture_pool_failure_and_cancelled_prepared_keep_credit_until_owned_backing_drops() {
+        let (scene, image, weak) = mapped();
+        let host = cpu(MEMORY_LIMIT);
+        let options = JobOptions::default();
+        let admission = host.admit(&scene, &image, options).unwrap();
+        let total = admission.estimated_total_bytes + retained_request_bytes(&image).unwrap() + image.retained_resource_metadata_bytes();
+        let busy = host.0.shared.budget.reserve(MEMORY_LIMIT - total + 1).unwrap();
+        let cancel = CancelToken::default();
+        let bytes = image.textures.as_ref().unwrap().captured_bytes().unwrap();
+        let mut credit = host.reserve_capture(bytes, CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact), &cancel, None).unwrap();
+        let error = host.prepare_submission_inner(scene, image, options, None, cancel, None, Some(&mut credit)).err().unwrap();
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(host.admitted_bytes(), busy.bytes + bytes);
+        drop(credit);
+        assert_eq!(host.admitted_bytes(), busy.bytes);
+        drop(busy);
+        assert_eq!(host.admitted_bytes(), 0);
+        let (scene, image, weak) = mapped();
+        let cancel = CancelToken::default();
+        let admission = host.admit(&scene, &image, options).unwrap();
+        let bytes = admission.estimated_total_bytes + retained_request_bytes(&image).unwrap() + image.retained_resource_metadata_bytes() + 4096;
+        let credit = host.reserve_capture(bytes, CaptureProfile::CpuRaytrace(super::super::super::CpuBudget::Compact), &cancel, None).unwrap();
+        let mut slot = Some(host.prepare_submission_with_capture(scene, image, options, None, cancel.clone(), None, credit).unwrap());
+        assert_eq!(slot.as_ref().unwrap().admission().estimated_total_bytes, admission.estimated_total_bytes + 4096);
+        let held = host.admitted_bytes();
+        assert_eq!(held, bytes);
+        cancel.cancel();
+        assert_eq!(host.try_submit_prepared(id(9511, 1), 1, &mut slot).err().unwrap().code, ErrorCode::Cancelled);
+        assert!(slot.is_some() && weak.upgrade().is_some());
+        assert_eq!(host.admitted_bytes(), held, "failed publication retains the full funded capsule");
+        drop(slot);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+    #[test]
+    fn capture_rechecks_actual_registered_layout_after_admission_before_merging_credit() {
+        let (scene, mut image, weak) = mapped();
+        image.integrator = Integrator::Raster;
+        image.raytrace = None;
+        let changed = Arc::new(AtomicU64::new(2));
+        let host = registered(MEMORY_LIMIT, changed.clone());
+        let cancel = CancelToken::default();
+        let bytes = image.textures.as_ref().unwrap().captured_bytes().unwrap();
+        let credit = host.reserve_capture(bytes, CaptureProfile::Registered, &cancel, None).unwrap();
+        let error = host.prepare_submission_with_capture(scene, image, JobOptions::default(), None, cancel, None, credit).err().unwrap();
+        assert_eq!(changed.load(Ordering::Acquire), 3);
+        assert_eq!(error.code, ErrorCode::HostUnavailable);
+        assert_eq!(error.message, "resolved capture executor metadata changed");
+        assert!(weak.upgrade().is_none());
+        assert_eq!(host.admitted_bytes(), 0);
+        assert!(host.0.shared.queue.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn capture_registered_factory_failure_releases_source_credit_and_preserves_only_record_summary() {
+        let (scene, mut image, weak) = mapped();
+        image.integrator = Integrator::Raster;
+        image.raytrace = None;
+        let host = registered(MEMORY_LIMIT, Arc::new(AtomicU64::new(0)));
+        let cancel = CancelToken::default();
+        let retained = image.retained_resource_metadata_bytes();
+        let bytes = image.textures.as_ref().unwrap().captured_bytes().unwrap();
+        let credit = host.reserve_capture(bytes, CaptureProfile::Registered, &cancel, None).unwrap();
+        let prepared = host.prepare_submission_with_capture(scene, image, JobOptions::default(), None, cancel, None, credit).unwrap();
+        let job = host.submit_prepared(id(9512, 1), 1, prepared).unwrap();
+        assert!(job.0.request.textures.is_none());
+        let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+        assert!(Running::begin(work).is_none());
+        assert_eq!(job.status().unwrap().progress.phase, Phase::Failed);
+        assert!(job.work_released());
+        assert!(weak.upgrade().is_none());
+        assert!(job.frame().unwrap().is_none());
+        assert_eq!(host.admitted_bytes(), retained);
+        drop(job);
         assert_eq!(host.admitted_bytes(), 0);
     }
 }

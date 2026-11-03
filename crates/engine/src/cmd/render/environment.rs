@@ -32,6 +32,8 @@ pub(super) fn set(s: &mut crate::Session, params: &serde_json::Value) -> Result<
         Some(RenderJob::CpuRaytrace { options, .. }) => {
             if let Some(hdr) = &mut options.hdr {
                 (Some(&mut hdr.rotation_rad), &mut hdr.intensity, 64.0)
+            } else if let Some(SkyEnvironment::Sky { rotation_rad, intensity, .. }) = &mut options.sky {
+                (Some(rotation_rad), intensity, 100.0)
             } else if let Some(environment) = &mut options.environment {
                 (None, &mut environment.intensity, 64.0)
             } else {

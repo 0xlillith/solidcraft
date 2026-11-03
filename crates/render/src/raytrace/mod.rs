@@ -5,17 +5,25 @@
 //! or third-party ray-tracer implementation is used. See `docs/render-raytrace-core.md`.
 
 use crate::job::CancelToken;
-use solidcraft_geom::Vec3;
+use solidcore_record::Vec3;
+use solidcraft_geom::prelude::*;
 
+mod aging;
 mod anisotropic_faces;
 pub mod area;
+mod box_certificate;
 mod bvh;
+mod celestial;
 mod denoise;
 pub mod dielectric;
 pub mod emission;
+mod glass_mesh;
+mod glass_volume;
 pub mod image;
 mod indirect;
+pub(crate) mod legacy_certificates;
 pub mod lighting;
+mod origin;
 pub mod prepared;
 mod progressive;
 pub mod punctual;

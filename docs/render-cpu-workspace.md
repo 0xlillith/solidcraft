@@ -130,7 +130,7 @@ panel to **HDR saved inside this design**. Further saves use `render.settings.se
 Reload, setup switching and design reopen never need the original path. The CPU
 HDR's rotation, intensity and sample count are saved separately from its source
 ID. Rotation remains in radians internally; drawing the degree editor does not
-round-trip or clamp it. A constant environment and HDR are mutually exclusive.
+round-trip or clamp it. Constant, gradient Sky and HDR environments are mutually exclusive. Explicit CPU Indirect lighting also supports the shared finite Sun and gradient Sky contracts; see [CPU celestial lighting](render-cpu-celestial.md).
 CPU still requires explicit sRGB/D65 primaries; it never inherits the GPU's optional
 assumption for an undeclared source.
 
@@ -205,3 +205,31 @@ use the setup's single exposure/background authority. The first numerical edit
 keeps the visible size and numerical baseline. Merely opening the editor never
 saves or starts a job. [CPU output presentation](render-cpu-output.md) describes
 the existing shared output bounds and raw ownership.
+
+## Explicit CPU image budgets
+
+The normal Sampling page shares Draft/Balanced/High with GPU, but projects CPU
+cost budgets independently from the same Q-001/Q-002/Q-003 catalogue. CPU uses
+960×540/16, 1600×900/32, 2560×1440/64 production samples and seed 21026. The smallest
+existing profile admitting the complete pilot+production envelope is selected,
+without lowering an already selected larger profile. Nonadaptive baseline
+profiles are Compact/Studio/Studio. No memory/work/SPP cap is raised.
+
+A CPU chip can change exactly width, height, progressive production sample cap,
+progressive seed and resource profile in one reversible edit. Camera, lens,
+HDR/light input, GI enablement/depth, denoise, optics, maps, aging, alpha,
+finishing, raw-master intent and adaptive policy stay as authored. A preserved
+adaptive minimum above the new sample cap refuses atomically. Saved fixed-AA
+setups retain the explicit Adopt progressive action before these presets; a
+quality click never silently normalizes primary AA or reflection attempts.
+
+These are image-cost presets, not complete optical/convergence quality tiers or
+CPU/GPU convergence equivalence. Geometry/memory and cumulative-work admission
+still apply to the captured job. Canonical CPU clicks use the same numerical
+transaction and current-shot save path; imported GPU quality review remains a
+separate acknowledged flow. Merely painting/selecting a page does not apply a
+preset or launch a final render.
+
+This outside CPU-budget source preparation is uncompiled/unrun. Its actual
+pointer/save/reopen/Undo and hostile-budget regressions require serial repository
+qualification and native UI evidence before a usability claim.

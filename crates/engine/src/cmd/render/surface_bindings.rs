@@ -3,12 +3,12 @@
 use crate::{Result, Session, params::bad};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use solidcore_record::Vec3;
 use solidcraft_doc::{
     render_resources::HdrId,
     render_settings::{RenderJob, RenderSetup},
     render_surface::{BuiltinSurfaceSource, RenderBodyTarget, SavedSurface, SurfaceBindings},
 };
-use solidcraft_geom::Vec3;
 use solidcraft_render::{ProductScene, job::textures::PlanarFrame};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -135,8 +135,16 @@ pub(super) fn bind(s: &mut Session, params: &Value) -> Result<Value> {
         return Err(bad(command, "setup patch cannot erase or replace saved surface bindings; use explicit bind/unbind commands"));
     }
 
-    if !matches!(setup.job, Some(RenderJob::GpuPath { .. })) {
-        return Err(bad(command, "persistent authored maps require an explicit GPU setup"));
+    if !matches!(setup.job, Some(RenderJob::CpuRaytrace { .. } | RenderJob::GpuPath { .. })) {
+        return Err(bad(command, "persistent authored maps require an explicit CPU or GPU raytrace setup"));
+    }
+    if let Some(RenderJob::CpuRaytrace { options, .. }) = &setup.job {
+        if !setup.optics.is_empty() && options.path.is_none() {
+            return Err(bad(command, "CPU maps with Glass require Indirect lighting and separate targets"));
+        }
+        // Saving validates portable intent; capture later resolves stable aging
+        // targets. The final setup validator still forbids maps on a Glass target.
+        options.validate_surface_maps(setup.exposure_ev).map_err(|e| bad(command, e.to_string()))?;
     }
     let prepared = super::library::prepare_surface(s, &input.surface)?;
     let id = prepared["id"].as_str().ok_or_else(|| bad(command, "missing prepared surface identifier"))?;

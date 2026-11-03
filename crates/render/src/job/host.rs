@@ -14,11 +14,14 @@ use sha2::{Digest, Sha256};
 
 use super::{
     Admission, AlphaConvention, CancelToken, ColourEncoding, ErrorCode, FrameInfo, ImageExecutor, ImageRequest, ImageTask, ImageWork, Integrator,
-    JobError, JobId, JobOptions, Phase, Progress, Result, TaskPoll, admit,
+    JobError, JobId, JobOptions, Phase, Progress, Result, TaskPoll,
 };
 use crate::{
     Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderFormat, RenderLimits, RenderMode, RenderOperation, RenderProfile, ScratchLayout,
 };
+
+#[cfg(test)]
+use super::admit;
 
 const MEMORY_LIMIT: u64 = 512 * 1024 * 1024;
 const QUEUE_LIMIT: usize = 2;
@@ -201,7 +204,7 @@ mod light_union_lease_tests {
         let mut host = CpuHost::for_platform().unwrap();
         let budget = host.0.shared.budget.clone();
         let request = request().unwrap();
-        let bytes = retained_request_bytes(&request).unwrap();
+        let bytes = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
         let capacities = request
             .raytrace
             .as_ref()
@@ -477,7 +480,7 @@ struct Record {
     started: web_time::Instant,
     presentation: Option<Arc<RetainedPresentation>>,
     textures: Option<super::textures::TextureSummary>,
-    options: JobOptions,
+    options: Option<RetainedOptions>,
     environment: Option<JobEnvironmentInfo>,
     _request_reservation: Option<Reservation>,
     id: JobId,
@@ -491,6 +494,12 @@ struct Record {
 }
 
 impl Record {
+    fn options(&self) -> Result<JobOptions> {
+        match &self.options {
+            None => Ok(JobOptions::default()),
+            Some(slot) => slot.0.first().copied().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing retained render options")),
+        }
+    }
     fn notify(&self) {
         #[cfg(not(target_arch = "wasm32"))]
         self.done.notify_all();
@@ -526,7 +535,7 @@ impl JobHandle {
             linear_master: data.frame.as_ref().and_then(|frame| frame.linear_master_info().cloned()),
             preview: data.preview.as_ref().map(|preview| preview.info.clone()),
             textures: self.0.textures.clone(),
-            options: self.0.options,
+            options: self.0.options()?,
             environment: self.0.environment.clone(),
             job: self.0.id,
             scene_generation: self.0.scene_generation,
@@ -598,7 +607,190 @@ impl Drop for WorkRelease {
     }
 }
 
+/// Independently prepaid captured metadata, retained beyond any one Work/frame.
+/// The owner must place its backing before this field so backing drops first.
+pub struct RetainedMetadata(Reservation);
+impl RetainedMetadata {
+    pub fn bytes(&self) -> u64 {
+        self.0.bytes
+    }
+}
+
+/// The explicit execution envelope for NEW common map capture. Registered
+/// executors use their actual host limit and never a synthetic CPU profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureProfile {
+    CpuRaytrace(super::CpuBudget),
+    Registered,
+}
+impl CaptureProfile {
+    fn integrator(self) -> Integrator {
+        match self {
+            Self::CpuRaytrace(_) => Integrator::Raytrace,
+            Self::Registered => Integrator::Raster,
+        }
+    }
+    fn budget(self) -> super::CpuBudget {
+        match self {
+            Self::CpuRaytrace(budget) => budget,
+            Self::Registered => super::CpuBudget::Compact,
+        }
+    }
+}
+
+// Serialize metadata directly into the existing hash state: no captured source,
+// descriptor JSON Value or retained descriptor Vec/String clone is created.
+fn capture_fingerprint(value: &impl Serialize) -> Result<[u8; 32]> {
+    struct HashWriter(Sha256);
+    impl std::io::Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(Sha256::new());
+    serde_json::to_writer(&mut writer, value).map_err(|e| JobError::new(ErrorCode::Internal, format!("capture descriptor: {e}")))?;
+    Ok(writer.0.finalize().into())
+}
+
+/// Move-only same-pool high-water credit acquired BEFORE common captured map
+/// backing. Its enclosing caller must drop that backing before this lease.
+/// Submission consumes it into the ordinary PreparedSubmission reservations.
+/// Any high-water excess over the final layout remains billed as preparation
+/// backing until Work releases; Record retains only its normal summary lease.
+pub struct CaptureLease<'a> {
+    host: ImageHost,
+    profile: CaptureProfile,
+    descriptor: [u8; 32],
+    execution: [u8; 32],
+    retained: Option<&'a RetainedMetadata>,
+    cancel: CancelToken,
+    reservation: Reservation,
+    consumed: bool,
+}
+impl CaptureLease<'_> {
+    pub fn bytes(&self) -> u64 {
+        self.reservation.bytes
+    }
+    fn check(&self, cancel: &CancelToken) -> Result<()> {
+        if self.consumed {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "capture credit was already consumed"));
+        }
+        if !Arc::ptr_eq(&self.cancel.0, &cancel.0) {
+            return Err(JobError::new(ErrorCode::WrongOwner, "capture cancellation owner changed"));
+        }
+        self.cancel.check()?;
+        cancel.check()?;
+        let descriptor = self.host.capture_descriptor(self.profile)?;
+        if capture_fingerprint(&descriptor)? != self.descriptor {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "capture executor metadata changed"));
+        }
+        Ok(())
+    }
+    /// Add only the difference between the next live peak and existing credit.
+    /// Retired duplicate/pending buffers reuse this high-water lease; no release
+    /// or reacquisition is needed between capture phases.
+    pub fn try_extend(&mut self, bytes: u64, cancel: &CancelToken) -> Result<()> {
+        self.check(cancel)?;
+        let total = self.bytes().checked_add(bytes).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "capture credit overflow"))?;
+        self.host.check_request_sum(total, self.retained.map_or(0, RetainedMetadata::bytes), self.profile.budget())?;
+        let mut extra = self.host.0.shared.budget.reserve(bytes)?;
+        self.reservation.merge_from(&mut extra)
+    }
+    fn check_request(&self, host: &ImageHost, request: &ImageRequest, cancel: &CancelToken, retained: Option<&RetainedMetadata>) -> Result<()> {
+        if !self.host.same_host(host) {
+            return Err(JobError::new(ErrorCode::WrongOwner, "capture credit belongs to a different installed host"));
+        }
+        self.check(cancel)?;
+        let selected = if host.0.executor.is_some() { CaptureProfile::Registered } else { CaptureProfile::CpuRaytrace(request.cpu_budget()) };
+        if self.profile != selected || request.integrator != self.profile.integrator() {
+            return Err(JobError::new(ErrorCode::WrongOwner, "capture execution profile changed"));
+        }
+        host.capture_retained_context(retained)?;
+        let same_retained = match (self.retained, retained) {
+            (None, None) => true,
+            (Some(before), Some(after)) => std::ptr::eq(before, after),
+            _ => false,
+        };
+        if !same_retained {
+            return Err(JobError::new(ErrorCode::WrongOwner, "capture retained-metadata context changed"));
+        }
+        let bytes = request
+            .textures
+            .as_ref()
+            .ok_or_else(|| JobError::new(ErrorCode::InvalidRequest, "capture credit requires common texture backing"))?
+            .captured_bytes()?;
+        if bytes > self.bytes() {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "captured texture backing exceeds its prepaid credit"));
+        }
+        Ok(())
+    }
+}
+
+/// Captured, completely validated input under the existing host budget. This
+/// has no job identity, document or camera mutation, and cannot be cloned.
+pub struct PreparedSubmission {
+    scene: ProductScene,
+    public_request: ImageRequest,
+    work_request: Option<ImageRequest>,
+    options: Option<RetainedOptions>,
+    environment: Option<crate::lighting::environment_input::EnvironmentInput>,
+    environment_info: Option<JobEnvironmentInfo>,
+    textures: Option<super::textures::TextureSummary>,
+    resolved: crate::ResolvedRequest,
+    admission: Admission,
+    cancel: CancelToken,
+    #[cfg(feature = "raytrace-cpu")]
+    proof: Vec<crate::raytrace::legacy_certificates::CertifiedOptics>,
+    request_reservation: Option<Reservation>,
+    reservation: Reservation,
+    host: ImageHost,
+}
+impl PreparedSubmission {
+    /// Check a simultaneously retained metadata owner under the same unchanged
+    /// per-job/profile cap. It is not funded by a Work/frame lease.
+    pub fn check_retained_metadata(&self, bytes: u64) -> Result<()> {
+        let retained = self
+            .request_reservation
+            .as_ref()
+            .map_or(0, |r| r.bytes)
+            .checked_add(bytes)
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "retained metadata byte overflow"))?;
+        self.host.check_request_sum(self.reservation.bytes, retained, self.request().cpu_budget())
+    }
+    pub fn reserve_retained_metadata(&self, bytes: u64) -> Result<RetainedMetadata> {
+        self.check_retained_metadata(bytes)?;
+        self.host.0.shared.budget.reserve(bytes).map(RetainedMetadata)
+    }
+    pub fn request(&self) -> &ImageRequest {
+        self.work_request.as_ref().unwrap_or(&self.public_request)
+    }
+    pub fn admission(&self) -> Admission {
+        self.admission
+    }
+    pub fn check_cancel(&self) -> Result<()> {
+        self.cancel.check()
+    }
+    pub fn executor(&self) -> &crate::ExecutorId {
+        &self.resolved.executor
+    }
+    pub fn host(&self) -> &ImageHost {
+        &self.host
+    }
+    pub fn options(&self) -> Result<JobOptions> {
+        match &self.options {
+            None => Ok(JobOptions::default()),
+            Some(slot) => slot.0.first().copied().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing prepared render options")),
+        }
+    }
+}
+
 struct Work {
+    #[cfg(feature = "raytrace-cpu")]
+    proof: Vec<crate::raytrace::legacy_certificates::CertifiedOptics>,
     regrade: Option<(Arc<RenderFrame>, super::presentation::Presentation)>,
     request: Option<ImageRequest>,
     executor: Option<Arc<dyn ImageExecutor>>,
@@ -609,12 +801,26 @@ struct Work {
     // Must remain last: see WorkRelease.
     _work_release: WorkRelease,
 }
+// A queued request moves into the task at begin; no task allocation exists yet.
+// Its fixed queue metadata must fit the same already prepaid task allowance,
+// independently of the separate retained-Record header reservation.
+const _: [(); 1] = [(); (std::mem::size_of::<Work>() <= 4096) as usize];
 // One host advance hashes at most four 16 KiB chunks, independently of the
 // integrator's quantum. The unchanged work reservation covers the sole PNG and
 // this fixed state until publication; it is not another image task or pool.
 const PNG_HASH_CHUNK_BYTES: usize = 16_384;
 const PNG_HASH_CHUNKS_PER_ADVANCE: usize = 4;
 pub(crate) const FRAME_METADATA_BYTES: u64 = 1024;
+#[cfg(feature = "raytrace-cpu")]
+const PREPARED_PROOF_HEADER_BYTES: usize = std::mem::size_of::<Vec<crate::raytrace::legacy_certificates::CertifiedOptics>>();
+#[cfg(not(feature = "raytrace-cpu"))]
+const PREPARED_PROOF_HEADER_BYTES: usize = 0;
+// Preparation/enqueue only moves fixed headers. All source/resource capacities
+// and optical proof backing have independent admission; none survives without
+// the owning work/request lease. Keep the existing preparation allowance.
+const _: [(); 1] =
+    [(); (std::mem::size_of::<PreparedSubmission>() + std::mem::size_of::<Work>() + std::mem::size_of::<Record>() + std::mem::size_of::<Running>()
+        <= super::image::PREPARATION_METADATA_BYTES as usize) as usize];
 
 struct PendingPng {
     png: Vec<u8>,
@@ -631,6 +837,7 @@ const _: [(); 1] = [(); (std::mem::size_of::<PendingPng>() <= 512) as usize];
 const _: [(); 1] = [(); (std::mem::size_of::<Running>()
     + std::mem::size_of::<RenderFrame>()
     + std::mem::size_of::<RenderPreview>()
+    + PREPARED_PROOF_HEADER_BYTES
     + 64
     + 2 * crate::MAX_RENDER_ID_BYTES
     + 32
@@ -702,6 +909,25 @@ impl Drop for Running {
     }
 }
 
+/// One independently prepaid options value. Exact defaults have no slot; authored
+/// option/effect presence is structural and is never normalized into that case.
+/// The containing Record is smaller than its previous inline JobOptions field.
+/// This lease survives work release and frame eviction through retained handles.
+struct RetainedOptions(Vec<JobOptions>);
+impl RetainedOptions {
+    fn new(options: JobOptions) -> Result<Self> {
+        let _ = options.retained_bytes()?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(1).map_err(|_| JobError::new(ErrorCode::AllocationFailed, "could not reserve retained render options"))?;
+        if values.capacity() != 1 {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "retained render options exceed their prepaid capacity"));
+        }
+        values.push(options);
+        Ok(Self(values))
+    }
+}
+const _: [(); 1] = [(); (std::mem::size_of::<Option<RetainedOptions>>() <= std::mem::size_of::<JobOptions>()) as usize];
+
 /// One fallibly allocated task, keeping the dispatch enum small in either build.
 /// Its bounded metadata allocation fits the existing per-job task allowance.
 struct TaskSlot<T>(Vec<T>);
@@ -740,6 +966,7 @@ impl WorkTask {
         match self {
             #[cfg(feature = "raytrace-cpu")]
             Self::Raytrace(slot) => slot.0.first().and_then(|task| task.punctual_diagnostics()),
+            Self::Registered(task) => task.punctual_diagnostics(),
             _ => None,
         }
     }
@@ -755,6 +982,8 @@ impl WorkTask {
     fn sampling_report(&self) -> Option<super::adaptive::SamplingReport> {
         match self {
             Self::Registered(task) => task.sampling_report(),
+            #[cfg(feature = "raytrace-cpu")]
+            Self::Raytrace(slot) => slot.0.first().and_then(|task| task.sampling_report()),
             _ => None,
         }
     }
@@ -771,6 +1000,7 @@ impl WorkTask {
         request: ImageRequest,
         cancel: CancelToken,
         environment: Option<crate::lighting::environment_input::EnvironmentInput>,
+        #[cfg(feature = "raytrace-cpu")] proof: Option<crate::raytrace::legacy_certificates::CertifiedOptics>,
     ) -> Result<Self> {
         let _ = &environment;
         match request.integrator {
@@ -779,7 +1009,7 @@ impl WorkTask {
                 #[cfg(feature = "raytrace-cpu")]
                 {
                     let options = request.raytrace.clone().unwrap_or_default();
-                    crate::raytrace::image::ImageTask::new_with_environment(scene, request, cancel, options, environment)
+                    crate::raytrace::image::ImageTask::new_prepared(scene, request, cancel, options, environment, proof)
                         .and_then(TaskSlot::new)
                         .map(Self::Raytrace)
                 }
@@ -836,10 +1066,17 @@ fn terminal(handle: &JobHandle, error: JobError) {
 
 impl Running {
     fn begin(mut work: Work) -> Option<Self> {
+        let options = match work.handle.0.options() {
+            Ok(options) => options,
+            Err(error) => {
+                terminal(&work.handle, error);
+                return None;
+            }
+        };
         let checkpoint_target = if let Some(executor) = &work.executor {
-            executor.preview_samples(work.handle.0.options).unwrap_or(0)
+            executor.preview_samples(options).unwrap_or(0)
         } else if work.handle.0.request.integrator == Integrator::Raytrace {
-            work.handle.0.request.raytrace.as_ref().and_then(|options| options.progressive).map_or(0, |options| options.samples_per_pixel)
+            work.handle.0.request.raytrace.as_ref().map_or(Ok(0), super::RaytraceOptions::preview_target).unwrap_or(0)
         } else {
             0
         };
@@ -876,9 +1113,19 @@ impl Running {
                 super::regrade::RegradeTask::new(source, presentation, work.handle.0.cancel.clone()).and_then(TaskSlot::new).map(WorkTask::Regrade)
             } else if let Some(executor) = work.executor {
                 let request = work.request.ok_or_else(|| JobError::new(ErrorCode::Internal, "missing registered executor request"))?;
-                executor.begin(work.scene, request, work.handle.0.options, work.handle.0.cancel.clone()).map(WorkTask::Registered)
+                executor.begin(work.scene, request, options, work.handle.0.cancel.clone()).map(WorkTask::Registered)
             } else {
-                WorkTask::new(work.scene, work.handle.0.request.clone(), work.handle.0.cancel.clone(), work.environment)
+                // CPU textures are work-owned just like registered resources. The
+                // public/status request has already had those Arcs removed.
+                let request = work.request.unwrap_or_else(|| work.handle.0.request.clone());
+                WorkTask::new(
+                    work.scene,
+                    request,
+                    work.handle.0.cancel.clone(),
+                    work.environment,
+                    #[cfg(feature = "raytrace-cpu")]
+                    work.proof.pop(),
+                )
             }
         }))
         .unwrap_or_else(|_| Err(JobError::new(ErrorCode::Internal, "image executor failed while preparing the job")));
@@ -936,7 +1183,7 @@ impl Running {
                     .raytrace
                     .as_ref()
                     .and_then(|options| options.output.as_deref())
-                    .map_or(self.handle.0.options.linear_exr, |output| output.linear_exr);
+                    .map_or(self.handle.0.options()?.linear_exr, |output| output.linear_exr);
                 if exr.is_some() != retain_exr {
                     return Err(JobError::new(ErrorCode::Internal, "linear master availability differs from the admitted request"));
                 }
@@ -1048,7 +1295,20 @@ impl Running {
                 info: PreviewInfo {
                     frame_sequence,
                     samples_per_pixel,
-                    adaptive: super::adaptive::AdaptivePreview::at(self.handle.0.options, samples_per_pixel)?,
+                    adaptive: match self.handle.0.request.raytrace.as_ref().filter(|_| self.handle.0.request.integrator == Integrator::Raytrace) {
+                        Some(options) => options
+                            .adaptive
+                            .as_deref()
+                            .map(|adaptive| {
+                                let maximum = options
+                                    .progressive
+                                    .ok_or_else(|| JobError::new(ErrorCode::Internal, "adaptive CPU preview has no captured film"))?
+                                    .samples_per_pixel;
+                                super::adaptive::AdaptivePreview::captured(*adaptive, maximum, samples_per_pixel)
+                            })
+                            .transpose()?,
+                        None => super::adaptive::AdaptivePreview::at(self.handle.0.options()?, samples_per_pixel)?,
+                    },
                     frame: info,
                 },
                 png,
@@ -1277,7 +1537,78 @@ impl ImageHost {
         self.0.shared.budget.limit
     }
 
+    fn capture_retained_context(&self, retained: Option<&RetainedMetadata>) -> Result<Option<u64>> {
+        if retained.is_some_and(|lease| !Arc::ptr_eq(&lease.0.budget, &self.0.shared.budget)) {
+            return Err(JobError::new(ErrorCode::WrongOwner, "retained metadata belongs to a different host pool"));
+        }
+        Ok(retained.map(RetainedMetadata::bytes))
+    }
+    fn capture_descriptor(&self, profile: CaptureProfile) -> Result<ExecutorDescriptor> {
+        if matches!(profile, CaptureProfile::Registered) != self.0.executor.is_some() {
+            return Err(JobError::new(ErrorCode::WrongOwner, "capture profile does not match the installed host"));
+        }
+        self.validate_integrator(profile.integrator())?;
+        if let CaptureProfile::CpuRaytrace(budget) = profile {
+            budget.validate_execution()?;
+        }
+        let descriptor = self.descriptor_for(profile.integrator())?;
+        if descriptor.availability != Availability::Available || descriptor.profiles.len() != 1 {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "capture executor is unavailable"));
+        }
+        Ok(descriptor)
+    }
+    /// Fund the next capture peak without a scene/request, fake job or renderer
+    /// allocation. The independent Plan lease is counted, never transferred.
+    pub fn reserve_capture<'a>(
+        &self,
+        bytes: u64,
+        profile: CaptureProfile,
+        cancel: &CancelToken,
+        retained: Option<&'a RetainedMetadata>,
+    ) -> Result<CaptureLease<'a>> {
+        cancel.check()?;
+        let mut descriptor = self.capture_descriptor(profile)?;
+        let context = self.capture_retained_context(retained)?;
+        self.check_request_sum(bytes, context.unwrap_or(0), profile.budget())?;
+        let descriptor_hash = capture_fingerprint(&descriptor)?;
+        // Resolution canonicalizes these enum lists. Pin its same value order
+        // without cloning/allocating another profile or altering the raw hash.
+        for profile in &mut descriptor.profiles {
+            profile.formats.sort_unstable();
+            profile.features.sort_unstable();
+        }
+        let execution = capture_fingerprint(&(&descriptor.id, descriptor.profiles.first()))?;
+        let reservation = self.0.shared.budget.reserve(bytes)?;
+        Ok(CaptureLease {
+            host: self.clone(),
+            profile,
+            descriptor: descriptor_hash,
+            execution,
+            retained,
+            cancel: cancel.clone(),
+            reservation,
+            consumed: false,
+        })
+    }
+
+    /// Strict blocking API. Native UI callers prepare beside the window. The
+    /// temporary lease exists before any new box proof backing is allocated.
     pub fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+        let admission = self.admit_layout(scene, request, options)?;
+        #[cfg(feature = "raytrace-cpu")]
+        if self.0.executor.is_none() && request.integrator == Integrator::Raytrace {
+            let defaults = super::RaytraceOptions::default();
+            let raytrace = request.raytrace.as_ref().unwrap_or(&defaults);
+            let bytes = crate::raytrace::legacy_certificates::Task::required_bytes(scene, raytrace).map_err(crate::raytrace::image::error)?;
+            if bytes != 0 {
+                let _validation = self.0.shared.budget.reserve(bytes)?;
+                crate::raytrace::image::certify_for_request(scene, request, raytrace, &CancelToken::default())?;
+            }
+        }
+        Ok(admission)
+    }
+
+    fn admit_layout(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
         let scatter = |t: Option<crate::transmission::Transmission>| t.and_then(|v| v.subsurface()).is_some_and(|s| s.active());
         if scene.meshes.iter().any(|b| scatter(b.transmission) || b.faces.iter().any(|f| scatter(f.transmission)))
             && !self.0.executor.as_ref().is_some_and(|executor| executor.supports_subsurface())
@@ -1346,7 +1677,7 @@ impl ImageHost {
             if options != JobOptions::default() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "CPU images use raytrace options, not progressive sampling controls"));
             }
-            admit(scene, request)
+            super::image::admit_layout(scene, request)
         }
     }
 
@@ -1481,6 +1812,74 @@ impl ImageHost {
         options: JobOptions,
         environment: Option<crate::lighting::environment_input::EnvironmentInput>,
     ) -> Result<JobHandle> {
+        if id.session == 0 || id.serial == 0 || id.generation == 0 {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "invalid render job identity"));
+        }
+        let prepared = self.prepare_submission(scene, request, options, environment, CancelToken::default())?;
+        self.submit_prepared(id, scene_generation, prepared)
+    }
+
+    /// Strict captured preparation. All new certificate backing is reserved
+    /// before allocation; the opaque capsule owns resources and leases to enqueue.
+    pub fn prepare_submission(
+        &self,
+        scene: ProductScene,
+        request: ImageRequest,
+        options: JobOptions,
+        environment: Option<crate::lighting::environment_input::EnvironmentInput>,
+        cancel: CancelToken,
+    ) -> Result<PreparedSubmission> {
+        self.prepare_submission_with_metadata(scene, request, options, environment, cancel, None)
+    }
+    /// The external owner already holds this independent same-pool lease. Count
+    /// its simultaneous backing before certificate/renderer allocation, without
+    /// reserving it twice or transferring its lifetime into Work.
+    pub fn prepare_submission_with_metadata(
+        &self,
+        scene: ProductScene,
+        request: ImageRequest,
+        options: JobOptions,
+        environment: Option<crate::lighting::environment_input::EnvironmentInput>,
+        cancel: CancelToken,
+        retained: Option<&RetainedMetadata>,
+    ) -> Result<PreparedSubmission> {
+        self.prepare_submission_inner(scene, request, options, environment, cancel, retained, None)
+    }
+    /// Consume already-owned capture credit. On any inner refusal/unwind, its
+    /// typed inputs drop before this outer lease. After PreparedSubmission owns
+    /// those inputs, merge credit and use the original Work/request split.
+    pub fn prepare_submission_with_capture(
+        &self,
+        scene: ProductScene,
+        request: ImageRequest,
+        options: JobOptions,
+        environment: Option<crate::lighting::environment_input::EnvironmentInput>,
+        cancel: CancelToken,
+        retained: Option<&RetainedMetadata>,
+        mut capture: CaptureLease<'_>,
+    ) -> Result<PreparedSubmission> {
+        self.prepare_submission_inner(scene, request, options, environment, cancel, retained, Some(&mut capture))
+    }
+    fn prepare_submission_inner(
+        &self,
+        scene: ProductScene,
+        request: ImageRequest,
+        options: JobOptions,
+        environment: Option<crate::lighting::environment_input::EnvironmentInput>,
+        cancel: CancelToken,
+        retained: Option<&RetainedMetadata>,
+        capture: Option<&mut CaptureLease<'_>>,
+    ) -> Result<PreparedSubmission> {
+        if let Some(credit) = capture.as_deref() {
+            credit.check_request(self, &request, &cancel, retained)?;
+        }
+        cancel.check()?;
+        if retained.is_some_and(|lease| !Arc::ptr_eq(&lease.0.budget, &self.0.shared.budget)) {
+            return Err(JobError::new(ErrorCode::WrongOwner, "retained metadata belongs to a different host pool"));
+        }
+        if !self.is_available() {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "image host has stopped"));
+        }
         if self.0.executor.is_some() && environment.is_some() {
             return Err(JobError::new(ErrorCode::InvalidRequest, "registered image executors do not accept CPU environments"));
         }
@@ -1491,9 +1890,6 @@ impl ImageHost {
         if environment.is_some() {
             request.raytrace.as_ref().unwrap_or(&super::RaytraceOptions::default()).validate_environment_reflections(&scene)?;
         }
-        if id.session == 0 || id.serial == 0 || id.generation == 0 {
-            return Err(JobError::new(ErrorCode::InvalidRequest, "invalid render job identity"));
-        }
         let environment_info = environment
             .as_ref()
             .map(|e| JobEnvironmentInfo::Cpu(e.metadata()))
@@ -1503,7 +1899,8 @@ impl ImageHost {
             if environment.is_some() { std::mem::size_of::<crate::lighting::environment_input::EnvironmentInfo>() as u64 } else { 0 }
                 + request.retained_resource_metadata_bytes();
         let request_bytes = retained_request_bytes(&request)?
-            .checked_add(metadata_bytes)
+            .checked_add(options.retained_bytes()?)
+            .and_then(|bytes| bytes.checked_add(metadata_bytes))
             .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "environment metadata overflow"))?;
         let mut features = scene.required_features();
         if environment.is_some() || request.environment.is_some() {
@@ -1515,15 +1912,25 @@ impl ImageHost {
         {
             features.push(crate::RenderFeature::Refraction);
         }
-        let Admission { estimated_total_bytes, .. } = self.admit(&scene, &request, options)?;
+        let mut admission = self.admit_layout(&scene, &request, options)?;
+        let estimated_total_bytes = admission.estimated_total_bytes;
         let environment_bytes =
             environment.as_ref().map_or(Ok(0), |e| e.required_bytes()).map_err(|e| JobError::new(ErrorCode::InvalidRequest, e.to_string()))?;
         let estimated_total_bytes = estimated_total_bytes
             .checked_add(environment_bytes)
             .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "environment admission overflow"))?;
-        self.check_request_sum(estimated_total_bytes, request_bytes, request.cpu_budget())?;
+        let simultaneous = request_bytes
+            .checked_add(retained.map_or(0, RetainedMetadata::bytes))
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "retained preparation byte overflow"))?;
+        self.check_request_sum(estimated_total_bytes, simultaneous, request.cpu_budget())?;
         let mut backend = crate::builtin_backend();
         let descriptor = self.descriptor_for_request(&request)?;
+        if let Some(credit) = capture.as_deref()
+            && credit.profile == CaptureProfile::Registered
+            && capture_fingerprint(&descriptor)? != credit.descriptor
+        {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "resolved capture executor metadata changed"));
+        }
         let expected_executor = descriptor.id.clone();
         backend.executors = vec![descriptor];
         let resolved = crate::resolve_request(
@@ -1543,38 +1950,158 @@ impl ImageHost {
         if resolved.executor != expected_executor {
             return Err(JobError::new(ErrorCode::HostUnavailable, "CPU product executor is unavailable"));
         }
-        let mut queue = self.0.shared.queue.lock().map_err(|_| JobError::new(ErrorCode::HostUnavailable, "render queue lock poisoned"))?;
-        if self.0.shared.stop.load(Ordering::Acquire) {
-            return Err(JobError::new(ErrorCode::HostUnavailable, "image host has stopped"));
+        // Reap cancelled queued captures on the preparation caller, before a
+        // replacement competes for their still-held credit. Never hold this
+        // lock while geometry is certified.
+        {
+            let mut queue = self.0.shared.queue.lock().map_err(|_| JobError::new(ErrorCode::HostUnavailable, "render queue lock poisoned"))?;
+            queue.retain(|work| !work.handle.0.cancel.is_cancelled());
         }
-        queue.retain(|work| !work.handle.0.cancel.is_cancelled());
-        if queue.len() >= QUEUE_LIMIT {
-            return Err(JobError::new(ErrorCode::QueueFull, "image queue is full"));
+        let combined_bytes = estimated_total_bytes
+            .checked_add(request_bytes)
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "prepared work/request byte overflow"))?;
+        if let Some(credit) = capture.as_deref()
+            && capture_fingerprint(&(&resolved.executor, Some(&resolved.profile)))? != credit.execution
+        {
+            return Err(JobError::new(ErrorCode::WrongOwner, "resolved capture executor/profile changed"));
         }
-        self.check_request_sum(estimated_total_bytes, request_bytes, request.cpu_budget())?;
-        let reservation = self.0.shared.budget.reserve(estimated_total_bytes)?;
-        let request_reservation = if request_bytes == 0 { None } else { Some(self.0.shared.budget.reserve(request_bytes)?) };
+        let already_held = capture.as_deref().map_or(0, CaptureLease::bytes);
+        // A retired pending duplicate/validator can make capture's high-water
+        // peak larger than the final renderer layout. Keep that conservative
+        // excess in Work until release, and report it as preparation backing.
+        // The independent Plan is still counted once under the same cap.
+        if already_held > combined_bytes {
+            self.check_request_sum(already_held, retained.map_or(0, RetainedMetadata::bytes), request.cpu_budget())?;
+            let extra = already_held - combined_bytes;
+            admission.preparation_bytes = admission
+                .preparation_bytes
+                .checked_add(extra)
+                .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "capture preparation admission overflow"))?;
+            admission.estimated_total_bytes = admission
+                .estimated_total_bytes
+                .checked_add(extra)
+                .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "capture work admission overflow"))?;
+        }
+        let mut reservation = self.0.shared.budget.reserve(combined_bytes.saturating_sub(already_held))?;
+        // The legacy None branch keeps its original debit and split. Captured
+        // inputs first move under PreparedSubmission's drop order, while the
+        // outer caller still owns already_held, before transfer/split can fail.
+        let request_reservation = if capture.is_some() || request_bytes == 0 { None } else { Some(reservation.split(request_bytes)?) };
         // Preserve the original CPU option capacities in the retained request and its lease.
-        // Registered executors instead move resource Arcs into work and keep a small public copy.
-        let (public_request, work_request) = if self.0.executor.is_some() {
+        // Registered executors and textured CPU jobs move resource Arcs into work
+        // and keep a small public copy under the retained metadata lease.
+        let (public_request, work_request) = if self.0.executor.is_some() || request.textures.is_some() {
             (ImageRequest { environment: None, textures: None, ..request.clone() }, Some(request))
         } else {
             (request, None)
         };
+
+        // Move all captured ownership under fields that drop before the leases
+        // before any remaining fallible certificate/options allocation.
+        let mut prepared = PreparedSubmission {
+            scene,
+            public_request,
+            work_request,
+            options: None,
+            environment,
+            environment_info,
+            textures,
+            resolved,
+            admission,
+            cancel,
+            #[cfg(feature = "raytrace-cpu")]
+            proof: Vec::new(),
+            request_reservation,
+            reservation,
+            host: self.clone(),
+        };
+        if let Some(credit) = capture {
+            prepared.reservation.merge_from(&mut credit.reservation)?;
+            credit.consumed = true;
+            prepared.request_reservation = if request_bytes == 0 { None } else { Some(prepared.reservation.split(request_bytes)?) };
+        }
+        #[cfg(feature = "raytrace-cpu")]
+        if self.0.executor.is_none() && prepared.request().integrator == Integrator::Raytrace {
+            let captured = prepared.request();
+            let defaults = super::RaytraceOptions::default();
+            let raytrace = captured.raytrace.as_ref().unwrap_or(&defaults);
+            if let Some(certified) = crate::raytrace::image::certify_for_request(&prepared.scene, captured, raytrace, &prepared.cancel)? {
+                prepared
+                    .proof
+                    .try_reserve_exact(1)
+                    .map_err(|_| JobError::new(ErrorCode::AllocationFailed, "could not retain certified optical result"))?;
+                if prepared.proof.capacity() != 1 {
+                    return Err(JobError::new(ErrorCode::LimitExceeded, "optical proof capacity exceeds admission"));
+                }
+                prepared.proof.push(certified);
+            }
+        }
+        prepared.cancel.check()?;
+        prepared.options = if options.is_structural_default() { None } else { Some(RetainedOptions::new(options)?) };
+        Ok(prepared)
+    }
+
+    /// Bounded publication into the existing queue. The real owning Session
+    /// supplies identity only after source/host revalidation; no proof is redrained.
+    pub fn submit_prepared(&self, id: JobId, scene_generation: u64, prepared: PreparedSubmission) -> Result<JobHandle> {
+        self.try_submit_prepared(id, scene_generation, &mut Some(prepared))
+    }
+
+    /// Non-consuming failure path for native completion. On refusal the caller
+    /// retains the complete capsule and its leases for worker-side retirement.
+    /// Success takes it once, after all fallible queue/identity checks.
+    pub fn try_submit_prepared(&self, id: JobId, scene_generation: u64, slot: &mut Option<PreparedSubmission>) -> Result<JobHandle> {
+        let prepared = slot.as_ref().ok_or_else(|| JobError::new(ErrorCode::InvalidRequest, "prepared render was already consumed"))?;
+        if id.session == 0 || id.serial == 0 || id.generation == 0 {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "invalid render job identity"));
+        }
+        if !self.same_host(&prepared.host) {
+            return Err(JobError::new(ErrorCode::WrongOwner, "prepared render belongs to a different installed host"));
+        }
+        prepared.cancel.check()?;
+        let options = prepared.options()?;
+        let mut queue = self.0.shared.queue.lock().map_err(|_| JobError::new(ErrorCode::HostUnavailable, "render queue lock poisoned"))?;
+        if self.0.shared.stop.load(Ordering::Acquire) {
+            return Err(JobError::new(ErrorCode::HostUnavailable, "image host has stopped"));
+        }
+        // Background preparation/worker owns cancelled capture retirement.
+        // A racing cancellation may keep this bounded queue full until drain;
+        // completion must not destroy large request/source backing on the UI.
+        if queue.len() >= QUEUE_LIMIT {
+            return Err(JobError::new(ErrorCode::QueueFull, "image queue is full"));
+        }
+        let prepared = slot.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "prepared render vanished before enqueue"))?;
+        let PreparedSubmission {
+            scene,
+            public_request,
+            work_request,
+            options: retained_options,
+            environment,
+            environment_info,
+            textures,
+            resolved,
+            admission: _,
+            cancel,
+            #[cfg(feature = "raytrace-cpu")]
+            proof,
+            request_reservation,
+            reservation,
+            host: _,
+        } = prepared;
         let handle = JobHandle(Arc::new(Record {
             work_released: AtomicBool::new(false),
             preview_unavailable_reason: self.0.executor.as_ref().and_then(|executor| executor.preview_unavailable_reason(options)),
             started: web_time::Instant::now(),
             presentation: None,
             textures,
-            options,
+            options: retained_options,
             environment: environment_info,
             _request_reservation: request_reservation,
             id,
             scene_generation,
             request: public_request,
             resolved,
-            cancel: CancelToken::default(),
+            cancel,
             data: Mutex::new(Data {
                 preview_retention_skips: 0,
                 completed_duration: None,
@@ -1590,6 +2117,8 @@ impl ImageHost {
         }));
         queue.push_back(Work {
             regrade: None,
+            #[cfg(feature = "raytrace-cpu")]
+            proof,
             request: work_request,
             executor: self.0.executor.clone(),
             scene,
@@ -1621,8 +2150,19 @@ impl ImageHost {
             presentation,
             denoise_applied: false,
         };
+        let options = JobOptions {
+            finishing: presentation.finishing,
+            backdrop: presentation.backdrop,
+            exposure_ev: presentation.exposure_ev,
+            tone_map: presentation.tone_map,
+            ..Default::default()
+        };
+        let option_bytes = options.retained_bytes()?;
+        let request_bytes = option_bytes
+            .checked_add(ImageRequest::fixed_cpu_metadata_bytes())
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "master request metadata overflow"))?;
         let metadata_bytes = (std::mem::size_of::<RetainedPresentation>() + origin.master_sha256.capacity() + 32) as u64;
-        if bytes.checked_add(metadata_bytes).is_none_or(|n| n > self.job_limit_bytes()) {
+        if bytes.checked_add(metadata_bytes).and_then(|n| n.checked_add(request_bytes)).is_none_or(|n| n > self.job_limit_bytes()) {
             return Err(JobError::new(ErrorCode::LimitExceeded, "master presentation exceeds the installed host's resource budget"));
         }
         let limits = RenderLimits { max_scratch_bytes: self.job_limit_bytes(), ..super::GPU_PATH_LIMITS };
@@ -1666,13 +2206,6 @@ impl ImageHost {
             integrator: Integrator::Raster,
             raytrace: None,
         };
-        let options = JobOptions {
-            finishing: presentation.finishing,
-            backdrop: presentation.backdrop,
-            exposure_ev: presentation.exposure_ev,
-            tone_map: presentation.tone_map,
-            ..Default::default()
-        };
         let mut queue = self.0.shared.queue.lock().map_err(|_| JobError::new(ErrorCode::HostUnavailable, "render queue lock poisoned"))?;
         if self.0.shared.stop.load(Ordering::Acquire) {
             return Err(JobError::new(ErrorCode::HostUnavailable, "image host has stopped"));
@@ -1683,6 +2216,7 @@ impl ImageHost {
         }
         let reservation = self.0.shared.budget.reserve(bytes)?;
         let metadata = self.0.shared.budget.reserve(metadata_bytes)?;
+        let option_reservation = if request_bytes == 0 { None } else { Some(self.0.shared.budget.reserve(request_bytes)?) };
         let origin = Arc::new(RetainedPresentation { info: origin, _reservation: metadata });
         let handle = JobHandle(Arc::new(Record {
             work_released: AtomicBool::new(false),
@@ -1690,9 +2224,9 @@ impl ImageHost {
             started: web_time::Instant::now(),
             presentation: Some(origin),
             textures: None,
-            options,
+            options: if options.is_structural_default() { None } else { Some(RetainedOptions::new(options)?) },
             environment: None,
-            _request_reservation: None,
+            _request_reservation: option_reservation,
             id,
             scene_generation: frame.info.scene_generation,
             request,
@@ -1712,6 +2246,8 @@ impl ImageHost {
             done: Condvar::new(),
         }));
         queue.push_back(Work {
+            #[cfg(feature = "raytrace-cpu")]
+            proof: Vec::new(),
             regrade: Some((master, presentation)),
             request: None,
             executor: None,
@@ -1802,6 +2338,200 @@ fn native_worker(shared: Arc<Shared>) {
 #[cfg(test)]
 mod retained_request_tests {
     use super::*;
+
+    #[test]
+    fn retained_native_options_charge_actual_single_capacity_only_for_structural_nondefaults() {
+        assert_eq!(JobOptions::default().retained_bytes().unwrap(), 0);
+        let explicit = JobOptions { lighting: Some(super::super::StudioLighting::default()), ..Default::default() };
+        let expected = std::mem::size_of::<JobOptions>() as u64;
+        assert_eq!(explicit.retained_bytes().unwrap(), expected);
+        let slot = RetainedOptions::new(explicit).unwrap();
+        assert_eq!(slot.0.capacity(), 1);
+        assert_eq!(slot.0.len(), 1);
+        assert_eq!(slot.0[0], explicit);
+        assert_ne!(slot.0[0], JobOptions::default(), "Some(black studio) must not become an absent default studio");
+        assert!(std::mem::size_of::<Option<RetainedOptions>>() <= std::mem::size_of::<JobOptions>());
+        let mut vignette = JobOptions::default();
+        vignette.finishing.vignette = -0.0;
+        let mut grain = JobOptions::default();
+        grain.finishing.photographic.grain = -0.0;
+        for options in [JobOptions { exposure_ev: -0.0, ..Default::default() }, vignette, grain] {
+            assert!(!options.is_structural_default());
+            assert_eq!(options.retained_bytes().unwrap(), expected);
+            assert_eq!(RetainedOptions::new(options).unwrap().0[0].exposure_ev.to_bits(), options.exposure_ev.to_bits());
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn retained_gpu_options_lease_survives_work_release_frame_eviction_and_cloned_handles() {
+        struct OptionsExecutor;
+        impl ImageExecutor for OptionsExecutor {
+            fn descriptor(&self) -> Result<ExecutorDescriptor> {
+                CpuExecutor.descriptor()
+            }
+            fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+                options.validate()?;
+                admit(scene, request)
+            }
+            fn begin(&self, scene: ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+                options.validate()?;
+                CpuExecutor.begin(scene, request, options, cancel)
+            }
+        }
+        for options in [
+            JobOptions::default(),
+            JobOptions { exposure_ev: -0.0, ..Default::default() },
+            JobOptions { lighting: Some(super::super::StudioLighting::default()), ..Default::default() },
+        ] {
+            let mut host = ImageHost::with_executor(Arc::new(OptionsExecutor)).unwrap();
+            let mut image = request();
+            image.integrator = Integrator::Raster;
+            image.raytrace = None;
+            let expected = options.retained_bytes().unwrap();
+            let job = host
+                .submit_with_options(
+                    JobId { session: 901, serial: 1, generation: 1 },
+                    1,
+                    ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY },
+                    image,
+                    options,
+                )
+                .unwrap();
+            assert_eq!(job.status().unwrap().options, options);
+            assert_eq!(job.status().unwrap().options.exposure_ev.to_bits(), options.exposure_ev.to_bits());
+            assert_eq!(job.0.options.is_some(), expected != 0);
+            if let Some(slot) = &job.0.options {
+                assert_eq!(slot.0.capacity() as u64 * std::mem::size_of::<JobOptions>() as u64, expected);
+            }
+            assert_eq!(job.wait_timeout(std::time::Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
+            host.0.shared.stop.store(true, Ordering::Release);
+            host.0.shared.wake.notify_all();
+            Arc::get_mut(&mut host.0).unwrap()._worker.take().unwrap().join().unwrap();
+            assert!(job.work_released());
+            let frame = job.frame().unwrap().unwrap();
+            let held = job.clone();
+            assert!(Arc::ptr_eq(&held.0, &job.0));
+            job.0.data.lock().unwrap().frame = None;
+            drop(frame);
+            assert_eq!(host.admitted_bytes(), expected + ImageRequest::fixed_cpu_metadata_bytes());
+            assert_eq!(held.status().unwrap().options, options);
+            drop(job);
+            assert_eq!(host.admitted_bytes(), expected + ImageRequest::fixed_cpu_metadata_bytes());
+            drop(held);
+            assert_eq!(host.admitted_bytes(), 0);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn cancelled_gpu_options_are_retained_once_without_work_or_frame_credit() {
+        struct Pending(CancelToken);
+        impl ImageWork for Pending {
+            fn step(&mut self, _: usize) -> Result<TaskPoll> {
+                self.0.check()?;
+                Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: 0, total: 1 }))
+            }
+        }
+        struct Executor(std::sync::mpsc::SyncSender<()>);
+        impl ImageExecutor for Executor {
+            fn descriptor(&self) -> Result<ExecutorDescriptor> {
+                CpuExecutor.descriptor()
+            }
+            fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+                options.validate()?;
+                admit(scene, request)
+            }
+            fn begin(&self, _: ProductScene, _: ImageRequest, _: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+                self.0.send(()).unwrap();
+                Ok(Box::new(Pending(cancel)))
+            }
+        }
+        let light = super::super::DirectionalLightOptions { direction: [0.0, 0.0, 2.0], color: [0.25, 0.5, 1.0], intensity: 0.0 };
+        let options = JobOptions {
+            lighting: Some(super::super::StudioLighting {
+                directional_lights: super::super::DirectionalLights::new(&[light; 8]).unwrap(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let (began, received) = std::sync::mpsc::sync_channel(1);
+        let mut host = ImageHost::with_executor(Arc::new(Executor(began))).unwrap();
+        let mut image = request();
+        image.integrator = Integrator::Raster;
+        image.raytrace = None;
+        let job = host
+            .submit_with_options(
+                JobId { session: 902, serial: 1, generation: 1 },
+                1,
+                ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY },
+                image,
+                options,
+            )
+            .unwrap();
+        // Raw worker-stop below does not drain Shared::queue (Owner::drop does).
+        // Establish actual begin before cancellation so join proves this active
+        // work has dropped, independently of native worker scheduling.
+        received.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
+        job.cancel().unwrap();
+        assert_eq!(job.wait_timeout(std::time::Duration::from_secs(60)).unwrap().progress.phase, Phase::Cancelled);
+        host.0.shared.stop.store(true, Ordering::Release);
+        host.0.shared.wake.notify_all();
+        Arc::get_mut(&mut host.0).unwrap()._worker.take().unwrap().join().unwrap();
+        assert!(job.work_released());
+        assert!(job.frame().unwrap().is_none());
+        assert_eq!(job.status().unwrap().options, options);
+        assert_eq!(host.admitted_bytes(), options.retained_bytes().unwrap() + ImageRequest::fixed_cpu_metadata_bytes());
+        let held = job.clone();
+        drop(job);
+        assert_eq!(held.status().unwrap().options, options);
+        drop(held);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn cpu_master_regrade_retains_exact_options_and_raw_bytes_under_separate_metadata_leases() {
+        let mut host = CpuHost::for_platform().unwrap();
+        let mut image = request();
+        image.raytrace.as_mut().unwrap().output = Some(Box::new(super::super::OutputOptions { linear_exr: true, ..Default::default() }));
+        let original = host
+            .submit(
+                JobId { session: 903, serial: 1, generation: 1 },
+                1,
+                ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY },
+                image,
+            )
+            .unwrap();
+        assert_eq!(original.wait_timeout(std::time::Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
+        assert!(original.0.options.is_none(), "CPU transport options retain their existing request lease, not a second native options slot");
+        let original_frame = original.frame().unwrap().unwrap();
+        let presentation = super::super::presentation::Presentation { exposure_ev: 1.0, ..Default::default() };
+        let derivative = host.submit_regrade(JobId { session: 903, serial: 2, generation: 2 }, &original, presentation).unwrap();
+        assert_eq!(derivative.wait_timeout(std::time::Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
+        host.0.shared.stop.store(true, Ordering::Release);
+        host.0.shared.wake.notify_all();
+        Arc::get_mut(&mut host.0).unwrap()._worker.take().unwrap().join().unwrap();
+        let frame = derivative.frame().unwrap().unwrap();
+        assert_eq!(frame.linear_exr().unwrap(), original_frame.linear_exr().unwrap());
+        assert_eq!(derivative.status().unwrap().options.exposure_ev, 1.0);
+        let option_bytes = derivative.0.options().unwrap().retained_bytes().unwrap();
+        let request_bytes = option_bytes + ImageRequest::fixed_cpu_metadata_bytes();
+        assert_eq!(derivative.0._request_reservation.as_ref().unwrap().bytes, request_bytes);
+        let presentation_bytes = derivative.0.presentation.as_ref().unwrap()._reservation.bytes;
+        derivative.0.data.lock().unwrap().frame = None;
+        original.0.data.lock().unwrap().frame = None;
+        drop(frame);
+        drop(original_frame);
+        drop(original);
+        assert_eq!(host.admitted_bytes(), request_bytes + presentation_bytes);
+        let held = derivative.clone();
+        drop(derivative);
+        assert_eq!(held.status().unwrap().options.exposure_ev, 1.0);
+        drop(held);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
     #[test]
     fn retained_emitters_bill_vector_and_original_name_capacities_in_same_pool() {
         let mut request = request();
@@ -1845,10 +2575,10 @@ mod retained_request_tests {
             sides: super::super::EmissionSides::Both,
         });
         request.raytrace.as_mut().unwrap().emissions = Some(values);
-        let expected = retained_request_bytes(&request).unwrap();
+        let expected = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
         let mesh = solidcraft_geom::Mesh {
-            positions: vec![solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::X, solidcraft_geom::Vec3::Y],
-            normals: vec![solidcraft_geom::Vec3::Z; 3],
+            positions: vec![solidcore_record::Vec3::ZERO, solidcore_record::Vec3::X, solidcore_record::Vec3::Y],
+            normals: vec![solidcore_record::Vec3::Z; 3],
             triangles: vec![[0, 1, 2]],
             tri_face: vec![0],
             ..Default::default()
@@ -1883,6 +2613,200 @@ mod retained_request_tests {
         drop(held);
         assert_eq!(host.admitted_bytes(), 0);
     }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    fn cpu_map_capture_fixture(mapped: bool, corrupt: bool) -> (ProductScene, ImageRequest, std::sync::Weak<Vec<u8>>) {
+        use super::super::textures::{BaseColorMode, PlanarFrame, RuntimeTextures, TextureBinding, TextureMap};
+        use image::ImageEncoder;
+        use solidcore_record::Vec3;
+        use solidcraft_geom::Mesh;
+        let mut encoded = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut encoded).write_image(&[128, 64, 255, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+        if corrupt {
+            let idat = encoded.windows(4).position(|w| w == b"IDAT").unwrap();
+            encoded[idat + 4] ^= 0xff;
+        }
+        let map = TextureMap::new(encoded, crate::texture_input::MapRole::BaseColor).unwrap();
+        let weak = map.source().encoded_weak();
+        let surface = if mapped {
+            Vec3::new(0.5, 0.5, 0.5)
+        } else {
+            let v = [128, 64, 255].map(|v| crate::surface::srgb8_to_linear(v) as f32 as f64);
+            Vec3::new(v[0], v[1], v[2])
+        };
+        let mesh = Arc::new(Mesh {
+            positions: vec![Vec3::new(-10.0, -10.0, 0.0), Vec3::new(10.0, -10.0, 0.0), Vec3::new(10.0, 10.0, 0.0), Vec3::new(-10.0, 10.0, 0.0)],
+            normals: vec![Vec3::Z; 4],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+            tri_face: vec![0; 2],
+            ..Default::default()
+        });
+        let scene = ProductScene {
+            bounds: mesh.bounds(),
+            meshes: vec![crate::ProductMesh {
+                name: "mapped".into(),
+                mesh,
+                color: [255; 3],
+                opacity: 1.0,
+                transmission: None,
+                surface: Some(crate::surface::OpaqueSurface::new(surface, 0.0, 1.0, 1.0).unwrap()),
+                faces: vec![],
+            }],
+        };
+        let options = super::super::RaytraceOptions {
+            lights: Some(vec![super::super::DirectionalLightOptions {
+                direction: [0.0, 0.0, 1.0],
+                color: [1.0; 3],
+                intensity: std::f64::consts::PI,
+            }]),
+            progressive: Some(super::super::CpuProgressiveOptions { samples_per_pixel: 3, seed: 9 }),
+            output: Some(Box::new(super::super::OutputOptions { linear_exr: true, ..Default::default() })),
+            ..Default::default()
+        };
+        let request = ImageRequest {
+            width: 1,
+            height: 1,
+            camera: crate::Camera { distance: 1.0, fov: 0.0, yaw: 0.0, pitch: std::f64::consts::FRAC_PI_2, ..Default::default() },
+            background: [0; 3],
+            transparent_background: false,
+            integrator: Integrator::Raytrace,
+            raytrace: Some(options),
+            environment: None,
+            studio_weights: None,
+            textures: if mapped {
+                Some(Arc::new(
+                    RuntimeTextures::new(vec![TextureBinding {
+                        body_index: 0,
+                        body_name: "mapped".into(),
+                        frame: PlanarFrame { origin: [0.0; 3], u: [100.0, 0.0, 0.0], v: [0.0, 100.0, 0.0] },
+                        base_color: Some(map),
+                        normal: None,
+                        roughness: None,
+                        metallic: None,
+                        normal_strength: 1.0,
+                        base_color_mode: BaseColorMode::Replace,
+                        flip_v: false,
+                    }])
+                    .unwrap(),
+                ))
+            } else {
+                None
+            },
+        };
+        (scene, request, weak)
+    }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    fn cpu_map_manual_native_queue() -> ImageHost {
+        // Deterministic queued/cancel/error boundary test using the real builtin
+        // CPU factory and work leases; no substitute registered executor or render.
+        ImageHost(Arc::new(Owner {
+            executor: None,
+            shared: ImageHost::shared(super::super::NATIVE_CPU_POOL_BYTES),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }))
+    }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn cpu_map_native_factory_consumes_full_work_capture_and_releases_sources_before_retained_frames() {
+        let (scene, request, weak) = cpu_map_capture_fixture(true, false);
+        let mut host = ImageHost::for_platform().unwrap();
+        let job = host.submit(JobId { session: 3301, serial: 1, generation: 1 }, 1, scene, request).unwrap();
+        assert!(job.0.request.textures.is_none(), "Record must never retain a work-only texture Arc");
+        let completed = job.wait_timeout(std::time::Duration::from_secs(60)).unwrap();
+        assert_eq!(completed.progress.phase, Phase::Completed);
+        assert_eq!(completed.textures.unwrap().bodies, 1);
+        let (scene, request, _) = cpu_map_capture_fixture(false, false);
+        let reference = host.submit(JobId { session: 3301, serial: 2, generation: 2 }, 1, scene, request).unwrap();
+        assert_eq!(reference.wait_timeout(std::time::Duration::from_secs(60)).unwrap().progress.phase, Phase::Completed);
+        host.join_worker_for_test().unwrap();
+        assert!(job.work_released());
+        assert!(weak.upgrade().is_none(), "all original encoded Arcs drop even while job/frame handles survive");
+        let frame = job.frame().unwrap().unwrap();
+        let expected = reference.frame().unwrap().unwrap();
+        assert_eq!(frame.png(), expected.png(), "builtin CPU factory must consume full Work.request, not stripped public metadata");
+        assert_eq!(frame.linear_exr(), expected.linear_exr());
+        assert!(frame.linear_exr().is_some());
+        let color = [128, 64, 255].map(|v| {
+            let x = crate::surface::srgb8_to_linear(v) as f32 as f64;
+            solidcraft_geom::srgb::encode8(x / (1.0 + x))
+        });
+        assert_eq!(image::load_from_memory(frame.png()).unwrap().to_rgba8().get_pixel(0, 0).0, [color[0], color[1], color[2], 255]);
+        let held = job.clone();
+        job.0.data.lock().unwrap().frame = None;
+        reference.0.data.lock().unwrap().frame = None;
+        drop(frame);
+        drop(expected);
+        drop(job);
+        assert!(weak.upgrade().is_none());
+        drop(held);
+        drop(reference);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn cpu_map_queued_cancel_failed_decode_and_late_cancel_keep_full_work_barrier_and_no_publication() {
+        for mode in ["queued_cancel", "failed_decode", "late_cancel"] {
+            let host = cpu_map_manual_native_queue();
+            let (scene, request, weak) = cpu_map_capture_fixture(true, mode == "failed_decode");
+            let retained = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
+            let job = host.submit(JobId { session: 3302, serial: 1, generation: 1 }, 1, scene, request).unwrap();
+            assert!(job.0.request.textures.is_none());
+            assert!(weak.upgrade().is_some());
+            let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+            assert!(work.request.as_ref().unwrap().textures.is_some());
+            if mode == "queued_cancel" {
+                job.cancel().unwrap();
+                assert!(!job.work_released());
+                assert!(Running::begin(work).is_none());
+            } else {
+                let mut running = Running::begin(work).unwrap();
+                let mut stopped = false;
+                for _ in 0..200_000 {
+                    if mode == "late_cancel" && running.pending_png.as_ref().is_some_and(|pending| pending.preview_samples.is_none()) {
+                        job.cancel().unwrap();
+                        assert!(!running.guarded_step(1));
+                        stopped = true;
+                        break;
+                    }
+                    if !running.guarded_step(1) {
+                        stopped = true;
+                        break;
+                    }
+                }
+                assert!(stopped);
+                assert!(!job.work_released(), "terminal phase cannot release an undropped work lease");
+                drop(running);
+            }
+            assert!(job.work_released());
+            assert!(weak.upgrade().is_none());
+            let status = job.status().unwrap();
+            assert_eq!(status.progress.phase, if mode == "failed_decode" { Phase::Failed } else { Phase::Cancelled });
+            assert!(job.frame().unwrap().is_none());
+            assert!(job.preview().unwrap().is_none());
+            assert_eq!(host.admitted_bytes(), retained, "only exact small public request/summary ownership survives work release");
+            let held = job.clone();
+            drop(job);
+            assert_eq!(host.admitted_bytes(), retained);
+            drop(held);
+            assert_eq!(host.admitted_bytes(), 0);
+        }
+    }
+
+    #[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+    #[test]
+    fn cpu_map_source_and_peak_decode_prepaid_pool_refusal_releases_all_captures_before_queueing() {
+        let (scene, request, weak) = cpu_map_capture_fixture(true, false);
+        let admission = super::super::admit(&scene, &request).unwrap();
+        let total = admission.estimated_total_bytes + retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
+        let mut host = cpu_map_manual_native_queue();
+        Arc::get_mut(&mut host.0).unwrap().shared = ImageHost::shared(total - 1);
+        assert_eq!(host.submit(JobId { session: 3303, serial: 1, generation: 1 }, 1, scene, request).err().unwrap().code, ErrorCode::LimitExceeded);
+        assert_eq!(host.admitted_bytes(), 0);
+        assert!(host.0.shared.queue.lock().unwrap().is_empty());
+        assert!(weak.upgrade().is_none(), "a failed prepaid capture cannot retain hidden encoded resources or queue a decoder");
+    }
+
     fn request() -> ImageRequest {
         let mut lights = Vec::with_capacity(8);
         lights.push(super::super::DirectionalLightOptions { direction: [0.0, 0.0, 1.0], color: [1.0; 3], intensity: 1.0 });
@@ -1914,7 +2838,7 @@ mod retained_request_tests {
     fn retained_lights_keep_the_same_pool_lease_after_png_eviction() {
         let host = CpuHost::for_platform().unwrap();
         let request = request();
-        let expected = retained_request_bytes(&request).unwrap();
+        let expected = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
         let job = host
             .submit(
                 JobId { session: 99, serial: 1, generation: 1 },
@@ -1953,7 +2877,7 @@ mod environment_metadata_lease_tests {
         }
         let input = EnvironmentInput::new(HdrSource::new(bytes).unwrap(), 0.5, 2.0, 16).unwrap();
         let metadata = input.metadata();
-        let expected = std::mem::size_of::<EnvironmentInfo>() as u64;
+        let expected = std::mem::size_of::<EnvironmentInfo>() as u64 + ImageRequest::fixed_cpu_metadata_bytes();
         let mut host = CpuHost::for_platform().unwrap();
         let budget = host.0.shared.budget.clone();
         let request = ImageRequest {
@@ -2033,11 +2957,11 @@ mod surface_request_metadata_tests {
                 bump_amplitude_mm: 0.0,
             });
         }
-        let scene = ProductScene { meshes, bounds: Aabb3 { min: solidcraft_geom::Vec3::ZERO, max: solidcraft_geom::Vec3::ZERO } };
+        let scene = ProductScene { meshes, bounds: Aabb3 { min: solidcore_record::Vec3::ZERO, max: solidcore_record::Vec3::ZERO } };
         let mut request = request();
         request.integrator = Integrator::Raytrace;
         request.raytrace = Some(super::super::RaytraceOptions { surface_effects: Some(effects), ..Default::default() });
-        let metadata = retained_request_bytes(&request).unwrap();
+        let metadata = retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
         assert!(metadata >= 32 * 256);
         let mut oversized = request.clone();
         let mut overallocated = Vec::with_capacity(64);
