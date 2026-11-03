@@ -1,40 +1,53 @@
 # CPU controls in the Render workspace
 
-This incremental panel is built on advanced CPU source tree
+The original incremental panel was built on advanced CPU source tree
 `6e5db1e64376164878918eb68f1e5b311740afcd`. It prepares the same existing
 `render.preflight` and `render.start` commands. It does not add a renderer, material asset or rendering dependency. The subsequent
 numeric setup unit persists the portable subset through `RenderSetup.job`; see
 [workspace settings](render-workspace.md#settings-and-product-camera).
 
-Choose **CPU ray tracing** in Render. Three collapsible sections provide the
-following controls; the existing AA 1/4/16, lighting presets, shadows and exposure
-remain available in **Single image** sampling mode.
+Choose **CPU ray tracing** in Render. The original three sections below describe
+its legacy request controls. The normal workspace also exposes the separately
+validated CPU lens, guided noise reduction, opaque indirect lighting and saved
+certified Glass controls. Existing fixed setups retain their AA 1/4/16, lighting,
+shadows and exposure; adopting progressive sampling is an explicit action.
 
 ## Progressive CPU sampling
 
-**CPU sampling mode → CPU progressive** accumulates samples of the existing CPU
-integrator. Set **samples per pixel** from 1 to 64 and the separate CPU sampling
-seed. Selecting the mode explicitly chooses one primary sample per pass; returning
-to **Single image** restores the AA selector without discarding lights or HDR controls.
-This is camera sampling of the existing integrator, not diffuse global illumination,
-adaptive sampling or CPU denoising.
+New normal CPU setups show progressive sampling as always-on status with samples
+per pixel and seed controls. Existing fixed setups retain their exact intent and
+show an explicit **Use progressive sampling** action; opening the page never
+converts them. Adoption announces one camera sample per pass and refuses an
+incompatible image budget or selected reflection count instead of changing size,
+method, lighting or reflections. The previous Single image / Progressive selector
+remains available through **Use previous Render image defaults**.
+Progressive camera sampling is independent of the optional [opaque path lighting](render-cpu-path.md)
+and [guided noise reduction](render-cpu-output.md) contracts. Those controls can
+be combined where their existing admission rules allow; CPU adaptive sampling
+remains unsupported.
 
-The initial progressive path accepts isotropic opaque surfaces and the supported
-directional, point and spot lighting. Selected reflections require one reflection
-sample. Area lights, LEDs, dielectric overrides and anisotropy must use Single image;
-switching modes never silently removes these inputs. Check and Start report an
-incompatible combination through the same request validation.
+Progressive sampling accepts the existing supported opaque/direct-light, selected
+reflection, certified dielectric and planar anisotropy transport. Selected opaque
+reflections require one attempt per camera sample. Glass remains restricted to
+certified thin sheets and axis-aligned boxes; anisotropy remains restricted to the
+certified planar subset. Geometry, HDR, clear-coat and optical overlap restrictions
+remain explicit. The shared Glass editor saves the certified dielectric subset
+with stable body/occurrence targets; see [saved optics](render-raytrace-dielectrics.md#saved-optical-bindings-and-common-glass-controls).
+Selected opaque-reflection and anisotropic-face bindings still use the temporary
+runtime identity/confirmation contract below.
 
-Admission allows at most 1,048,576 pixels, dimensions up to 4096, and
+The Compact resource profile allows at most 1,048,576 progressive pixels, dimensions
+up to 4096, and
 16,777,216 pixel × sample evaluations. For example, 1024 × 1024 supports 16 SPP,
 whereas 64 SPP requires at most 262,144 pixels. Increasing SPP or loading a setup
 never changes its dimensions automatically. If needed, the panel displays a
 **Use the largest size at this aspect: W × H** action; only clicking it resizes
 the draft. Save applies the same numeric limits without requiring a renderer and
 leaves invalid drafts intact. Traversal, sampling and image encoding also share
-the backend's cumulative work budget.
+the backend's cumulative work budget. Larger [CPU resource profiles](render-cpu-resource-profiles.md)
+remain explicit choices; no profile, size or sample count is raised automatically.
 
-The result canvas shows provisional PNG checkpoints after 1, 2, 4, … samples,
+The result canvas shows provisional PNG checkpoints after every complete pass, 1, 2, 3, 4, … samples,
 before the requested final count. A provisional label includes its SPP and checkpoint
 sequence; the job identity and captured revision remain unchanged. Checkpoint updates
 reuse the current pan/zoom. Completion replaces the preview with its final image;
@@ -85,13 +98,17 @@ The engine still performs final capture and surface compatibility validation.
 
 CPU reflections do not implement a general layered clear-coat transport model.
 The engine rejects a coated body or face selected for an incompatible reflection
-path. This panel does not claim diffuse global illumination, caustics or a general
-glass renderer.
+path. Optional opaque path lighting supplies diffuse/specular indirect transport
+through its separate explicit control; it cannot silently absorb incompatible
+selected optical settings. Caustics and a general glass path integrator remain
+unsupported.
 
 ## Environment capture
 
-**Constant** environment supplies secondary reflected/transmitted radiance. It
-is not direct diffuse lighting and does not replace the image background.
+In the legacy selected-reflection transport, **Constant** environment supplies
+secondary reflected/transmitted radiance. Optional opaque path lighting also
+estimates its direct and continued environment illumination. Neither route
+replaces the separately authored image background.
 **HDR** uses the CPU environment contract: Radiance `.hdr`, 2:1 panorama, at most
 2048 × 1024 pixels and 16 MiB of source bytes, with explicit supported sRGB/D65
 primaries. EXR and files without those primaries are refused. Selected rough
@@ -139,12 +156,14 @@ attenuation and must not exceed the reference. Both distances range from 0.001 t
 1,000,000 mm in this panel. Intensities are relative renderer values, not a claim
 of lumens, watts or calibrated photometric measurements.
 
-Area lights, their sampling/seed and spot cones remain without dedicated panel
-editors, but valid values loaded from a setup are preserved in Save, Check and Start.
+The original panel did not provide dedicated area/spot editors. The shared Lights
+editor now exposes supported area and directional/point controls; loaded spot
+cones and numeric sampling intent remain preserved in Save, Check and Start.
 Directions retain their original nonzero magnitude; showing a field does not normalize
 or clamp it. Emission, surface effects, dielectric bindings and anisotropic faces
-remain runtime API capabilities that this panel explicitly refuses to edit. A later
-material/optics editor can expose those contracts separately.
+remain runtime API capabilities beyond the original panel. The current shared
+Glass editor exposes only its separately validated saved certified dielectric
+subset; it does not make arbitrary optics or temporary bindings portable.
 
 ## Integration and acceptance
 
@@ -157,10 +176,32 @@ regressions for sequence caching, final publication racing the status read,
 cancellation/export retention, explicit resolution adjustment, offline Save/Reload,
 hidden values and reopening progressive setups with embedded HDR.
 
-The author checked Rust formatting, locale-key coverage, whitespace and exact
-patch replay. No Cargo build, test execution, native launch or visual quality
-acceptance was performed for this incremental source unit. The integrator must
+For the historical incremental source unit, the author checked Rust formatting,
+locale-key coverage, whitespace and exact patch replay. No Cargo build, test
+execution, native launch or visual quality acceptance was performed for that unit. The integrator must
 run the combined revision's CI and the native UI/render tests before treating
 those regressions as passing. CPU controls and the GPU material editor have
 separate modules and request builders; both must retain their final admission
 guards when mounted together.
+
+## Output presentation
+
+The shared **Effects** editor accepts CPU ray tracing and GPU path tracing. Tone
+mapping, creative looks, RGB gains, bloom and photographic image effects remain
+presentation controls. CPU opaque path lighting, physical lens sampling and guided
+noise reduction have their own explicit controls and compatibility checks. Noise
+reduction filters complete progressive/final display passes without changing raw
+film or the final unfiltered EXR. **Environment → Gradient** is also available for CPU output.
+Physical depth of field is configured separately in **Frame → Lens**, through
+the shared [thin-lens contract](render-thin-lens.md). CPU aperture sampling uses
+the progressive film and requires a perspective camera; disabled or zero aperture
+preserves the previous image exactly.
+**Keep linear master** retains a final-only native FLOAT32 EXR. The export choice
+uses the selected completed image's actual master, independently of the current
+draft method or a new provisional render.
+
+These values save under `job.options.output`, reopen without a render host, and
+use the setup's single exposure/background authority. The first numerical edit
+keeps the visible size and numerical baseline. Merely opening the editor never
+saves or starts a job. [CPU output presentation](render-cpu-output.md) describes
+the existing shared output bounds and raw ownership.

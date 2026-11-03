@@ -15,6 +15,9 @@ pub mod adaptive;
 pub mod aging;
 pub mod bloom;
 mod cpu_budget;
+mod cpu_path;
+#[cfg(feature = "raytrace-cpu")]
+pub(crate) mod denoise;
 pub(crate) mod encoding;
 pub mod finishing;
 mod host;
@@ -27,6 +30,8 @@ mod lighting;
 pub mod linear_exr;
 mod linear_exr_decode;
 pub mod looks;
+#[cfg(feature = "raytrace-cpu")]
+pub(crate) mod output;
 pub mod photographic;
 mod png;
 pub mod presentation;
@@ -38,6 +43,7 @@ pub mod textures;
 pub mod volume;
 
 pub use cpu_budget::{CpuBudget, CpuBudgetLimits, MAX_CPU_BODIES, MAX_CPU_SAMPLES_PER_PIXEL, MAX_CPU_TRIANGLES, MAX_CPU_WORK, NATIVE_CPU_POOL_BYTES};
+pub use cpu_path::CpuPathOptions;
 #[cfg(feature = "raytrace-cpu")]
 pub(crate) use host::FRAME_METADATA_BYTES;
 pub(crate) use host::Reservation;
@@ -49,6 +55,7 @@ pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geo
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, MAX_AREA_LIGHTS, StudioLighting, Sun, ToneMap};
 pub use png::PngTask;
+pub use presentation::OutputOptions;
 pub use punctual::{PunctualDiagnostics, PunctualLightOptions, SpotConeOptions};
 
 /// Native path-tracing ceilings, further restricted by the actual device.
@@ -114,6 +121,14 @@ impl Default for JobOptions {
 }
 
 impl JobOptions {
+    /// Absolute complete-pass target, including independent pilots when adaptive.
+    /// This is not a claim that every adaptive production pixel takes every pass.
+    pub fn preview_target(self) -> Result<u32> {
+        self.validate()?;
+        self.samples
+            .checked_add(self.adaptive.map_or(0, |adaptive| adaptive.pilot_samples))
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "sampling pass target overflow"))
+    }
     pub fn validate(&self) -> Result<()> {
         self.aging.validate()?;
         if let Some(volume) = self.volume {
@@ -158,8 +173,21 @@ impl JobOptions {
     }
 }
 
+/// Provisional PNG from a complete pass, moved to the host for bounded publication.
+/// It never enters the final-image or linear-master slot.
+pub struct ImageWorkPreview {
+    pub png: Vec<u8>,
+    /// Uniform SPP, or the absolute pilot+production iteration for adaptive work.
+    /// The host publishes phase metadata so display clients never label it uniform SPP.
+    pub samples_per_pixel: u32,
+}
+
 /// One bounded quantum of image work. Implementations check cancellation between quanta.
 pub trait ImageWork: Send {
+    /// Called after each step. The host hashes and publishes this separately from final output.
+    fn take_preview(&mut self) -> Option<ImageWorkPreview> {
+        None
+    }
     fn sampling_report(&self) -> Option<adaptive::SamplingReport> {
         None
     }
@@ -179,6 +207,14 @@ impl ImageWork for ImageTask {
 /// Device-independent executor boundary. The host owns admission leases and publication;
 /// an executor owns computation only. GPU implementations live above the render crate.
 pub trait ImageExecutor: Send + Sync {
+    /// Pure metadata: complete passes this request can publish (including adaptive pilots).
+    /// The host prepays at most two immutable PNG snapshots in addition to executor work.
+    fn preview_samples(&self, _options: JobOptions) -> Option<u32> {
+        None
+    }
+    fn preview_unavailable_reason(&self, _options: JobOptions) -> Option<&'static str> {
+        None
+    }
     fn supports_aging(&self) -> bool {
         false
     }
@@ -655,16 +691,33 @@ impl CpuProgressiveOptions {
         budget.validate_image(width, height, Some(*self))
     }
 
-    /// Nonfinal checkpoints whose PNG allocations may remain externally retained.
+    /// At most two immutable nonfinal snapshots are admitted, independent of SPP.
     #[cfg(feature = "raytrace-cpu")]
-    pub(crate) fn preview_count(&self) -> u32 {
-        if self.samples_per_pixel <= 1 { 0 } else { (self.samples_per_pixel - 1).ilog2() + 1 }
+    pub(crate) fn preview_slots(&self) -> u32 {
+        self.samples_per_pixel.saturating_sub(1).min(2)
     }
+}
+
+/// The CPU filter shares the bounded float4 presentation envelope; it never
+/// enlarges a profile or implies that a linear EXR companion is requested.
+pub fn validate_cpu_denoise_image(width: u32, height: u32) -> Result<()> {
+    linear_exr::encoded_limit(width, height)
+        .map(|_| ())
+        .map_err(|_| JobError::new(ErrorCode::InvalidRequest, "CPU denoising requires 1..8192 sides and at most 16777216 pixels"))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RaytraceOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<CpuPathOptions>,
+    /// Optional CPU spatial output filtering; never changes the raw film or sampling.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub denoise: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<ThinLens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<Box<OutputOptions>>,
     #[serde(skip_serializing_if = "CpuBudget::is_compact")]
     pub budget: CpuBudget,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -700,6 +753,10 @@ pub struct RaytraceOptions {
 impl Default for RaytraceOptions {
     fn default() -> Self {
         Self {
+            denoise: false,
+            path: None,
+            lens: None,
+            output: None,
             budget: CpuBudget::Compact,
             progressive: None,
             punctual_lights: None,
@@ -842,6 +899,7 @@ impl RaytraceOptions {
         for target in self.anisotropic_faces.iter().flatten() {
             bytes = bytes.checked_add(target.body_name.capacity() as u64).ok_or_else(limit)?;
         }
+        bytes = bytes.checked_add(if self.output.is_some() { std::mem::size_of::<OutputOptions>() as u64 } else { 0 }).ok_or_else(limit)?;
         bytes = bytes.checked_add(self.retained_emission_bytes()?).ok_or_else(limit)?;
         bytes = bytes.checked_add(self.retained_surface_effect_bytes()?).ok_or_else(limit)?;
         bytes = bytes.checked_add(self.retained_dielectric_bytes()?).ok_or_else(limit)?;
@@ -883,21 +941,44 @@ impl RaytraceOptions {
         Ok(())
     }
     pub fn validate(&self) -> Result<()> {
+        if let Some(path) = self.path {
+            path.validate()?;
+            cpu_path::validate_emitters(self.area_lights.as_deref().unwrap_or(&[]))?;
+            if self.progressive.is_none() || self.primary_samples != 1 {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "CPU opaque path transport requires explicit progressive sampling with primary_samples: 1",
+                ));
+            }
+            if !self.shadows {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "CPU opaque path transport requires traced shadows for matched light visibility",
+                ));
+            }
+            if self.reflections.is_some() || self.anisotropic_faces.iter().any(Option::is_some) || !self.dielectrics.is_empty() {
+                return Err(JobError::new(
+                    ErrorCode::InvalidRequest,
+                    "CPU opaque path transport cannot combine selected reflection, certified anisotropy or dielectric overrides; preserve them and choose the legacy transport explicitly",
+                ));
+            }
+        }
+
+        if let Some(lens) = self.lens {
+            lens.validate()?;
+            if lens.aperture_radius_mm > 0.0 && self.progressive.is_none() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "CPU depth of field requires progressive camera sampling"));
+            }
+        }
+        if let Some(output) = &self.output {
+            output.validate()?;
+        }
         if let Some(progressive) = self.progressive {
             self.budget.validate_samples(progressive.samples_per_pixel)?;
             if self.primary_samples != 1 || self.reflections.as_ref().is_some_and(|r| !r.bodies.is_empty() && r.samples != 1) {
                 return Err(JobError::new(
                     ErrorCode::InvalidRequest,
                     "CPU progressive requires primary_samples: 1 and one reflection attempt per camera sample",
-                ));
-            }
-            if !self.dielectrics.is_empty()
-                || self.anisotropic_faces.iter().any(Option::is_some)
-                || self.area_lights.as_ref().is_some_and(|lights| !lights.is_empty())
-            {
-                return Err(JobError::new(
-                    ErrorCode::InvalidRequest,
-                    "CPU progressive currently supports isotropic opaque surfaces and directional/point/spot lights; use fixed sampling for dielectric, anisotropic or area/LED inputs",
                 ));
             }
         }
@@ -953,7 +1034,12 @@ impl RaytraceOptions {
         if self.area_samples.is_some_and(|n| !matches!(n, 1 | 4 | 16 | 64)) {
             return Err(JobError::new(ErrorCode::InvalidRequest, "area_samples must be 1, 4, 16 or 64"));
         }
-        let directional_count = self.lights.as_ref().map_or_else(|| if self.preset == Some(LightingPreset::KeyRim) { 2 } else { 3 }, Vec::len);
+        let directional_count = self.lights.as_ref().map_or_else(
+            || {
+                if self.preset == Some(LightingPreset::KeyRim) { 2 } else { 3 }
+            },
+            Vec::len,
+        );
         if directional_count
             .checked_add(area_count)
             .and_then(|n| n.checked_add(self.punctual_lights.as_ref().map_or(0, Vec::len)))
@@ -1186,7 +1272,7 @@ mod runtime_request_roundtrip_tests {
             color: [1.0; 3],
             intensity: 1.0,
         };
-        assert!(RaytraceOptions { progressive, area_lights: Some(vec![area]), ..Default::default() }.validate().is_err());
+        RaytraceOptions { progressive, area_lights: Some(vec![area]), ..Default::default() }.validate().unwrap();
         let dielectric = DielectricOptions {
             body_index: 0,
             body_name: "Body".into(),
@@ -1195,7 +1281,7 @@ mod runtime_request_roundtrip_tests {
             absorption_per_mm: [0.0; 3],
             thickness_mm: 1.0,
         };
-        assert!(RaytraceOptions { progressive, dielectrics: vec![dielectric], ..Default::default() }.validate().is_err());
+        RaytraceOptions { progressive, dielectrics: vec![dielectric], ..Default::default() }.validate().unwrap();
         let face = AnisotropicFaceOptions {
             body_index: 0,
             body_name: "Body".into(),
@@ -1205,7 +1291,7 @@ mod runtime_request_roundtrip_tests {
             roughness_x: 0.2,
             roughness_y: 0.6,
         };
-        assert!(RaytraceOptions { progressive, anisotropic_faces: [Some(face), None], ..Default::default() }.validate().is_err());
+        RaytraceOptions { progressive, anisotropic_faces: [Some(face), None], ..Default::default() }.validate().unwrap();
         RaytraceOptions { progressive, area_lights: Some(Vec::new()), ..Default::default() }.validate().unwrap();
     }
 }

@@ -16,6 +16,7 @@ pub(super) struct View {
     reveal: Option<&'static str>,
     pending: Option<Pending>,
     pub checked: Option<Review>,
+    quality_plans: Option<[Result<Value, String>; 3]>,
     scene_info: Option<Review>,
     selection_appearance: selection_appearance::View,
     pub(super) resolution: Resolution,
@@ -116,9 +117,11 @@ pub(super) fn shot_row_action(app: &mut SolveApp, name: String, command: &str) {
 }
 
 fn request_action(app: &mut SolveApp, action: PendingAction) {
-    // Focusing the current shot is navigation, never a request to reload its draft.
+    // Editor focus is separate from activation. With the saved camera already in
+    // place (or in compatibility mode), focusing the active shot keeps its draft.
     if let PendingAction::Switch(name) = &action
         && *name == app.render_workspace.view.name
+        && (app.preferences.render_legacy_image_defaults || app.session.doc.render.setups.get(name).is_none_or(|setup| setup.camera == app.cam))
     {
         super::selection_editor(app, &super::RenderSelection::Shot(name.clone()));
         return;
@@ -136,11 +139,22 @@ fn request_action(app: &mut SolveApp, action: PendingAction) {
         app.set_status(error, true);
     }
 }
+/// Explicit tree/strip activation restores the complete saved camera. Numeric reloads,
+/// external edits and Undo keep using the camera-neutral setup adapter.
+pub(super) fn activate_saved_shot(app: &mut SolveApp, name: String) -> Result<(), String> {
+    if !app.preferences.render_legacy_image_defaults {
+        // The command validates the saved setup before any active draft is replaced.
+        restore_saved_camera(app, &name)?;
+    }
+    app.render_workspace.view.name = name;
+    setups::load(app);
+    Ok(())
+}
+
 fn perform_action(app: &mut SolveApp, action: PendingAction) -> Result<(), String> {
     match action {
         PendingAction::Switch(name) => {
-            app.render_workspace.view.name = name.clone();
-            setups::load(app);
+            activate_saved_shot(app, name.clone())?;
             super::selection_editor(app, &super::RenderSelection::Shot(name));
         }
         PendingAction::ManageShot { name, command } => {
@@ -211,6 +225,26 @@ fn browse_button(app: &mut SolveApp, ui: &mut egui::Ui, kind: &str, key: &str) {
         library::open_category(app, kind);
     }
 }
+/// All visible batch entry points share readiness and the captured, live-draining action.
+fn all_shots_button(app: &mut SolveApp, ui: &mut egui::Ui, label: &str, target: &str) -> Option<String> {
+    let ready = super::ribbon::action_ready(app, "render.batch");
+    let button = ui_kit::button(ui, label, ui_kit::Button::Enabled(ready.is_ok()));
+    let button = if let Err(reason) = &ready { button.on_disabled_hover_text(reason) } else { button };
+    crate::scenario::publish_target(target, button.rect);
+    if button.clicked()
+        && let Err(error) = super::ribbon::perform_job(app, "render.batch")
+    {
+        app.set_status(error, true);
+    }
+    ready.err()
+}
+fn batch_explanation(app: &SolveApp, ui: &mut egui::Ui, reason: Option<&str>) {
+    if let Some(reason) = reason {
+        ui_kit::text(ui, reason, ui_kit::Text::Note("render:batch:reason"));
+    }
+    ui_kit::text(ui, app.tr("render.batch_current_settings_help"), ui_kit::Text::Note("render.batch_current_settings_help"));
+}
+
 pub(super) fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui_kit::text(ui, app.tr("render.scene_preserves_design"), ui_kit::Text::Note("render.scene_preserves_design"));
     let label = app.tr("render.children.method").to_string();
@@ -295,9 +329,8 @@ pub(super) fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
         });
         let label = crate::i18n::format("render.scene_all_shots", &[("count", &app.session.doc.render.setups.len().to_string())]);
-        let response = ui_kit::button(ui, &label, ui_kit::Button::Enabled(false));
-        crate::scenario::publish_target("render:scene:all-shots", response.rect);
-        ui_kit::text(ui, app.tr("render.scene_batch_reason"), ui_kit::Text::Note("render.scene_batch_reason"));
+        let reason = all_shots_button(app, ui, &label, "render:scene:all-shots");
+        batch_explanation(app, ui, reason.as_deref());
     });
     let title = app.tr("render.scene_reminders").to_string();
     ui_kit::section(ui, "render_scene_reminders", &title, true, |ui| {
@@ -510,11 +543,11 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::text(ui, &size_limit_reason(app, before[0], before[1]), ui_kit::Text::Error("render.output_over_budget"));
     }
     studio::export_controls(app, ui);
-    let gpu = app.render_workspace.view.method == ImageMethod::GpuRaytrace;
-    if !gpu {
-        ui_kit::text(ui, app.tr("render.effects_gpu_only"), ui_kit::Text::Note("render.effects_gpu_only"));
+    let raytrace = app.render_workspace.view.method != ImageMethod::Raster;
+    if !raytrace {
+        ui_kit::text(ui, app.tr("render.output_raytrace_only"), ui_kit::Text::Note("render.output_raytrace_only"));
     }
-    ui.add_enabled_ui(gpu, |ui| {
+    ui.add_enabled_ui(raytrace, |ui| {
         let label = app.tr("render.children.keep_master").to_string();
         let response = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.linear_exr);
         crate::scenario::publish_target("render:retain-exr", response.rect);
@@ -523,12 +556,10 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let label = app.tr("render.image_transparent").to_string();
     let cpu = app.render_workspace.view.method == ImageMethod::CpuRaytrace;
     if cpu {
-        ui_kit::text(ui, app.tr("render.cpu_opaque_required"), ui_kit::Text::Note("render.cpu_opaque_required"));
+        ui_kit::text(ui, app.tr("render.cpu_transparent_help"), ui_kit::Text::Note("render.cpu_transparent_help"));
     }
-    // An incompatible retained value can always be cleared without switching method.
-    ui.add_enabled_ui(!cpu || app.render_workspace.view.transparent, |ui| {
-        ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.transparent);
-    });
+    let response = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.transparent);
+    crate::scenario::publish_target("render:transparent-background", response.rect);
     reveal_section(app, ui, "render_output_advanced");
     let title = app.tr("render.output_advanced").to_string();
     ui_kit::section(ui, "render_output_advanced", &title, false, |ui| {
@@ -586,6 +617,7 @@ fn render_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         super::progress_pill(app, ui);
         return;
     }
+    let mut batch_reason = None;
     ui.horizontal_wrapped(|ui| {
         let ready = super::ribbon::action_ready(app, "render.start");
         let button = ui_kit::button(ui, app.tr("render.children.render_shot"), ui_kit::Button::Enabled(ready.is_ok()));
@@ -595,10 +627,10 @@ fn render_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         if let Err(reason) = ready {
             button.on_disabled_hover_text(reason);
         }
-        ui_kit::button(ui, app.tr("render.children.all_shots"), ui_kit::Button::Enabled(false))
-            .on_disabled_hover_text(app.tr("render.queue_pending"));
+        let label = app.tr("render.children.all_shots").to_string();
+        batch_reason = all_shots_button(app, ui, &label, "render:output:section-all-shots");
     });
-    ui_kit::text(ui, app.tr("render.queue_pending"), ui_kit::Text::Note("render.queue_pending"));
+    batch_explanation(app, ui, batch_reason.as_deref());
     if ui_kit::button(ui, app.tr("render.output_view_image"), ui_kit::Button::Enabled(app.render_workspace.view.completed.is_some())).clicked() {
         let _ = app.run("render.result.view", json!({"view":"image"}));
     }
@@ -606,7 +638,12 @@ fn render_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 pub(super) fn sampling_editor(app: &mut SolveApp, ui: &mut egui::Ui) {
     editor_section(app, ui, "render_sampling_quality", "render.output_quality", |app, ui| {
         quality_choices(app, ui);
-        ui_kit::text(ui, app.tr("render.output_quality_waiting"), ui_kit::Text::Note("render.output_quality_waiting"));
+        if app.render_workspace.view.method == ImageMethod::GpuRaytrace {
+            let view = &app.render_workspace.view;
+            let summary = quality_summary(app, view.draft.width, view.draft.height, view.samples, view.max_depth, view.seed, view.studio.denoise);
+            ui_kit::text(ui, &summary, ui_kit::Text::Note("render:quality:summary"));
+        }
+        ui_kit::text(ui, app.tr("render.quality_budget_help"), ui_kit::Text::Note("render.quality_budget_help"));
         browse_button(app, ui, "quality", "render.children.review_quality");
         library::inspect_kinds(app, ui, &["quality"]);
     });
@@ -625,27 +662,32 @@ pub(super) fn sampling_editor(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn path_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let label = app.tr("render.children.samples").to_string();
     let mut samples = app.render_workspace.view.samples.clamp(1, 4096);
-    if ui_kit::row(ui, &label, |ui| {
+    let response = ui_kit::row(ui, &label, |ui| {
         ui_kit::slider(
             ui,
             &mut samples,
             1..=4096,
             ui_kit::Slider { integer: true, step: Some(1.0), format: |v| format!("{v:.0}"), ..Default::default() },
         )
-    })
-    .changed()
-    {
-        app.render_workspace.view.samples = samples.checked_next_power_of_two().unwrap_or(4096).min(4096);
+    });
+    crate::scenario::publish_target("render:gpu-samples", response.rect);
+    if response.changed() {
+        app.render_workspace.view.samples =
+            if app.preferences.render_legacy_image_defaults { samples.checked_next_power_of_two().unwrap_or(4096).min(4096) } else { samples };
     }
     let label = app.tr("render.children.depth").to_string();
     let mut depth = app.render_workspace.view.max_depth.clamp(1, 16);
-    if ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut depth, 1..=16, 1.0, "")).changed() {
+    let response = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut depth, 1..=16, 1.0, ""));
+    crate::scenario::publish_target("render:gpu-depth", response.rect);
+    if response.changed() {
         app.render_workspace.view.max_depth = depth;
     }
     let label = app.tr("render.children.seed").to_string();
-    ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.seed, 0..=u32::MAX, 1.0, ""));
+    let response = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.seed, 0..=u32::MAX, 1.0, ""));
+    crate::scenario::publish_target("render:gpu-seed", response.rect);
     let label = app.tr("render.children.denoise").to_string();
-    ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.denoise);
+    let response = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.denoise);
+    crate::scenario::publish_target("render:gpu-denoise", response.rect);
     ui_kit::text(ui, app.tr("render.studio_denoise_help"), ui_kit::Text::Note("render.studio_denoise_help"));
 }
 fn cpu_sampling(app: &mut SolveApp, ui: &mut egui::Ui) {
@@ -656,9 +698,15 @@ fn cpu_sampling(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     let depth = app.tr("render.children.reflect_depth").to_string();
     let samples = app.tr("render.children.reflect_samples").to_string();
+    let maximum = if app.render_workspace.view.raytrace.progressive.is_some() { 1 } else { 64 };
     ui.add_enabled_ui(app.render_workspace.view.raytrace.reflections.is_some(), |ui| {
         ui_kit::row(ui, &depth, |ui| ui_kit::number_field(ui, &mut reflections.max_bounces, 1..=8, 1.0, ""));
-        ui_kit::row(ui, &samples, |ui| ui_kit::number_field(ui, &mut reflections.samples, 1..=64, 1.0, ""));
+        let response = ui_kit::row(ui, &samples, |ui| {
+            let field = ui_kit::number_field_preserving(ui, &mut reflections.samples, 1..=maximum, 1.0, "");
+            crate::scenario::publish_target("render:cpu-reflection-samples-field", field.rect);
+            field
+        });
+        crate::scenario::publish_target("render:cpu-reflection-samples", response.rect);
     });
     if let Some(value) = &mut app.render_workspace.view.raytrace.reflections {
         *value = reflections;
@@ -806,26 +854,141 @@ pub(super) fn largest_output(app: &SolveApp) -> Option<(u64, u64)> {
     let draft = &app.render_workspace.view.draft;
     limits.fit(u64::from(draft.width).checked_mul(limits.max_dimension)?, u64::from(draft.height).checked_mul(limits.max_dimension)?, None)
 }
-pub(super) fn quality_choices(app: &mut SolveApp, ui: &mut egui::Ui) {
-    let reason = app.tr("render.output_quality_waiting");
-    let labels = ["render.quality_draft", "render.quality_balanced", "render.quality_high", "render.quality_custom"].map(|key| app.tr(key));
-    let mut quality = 3;
-    if ui_kit::segmented(
-        ui,
-        &mut quality,
-        &labels,
-        ui_kit::Segments {
-            workspace_accent: true,
-            intrinsic: true,
-            compact: true,
-            targets: &["render:quality:draft", "render:quality:balanced", "render:quality:high", "render:quality:custom"],
-            disabled_reasons: &[Some(reason), Some(reason), Some(reason), None],
-            ..Default::default()
-        },
-    ) {
-        let _ = app.run("view.render_select", json!({"kind":"sampling"}));
+const QUALITY_IDS: [&str; 3] = ["Q-001", "Q-002", "Q-003"];
+
+/// Immutable catalogue budgets are cached for comparison and hover summaries only.
+/// An actual preset click prepares and applies a fresh canonical plan.
+fn prepare_quality_choices(app: &mut SolveApp) {
+    if app.render_workspace.view.method == ImageMethod::GpuRaytrace && app.render_workspace.view.inspector.quality_plans.is_none() {
+        let plans = QUALITY_IDS.map(|id| {
+            app.session
+                .execute("render.quality.prepare", &json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true}))
+                .map_err(|error| error.to_string())
+        });
+        app.render_workspace.view.inspector.quality_plans = Some(plans);
     }
 }
+
+fn quality_selection(app: &SolveApp) -> usize {
+    let view = &app.render_workspace.view;
+    if view.method != ImageMethod::GpuRaytrace {
+        return 3;
+    }
+    view.inspector
+        .quality_plans
+        .as_ref()
+        .and_then(|plans| {
+            plans.iter().position(|plan| {
+                plan.as_ref().is_ok_and(|plan| {
+                    plan["settings"]["width"].as_u64() == Some(u64::from(view.draft.width))
+                        && plan["settings"]["height"].as_u64() == Some(u64::from(view.draft.height))
+                        && plan["gpu_options"]["samples"].as_u64() == Some(u64::from(view.samples))
+                        && plan["gpu_options"]["max_depth"].as_u64() == Some(u64::from(view.max_depth))
+                        && plan["gpu_options"]["seed"].as_u64() == Some(u64::from(view.seed))
+                        && plan["gpu_options"]["denoise"].as_bool() == Some(view.studio.denoise)
+                })
+            })
+        })
+        .unwrap_or(3)
+}
+
+fn quality_reason(app: &SolveApp, index: usize) -> Option<&str> {
+    if index == 3 {
+        return None;
+    }
+    if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
+        return Some(app.tr("render.stage_panels.gpu_required"));
+    }
+    match app.render_workspace.view.inspector.quality_plans.as_ref().and_then(|plans| plans.get(index)) {
+        Some(Ok(_)) => None,
+        Some(Err(reason)) => Some(reason),
+        None => Some(app.tr("render.error_quality_projection")),
+    }
+}
+
+fn choose_quality(app: &mut SolveApp, index: usize) -> Result<(), String> {
+    if index == 3 {
+        return app.run("view.render_select", json!({"kind":"sampling"})).map(|_| ());
+    }
+    let id = QUALITY_IDS.get(index).ok_or_else(|| app.tr("render.error_quality_projection").to_string())?;
+    if app.render_workspace.view.method != ImageMethod::GpuRaytrace {
+        return Err(app.tr("render.stage_panels.gpu_required").into());
+    }
+    // Canonical chips are reversible numerical presets. Imported library plans keep
+    // their separate acknowledged review; comparison caches never author an edit.
+    let plan = app.run("render.quality.prepare", json!({"id":id,"variant":"fixed_samples_png","acknowledge_omissions":true}))?;
+    apply_quality_transaction(app, &plan)
+}
+
+fn quality_summary(app: &SolveApp, width: u32, height: u32, samples: u32, depth: u32, seed: u32, denoise: bool) -> String {
+    crate::i18n::format(
+        "render.quality_summary",
+        &[
+            ("width", &width.to_string()),
+            ("height", &height.to_string()),
+            ("samples", &samples.to_string()),
+            ("depth", &depth.to_string()),
+            ("seed", &seed.to_string()),
+            ("denoise", app.tr(if denoise { "render.quality_denoise_on" } else { "render.quality_denoise_off" })),
+        ],
+    )
+}
+
+fn quality_hover(app: &SolveApp) -> String {
+    let labels = ["render.quality_draft", "render.quality_balanced", "render.quality_high"];
+    app.render_workspace.view.inspector.quality_plans.as_ref().map_or_else(String::new, |plans| {
+        plans
+            .iter()
+            .zip(labels)
+            .filter_map(|(plan, label)| {
+                let plan = plan.as_ref().ok()?;
+                let field = |section: &str, key: &str| plan[section][key].as_u64().and_then(|n| u32::try_from(n).ok());
+                let summary = quality_summary(
+                    app,
+                    field("settings", "width")?,
+                    field("settings", "height")?,
+                    field("gpu_options", "samples")?,
+                    field("gpu_options", "max_depth")?,
+                    field("gpu_options", "seed")?,
+                    plan["gpu_options"]["denoise"].as_bool()?,
+                );
+                Some(format!("{}: {summary}", app.tr(label)))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+pub(super) fn quality_choices(app: &mut SolveApp, ui: &mut egui::Ui) {
+    prepare_quality_choices(app);
+    let labels = ["render.quality_draft", "render.quality_balanced", "render.quality_high", "render.quality_custom"].map(|key| app.tr(key));
+    let mut quality = quality_selection(app);
+    let choice = ui.scope(|ui| {
+        ui_kit::segmented(
+            ui,
+            &mut quality,
+            &labels,
+            ui_kit::Segments {
+                workspace_accent: true,
+                intrinsic: true,
+                compact: true,
+                targets: &["render:quality:draft", "render:quality:balanced", "render:quality:high", "render:quality:custom"],
+                disabled_reasons: &[quality_reason(app, 0), quality_reason(app, 1), quality_reason(app, 2), None],
+                ..Default::default()
+            },
+        )
+    });
+    let help = quality_hover(app);
+    if !help.is_empty() {
+        choice.response.on_hover_text(help);
+    }
+    if choice.inner
+        && let Err(error) = choose_quality(app, quality)
+    {
+        app.set_status(error, true);
+    }
+}
+
 pub(super) fn check_summary(app: &SolveApp) -> String {
     let state = match &app.render_workspace.view.inspector.checked {
         Some(check) if check.current(app) && super::image_params(app).as_ref().ok() == Some(&check.request) => {
@@ -1088,6 +1251,18 @@ pub(super) fn quality_resource(app: &mut SolveApp, ui: &mut egui::Ui, id: &str) 
         app.set_status(error, true);
     }
 }
+/// Share one non-camera numerical transaction between canonical presets and library reviews.
+pub(super) fn apply_quality_transaction(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
+    let before = setups::draft(app)?;
+    let previous = app.render_workspace.view.clone();
+    let result = apply_quality(app, plan).and_then(|()| setups::persist_editor(app, &before));
+    if let Err(error) = result {
+        app.render_workspace.view = previous;
+        return Err(error);
+    }
+    Ok(())
+}
+
 pub(super) fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
     if app.render_workspace.view.method != ImageMethod::GpuRaytrace || plan["variant"] != "fixed_samples_png" {
         return Err(crate::i18n::tr("render.error_quality_method").into());
@@ -1191,11 +1366,24 @@ pub(super) fn fit_subject(app: &mut SolveApp) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn restore_camera(app: &mut SolveApp) -> Result<(), String> {
-    let name = app.render_workspace.view.name.clone();
+/// Revert accepts only the restored camera as clean. Numerical and temporary
+/// material drafts retain their independent dirty state and confirmation guard.
+pub(super) fn restore_saved_camera(app: &mut SolveApp, name: &str) -> Result<(), String> {
     app.run("render.settings.apply", json!({"name":name}))?;
     app.follow_view_request(false);
+    app.ui.perspective = app.cam.fov > 0.0;
+    if app.render_workspace.view.name == name
+        && let Some(clean) = &mut app.render_workspace.view.clean_setup
+    {
+        clean.camera = app.cam;
+    }
+    setups::refresh_dirty(app);
     Ok(())
+}
+
+pub(super) fn restore_camera(app: &mut SolveApp) -> Result<(), String> {
+    let name = app.render_workspace.view.name.clone();
+    restore_saved_camera(app, &name)
 }
 pub(super) fn confirmation_open(app: &SolveApp) -> bool {
     app.render_workspace.view.inspector.pending.is_some()

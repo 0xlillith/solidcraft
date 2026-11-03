@@ -19,6 +19,12 @@ pub(super) fn validate_progressive_image(app: &SolveApp) -> Result<(), String> {
     }
     if view.method == super::ImageMethod::CpuRaytrace {
         view.raytrace.budget.validate_image(width, height, view.raytrace.progressive).map_err(|error| error.to_string())?;
+        if view.studio.denoise {
+            solidcraft_engine::render::job::validate_cpu_denoise_image(width, height).map_err(|error| error.to_string())?;
+        }
+        if let Some(output) = super::studio::cpu_output(view) {
+            output.validate_image(width, height).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
@@ -32,6 +38,10 @@ pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderL
     }
     let options = &app.render_workspace.view.raytrace;
     let mut limits = options.budget.image_limits(options.progressive.is_some());
+    if app.render_workspace.view.studio.denoise {
+        limits.max_dimension = limits.max_dimension.min(8192);
+        limits.max_pixels = limits.max_pixels.min(16_777_216);
+    }
     if let Some(progressive) = options.progressive {
         limits.max_pixels = limits.max_pixels.min(options.budget.limits().max_camera_samples / u64::from(progressive.samples_per_pixel.max(1)));
     }
@@ -101,6 +111,7 @@ fn budget_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     ui_kit::text(ui, &note, ui_kit::Text::Note("render.cpu_budget_help"));
 }
 fn set_progressive(app: &mut SolveApp, enabled: bool) {
+    app.render_workspace.view.cpu_sampling_initialized = true;
     let options = &mut app.render_workspace.view.raytrace;
     if enabled {
         options.progressive.get_or_insert_default();
@@ -114,33 +125,73 @@ fn set_progressive(app: &mut SolveApp, enabled: bool) {
 pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     budget_controls(app, ui);
     let mut selected = usize::from(app.render_workspace.view.raytrace.progressive.is_some());
-    let labels = [app.tr("render.children.single_image").to_string(), app.tr("render.cpu_progressive").to_string()];
+    let legacy = app.preferences.render_legacy_image_defaults;
+    let mut changed = false;
     let response = ui.scope(|ui| {
-        ui_kit::row(ui, app.tr("render.children.sampling"), |ui| {
-            ui_kit::segmented(
-                ui,
-                &mut selected,
-                &labels.iter().map(String::as_str).collect::<Vec<_>>(),
-                ui_kit::Segments { compact: true, targets: &["render:cpu-fixed", "render:cpu-progressive"], ..Default::default() },
-            )
-        })
+        if legacy {
+            let labels = [app.tr("render.children.single_image").to_string(), app.tr("render.cpu_progressive").to_string()];
+            ui_kit::row(ui, app.tr("render.children.sampling"), |ui| {
+                changed = ui_kit::segmented(
+                    ui,
+                    &mut selected,
+                    &labels.iter().map(String::as_str).collect::<Vec<_>>(),
+                    ui_kit::Segments { compact: true, targets: &["render:cpu-fixed", "render:cpu-progressive"], ..Default::default() },
+                );
+            });
+        } else {
+            let key = if selected == 1 { "render.cpu_progressive_always" } else { "render.cpu_fixed_retained" };
+            ui_kit::row(ui, app.tr("render.children.sampling"), |ui| {
+                ui_kit::text(ui, app.tr(key), ui_kit::Text::Inline);
+            });
+            if selected == 0 {
+                let options = &app.render_workspace.view.raytrace;
+                let reason = if options.reflections.as_ref().is_some_and(|r| !r.bodies.is_empty() && r.samples != 1) {
+                    Some(app.tr("render.cpu_progressive_reflection_adopt").to_string())
+                } else {
+                    options
+                        .budget
+                        .validate_image(app.render_workspace.view.draft.width, app.render_workspace.view.draft.height, Some(Default::default()))
+                        .err()
+                        .map(|error| error.to_string())
+                };
+                let button = ui_kit::button(ui, app.tr("render.cpu_progressive_adopt"), ui_kit::Button::Enabled(reason.is_none()));
+                crate::scenario::publish_target("render:cpu-adopt-progressive", button.rect);
+                crate::scenario::publish_target("render:cpu-progressive", button.rect);
+                if button.clicked() {
+                    selected = 1;
+                    changed = true;
+                }
+                if let Some(reason) = reason {
+                    ui_kit::text(ui, &reason, ui_kit::Text::Note("render.cpu_progressive_adopt_reason"));
+                }
+                ui_kit::text(ui, app.tr("render.cpu_progressive_adopt_help"), ui_kit::Text::Note("render.cpu_progressive_adopt_help"));
+            }
+        }
     });
     crate::scenario::publish_target("render:cpu-sampling", response.response.rect);
-    if response.inner {
+    if changed {
         set_progressive(app, selected == 1);
     }
+    path_controls(app, ui);
     let enabled = app.render_workspace.view.raytrace.progressive.is_some();
     let mut options = app.render_workspace.view.raytrace.progressive.unwrap_or_default();
     if !enabled {
         ui_kit::text(ui, app.tr("render.children.progressive_reason"), ui_kit::Text::Note("render.children.progressive_reason"));
     }
     ui.add_enabled_ui(enabled, |ui| {
-        let response =
-            ui_kit::row(ui, app.tr("render.cpu_progressive_spp"), |ui| ui_kit::number_field(ui, &mut options.samples_per_pixel, 1..=4096, 1.0, ""));
+        let maximum = app.render_workspace.view.raytrace.budget.limits().max_samples_per_pixel;
+        let response = ui_kit::row(ui, app.tr("render.cpu_progressive_spp"), |ui| {
+            let field = ui_kit::number_field_preserving(ui, &mut options.samples_per_pixel, 1..=maximum, 1.0, "");
+            crate::scenario::publish_target("render:cpu-spp-field", field.rect);
+            field
+        });
         app.render_workspace.view.dirty |= response.changed();
         crate::scenario::publish_target("render:cpu-spp", response.rect);
-        let response =
-            ui_kit::row(ui, app.tr("render.cpu_progressive_seed"), |ui| ui_kit::number_field(ui, &mut options.seed, 0..=u32::MAX, 1.0, ""));
+        let response = ui_kit::row(ui, app.tr("render.cpu_progressive_seed"), |ui| {
+            let field = ui_kit::number_field(ui, &mut options.seed, 0..=u32::MAX, 1.0, "");
+            crate::scenario::publish_target("render:cpu-seed-field", field.rect);
+            field
+        });
         app.render_workspace.view.dirty |= response.changed();
         crate::scenario::publish_target("render:cpu-seed", response.rect);
     });
@@ -150,6 +201,41 @@ pub(super) fn progressive_controls(app: &mut SolveApp, ui: &mut egui::Ui) -> boo
     ui_kit::text(ui, app.tr("render.cpu_progressive_help"), ui_kit::Text::Note("render.cpu_progressive_help"));
     enabled
 }
+/// A prospective opt-in never changes old fixed sampling or removes optical bindings.
+pub(super) fn path_reason(app: &SolveApp) -> Option<String> {
+    if !app.render_workspace.view.draft.optics.is_empty() || !app.render_workspace.view.materials.bindings.is_empty() {
+        return Some(app.tr("render.cpu_path_optics_reason").into());
+    }
+    let mut options = app.render_workspace.view.raytrace.clone();
+    options.path.get_or_insert_default();
+    options.validate().err().map(|error| error.to_string())
+}
+fn path_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let mut enabled = app.render_workspace.view.raytrace.path.is_some();
+    let reason = path_reason(app);
+    let label = app.tr("render.cpu_path_lighting").to_string();
+    let response = ui.add_enabled_ui(enabled || reason.is_none(), |ui| ui_kit::checkbox(ui, &label, &mut enabled));
+    crate::scenario::publish_target("render:cpu-path", response.inner.rect);
+    if response.inner.changed() {
+        app.render_workspace.view.raytrace.path = enabled.then(solidcraft_engine::render::job::CpuPathOptions::default);
+        app.render_workspace.view.dirty = true;
+    }
+    if let Some(reason) = reason {
+        ui_kit::text(ui, &reason, ui_kit::Text::Note("render.cpu_path_reason"));
+    }
+    if let Some(mut path) = app.render_workspace.view.raytrace.path {
+        let label = app.tr("render.cpu_path_depth").to_string();
+        let response = ui_kit::row(ui, &label, |ui| {
+            let field = ui_kit::number_field_preserving(ui, &mut path.max_depth, 1..=16, 1.0, "");
+            crate::scenario::publish_target("render:cpu-path-depth", field.rect);
+            field
+        });
+        app.render_workspace.view.dirty |= response.changed();
+        app.render_workspace.view.raytrace.path = Some(path);
+    }
+    ui_kit::text(ui, app.tr("render.cpu_path_help"), ui_kit::Text::Note("render.cpu_path_help"));
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum Environment {
     #[default]
@@ -292,7 +378,13 @@ pub(super) fn set_reflection(app: &mut SolveApp, name: &str, mode: Option<Reflec
     let message = app.tr("render.cpu_reflection_limit").to_string();
     let options = &mut app.render_workspace.view.raytrace;
     if let Some(mode) = mode {
-        let mut reflections = options.reflections.clone().unwrap_or_default();
+        let mut reflections = options.reflections.clone().unwrap_or_else(|| {
+            let mut reflections = solidcraft_engine::render::job::ReflectionOptions::default();
+            if options.progressive.is_some() {
+                reflections.samples = 1;
+            }
+            reflections
+        });
         if let Some(entry) = reflections.bodies.iter_mut().find(|entry| entry.body == name) {
             entry.mode = mode;
         } else {
@@ -343,6 +435,12 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     }
     let view = &app.render_workspace.view.cpu;
     let mut options = base.clone();
+    options.output = super::studio::cpu_output(&app.render_workspace.view);
+    options.denoise = app.render_workspace.view.studio.denoise;
+    options.lens = app.render_workspace.view.studio.lens_enabled.then_some(app.render_workspace.view.studio.lens);
+    if let Some(lens) = options.lens {
+        lens.validate_camera(&app.cam).map_err(|error| error.to_string())?;
+    }
     if options.area_samples.is_some_and(|n| !matches!(n, 1 | 4 | 16 | 64)) {
         return Err(crate::i18n::tr("render.error_area_samples").into());
     }
@@ -566,7 +664,9 @@ pub(super) fn record_checked(app: &mut SolveApp, params: &Value, reply: &Value) 
 }
 
 fn metadata(app: &SolveApp, ui: &mut egui::Ui, info: &Value) {
-    let Some(hash) = info["source_sha256"].as_array().filter(|hash| hash.len() == 32) else { return };
+    let Some(hash) = info["source_sha256"].as_array().filter(|hash| hash.len() == 32) else {
+        return;
+    };
     let digest: Option<Vec<_>> = hash.iter().map(|byte| byte.as_u64().and_then(|n| u8::try_from(n).ok())).collect();
     let Some(digest) = digest else { return };
     let digest: String = digest.into_iter().map(|byte| format!("{byte:02x}")).collect();

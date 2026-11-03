@@ -1091,3 +1091,62 @@ fn a_track_number_adds_up_and_a_sign_adds_to_the_value_now() {
     assert_eq!(typed("1e-3+1", 0.0), Some(1.001));
     assert_eq!(typed("abc", 1.0), None);
 }
+
+#[test]
+fn bounded_dropdown_focus_announces_full_selected_source_with_a_nonempty_accessible_label() {
+    use std::cell::Cell;
+    let current = "CPU retained image with a complete captured shot name that exceeds the bounded toolbar width";
+    for labelled in [false, true] {
+        let ctx = crate::fonts::test_context();
+        ctx.enable_accesskit();
+        let id = Cell::new(None);
+        let focus = Cell::new(false);
+        let mut draw = |ui: &mut Ui| {
+            let picker = |ui: &mut Ui| {
+                if focus.get() {
+                    // Give the real widget focus during this frame, before its
+                    // native and kit metadata are emitted. No synthetic event.
+                    ui.memory_mut(|memory| memory.request_focus(id.get().expect("the first frame captures the picker ID")));
+                }
+                let response = bounded_dropdown_menu(ui, "accessible_bounded_source", current, 120.0, |ui| {
+                    list_picker(ui, "source", current, true);
+                });
+                id.set(Some(response.id));
+            };
+            if labelled {
+                row(ui, "Retained source", picker);
+            } else {
+                picker(ui);
+            }
+        };
+        menu_frame(&ctx, vec![], &mut draw);
+        focus.set(true);
+        let output = menu_frame(&ctx, vec![], &mut draw);
+        assert!(ctx.memory(|memory| memory.has_focus(id.get().unwrap())));
+        let event = output.platform_output.events.last().expect("focusing the actual picker must announce its value");
+        assert!(matches!(event, egui::output::OutputEvent::FocusGained(_)), "the final announcement must describe actual focus: {event:?}");
+        let info = event.widget_info();
+        assert_eq!(info.typ, egui::WidgetType::ComboBox);
+        assert!(info.enabled);
+        let expected = if labelled { crate::i18n::tr_label("Retained source") } else { current };
+        assert_eq!(info.label.as_deref(), Some(expected));
+        assert!(!info.label.as_deref().unwrap().trim().is_empty());
+        assert_eq!(
+            info.current_text_value.as_deref(),
+            Some(current),
+            "the visual ellipsis cannot replace the full selected source in focus metadata"
+        );
+        let update = output.platform_output.accesskit_update.as_ref().expect("the native accessibility tree must describe the focused picker");
+        let pickers: Vec<_> = update.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::ComboBox).collect();
+        assert_eq!(pickers.len(), 1, "the real picker has one native accessibility node");
+        let node = &pickers[0].1;
+        assert_eq!(node.label(), Some(expected));
+        assert_eq!(node.value(), Some(current), "the native screen reader receives the complete selected source");
+        assert!(!node.is_disabled());
+        if !labelled {
+            // egui's simple TTS description reads ComboBox labels; its native
+            // AccessKit tree above also carries the separate selected value.
+            assert!(output.platform_output.events_description().contains(current));
+        }
+    }
+}

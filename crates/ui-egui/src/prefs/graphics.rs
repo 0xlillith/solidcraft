@@ -236,6 +236,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     #[cfg(target_os = "linux")]
     ui_kit::settings_section(ui, "window_system", app.tr("ui.window_system"), |ui| window_system_row(app, ui));
     setting::render_previous_geometry_budget(app, ui).on_hover_text(app.tr("prefs.render_previous_geometry_budget_help"));
+    setting::render_legacy_image_defaults(app, ui).on_hover_text(app.tr("prefs.render_legacy_image_defaults_help"));
     ui.horizontal(|ui| {
         ui_kit::text(ui, app.tr_label("Renderer"), ui_kit::Text::Inline);
         let renderer = match (&app.viewport.gpu, &app.help.gpu) {

@@ -1,0 +1,50 @@
+{
+  "ar": {
+    "render.cpu_path_lighting": "إضاءة غير مباشرة (أسطح معتمة)",
+    "render.cpu_path_depth": "عمق المسار",
+    "render.cpu_path_help": "تضيف ضوءاً يرتد بين الأسطح المعتمة. تتطلب التصيير التدريجي وظلال تتبع الأشعة. يحسب عمق المسار الأسطح التي تُحسب إضاءتها، بدءاً من أول سطح مرئي (1–16). يستخدم العمق 1 الإضاءة المباشرة فقط؛ وتسمح القيم الأعلى بمزيد من الارتدادات وقد تستغرق وقتاً أطول. أوقف الإضاءة غير المباشرة لاستخدام الزجاج أو الانعكاسات المخصصة أو التباين الاتجاهي.",
+    "render.cpu_path_optics_reason": "تبقى إعداداتك كما هي. أوقف الإضاءة غير المباشرة لاستخدام الزجاج أو الانعكاسات المخصصة أو التباين الاتجاهي."
+  },
+  "de": {
+    "render.cpu_path_lighting": "Indirekte Beleuchtung (undurchsichtige Flächen)",
+    "render.cpu_path_depth": "Pfadtiefe",
+    "render.cpu_path_help": "Fügt Licht hinzu, das zwischen undurchsichtigen Flächen reflektiert wird. Erfordert progressives Rendern und per Raytracing berechnete Schatten. Die Pfadtiefe zählt beleuchtete Flächen ab der ersten sichtbaren Fläche (1–16). Bei Tiefe 1 wird nur direktes Licht berechnet; höhere Werte erlauben mehr Reflexionen und können länger dauern. Indirekte Beleuchtung ausschalten, um Glas, eigene Reflexionseinstellungen oder Anisotropie zu verwenden.",
+    "render.cpu_path_optics_reason": "Die Einstellungen bleiben erhalten. Indirekte Beleuchtung ausschalten, um Glas, eigene Reflexionseinstellungen oder Anisotropie zu verwenden."
+  },
+  "en": {
+    "render.cpu_path_lighting": "Indirect lighting (opaque surfaces)",
+    "render.cpu_path_depth": "Path depth",
+    "render.cpu_path_help": "Adds light bouncing between opaque surfaces. Requires progressive rendering and traced shadows. Path depth counts shaded surfaces, starting with the first visible surface (1–16). A depth of 1 uses direct lighting only; higher values allow more bounces and may take longer. Turn off Indirect lighting to use Glass, custom reflections or anisotropy.",
+    "render.cpu_path_optics_reason": "Your settings are kept. Turn off Indirect lighting to use Glass, custom reflections or anisotropy."
+  },
+  "he": {
+    "render.cpu_path_lighting": "תאורה עקיפה (משטחים אטומים)",
+    "render.cpu_path_depth": "עומק מסלול",
+    "render.cpu_path_help": "מוסיפה אור שמוחזר בין משטחים אטומים. נדרשים רינדור הדרגתי וצללים במעקב קרניים. עומק המסלול סופר משטחים שעבורם מחושבת תאורה, החל מהמשטח הראשון הנראה (1–16). עומק 1 משתמש בתאורה ישירה בלבד; ערכים גבוהים מאפשרים יותר החזרי אור ועשויים לדרוש יותר זמן. יש לכבות תאורה עקיפה כדי להשתמש בזכוכית, בהשתקפויות מותאמות או באנאיזוטרופיה.",
+    "render.cpu_path_optics_reason": "ההגדרות שלך נשמרות. יש לכבות תאורה עקיפה כדי להשתמש בזכוכית, בהשתקפויות מותאמות או באנאיזוטרופיה."
+  },
+  "ja": {
+    "render.cpu_path_lighting": "間接照明（不透明な表面）",
+    "render.cpu_path_depth": "パス深度",
+    "render.cpu_path_help": "不透明な表面間で跳ね返る光を追加します。プログレッシブレンダリングとレイトレースシャドウが必要です。パス深度は、最初に見える表面から、照明を計算する表面の数を数えます（1～16）。深度1では直接光のみを計算します。値を大きくすると反射回数が増え、処理に時間がかかる場合があります。ガラス、カスタム反射、異方性を使うには、間接照明をオフにしてください。",
+    "render.cpu_path_optics_reason": "設定は保持されます。ガラス、カスタム反射、異方性を使うには、間接照明をオフにしてください。"
+  },
+  "ko": {
+    "render.cpu_path_lighting": "간접 조명(불투명 표면)",
+    "render.cpu_path_depth": "경로 깊이",
+    "render.cpu_path_help": "불투명 표면 사이에서 반사되는 빛을 추가합니다. 프로그레시브 렌더링과 광선 추적 그림자가 필요합니다. 경로 깊이는 처음 보이는 표면부터 조명을 계산하는 표면 수를 뜻합니다(1–16). 깊이 1은 직접 조명만 사용합니다. 값을 높이면 빛이 더 많이 반사되고 시간이 더 걸릴 수 있습니다. 유리, 사용자 지정 반사 또는 이방성을 사용하려면 간접 조명을 끄세요.",
+    "render.cpu_path_optics_reason": "기존 설정은 유지됩니다. 유리, 사용자 지정 반사 또는 이방성을 사용하려면 간접 조명을 끄세요."
+  },
+  "vi": {
+    "render.cpu_path_lighting": "Ánh sáng gián tiếp (bề mặt không trong suốt)",
+    "render.cpu_path_depth": "Độ sâu đường truyền",
+    "render.cpu_path_help": "Thêm ánh sáng phản xạ qua lại giữa các bề mặt không trong suốt. Cần kết xuất lũy tiến và bóng đổ dò tia. Độ sâu đường truyền đếm các bề mặt được tính chiếu sáng, bắt đầu từ bề mặt nhìn thấy đầu tiên (1–16). Độ sâu 1 chỉ dùng ánh sáng trực tiếp; giá trị cao hơn cho phép nhiều lần phản xạ hơn và có thể mất nhiều thời gian hơn. Tắt Ánh sáng gián tiếp để dùng Kính, phản xạ tùy chỉnh hoặc tính dị hướng.",
+    "render.cpu_path_optics_reason": "Các thiết lập của bạn được giữ nguyên. Tắt Ánh sáng gián tiếp để dùng Kính, phản xạ tùy chỉnh hoặc tính dị hướng."
+  },
+  "zh": {
+    "render.cpu_path_lighting": "间接光照（不透明表面）",
+    "render.cpu_path_depth": "路径深度",
+    "render.cpu_path_help": "添加在不透明表面之间反弹的光。需要渐进渲染和光线追踪阴影。路径深度指计算光照的表面数量，从首个可见表面开始计数（1–16）。深度为1时仅使用直接光照；数值越大，允许的反弹次数越多，也可能更耗时。要使用玻璃、自定义反射或各向异性，请关闭间接光照。",
+    "render.cpu_path_optics_reason": "保留现有设置。要使用玻璃、自定义反射或各向异性，请关闭间接光照。"
+  }
+}

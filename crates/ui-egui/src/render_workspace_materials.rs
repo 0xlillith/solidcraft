@@ -1,4 +1,4 @@
-//! Transient body-level optical overrides for the captured GPU image request.
+//! Transient body-level optical overrides for the captured CPU/GPU image request.
 //! The model's appearances, physical material cards and saved setups are not changed.
 use std::sync::{Arc, Weak};
 
@@ -136,6 +136,7 @@ pub(super) struct Binding {
     pub maps_enabled: bool,
     pub maps: Maps,
     replace_saved_optics: bool,
+    saved_source: Option<solidcraft_engine::doc::render_optics::OpticalMaterial>,
 }
 impl Binding {
     pub(super) fn new(target: Target, app: &SolveApp) -> Self {
@@ -151,13 +152,55 @@ impl Binding {
             maps_enabled: false,
             maps: Maps::default(),
             replace_saved_optics: false,
+            saved_source: None,
+        }
+    }
+    pub(super) fn from_saved(target: Target, app: &SolveApp, optics: solidcraft_engine::doc::render_optics::OpticalMaterial) -> Self {
+        let mut binding = Self::new(target, app);
+        binding.saved_source = Some(optics);
+        binding.glass_enabled = true;
+        binding.glass = Glass {
+            recipe: None,
+            ior: optics.ior,
+            absorption: optics.absorption_per_mm,
+            boundary: match optics.boundary {
+                solidcraft_engine::doc::render_optics::OpticalBoundary::ThinSheet => Boundary::Thin,
+                solidcraft_engine::doc::render_optics::OpticalBoundary::ClosedBox => Boundary::Box,
+                solidcraft_engine::doc::render_optics::OpticalBoundary::ClosedMesh => Boundary::Closed,
+            },
+            thickness: if optics.boundary == solidcraft_engine::doc::render_optics::OpticalBoundary::ThinSheet { optics.thickness_mm } else { 1.0 },
+            shadows: optics.shadow_transmission,
+            subsurface: optics.subsurface,
+        };
+        binding
+    }
+    fn optics(&self) -> solidcraft_engine::doc::render_optics::OpticalMaterial {
+        solidcraft_engine::doc::render_optics::OpticalMaterial {
+            ior: self.glass.ior,
+            absorption_per_mm: self.glass.absorption,
+            boundary: match self.glass.boundary {
+                Boundary::Thin => solidcraft_engine::doc::render_optics::OpticalBoundary::ThinSheet,
+                Boundary::Box => solidcraft_engine::doc::render_optics::OpticalBoundary::ClosedBox,
+                Boundary::Closed => solidcraft_engine::doc::render_optics::OpticalBoundary::ClosedMesh,
+            },
+            thickness_mm: if self.glass.boundary == Boundary::Thin { self.glass.thickness } else { 0.0 },
+            shadow_transmission: self.glass.shadows,
+            subsurface: self.glass.subsurface,
         }
     }
     fn current(&self, app: &SolveApp) -> bool {
         self.revision == app.session.revision && Weak::ptr_eq(&self.document, &Arc::downgrade(&app.session.doc)) && !app.session.model.is_stale()
     }
     fn active(&self) -> bool {
+        if let Some(saved) = self.saved_source {
+            // Saved edits become a prospective stable request overlay, never
+            // an ordinal override or a silent return to the old saved values.
+            return !self.enabled || !self.glass_enabled || self.coat_enabled || self.maps_enabled || self.optics() != saved;
+        }
         self.enabled && (self.glass_enabled || self.coat_enabled || self.maps_enabled)
+    }
+    pub(super) fn has_runtime_intent(&self) -> bool {
+        self.saved_source.is_none()
     }
 }
 
@@ -236,15 +279,53 @@ pub(super) fn refresh_render_revision(app: &mut SolveApp) {
     }
 }
 
+/// Overlay reviewed stable saved targets into a captured request only. Temporary
+/// ordinal bindings retain their separate runtime path and never replace these rows.
+pub(super) fn overlay_saved(app: &SolveApp, setup: &mut solidcraft_engine::doc::render_settings::RenderSetup) -> Result<(), String> {
+    for binding in app.render_workspace.view.materials.bindings.iter().filter(|binding| binding.saved_source.is_some() && binding.active()) {
+        if !binding.current(app) {
+            return Err(app.tr("render.material_revalidate_needed").into());
+        }
+        let target = binding.target.stable_target.as_ref().ok_or_else(|| app.tr("render.material_target_missing").to_string())?;
+        let source =
+            setup.optics.iter().find(|saved| &saved.target == target).ok_or_else(|| app.tr("render.material_revalidate_needed").to_string())?;
+        if Some(source.optics) != binding.saved_source {
+            return Err(app.tr("render.material_revalidate_needed").into());
+        }
+        if binding.coat_enabled || binding.maps_enabled {
+            return Err(app.tr("render.material_saved_edit_pending").into());
+        }
+        if !binding.enabled || !binding.glass_enabled {
+            setup.optics.remove(target);
+        } else {
+            setup
+                .optics
+                .set(solidcraft_engine::doc::render_optics::SavedOptics { target: target.clone(), optics: binding.optics() }, true)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Called for every Check and Start through the one shared image request builder.
 /// No files are read until the engine captures the actual request.
 pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     let view = &app.render_workspace.view.materials;
+    if let Some(binding) = view.bindings.iter().find(|binding| binding.saved_source.is_some() && binding.active()) {
+        if !binding.current(app) {
+            return Err(app.tr("render.material_revalidate_needed").into());
+        }
+        return Err(app.tr("render.material_saved_edit_pending").into());
+    }
     if !view.enabled || !view.bindings.iter().any(Binding::active) {
         return Ok(());
     }
-    if app.render_workspace.view.method != super::ImageMethod::GpuRaytrace {
-        return Err(app.tr("render.material_gpu_required").to_string());
+    let cpu = app.render_workspace.view.method == super::ImageMethod::CpuRaytrace;
+    if app.render_workspace.view.method == super::ImageMethod::Raster {
+        return Err(app.tr("render.material_raytrace_required").to_string());
+    }
+    if cpu && !app.render_workspace.view.draft.optics.is_empty() {
+        return Err(app.tr("render.material_cpu_saved_runtime_conflict").into());
     }
     if view.bindings.len() > MAX_BINDINGS {
         return Err(app.tr("render.material_limits").to_string());
@@ -254,6 +335,9 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     for binding in view.bindings.iter().filter(|b| b.active()) {
         if !binding.current(app) {
             return Err(app.tr("render.material_revalidate_needed").to_string());
+        }
+        if binding.saved_source.is_some() {
+            return Err(app.tr("render.material_saved_edit_pending").into());
         }
         let target = &binding.target;
         if target.ordinal >= solidcraft_engine::render::job::MAX_GPU_PATH_BODIES
@@ -267,8 +351,14 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
         if binding.glass_enabled && (binding.coat_enabled || binding.maps_enabled) {
             return Err(app.tr("render.material_glass_exclusive").to_string());
         }
+        if cpu && (binding.coat_enabled || binding.maps_enabled) {
+            return Err(app.tr("render.material_cpu_glass_only").into());
+        }
         let identity = || json!({"body_index":target.ordinal,"body_name":target.name});
-        if binding.glass_enabled {
+        if cpu && binding.glass_enabled {
+            let optical = binding.optics();
+            glass.push(json!(optical.to_cpu(target.ordinal, &target.name).map_err(|error| error.to_string())?));
+        } else if binding.glass_enabled {
             let value = &binding.glass;
             OpaqueSurface::new(Vec3::ZERO, 0.0, 0.5, value.ior).map_err(|e| e.to_string())?;
             let [r, g, b] = value.absorption;
@@ -335,7 +425,16 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     {
         return Err(app.tr("render.material_limits").to_string());
     }
-    params["raytrace"] = json!({"dielectrics":glass,"clear_coats":coats,"textures":textures});
+    if cpu {
+        // Preserve all CPU lights, output, lens and sampling. This is the same
+        // numerical override type produced by stable saved-optics lowering.
+        params["raytrace"]["dielectrics"] = json!(glass);
+        let options: solidcraft_engine::render::job::RaytraceOptions =
+            serde_json::from_value(params["raytrace"].clone()).map_err(|error| error.to_string())?;
+        options.validate().map_err(|error| error.to_string())?;
+    } else {
+        params["raytrace"] = json!({"dielectrics":glass,"clear_coats":coats,"textures":textures});
+    }
     Ok(())
 }
 
@@ -449,7 +548,9 @@ pub(super) fn controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 
 fn glass_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) {
-    if ui_kit::checkbox(ui, app.tr("render.appearance_editor.glass_enable"), &mut binding.glass_enabled).changed() && binding.glass_enabled {
+    let enabled = ui_kit::checkbox(ui, app.tr("render.appearance_editor.glass_enable"), &mut binding.glass_enabled);
+    crate::scenario::publish_target("render:glass:enable", enabled.rect);
+    if enabled.changed() && binding.glass_enabled {
         binding.coat_enabled = false;
         binding.maps_enabled = false;
     }
@@ -500,11 +601,17 @@ fn glass_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) 
                 changed = true;
             }
         });
-        changed |=
-            ui_kit::row(ui, app.tr("render.appearance_editor.ior"), |ui| ui_kit::number_field(ui, &mut glass.ior, 1.0..=3.0, 0.01, "")).changed();
+        changed |= ui_kit::row(ui, app.tr("render.appearance_editor.ior"), |ui| {
+            let response = ui_kit::number_field(ui, &mut glass.ior, 1.0..=3.0, 0.01, "");
+            crate::scenario::publish_target("render:glass:ior-field", response.rect);
+            response
+        })
+        .changed();
         ui.add_enabled_ui(glass.boundary == Boundary::Thin, |ui| {
             changed |= ui_kit::row(ui, app.tr("render.appearance_editor.thickness"), |ui| {
-                ui_kit::number_field(ui, &mut glass.thickness, 0.001..=10000.0, 0.1, " mm")
+                let response = ui_kit::number_field_preserving(ui, &mut glass.thickness, 0.0..=10000.0, 0.1, " mm");
+                crate::scenario::publish_target("render:glass:thickness-field", response.rect);
+                response
             })
             .changed();
         });
@@ -704,9 +811,13 @@ fn save_optics(app: &mut SolveApp, binding: &Binding) -> Result<(), String> {
     let local = std::mem::take(&mut app.render_workspace.view.materials);
     let setup = super::setups::snapshot(app);
     app.render_workspace.view.materials = local;
-    let setup = setup?;
+    let mut setup = setup?;
     let value = &binding.glass;
     let name = app.render_workspace.view.name.clone();
+    if let Some(saved) = app.session.doc.render.setups.get(&name) {
+        // Saving optical numbers is not the shot's explicit camera update action.
+        setup.camera = saved.camera;
+    }
     let optics = json!({"ior":value.ior,"absorption_per_mm":value.absorption,"boundary":value.boundary.wire(),
         "thickness_mm":if value.boundary==Boundary::Thin {value.thickness} else {0.0},"shadow_transmission":value.shadows,"subsurface":value.subsurface});
     app.run(
@@ -737,7 +848,11 @@ fn editor_sections(app: &mut SolveApp, ui: &mut egui::Ui, binding: Option<&mut B
         None
     };
     let title = app.tr("render.appearance_editor.glass").to_owned();
-    ui_kit::method_section(ui, "render:appearance:glass", &title, "GPU", reason.as_deref(), |ui| glass_controls(app, ui, binding));
+    let glass_reason = if supported && app.render_workspace.view.method == super::ImageMethod::CpuRaytrace { None } else { reason.as_deref() };
+    ui_kit::method_section(ui, "render:appearance:glass", &title, "CPU / GPU", glass_reason, |ui| glass_controls(app, ui, binding));
+    if app.render_workspace.view.method == super::ImageMethod::CpuRaytrace {
+        note(app, ui, "render.material_cpu_optics_limits");
+    }
     let opaque_reason = reason.clone().or_else(|| binding.glass_enabled.then(|| app.tr("render.material_glass_exclusive").to_owned()));
     let title = app.tr("render.appearance_editor.coat").to_owned();
     ui_kit::method_section(ui, "render:appearance:coat", &title, "GPU", opaque_reason.as_deref(), |ui| coat_controls(app, ui, binding));
@@ -776,7 +891,8 @@ pub(super) fn selection_controls(app: &mut SolveApp, ui: &mut egui::Ui, body: Op
         if let Some(target) = targets.next()
             && targets.next().is_none()
         {
-            binding = Some(Binding::new(target.clone(), app));
+            let saved = app.render_workspace.view.draft.optics.iter().find(|saved| target.stable_target.as_ref() == Some(&saved.target));
+            binding = Some(saved.map_or_else(|| Binding::new(target.clone(), app), |saved| Binding::from_saved(target.clone(), app, saved.optics)));
         }
     }
     let before = app.session.revision;
@@ -790,7 +906,11 @@ pub(super) fn selection_controls(app: &mut SolveApp, ui: &mut egui::Ui, body: Op
             }
         } else if app.session.revision == before {
             // Opening the editor alone never allocates an inactive assignment.
-            if binding.glass_enabled || binding.coat_enabled || binding.maps_enabled || existing.is_some() {
+            if binding.saved_source.is_some() && !binding.active() {
+                if let Some(index) = existing {
+                    view.bindings.remove(index);
+                }
+            } else if binding.glass_enabled || binding.coat_enabled || binding.maps_enabled || existing.is_some() {
                 if existing.is_none() {
                     view.enabled = true;
                 }
@@ -822,14 +942,19 @@ fn saved_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) 
         note(
             app,
             ui,
-            if saved.is_some() && !binding.active() { "render.appearance_editor.saved_state" } else { "render.appearance_editor.temporary" },
+            if saved.is_some() && binding.saved_source.is_some() && !binding.active() {
+                "render.appearance_editor.saved_state"
+            } else {
+                "render.appearance_editor.temporary"
+            },
         );
     });
-    let can_save = binding.glass_enabled
+    let can_save = binding.enabled
+        && binding.glass_enabled
         && binding.current(app)
         && !binding.maps_enabled
         && !binding.coat_enabled
-        && app.render_workspace.view.method == super::ImageMethod::GpuRaytrace;
+        && matches!(app.render_workspace.view.method, super::ImageMethod::CpuRaytrace | super::ImageMethod::GpuRaytrace);
     let mut removed = false;
     ui.horizontal(|ui| {
         let save = ui_kit::button(ui, app.tr("render.appearance_editor.save"), ui_kit::Button::Enabled(can_save));
@@ -854,6 +979,12 @@ fn saved_controls(app: &mut SolveApp, ui: &mut egui::Ui, binding: &mut Binding) 
             });
         }
     });
+    if binding.saved_source.is_some() && binding.active() {
+        note(app, ui, "render.material_saved_edit_pending");
+        let discard = ui_kit::button(ui, app.tr("render.appearance_editor.discard_saved_edit"), ui_kit::Button::Normal);
+        crate::scenario::publish_target("render:optics-discard-edit", discard.rect);
+        removed |= discard.clicked();
+    }
     ui_kit::checkbox(ui, app.tr("render.appearance_editor.replace"), &mut binding.replace_saved_optics);
     if !can_save {
         note(app, ui, "render.appearance_editor.save_reason");

@@ -108,13 +108,23 @@ impl Budget {
 }
 impl Reservation {
     /// Transfer an already admitted portion without changing the pool's total.
-    /// CPU progressive admission includes every possible checkpoint up front.
+    /// CPU progressive admission prepays at most two reusable checkpoint slots.
     fn split(&mut self, bytes: u64) -> Result<Self> {
         if bytes > self.bytes {
             return Err(JobError::new(ErrorCode::LimitExceeded, "preview exceeds its prepaid reservation"));
         }
         self.bytes -= bytes;
         Ok(Self { budget: self.budget.clone(), bytes })
+    }
+
+    /// Return a lease to the same prepaid pool without reserving memory again.
+    fn merge_from(&mut self, other: &mut Self) -> Result<()> {
+        if !Arc::ptr_eq(&self.budget, &other.budget) {
+            return Err(JobError::new(ErrorCode::Internal, "checkpoint lease belongs to another pool"));
+        }
+        self.bytes = self.bytes.checked_add(other.bytes).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint lease overflow"))?;
+        other.bytes = 0;
+        Ok(())
     }
 
     pub(crate) fn shrink(&mut self, bytes: u64) -> Result<()> {
@@ -310,7 +320,10 @@ impl RenderFrame {
 #[derive(Clone, Debug, Serialize)]
 pub struct PreviewInfo {
     pub frame_sequence: u32,
+    /// Uniform SPP when adaptive is absent; otherwise absolute completed iteration.
     pub samples_per_pixel: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adaptive: Option<super::adaptive::AdaptivePreview>,
     pub frame: FrameInfo,
 }
 
@@ -319,7 +332,88 @@ pub struct PreviewInfo {
 pub struct RenderPreview {
     pub info: PreviewInfo,
     png: Vec<u8>,
-    _reservation: Reservation,
+    _reservation: CheckpointLease,
+}
+
+/// Two reusable, immutable complete-pass slots. No consumer acknowledgement or
+/// queue: externally pinned slots are diagnosed and never stall final work.
+struct CheckpointCredits {
+    state: Mutex<CheckpointCreditState>,
+    slot_bytes: u64,
+    capacity: u64,
+}
+struct CheckpointCreditState {
+    free: Reservation,
+    closed: bool,
+}
+impl CheckpointCredits {
+    fn new(reservation: &mut Reservation, slot_bytes: u64, slots: u32) -> Result<Arc<Self>> {
+        if !(1..=2).contains(&slots) || slot_bytes == 0 {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "checkpoint credits require one or two finite slots"));
+        }
+        let capacity = slot_bytes
+            .checked_mul(u64::from(slots))
+            .and_then(|n| n.checked_add(FRAME_METADATA_BYTES))
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint credit capacity overflow"))?;
+        let free = reservation.split(capacity)?;
+        Ok(Arc::new(Self { state: Mutex::new(CheckpointCreditState { free, closed: false }), slot_bytes, capacity }))
+    }
+    fn acquire(self: &Arc<Self>) -> Result<Option<CheckpointLease>> {
+        let mut state = self.state.lock().map_err(|_| JobError::new(ErrorCode::Internal, "checkpoint credit lock poisoned"))?;
+        if state.closed {
+            return Err(JobError::new(ErrorCode::Cancelled, "checkpoint credits are closed"));
+        }
+        let needed = self
+            .slot_bytes
+            .checked_add(FRAME_METADATA_BYTES)
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint credit bound overflow"))?;
+        if state.free.bytes < needed {
+            return Ok(None);
+        }
+        let reservation = state.free.split(self.slot_bytes)?;
+        Ok(Some(CheckpointLease { reservation, credits: self.clone() }))
+    }
+    fn close(&self) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(error) => error.into_inner(),
+        };
+        state.closed = true;
+        let _ = state.free.shrink(0);
+    }
+}
+struct CheckpointLease {
+    reservation: Reservation,
+    credits: Arc<CheckpointCredits>,
+}
+impl std::ops::Deref for CheckpointLease {
+    type Target = Reservation;
+    fn deref(&self) -> &Reservation {
+        &self.reservation
+    }
+}
+impl Drop for CheckpointLease {
+    fn drop(&mut self) {
+        let mut state = match self.credits.state.lock() {
+            Ok(state) => state,
+            Err(error) => {
+                let mut state = error.into_inner();
+                state.closed = true;
+                let _ = state.free.shrink(0);
+                state
+            }
+        };
+        if !state.closed {
+            if self.reservation.bytes <= self.credits.slot_bytes
+                && state.free.bytes.checked_add(self.reservation.bytes).is_some_and(|n| n <= self.credits.capacity)
+                && state.free.merge_from(&mut self.reservation).is_ok()
+            {
+                return;
+            }
+            state.closed = true;
+            let _ = state.free.shrink(0);
+        }
+    }
 }
 
 impl RenderPreview {
@@ -338,6 +432,12 @@ pub enum JobEnvironmentInfo {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct JobStatus {
+    /// Complete passes omitted only when both prepaid snapshots are externally retained.
+    /// Final rendering continues; this is not a dropped sample or a stalled job.
+    pub preview_retention_skips: u32,
+    /// This request still renders final output, but has no intermediate-image route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_unavailable_reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub punctual_diagnostics: Option<super::PunctualDiagnostics>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -362,6 +462,7 @@ pub struct JobStatus {
 }
 
 struct Data {
+    preview_retention_skips: u32,
     completed_duration: Option<std::time::Duration>,
     punctual_diagnostics: Option<super::PunctualDiagnostics>,
     sampling: Option<super::adaptive::SamplingReport>,
@@ -371,6 +472,8 @@ struct Data {
     preview: Option<Arc<RenderPreview>>,
 }
 struct Record {
+    work_released: AtomicBool,
+    preview_unavailable_reason: Option<&'static str>,
     started: web_time::Instant,
     presentation: Option<Arc<RetainedPresentation>>,
     textures: Option<super::textures::TextureSummary>,
@@ -401,6 +504,13 @@ impl JobHandle {
     pub fn id(&self) -> JobId {
         self.0.id
     }
+    /// True only after queued/running captures, tasks and their work reservations
+    /// have been dropped. A terminal phase alone does not prove resource release.
+    /// Retained final/preview images and status-input leases remain owned by their
+    /// observers; callers retiring a job must drop those handles after this barrier.
+    pub fn work_released(&self) -> bool {
+        self.0.work_released.load(Ordering::Acquire)
+    }
     /// Submission-to-publication time, captured once by the host, independent of UI polling.
     pub fn completed_duration(&self) -> Result<Option<std::time::Duration>> {
         self.0.data.lock().map(|data| data.completed_duration).map_err(|_| JobError::new(ErrorCode::Internal, "render duration lock poisoned"))
@@ -408,6 +518,8 @@ impl JobHandle {
     pub fn status(&self) -> Result<JobStatus> {
         let data = self.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         Ok(JobStatus {
+            preview_retention_skips: data.preview_retention_skips,
+            preview_unavailable_reason: self.0.preview_unavailable_reason,
             punctual_diagnostics: data.punctual_diagnostics,
             presentation: self.0.presentation.as_deref().map(|retained| retained.info.clone()),
             sampling: data.sampling.clone(),
@@ -473,6 +585,19 @@ impl JobHandle {
     }
 }
 
+/// The last field of Work and Running. Rust drops earlier fields first, so
+/// observers cannot see this barrier until captured inputs, executor tasks,
+/// pending PNGs, reservations and checkpoint credits have actually been released.
+struct WorkRelease(Weak<Record>);
+impl Drop for WorkRelease {
+    fn drop(&mut self) {
+        if let Some(record) = self.0.upgrade() {
+            record.work_released.store(true, Ordering::Release);
+            record.notify();
+        }
+    }
+}
+
 struct Work {
     regrade: Option<(Arc<RenderFrame>, super::presentation::Presentation)>,
     request: Option<ImageRequest>,
@@ -481,6 +606,8 @@ struct Work {
     scene: ProductScene,
     handle: JobHandle,
     reservation: Reservation,
+    // Must remain last: see WorkRelease.
+    _work_release: WorkRelease,
 }
 // One host advance hashes at most four 16 KiB chunks, independently of the
 // integrator's quantum. The unchanged work reservation covers the sole PNG and
@@ -492,10 +619,10 @@ pub(crate) const FRAME_METADATA_BYTES: u64 = 1024;
 struct PendingPng {
     png: Vec<u8>,
     digest: Sha256,
+    png_digest: Option<sha2::digest::Output<Sha256>>,
     hashed: usize,
     preview_samples: Option<u32>,
     exr: Option<Vec<u8>>,
-    exr_digest: Sha256,
     exr_hashed: usize,
 }
 // Keep the new fixed completion state within the existing metadata allowance
@@ -511,10 +638,9 @@ const _: [(); 1] = [(); (std::mem::size_of::<Running>()
 
 impl PendingPng {
     fn new(png: Vec<u8>) -> Self {
-        Self { png, digest: Sha256::new(), hashed: 0, preview_samples: None, exr: None, exr_digest: Sha256::new(), exr_hashed: 0 }
+        Self { png, digest: Sha256::new(), png_digest: None, hashed: 0, preview_samples: None, exr: None, exr_hashed: 0 }
     }
 
-    #[cfg(feature = "raytrace-cpu")]
     fn preview(png: Vec<u8>, samples: u32) -> Self {
         Self { preview_samples: Some(samples), ..Self::new(png) }
     }
@@ -522,19 +648,28 @@ impl PendingPng {
     fn step(&mut self, units: usize, cancel: &CancelToken) -> Result<bool> {
         cancel.check()?;
         for _ in 0..units.min(PNG_HASH_CHUNKS_PER_ADVANCE) {
-            let (bytes, hashed, digest) = if self.hashed < self.png.len() {
-                (&self.png, &mut self.hashed, &mut self.digest)
+            self.finish_png_digest();
+            let (bytes, hashed) = if self.hashed < self.png.len() {
+                (&self.png, &mut self.hashed)
             } else if let Some(exr) = self.exr.as_ref().filter(|exr| self.exr_hashed < exr.len()) {
-                (exr, &mut self.exr_hashed, &mut self.exr_digest)
+                (exr, &mut self.exr_hashed)
             } else {
                 break;
             };
             let end = hashed.saturating_add(PNG_HASH_CHUNK_BYTES).min(bytes.len());
-            digest.update(bytes.get(*hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed image digest chunk"))?);
+            self.digest.update(bytes.get(*hashed..end).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed image digest chunk"))?);
             *hashed = end;
             cancel.check()?;
         }
+        self.finish_png_digest();
         Ok(self.hashed == self.png.len() && self.exr.as_ref().is_none_or(|exr| self.exr_hashed == exr.len()))
+    }
+    fn finish_png_digest(&mut self) {
+        if self.hashed == self.png.len() && self.png_digest.is_none() {
+            // PNG and EXR are scanned sequentially. Keep only its fixed digest
+            // while resetting the same SHA state for the optional raw companion.
+            self.png_digest = Some(self.digest.finalize_reset());
+        }
     }
     fn progress(&self) -> Progress {
         Progress {
@@ -552,6 +687,19 @@ struct Running {
     handle: JobHandle,
     reservation: Option<Reservation>,
     next_preview_sequence: u32,
+    next_checkpoint_pass: u32,
+    checkpoint_target: u32,
+    checkpoints: Option<Arc<CheckpointCredits>>,
+    // Must remain last: see WorkRelease.
+    _work_release: WorkRelease,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Some(credits) = &self.checkpoints {
+            credits.close();
+        }
+    }
 }
 
 /// One fallibly allocated task, keeping the dispatch enum small in either build.
@@ -584,11 +732,7 @@ enum WorkTask {
 
 enum WorkPoll {
     Existing(TaskPoll),
-    #[cfg(feature = "raytrace-cpu")]
-    Preview {
-        png: Vec<u8>,
-        samples_per_pixel: u32,
-    },
+    Preview { png: Vec<u8>, samples_per_pixel: u32 },
 }
 
 impl WorkTask {
@@ -617,6 +761,8 @@ impl WorkTask {
     fn take_linear_exr(&mut self) -> Option<Vec<u8>> {
         match self {
             Self::Registered(task) => task.take_linear_exr(),
+            #[cfg(feature = "raytrace-cpu")]
+            Self::Raytrace(task) => task.0.first_mut().and_then(|task| task.take_linear_exr()),
             _ => None,
         }
     }
@@ -648,7 +794,17 @@ impl WorkTask {
     fn step(&mut self, units: usize) -> Result<WorkPoll> {
         match self {
             Self::Regrade(task) => task.get_mut()?.step(units).map(WorkPoll::Existing),
-            Self::Registered(task) => task.step(units).map(WorkPoll::Existing),
+            Self::Registered(task) => {
+                let poll = task.step(units)?;
+                if let Some(preview) = task.take_preview() {
+                    if !matches!(poll, TaskPoll::Pending(_)) {
+                        return Err(JobError::new(ErrorCode::Internal, "executor published provisional and final output together"));
+                    }
+                    Ok(WorkPoll::Preview { png: preview.png, samples_per_pixel: preview.samples_per_pixel })
+                } else {
+                    Ok(WorkPoll::Existing(poll))
+                }
+            }
             Self::Raster(task) => task.get_mut()?.step(units).map(WorkPoll::Existing),
             #[cfg(feature = "raytrace-cpu")]
             Self::Raytrace(task) => Ok(match task.get_mut()?.step_with_previews(units)? {
@@ -679,7 +835,33 @@ fn terminal(handle: &JobHandle, error: JobError) {
 }
 
 impl Running {
-    fn begin(work: Work) -> Option<Self> {
+    fn begin(mut work: Work) -> Option<Self> {
+        let checkpoint_target = if let Some(executor) = &work.executor {
+            executor.preview_samples(work.handle.0.options).unwrap_or(0)
+        } else if work.handle.0.request.integrator == Integrator::Raytrace {
+            work.handle.0.request.raytrace.as_ref().and_then(|options| options.progressive).map_or(0, |options| options.samples_per_pixel)
+        } else {
+            0
+        };
+        let checkpoints = (|| {
+            let slots = checkpoint_target.saturating_sub(1).min(2);
+            if slots == 0 {
+                return Ok(None);
+            }
+            let slot_bytes = u64::from(work.handle.0.request.width)
+                .checked_mul(u64::from(work.handle.0.request.height))
+                .and_then(|pixels| pixels.checked_mul(8))
+                .and_then(|bytes| bytes.checked_add(65_536 + FRAME_METADATA_BYTES))
+                .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint slot overflow"))?;
+            CheckpointCredits::new(&mut work.reservation, slot_bytes, slots).map(Some)
+        })();
+        let checkpoints = match checkpoints {
+            Ok(credits) => credits,
+            Err(error) => {
+                terminal(&work.handle, error);
+                return None;
+            }
+        };
         if work.handle.0.cancel.is_cancelled() {
             terminal(&work.handle, JobError::new(ErrorCode::Cancelled, "render cancelled"));
             return None;
@@ -708,6 +890,10 @@ impl Running {
                 handle: work.handle,
                 reservation: Some(work.reservation),
                 next_preview_sequence: 1,
+                next_checkpoint_pass: 1,
+                checkpoint_target,
+                checkpoints,
+                _work_release: work._work_release,
             }),
             Err(e) => {
                 terminal(&work.handle, e);
@@ -743,7 +929,15 @@ impl Running {
                 self.source_master = self.task.as_ref().map(WorkTask::source_master).transpose()?.flatten();
                 data.sampling = self.task.as_ref().and_then(WorkTask::sampling_report);
                 let exr = self.task.as_mut().and_then(WorkTask::take_linear_exr);
-                if exr.is_some() != self.handle.0.options.linear_exr {
+                let retain_exr = self
+                    .handle
+                    .0
+                    .request
+                    .raytrace
+                    .as_ref()
+                    .and_then(|options| options.output.as_deref())
+                    .map_or(self.handle.0.options.linear_exr, |output| output.linear_exr);
+                if exr.is_some() != retain_exr {
                     return Err(JobError::new(ErrorCode::Internal, "linear master availability differs from the admitted request"));
                 }
                 if let Some(bytes) = &exr {
@@ -759,7 +953,6 @@ impl Running {
                 self.pending_png = Some(pending);
                 Ok(true)
             }
-            #[cfg(feature = "raytrace-cpu")]
             WorkPoll::Preview { png, samples_per_pixel } => {
                 // Retain the integrator/film and the entire remaining work lease.
                 // Hash the checkpoint before making immutable bytes observable.
@@ -781,7 +974,7 @@ impl Running {
             data.progress = progress;
             return Ok(true);
         }
-        let PendingPng { png, digest, preview_samples, exr, exr_digest, .. } =
+        let PendingPng { png, digest, png_digest, preview_samples, exr, .. } =
             self.pending_png.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed PNG digest"))?;
         let info = FrameInfo {
             job: self.handle.0.id,
@@ -793,13 +986,17 @@ impl Running {
             encoding: ColourEncoding::Srgb,
             alpha: AlphaConvention::Straight,
             png_bytes: png.len() as u64,
-            png_sha256: format!("{:x}", digest.finalize()),
+            png_sha256: format!("{:x}", png_digest.ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed PNG digest"))?),
         };
         // Include the working digest/Vec metadata, completed frame layout,
         // actual hex allocation, bounded copied IDs and Arc/header allowance.
         // The PNG allocation itself is retained once and billed by capacity below.
         let frame_layout = if preview_samples.is_some() { std::mem::size_of::<RenderPreview>() } else { std::mem::size_of::<RenderFrame>() };
-        let fixed_metadata = std::mem::size_of::<Running>() + frame_layout + 2 * crate::MAX_RENDER_ID_BYTES + 32;
+        // A retained checkpoint keeps its shared credit ledger alive even after
+        // the running job closes it. Bill that fixed Arc payload/header through
+        // the checkpoint's own metadata allowance as well as its PNG capacity.
+        let checkpoint_metadata = if preview_samples.is_some() { std::mem::size_of::<CheckpointCredits>() + 32 } else { 0 };
+        let fixed_metadata = std::mem::size_of::<Running>() + frame_layout + checkpoint_metadata + 2 * crate::MAX_RENDER_ID_BYTES + 32;
         let linear_digest_bytes = if exr.is_some() { 64 } else { 0 };
         if fixed_metadata
             .checked_add(info.png_sha256.capacity())
@@ -814,47 +1011,69 @@ impl Running {
         // while the final-only path has already released it.
         self.handle.0.cancel.check()?;
         if let Some(samples_per_pixel) = preview_samples {
-            let options = self
-                .handle
-                .0
-                .request
-                .raytrace
-                .as_ref()
-                .and_then(|options| options.progressive)
-                .ok_or_else(|| JobError::new(ErrorCode::Internal, "preview requires CPU progressive intent"))?;
+            let target_samples = self.checkpoint_target;
             let frame_sequence = self.next_preview_sequence;
-            let expected = frame_sequence.checked_sub(1).and_then(|n| 1_u32.checked_shl(n));
-            if expected != Some(samples_per_pixel) || samples_per_pixel >= options.samples_per_pixel || self.task.is_none() {
+            let expected = Some(self.next_checkpoint_pass);
+            if expected != Some(samples_per_pixel) || samples_per_pixel >= target_samples || self.task.is_none() {
                 return Err(JobError::new(ErrorCode::Internal, "invalid progressive checkpoint sequence"));
             }
             let next_sequence = frame_sequence.checked_add(1).ok_or_else(|| JobError::new(ErrorCode::Internal, "preview sequence exhausted"))?;
-            let reservation = self
-                .reservation
-                .as_mut()
-                .ok_or_else(|| JobError::new(ErrorCode::Internal, "missing progressive reservation"))?
-                .split(png.capacity() as u64 + FRAME_METADATA_BYTES)?;
+            let credits = self.checkpoints.as_ref().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing checkpoint credits"))?;
+            if (png.capacity() as u64).checked_add(FRAME_METADATA_BYTES).is_none_or(|bytes| bytes > credits.slot_bytes) {
+                return Err(JobError::new(ErrorCode::LimitExceeded, "checkpoint PNG exceeds its admitted slot"));
+            }
+            let mut reservation = credits.acquire()?;
+            if reservation.is_none() {
+                // A headless client need not acknowledge snapshots: release our old
+                // slot before deciding that both images are retained by consumers.
+                let released = data.preview.take();
+                drop(data);
+                drop(released);
+                reservation = credits.acquire()?;
+                data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render preview publication lock poisoned"))?;
+                self.handle.0.cancel.check()?;
+            }
+            self.next_checkpoint_pass = self
+                .next_checkpoint_pass
+                .checked_add(1)
+                .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint pass ordinal exhausted"))?;
+            let Some(reservation) = reservation else {
+                data.preview_retention_skips = data
+                    .preview_retention_skips
+                    .checked_add(1)
+                    .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint retention diagnostic overflow"))?;
+                return Ok(true);
+            };
             data.preview = Some(Arc::new(RenderPreview {
-                info: PreviewInfo { frame_sequence, samples_per_pixel, frame: info },
+                info: PreviewInfo {
+                    frame_sequence,
+                    samples_per_pixel,
+                    adaptive: super::adaptive::AdaptivePreview::at(self.handle.0.options, samples_per_pixel)?,
+                    frame: info,
+                },
                 png,
                 _reservation: reservation,
             }));
             self.next_preview_sequence = next_sequence;
             let pixels = u64::from(self.handle.0.request.width) * u64::from(self.handle.0.request.height);
             data.progress =
-                Progress { phase: Phase::Running, done: pixels * u64::from(samples_per_pixel), total: pixels * u64::from(options.samples_per_pixel) };
+                Progress { phase: Phase::Running, done: pixels * u64::from(samples_per_pixel), total: pixels * u64::from(target_samples) };
             self.handle.0.notify();
             return Ok(true);
         }
         let exr = exr.map(|bytes| {
             let info = LinearMasterInfo {
                 bytes: bytes.len() as u64,
-                sha256: format!("{:x}", exr_digest.finalize()),
+                sha256: format!("{:x}", digest.finalize()),
                 encoding: LinearColourEncoding::SceneLinearSrgbD65,
                 alpha: LinearAlphaConvention::CoveragePremultiplied,
             };
             (bytes, info)
         });
         let retained = png.capacity() as u64 + exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64) + FRAME_METADATA_BYTES;
+        if let Some(credits) = &self.checkpoints {
+            credits.close();
+        }
         let mut reservation = self.reservation.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render reservation"))?;
         reservation.shrink(retained)?;
         data.frame = Some(Arc::new(RenderFrame {
@@ -1099,7 +1318,25 @@ impl ImageHost {
             if (!options.finishing.is_identity() || options.backdrop.is_some()) && !executor.supports_finishing() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot apply the requested finishing/backdrop"));
             }
-            let admission = executor.admit(scene, request, options)?;
+            let mut admission = executor.admit(scene, request, options)?;
+            if let Some(samples) = executor.preview_samples(options) {
+                if !(1..=options.preview_target()?).contains(&samples) {
+                    return Err(JobError::new(ErrorCode::InvalidRequest, "executor preview target exceeds captured sampling passes"));
+                }
+                let slots = samples.saturating_sub(1).min(2);
+                if slots != 0 {
+                    let previews = admission
+                        .encoded_limit
+                        .checked_add(FRAME_METADATA_BYTES)
+                        .and_then(|bytes| bytes.checked_mul(u64::from(slots)))
+                        .and_then(|bytes| bytes.checked_add(FRAME_METADATA_BYTES))
+                        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "executor preview admission overflow"))?;
+                    admission.estimated_total_bytes = admission
+                        .estimated_total_bytes
+                        .checked_add(previews)
+                        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "executor preview admission overflow"))?;
+                }
+            }
             if admission.estimated_total_bytes > self.job_limit_bytes() {
                 return Err(JobError::new(ErrorCode::LimitExceeded, "registered image job exceeds its admitted host pool"));
             }
@@ -1325,6 +1562,8 @@ impl ImageHost {
             (request, None)
         };
         let handle = JobHandle(Arc::new(Record {
+            work_released: AtomicBool::new(false),
+            preview_unavailable_reason: self.0.executor.as_ref().and_then(|executor| executor.preview_unavailable_reason(options)),
             started: web_time::Instant::now(),
             presentation: None,
             textures,
@@ -1337,6 +1576,7 @@ impl ImageHost {
             resolved,
             cancel: CancelToken::default(),
             data: Mutex::new(Data {
+                preview_retention_skips: 0,
                 completed_duration: None,
                 punctual_diagnostics: None,
                 sampling: None,
@@ -1356,6 +1596,7 @@ impl ImageHost {
             handle: handle.clone(),
             reservation,
             environment,
+            _work_release: WorkRelease(Arc::downgrade(&handle.0)),
         });
         drop(queue);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1444,6 +1685,8 @@ impl ImageHost {
         let metadata = self.0.shared.budget.reserve(metadata_bytes)?;
         let origin = Arc::new(RetainedPresentation { info: origin, _reservation: metadata });
         let handle = JobHandle(Arc::new(Record {
+            work_released: AtomicBool::new(false),
+            preview_unavailable_reason: None,
             started: web_time::Instant::now(),
             presentation: Some(origin),
             textures: None,
@@ -1456,6 +1699,7 @@ impl ImageHost {
             resolved,
             cancel: CancelToken::default(),
             data: Mutex::new(Data {
+                preview_retention_skips: 0,
                 completed_duration: None,
                 punctual_diagnostics: None,
                 sampling: None,
@@ -1475,6 +1719,7 @@ impl ImageHost {
             scene: ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY },
             handle: handle.clone(),
             reservation,
+            _work_release: WorkRelease(Arc::downgrade(&handle.0)),
         });
         drop(queue);
         #[cfg(not(target_arch = "wasm32"))]
@@ -1535,7 +1780,9 @@ fn native_worker(shared: Arc<Shared>) {
         }
         let work = queue.pop_front();
         drop(queue);
-        let Some(mut running) = work.and_then(Running::begin) else { continue };
+        let Some(mut running) = work.and_then(Running::begin) else {
+            continue;
+        };
         if let Ok(mut active) = shared.active.lock() {
             *active = Some(Arc::downgrade(&running.handle.0));
         }

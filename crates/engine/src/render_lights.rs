@@ -251,7 +251,7 @@ pub fn write(setup: &mut RenderSetup, lights: &[Light]) -> Result<(), String> {
         return Err("light family limit exceeded (8 directional, 8 punctual, 4 area)".into());
     }
     match setup.job.as_mut() {
-        Some(RenderJob::CpuRaytrace { options }) => {
+        Some(RenderJob::CpuRaytrace { options, .. }) => {
             if directional.iter().any(|light| matches!(light.geometry, Geometry::Directional { angular_radius_rad: Some(_), .. })) {
                 return Err("CPU directional lights have hard shadows; softness is not supported".into());
             }
@@ -380,7 +380,7 @@ pub fn inspect(setup: &RenderSetup) -> Result<Vec<Light>, String> {
     setup.validate().map_err(|e| e.to_string())?;
     let mut lights = Vec::new();
     match &setup.job {
-        Some(RenderJob::CpuRaytrace { options }) => {
+        Some(RenderJob::CpuRaytrace { options, .. }) => {
             let implicit = options.lights.is_none();
             let defaults;
             let directional = match &options.lights {

@@ -140,10 +140,7 @@ fn apply(app: &mut SolveApp, draft: &mut Draft) -> Result<(), String> {
             }
         }
         Apply::Maps { id, target, plane, scale } => materials::install_library_surface(app, id, target.clone(), plane, *scale)?,
-        Apply::Quality(plan) => {
-            super::super::inspector::apply_quality(app, plan)?;
-            setups::save(app)?;
-        }
+        Apply::Quality(plan) => super::super::inspector::apply_quality_transaction(app, plan)?,
         Apply::Physical(_) => {}
     }
     Ok(())
@@ -246,6 +243,11 @@ pub(in crate::render_workspace) fn dialog(app: &mut SolveApp, ctx: &egui::Contex
                         ui_kit::Text::Inline,
                     );
                 });
+                ui_kit::row(ui, app.tr("render.children.seed"), |ui| {
+                    ui_kit::text(ui, &draft.plan["gpu_options"]["seed"].to_string(), ui_kit::Text::Inline);
+                });
+                let denoise = if draft.plan["gpu_options"]["denoise"] == true { "render.quality_denoise_on" } else { "render.quality_denoise_off" };
+                ui_kit::text(ui, app.tr(denoise), ui_kit::Text::Inline);
                 ui_kit::text(ui, app.tr("render.stage_panels.omits"), ui_kit::Text::Note("review:omits"));
                 ui_kit::text(ui, app.tr("render.stage_panels.quality_omissions"), ui_kit::Text::Note("review:omissions"));
             }

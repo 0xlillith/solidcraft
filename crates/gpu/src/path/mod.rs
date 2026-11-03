@@ -43,6 +43,10 @@ const SHADER: &str = concat!(
 );
 const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
 const PARAMETER_BYTES: usize = 1184;
+// Use 32 invocations per production workgroup: the physical Radeon produced
+// nonfinite samples with 64. The structural and actual-tail tests
+// lock this host/shader contract; counter-based per-pixel RNG is group independent.
+const PATH_WORKGROUP_SIZE: u32 = 32;
 // Eight u32 words: count low, pixel, bounce, sample, code, count high, first-writer flag, spare.
 const FAILURE_BYTES: u64 = 32;
 // A path that cannot classify its glass medium ends there. Isolated paths at the
@@ -387,7 +391,7 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     // Peak preparation: f64 triangles + nodes + serialized upload. After preparation:
     // serialized + device geometry + accumulation/readback/RGBA/PNG. These phases don't overlap.
     let pixels = u64::from(request.width) * u64::from(request.height);
-    let denoise_bytes = pixels * if options.denoise { denoise::BYTES_PER_PIXEL } else { 0 };
+    let denoise_bytes = pixels * if options.denoise { denoise::BYTES_PER_PIXEL + if options.adaptive.is_some() { 16 } else { 0 } } else { 0 };
     admission.pixel_scratch_bytes = pixels * 64 + denoise_bytes;
     let vertex_bytes = scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
     let triangle_preparation =
@@ -419,7 +423,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     let photo_bytes = options.finishing.photographic.scratch_bytes(request.width, request.height)?;
     admission.pixel_scratch_bytes += photo_bytes;
     admission.preparation_bytes += photo_bytes;
-    let adaptive_bytes = pixels * if options.adaptive.is_some() { 32 } else { 0 };
+    // Two pilot/budget planes plus a second readback plane. Adaptive denoising's
+    // independent normalized preview input is included in denoise_bytes above.
+    let adaptive_bytes = pixels * if options.adaptive.is_some() { 48 } else { 0 };
     admission.pixel_scratch_bytes += adaptive_bytes;
     admission.preparation_bytes += adaptive_bytes;
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
@@ -430,6 +436,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn preview_samples(&self, options: JobOptions) -> Option<u32> {
+        options.preview_target().ok()
+    }
     fn supports_aging(&self) -> bool {
         true
     }
@@ -495,7 +504,9 @@ impl ImageExecutor for Executor {
     }
     fn begin(&self, scene: ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
         self.admit(&scene, &request, options)?;
-        Ok(Box::new(Task::new(self.context.clone(), scene, request, options, cancel)?))
+        let mut task = Task::new(self.context.clone(), scene, request, options, cancel)?;
+        task.preview_enabled = true;
+        Ok(Box::new(task))
     }
 }
 
@@ -547,6 +558,9 @@ struct Task {
     offset: u32,
     epsilon: f32,
     png: Option<PngTask>,
+    encoding_preview: bool,
+    preview_enabled: bool,
+    preview: Option<solidcraft_render::job::ImageWorkPreview>,
     exr_work: Option<solidcraft_render::job::linear_exr::ExrTask>,
     bloom_work: Option<solidcraft_render::job::bloom::BloomTask>,
     exr: Option<Vec<u8>>,
@@ -612,7 +626,7 @@ impl Task {
             );
             let readback = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("path readback"),
-                size: size + FAILURE_BYTES,
+                size: size * if options.adaptive.is_some() { 2 } else { 1 } + FAILURE_BYTES,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -631,6 +645,7 @@ impl Task {
                     [&triangles, &nodes, &environment, &texture_buffer, &failures],
                     &accumulation,
                     size,
+                    options.adaptive.is_some(),
                 )?)
             } else {
                 None
@@ -663,6 +678,9 @@ impl Task {
             offset: 0,
             epsilon: upload.epsilon,
             png: None,
+            encoding_preview: false,
+            preview_enabled: false,
+            preview: None,
             exr_work: None,
             bloom_work: None,
             exr: None,
@@ -784,7 +802,7 @@ impl Task {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("path tile"), timestamp_writes: None });
             pass.set_pipeline(&context.pipeline);
             pass.set_bind_group(0, &self.bind, &[]);
-            pass.dispatch_workgroups(count.div_ceil(64), 1, 1);
+            pass.dispatch_workgroups(count.div_ceil(PATH_WORKGROUP_SIZE), 1, 1);
         }
         let submission = context.queue.submit([encoder.finish()]);
         checked(scopes)?;
@@ -822,13 +840,24 @@ impl Task {
         self.read_linear_buffer(&self.accumulation)
     }
     fn read_linear_buffer(&self, source: &wgpu::Buffer) -> Result<Vec<[f32; 4]>> {
+        self.read_pixels(source, false)
+    }
+    fn read_checkpoint(&self) -> Result<Vec<[f32; 4]>> {
+        self.read_pixels(&self.accumulation, self.options.adaptive.is_some())
+    }
+    fn read_pixels(&self, source: &wgpu::Buffer, adaptive_preview: bool) -> Result<Vec<[f32; 4]>> {
         self.cancel.check()?;
         let context = &self.context;
         let scopes = scopes(&context.device);
         let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path readback") });
         let pixel_bytes = u64::from(self.request.width) * u64::from(self.request.height) * 16;
-        encoder.copy_buffer_to_buffer(source, 0, &self.readback, 0, pixel_bytes);
-        encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, pixel_bytes, FAILURE_BYTES);
+        let pilot = adaptive_preview && self.options.adaptive.is_some_and(|options| self.sample <= options.pilot_samples);
+        encoder.copy_buffer_to_buffer(source, if pilot { pixel_bytes } else { 0 }, &self.readback, 0, pixel_bytes);
+        if adaptive_preview && !pilot {
+            encoder.copy_buffer_to_buffer(&self.accumulation, pixel_bytes * 2, &self.readback, pixel_bytes, pixel_bytes);
+        }
+        let failure_offset = pixel_bytes * if self.options.adaptive.is_some() { 2 } else { 1 };
+        encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, failure_offset, FAILURE_BYTES);
         let submission = context.queue.submit([encoder.finish()]);
         checked(scopes)?;
         let slice = self.readback.slice(..);
@@ -840,7 +869,13 @@ impl Task {
         rx.try_recv().map_err(gpu)?.map_err(gpu)?;
         let data = slice.get_mapped_range().map_err(gpu)?;
         let result = (|| {
-            let (pixels, failures) = data.split_at(data.len().saturating_sub(FAILURE_BYTES as usize));
+            let pixels = data.get(..pixel_bytes as usize).ok_or_else(|| gpu("missing image readback"))?;
+            let failures = data.get(failure_offset as usize..).ok_or_else(|| gpu("missing failure readback"))?;
+            let budgets = if adaptive_preview && !pilot {
+                Some(data.get(pixel_bytes as usize..(pixel_bytes * 2) as usize).ok_or_else(|| gpu("missing adaptive preview budgets"))?)
+            } else {
+                None
+            };
             let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
             if word(7) != 0 {
                 return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative pilot/production path radiance"));
@@ -848,12 +883,16 @@ impl Task {
             let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
             if failed > 0 {
                 let pixels = u64::from(self.request.width) * u64::from(self.request.height);
-                let paths = self
-                    .sampling_report
-                    .as_ref()
-                    .map_or(pixels * u64::from(self.sample.max(1)) * u64::from(self.options.transmission_samples), |report| {
-                        report.production_samples * u64::from(report.transmission_strata) + pixels * u64::from(report.pilot_samples_per_pixel)
-                    });
+                let paths = if adaptive_preview {
+                    adaptive::preview_paths(self, budgets)?
+                } else {
+                    self.sampling_report.as_ref().map_or(
+                        pixels * u64::from(self.sample.max(1)) * u64::from(self.options.transmission_samples),
+                        |report| {
+                            report.production_samples * u64::from(report.transmission_strata) + pixels * u64::from(report.pilot_samples_per_pixel)
+                        },
+                    )
+                };
                 let detail =
                     format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
                 if !medium_failures_tolerated(failed, paths) {
@@ -867,10 +906,18 @@ impl Task {
                 log::warn!("gpu-path ended {detail} at an unclassifiable glass medium");
             }
             let mut values = scene::reserved((self.request.width * self.request.height) as usize)?;
-            for pixel in pixels.as_chunks::<16>().0 {
+            for (index, pixel) in pixels.as_chunks::<16>().0.iter().enumerate() {
+                if index % 4096 == 0 {
+                    self.cancel.check()?;
+                }
+                let divisor = if adaptive_preview {
+                    adaptive::preview_divisor(&self.options, self.sample, budgets.and_then(|values| values.get(index * 16..index * 16 + 4)))?
+                } else {
+                    self.normalization_samples() as f32
+                };
                 let mut value = [0.0; 4];
                 for (v, bytes) in value.iter_mut().zip(pixel.as_chunks::<4>().0) {
-                    *v = f32::from_le_bytes(*bytes) / self.normalization_samples() as f32;
+                    *v = f32::from_le_bytes(*bytes) / divisor;
                     if !v.is_finite() || *v < 0.0 {
                         return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative path radiance"));
                     }
@@ -888,6 +935,9 @@ impl Task {
 use solidcraft_render::job::presentation::Display;
 
 impl ImageWork for Task {
+    fn take_preview(&mut self) -> Option<solidcraft_render::job::ImageWorkPreview> {
+        self.preview.take()
+    }
     fn sampling_report(&self) -> Option<solidcraft_render::job::adaptive::SamplingReport> {
         self.sampling_report.clone()
     }
@@ -897,8 +947,25 @@ impl ImageWork for Task {
     fn step(&mut self, units: usize) -> Result<TaskPoll> {
         self.cancel.check()?;
         self.context.ensure_available()?;
+        // Direct executor consumers may ignore previews; dropping their old slot
+        // here never changes accumulated samples or final output. The image host
+        // takes every publication immediately after this quantum.
+        self.preview = None;
         if let Some(png) = &mut self.png {
-            return png.step(units);
+            let poll = png.step(units)?;
+            if self.encoding_preview
+                && let TaskPoll::Complete(png) = poll
+            {
+                self.png = None;
+                self.encoding_preview = false;
+                self.preview = Some(solidcraft_render::job::ImageWorkPreview { png, samples_per_pixel: self.sample });
+                return Ok(TaskPoll::Pending(Progress {
+                    phase: Phase::Running,
+                    done: u64::from(self.sample),
+                    total: u64::from(self.target_samples()),
+                }));
+            }
+            return Ok(poll);
         }
         if let Some(mut task) = self.photographic.take() {
             if !task.step(units)? {
@@ -908,13 +975,6 @@ impl ImageWork for Task {
             }
             self.png = Some(PngTask::new(&self.request, task.finish()?, self.cancel.clone())?);
             return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }));
-        }
-        if self.sample < self.target_samples() {
-            self.dispatch()?;
-            return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.target_samples()) }));
-        }
-        if self.sampling_report.is_none() && (self.options.adaptive.is_some() || self.options.transmission_samples != 1) {
-            self.sampling_report = Some(adaptive::report(self)?);
         }
         if let Some(mut bloom) = self.bloom_work.take() {
             if !bloom.step(8)? {
@@ -926,10 +986,25 @@ impl ImageWork for Task {
             let (pixels, glow) = bloom.finish()?;
             return self.encode_output(pixels, Some(glow));
         }
+        if self.sample < self.target_samples() {
+            let before = self.sample;
+            self.dispatch()?;
+            if self.preview_enabled && self.sample > before && self.sample < self.target_samples() {
+                // sample advances only after every tile and Fresnel stratum of
+                // the pass. Readback cannot observe a partially updated film.
+                self.encoding_preview = true;
+                let linear = self.read_checkpoint()?;
+                return self.finish_output(linear);
+            }
+            return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.target_samples()) }));
+        }
+        if self.sampling_report.is_none() && (self.options.adaptive.is_some() || self.options.transmission_samples != 1) {
+            self.sampling_report = Some(adaptive::report(self)?);
+        }
         if self.exr_work.is_none() {
             log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
         }
-        let mut linear = if let Some(mut work) = self.exr_work.take() {
+        let linear = if let Some(mut work) = self.exr_work.take() {
             if !work.step(4)? {
                 let done = work.completed_rows();
                 self.exr_work = Some(work);
@@ -947,11 +1022,20 @@ impl ImageWork for Task {
             }
             pixels
         };
+        self.finish_output(linear)
+    }
+}
+impl Task {
+    fn finish_output(&mut self, mut linear: Vec<[f32; 4]>) -> Result<TaskPoll> {
         if let Some(denoiser) = &self.denoiser {
             // Diagnose the raw path buffer before filtering: never hide invalid media
             // or nonfinite radiance by replacing a pixel with neighbouring values.
             drop(linear);
-            denoiser.run(self)?;
+            if self.encoding_preview && self.options.adaptive.is_some() {
+                denoiser.run_adaptive_preview(self)?;
+            } else {
+                denoiser.run(self)?;
+            }
             linear = self.read_linear_buffer(denoiser.output())?;
         }
         if let Some(options) = self.options.finishing.bloom.filter(|options| options.active()) {
@@ -965,8 +1049,6 @@ impl ImageWork for Task {
         }
         self.encode_output(linear, None)
     }
-}
-impl Task {
     fn encode_output(&mut self, linear: Vec<[f32; 4]>, bloom: Option<Vec<[f32; 3]>>) -> Result<TaskPoll> {
         let encoded_len = linear.len().checked_mul(4).ok_or_else(|| gpu("display byte length overflow"))?;
         if bloom.as_ref().is_some_and(|pixels| pixels.len() != linear.len()) {

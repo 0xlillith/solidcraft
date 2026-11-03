@@ -708,7 +708,7 @@ fn portable_job_save_is_host_independent_atomic_and_undoable_without_geometry_ch
     save(&mut s, json!({"job":{"method":"cpu_raytrace"}}));
     assert_eq!(
         s.doc.render.setups["Studio"].job,
-        Some(solidcraft_doc::render_settings::RenderJob::CpuRaytrace { options: solidcraft_doc::render_settings::CpuJob::default() })
+        Some(solidcraft_doc::render_settings::RenderJob::CpuRaytrace { transparent_background: false, options: Box::default() })
     );
     assert_eq!(s.doc.render.setups["Studio"].exposure_ev, 2.5);
     assert!(Arc::ptr_eq(&model, &s.model.state()));
@@ -966,12 +966,12 @@ fn render_lights_removing_last_area_clears_area_only_sampling_settings() {
     light_fixture(&mut s, "cpu_raytrace");
     s.execute("render.lights.add", &json!({"name":"Studio","set":{"kind":"area"}})).unwrap();
     let mut setup = s.doc.render.setups["Studio"].clone();
-    if let Some(RenderJob::CpuRaytrace { options }) = &mut setup.job {
+    if let Some(RenderJob::CpuRaytrace { options, .. }) = &mut setup.job {
         options.area_samples = Some(64);
         options.seed = Some(123);
     }
     s.execute("render.lights.remove", &json!({"name":"Studio","id":"area:0","settings":setup})).unwrap();
-    let Some(RenderJob::CpuRaytrace { options }) = &s.doc.render.setups["Studio"].job else { panic!("CPU") };
+    let Some(RenderJob::CpuRaytrace { options, .. }) = &s.doc.render.setups["Studio"].job else { panic!("CPU") };
     assert!(options.area_samples.is_none() && options.seed.is_none());
     assert!(options.area_lights.as_ref().unwrap().is_empty());
 }

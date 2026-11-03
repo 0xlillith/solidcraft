@@ -1,8 +1,9 @@
 # Bounded CPU dielectric preview (#1655)
 
-Source implementation only: focused tests, real native PNG acceptance and full
-project gates have not run on this integrated revision. The render and engine
-crates keep `raytrace-cpu` optional; the application controls whether its normal
+CPU renderer certification, Fresnel/Beer, decoded-image and cancellation
+regressions have executed on the combined source. Current combined document,
+engine, UI and native workflow qualification and full project gates remain
+pending. The render and engine crates keep `raytrace-cpu` optional; the application controls whether its normal
 build enables it. The CPU executor remains native only. This unit reuses the image-job host,
 queue, cancellation, admission lease, incremental BVH traversal and PNG encoder.
 
@@ -15,18 +16,22 @@ CPU preflight reports `transparency: "physical_transmission"` when its request
 contains admitted dielectric overrides, with `dielectric_boundaries` limited to
 `["thin_sheet","closed_box"]`. Without overrides it reports `"opaque_only"` and
 an empty boundary list. This metadata describes the requested transport; both CPU
-raytrace cases still require surface alpha one and an opaque PNG background.
+raytrace cases still require surface alpha one. The optional transparent PNG
+background exports primary geometry coverage; glass does not gain a compositing
+matte for a different transmitted background.
 
 The native host's `descriptor_for(Raytrace)` advertises `refraction` in its
 Preview / Image / PNG profile, and CPU requests containing dielectric overrides
 require that capability during both preflight and host submission. This is the
-bounded `thin_sheet` / `closed_box` contract below: it does not advertise general
-closed-mesh transmission, final-quality rendering or progressive CPU images.
+bounded `thin_sheet` / `closed_box` contract below, shared by fixed and progressive
+CPU sampling: it does not advertise general closed-mesh transmission, caustics
+or diffuse global illumination.
 Raster and the cooperative CPU host do not advertise this capability. The
 `render.backends` registry publishes the additional `cpu-raytrace` descriptor only
-for an installed native CPU worker with the build feature enabled. Raster remains
-the default, and the explicit CPU raytrace route resolves its own integrator-specific
-descriptor. See [backend discovery](render-backends.md#installed-image-methods).
+for an installed native CPU worker with the build feature enabled. New unsaved
+setups use CPU progressive when this host is available and legacy defaults are
+off; saved, legacy and offline setups retain their existing route. The explicit
+CPU raytrace route resolves its own integrator-specific descriptor. See [backend discovery](render-backends.md#installed-image-methods).
 
 A CPU request example:
 
@@ -82,13 +87,14 @@ optics equations; no rendering-engine source was consulted or adapted. The
 was consulted as a mathematical reference only; no text or assets were copied.
 
 Primary misses preserve the request's display-sRGB background bytes, independent
-of exposure. Reflected/transmitted misses default to black. An explicit runtime
+of exposure, or zero RGBA when transparent background is requested. Reflected/transmitted misses default to black. An explicit runtime
 `environment:{color:[r,g,b],intensity:n}` supplies a constant secondary radiance:
 finite linear-sRGB channels in 0–1 and relative intensity in 0–64. It is separate
 from the display background and receives the same one-time exposure/display
 mapping as the accumulated optical contributions. Unit white environment radiance
 maps to approximately 188/255 at zero exposure. It is not HDRI lighting and does
-not illuminate opaque diffuse surfaces. Transparent PNG backgrounds remain unsupported.
+not illuminate opaque diffuse surfaces. Transparent PNG exports primary geometry
+coverage with straight RGB; transmitted/reflected paths and raw EXR are unchanged.
 
 Transport deterministically splits Fresnel branches using a fixed nine-slot DFS
 stack, at most eight dielectric boundary events and 511 paths per pixel. An
@@ -124,13 +130,13 @@ not OS timing or RSS guarantees.
 Source regressions cover F0=0.04, Snell/reversibility, TIR, absorption and slab
 offset scaling, closure/winding/identity refusals, nested-volume admission,
 bounded runtime DTOs, cancellation and small decoded PNG controls for clear
-volumes and 2/8 mm absorption. They are **not passing results until executed**.
+volumes and 2/8 mm absorption. These renderer regressions have executed.
 Required acceptance also includes an original native scene with identifiable
 background geometry, paired oblique slab PNGs, physical/persistence invariants,
 work exhaustion, cancellation and captured-resource release. Current source
 tests alone do not establish this visible acceptance or qualify the draft PR.
 
-## Thin-sheet polarization correction (source only)
+## Thin-sheet polarization correction
 
 The incoherent internal-return series is evaluated separately for s and p
 polarization. For one polarization with interface power reflectance `F` and
@@ -153,5 +159,42 @@ This correction preserves polarization only inside the analytic parallel-sheet
 closure. The existing transport still carries a scalar unpolarized response;
 it does not add full Stokes transport or change the closed-volume approximation.
 The runtime schema, boundary certification, millimetre units, path limits, and
-virtual-thickness geometry contract are unchanged. These new Rust regressions
-have not been built or run; the source-only correction is not acceptance proof.
+virtual-thickness geometry contract are unchanged. The rational-value and
+actual decoded PNG regressions have executed in the CPU renderer suite; native
+visual and combined workflow acceptance remain separate.
+
+
+## Saved optical bindings and common Glass controls
+
+The existing stable `RenderSetup.optics` contract can also be consumed by an
+explicit CPU job. Definition/feature/component/occurrence identity resolves into
+an exact visible captured body name and ordinal at Check/Render. The CPU request
+uses its existing `DielectricOptions`; no engineering material, product opacity,
+physical transmission, CAD geometry or mass changes.
+
+Saved `closed_box` and `closed_mesh` optical intent execute only when the exact
+captured mesh passes the existing strict twelve-triangle axis-aligned-box
+certificate. The saved boundary is retained unchanged; a sphere, cylinder,
+rotated box or arbitrary closed mesh does not gain support. Thin sheets retain
+the strict one/two-triangle planar certificate and authored virtual thickness.
+All overlap, near-plane, camera/lens, coat and per-path guards still apply.
+
+CPU glass supports the authored IOR and per-mm Beer extinction for at most eight
+targets. Extinction is 0..100 per mm and virtual thickness 0..10000 mm. Authored
+transmissive shadows and any subsurface value refuse explicitly. Common thin
+recipes retain their transmissive-shadow flag: turn that flag off explicitly
+before CPU rendering. Clear-coat and map bindings remain GPU features; switching
+to CPU never strips them. There is no caustic, general glass, nested-medium or
+diffuse-GI claim.
+
+The common Glass editor creates temporary request-local presets and can save
+compatible numerical optics with the existing reviewed bind command in one undo.
+Reopening a selected stable saved target shows its actual enabled state, IOR,
+Beer extinction and boundary without allocating a temporary override on paint.
+Edits to those saved controls replace or remove only their exact target in a
+cloned image request, so live feedback uses the prospective values immediately.
+The document changes only through explicit Save/replacement or Remove. Discard
+returns to the saved values. Other saved rows remain intact; stale identities or
+changed sources refuse instead of targeting a new body. Mixed legacy temporary
+bindings or file-only HDR inputs retain an explicit conflict where they cannot
+share this typed request.

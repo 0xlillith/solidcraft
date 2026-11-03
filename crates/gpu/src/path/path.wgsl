@@ -331,10 +331,70 @@ fn triangle_ahead_precise(t: Triangle, o: vec3<f32>, o_low: vec3<f32>, d: vec3<f
     if any((d==vec3<f32>(0.0))&((lo>vec3<f32>(0.0))|(hi<vec3<f32>(0.0)))) { return false; }
     return true;
 }
+// The host keeps studio_weights.w at positive zero. The integer dependency
+// materializes scalar intermediates and prevents floating reassociation.
+fn split_materialize(value: f32) -> f32 {
+    return bitcast<f32>(bitcast<u32>(value)^bitcast<u32>(u.studio_weights.w));
+}
+struct SplitScaled { value: f32, exponent: i32 };
+fn split_scaled(value: f32) -> SplitScaled {
+    let bits=bitcast<u32>(value);let exponent=(bits>>23u)&255u;let fraction=bits&0x7fffffu;
+    if (bits&0x7fffffffu)==0u || exponent==255u { return SplitScaled(value,0); }
+    let sig=fraction|select(0u,0x800000u,exponent!=0u);
+    let shift=countLeadingZeros(sig)-8u;
+    let normalized=(bits&0x80000000u)|0x3f800000u|((sig<<shift)&0x7fffffu);
+    return SplitScaled(bitcast<f32>(normalized),select(-126,i32(exponent)-127,exponent!=0u)-i32(shift));
+}
+fn split_add(a: f32, b: f32) -> f32 {
+    return bitcast<f32>(fp_add_bits(bitcast<u32>(a),bitcast<u32>(b)));
+}
+// With normalized operands, all four12-by12-bit partial products and these
+// subtractions are exactly representable, even if p chose either faithful neighbor.
+fn split_product(a: f32, b: f32) -> vec2<f32> {
+    let ah=bitcast<f32>(bitcast<u32>(a)&0xfffff000u);let al=split_materialize(a-ah);
+    let bh=bitcast<f32>(bitcast<u32>(b)&0xfffff000u);let bl=split_materialize(b-bh);
+    let p=split_materialize(a*b);
+    let e1=split_materialize(p-ah*bh);
+    let e2=split_materialize(e1-al*bh);
+    let e3=split_materialize(e2-ah*bl);
+    return vec2<f32>(p,split_materialize(al*bl-e3));
+}
+fn split_two_sum(a: f32, b: f32) -> vec2<f32> {
+    let swap=abs(a)<abs(b);let large=select(a,b,swap);let small=select(b,a,swap);
+    let sum=split_add(large,small);
+    let delta=split_materialize(sum-large);
+    return vec2<f32>(sum,split_materialize(small-delta));
+}
+fn split_rescale(value: f32, exponent: i32) -> f32 {
+    if value==0.0 { return value; }
+    let scaled=split_scaled(value);let combined=scaled.exponent+exponent+1;
+    if combined>128 { return bitcast<f32>((bitcast<u32>(value)&0x80000000u)|0x7f800000u); }
+    return ldexp(scaled.value*0.5,combined);
+}
+fn split_difference_products(a: f32, b: f32, c: f32, d: f32) -> f32 {
+    let aa=split_scaled(a);let bb=split_scaled(b);let cc=split_scaled(c);let dd=split_scaled(d);
+    let p=split_product(aa.value,bb.value);let q=split_product(cc.value,dd.value);
+    let ep=aa.exponent+bb.exponent;let eq=cc.exponent+dd.exponent;
+    if p.x==0.0 { return split_rescale(-split_add(q.x,q.y),eq); }
+    if q.x==0.0 { return split_rescale(split_add(p.x,p.y),ep); }
+    let exponent=max(ep,eq);
+    let pp=ldexp(p,vec2<i32>(ep-exponent));let qq=ldexp(q,vec2<i32>(eq-exponent));
+    let high=split_materialize(pp.x-qq.x);
+    let tail=split_two_sum(pp.y,-qq.y);
+    if high==0.0 { return split_rescale(tail.x,exponent); }
+    if tail.x==0.0 { return split_rescale(high,exponent); }
+    let total=split_two_sum(high,tail.x);
+    return split_rescale(split_add(total.x,split_add(total.y,tail.y)),exponent);
+}
 fn difference_products(a: f32, b: f32, c: f32, d: f32) -> f32 {
-    let cd = c*d;
-    let error = fma(-c,d,cd);
-    return fma(a,b,-cd)+error;
+    let ab=a*b;let cd=c*d;
+    // Four cancelled leading bits select the compensated method; this is an
+    // arithmetic strategy, not a change to any intersection tolerance.
+    if abs(ab-cd)>max(abs(ab),abs(cd))*(1.0/16.0) {
+        let error=fma(-c,d,cd);
+        return fma(a,b,-cd)+error;
+    }
+    return split_difference_products(a,b,c,d);
 }
 struct Hit { distance: f32, triangle: u32, bary: vec3<f32> };
 // A closed continuation that leaves its producing triangle at a shared edge or
@@ -1106,7 +1166,7 @@ fn adaptive_target(mean: vec4<f32>, m2: vec4<f32>) -> u32 {
     return clamp(u32(max(max(need.x,need.y),max(need.z,need.w))),u.adaptive_budget.y,maximum);
 }
 
-@compute @workgroup_size(64)
+@compute @workgroup_size(32)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel = u.image.w + gid.x;
     let pixels = u.image.x*u.image.y;
@@ -1382,4 +1442,17 @@ fn integer_relative_reference(@builtin(global_invocation_id) invocation: vec3<u3
     let reference=fp_add_bits(fp_sub_bits(a,b),fp_sub_bits(al,bl));
     let candidate=anchored_delta_bits(a,al,b,bl);
     accumulation[i]=vec4<f32>(f32(reference&65535u),f32(reference>>16u),f32(candidate&65535u),f32(candidate>>16u));
+}
+
+@compute @workgroup_size(32)
+fn split_predicate_reference(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if gid.x>=geometry[0] { return; }
+    let word=1u+gid.x*4u;
+    let a=bitcast<f32>(geometry[word]);let b=bitcast<f32>(geometry[word+1u]);
+    let c=bitcast<f32>(geometry[word+2u]);let d=bitcast<f32>(geometry[word+3u]);
+    let product=split_product(split_scaled(a).value,split_scaled(b).value);
+    let p=bitcast<u32>(product.x);let e=bitcast<u32>(product.y);
+    let direct=bitcast<u32>(split_difference_products(a,b,c,d));let wrapped=bitcast<u32>(difference_products(a,b,c,d));
+    accumulation[2u*gid.x]=vec4<f32>(f32(p&65535u),f32(p>>16u),f32(e&65535u),f32(e>>16u));
+    accumulation[2u*gid.x+1u]=vec4<f32>(f32(direct&65535u),f32(direct>>16u),f32(wrapped&65535u),f32(wrapped>>16u));
 }

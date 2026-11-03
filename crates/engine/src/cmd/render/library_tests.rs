@@ -74,7 +74,7 @@ fn builtin_hdr_capture_is_atomic_undoable_deduplicated_and_path_independent() {
     assert_eq!(reply["source_sha256"], reply["resource"]);
     assert_eq!(reply["native_rotation_rad"], std::f64::consts::PI);
     assert_eq!(reply["self_contained"], true);
-    let Some(RenderJob::CpuRaytrace { options }) = &s.doc.render.setups["Library CPU"].job else {
+    let Some(RenderJob::CpuRaytrace { options, .. }) = &s.doc.render.setups["Library CPU"].job else {
         panic!("CPU intent");
     };
     let id = options.hdr.unwrap().resource;

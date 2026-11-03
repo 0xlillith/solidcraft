@@ -381,7 +381,7 @@ struct EnvironmentApply {
 
 fn has_environment(setup: &solidcraft_doc::render_settings::RenderSetup) -> bool {
     match &setup.job {
-        Some(RenderJob::CpuRaytrace { options }) => options.hdr.is_some() || options.environment.is_some(),
+        Some(RenderJob::CpuRaytrace { options, .. }) => options.hdr.is_some() || options.environment.is_some(),
         Some(RenderJob::GpuPath { options, .. }) => options.hdr.is_some() || options.environment.is_some(),
         _ => false,
     }
@@ -398,7 +398,7 @@ pub(super) fn apply_environment(s: &mut Session, params: &Value) -> Result<Value
     let rotation = hdr_rotation(input.rotation_rad, command)?;
     let mut setup = super::patched_settings(s, &input.name, &input.set, command)?;
     match &setup.job {
-        Some(RenderJob::CpuRaytrace { options }) => {
+        Some(RenderJob::CpuRaytrace { options, .. }) => {
             if !input.replace_environment && (options.hdr.is_some() || options.environment.is_some()) {
                 return Err(bad(command, "existing environment requires replace_environment: true"));
             }
@@ -420,7 +420,7 @@ pub(super) fn apply_environment(s: &mut Session, params: &Value) -> Result<Value
     let digest = resource.id();
     settings.resources.insert(resource).map_err(|e| bad(command, e.to_string()))?;
     match &mut setup.job {
-        Some(RenderJob::CpuRaytrace { options }) => {
+        Some(RenderJob::CpuRaytrace { options, .. }) => {
             options.environment = None;
             options.hdr = Some(CpuHdrEnvironment { resource: digest, rotation_rad: rotation, intensity: input.intensity, samples: input.samples });
         }

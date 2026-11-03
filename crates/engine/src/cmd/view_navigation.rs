@@ -5,12 +5,13 @@ use solidcraft_render::{Camera, StandardView};
 use super::CommandSpec;
 use crate::params::{bad, num, req_vec2, req_vec3, vec3};
 use crate::schema::view_navigation::{
-    CameraReply, NormalToParams, RenderBrowser, RenderFocus, RenderSelect, StandardViewParams, TabStep, TabStepParams,
+    CameraReply, NormalToParams, RenderBrowser, RenderFocus, RenderLive, RenderSelect, StandardViewParams, TabStep, TabStepParams,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Sel, Session};
 
 const FOCUS_CONTRACT: TypedContract<RenderFocus> = TypedContract::new();
+const RENDER_LIVE_CONTRACT: TypedContract<RenderLive> = TypedContract::new();
 const BROWSER_CONTRACT: TypedContract<RenderBrowserRequest> = TypedContract::new();
 const TAB_STEP_CONTRACT: TypedContract<TabStepParams> = TypedContract::new();
 const STANDARD_VIEW_CONTRACT: TypedContract<StandardViewParams> = TypedContract::new();
@@ -79,6 +80,10 @@ CommandSpec::new("view.render_browser", "Render Browser", crate::checked!("view.
 CommandSpec::new("view.render_inspector", "Render Inspector", render_inspector)
     .icon("inspect").noundo().doc_only()
     .params("visible: bool → {visible}; per-document Inspector visibility; never edits the design or opens a dialog"),
+CommandSpec::new("view.render_live", "Pause or Resume Live Render", crate::checked!("view.render_live", render_live))
+    .icon("render_image").noundo().doc_only()
+    .contract(&RENDER_LIVE_CONTRACT).output(output_schema_for::<RenderLive>)
+    .params("paused: bool → {paused}; pause or resume this document's live Render preview; headless validation only, never saves settings or changes a final image"),
 CommandSpec::new("view.render_select", "Render selection", crate::checked!("view.render_select", render_select))
     .contract(&RENDER_SELECT).output(output_schema_for::<RenderSelect>)
     .icon("select").noundo().doc_only()
@@ -325,6 +330,11 @@ fn status_items(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn render_focus(_s: &mut Session, p: &Value) -> Result<Value> {
     let request: RenderFocus = serde_json::from_value(p.clone()).map_err(|e| bad("view.render_focus", e.to_string()))?;
+    Ok(json!(request))
+}
+
+fn render_live(_s: &mut Session, p: &Value) -> Result<Value> {
+    let request: RenderLive = serde_json::from_value(p.clone()).map_err(|e| bad("view.render_live", e.to_string()))?;
     Ok(json!(request))
 }
 
@@ -1128,7 +1138,7 @@ fn render_workspace_focus_and_browser_validate_without_side_effects() {
     let camera = session.camera;
     let document = session.doc.clone();
     let before = (session.undo.len(), session.redo.len(), session.revision, session.evaluations, session.is_dirty());
-    for (id, field) in [("view.render_focus", "on"), ("view.render_browser", "open")] {
+    for (id, field) in [("view.render_focus", "on"), ("view.render_browser", "open"), ("view.render_live", "paused")] {
         let command = crate::find_command(id).unwrap();
         assert!(command.contract.is_some() && command.output.is_some());
         for on in [true, false] {

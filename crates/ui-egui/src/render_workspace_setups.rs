@@ -9,12 +9,16 @@ use crate::SolveApp;
 /// Unsaved files and temporary bindings use the runtime request route. Embedded sources
 /// use the typed job route unless a binding also needs the runtime schema.
 pub(super) fn has_runtime_inputs(app: &SolveApp) -> bool {
-    has_unportable_bindings(app) || hdr::active(app).is_some_and(|target| !hdr::input(app, target).embedded())
+    has_runtime_bindings(app) || hdr::active(app).is_some_and(|target| !hdr::input(app, target).embedded())
 }
 
 fn has_unportable_bindings(app: &SolveApp) -> bool {
+    !app.render_workspace.view.materials.bindings.is_empty() || has_runtime_bindings(app)
+}
+
+fn has_runtime_bindings(app: &SolveApp) -> bool {
     let view = &app.render_workspace.view;
-    if !view.materials.bindings.is_empty() {
+    if view.materials.bindings.iter().any(super::materials::Binding::has_runtime_intent) {
         return true;
     }
     match view.method {
@@ -32,11 +36,44 @@ fn has_unportable_bindings(app: &SolveApp) -> bool {
 
 /// Pure construction: saving intent must work with no CPU/GPU host and stale geometry.
 pub(super) fn snapshot(app: &SolveApp) -> Result<RenderSetup, String> {
+    snapshot_with_lens_override(app, None)
+}
+
+/// Validate a prospective lens edit without changing the live draft first. In particular,
+/// removing an authored lens remains possible after navigating to orthographic.
+pub(super) fn snapshot_with_lens(app: &SolveApp, lens: Option<solidcraft_engine::render::job::ThinLens>) -> Result<RenderSetup, String> {
+    snapshot_with_lens_override(app, Some(lens))
+}
+
+fn snapshot_with_lens_override(app: &SolveApp, lens: Option<Option<solidcraft_engine::render::job::ThinLens>>) -> Result<RenderSetup, String> {
     cpu::validate_progressive_image(app)?;
     if has_unportable_bindings(app) {
         return Err(app.tr("render.setup_runtime_unsupported").to_string());
     }
-    let setup = draft(app)?;
+    let mut setup = draft(app)?;
+    if let Some(lens) = lens {
+        match &mut setup.job {
+            Some(RenderJob::CpuRaytrace { options, .. }) => options.lens = lens,
+            Some(RenderJob::GpuPath { options, .. }) => options.lens = lens,
+            _ => return Err(app.tr("render.shot_lens_raytrace_reason").into()),
+        }
+    }
+    validate_snapshot(app, setup)
+}
+
+/// Stable saved optical edits stay transient while every ordinary image capture sees
+/// the prospective values. Generic Save still requires the explicit optical review.
+pub(super) fn image_snapshot(app: &SolveApp) -> Result<RenderSetup, String> {
+    cpu::validate_progressive_image(app)?;
+    if has_runtime_bindings(app) {
+        return Err(app.tr("render.setup_runtime_unsupported").into());
+    }
+    let mut setup = draft(app)?;
+    materials::overlay_saved(app, &mut setup)?;
+    validate_snapshot(app, setup)
+}
+
+fn validate_snapshot(app: &SolveApp, setup: RenderSetup) -> Result<RenderSetup, String> {
     // Preserve unsupported legacy intent visibly instead of erasing it while upgrading a setup.
     if setup.environment_rotation != 0.0 || setup.environment_intensity != 1.0 {
         return Err(app.tr("render.setup_legacy_environment").to_string());
@@ -56,12 +93,14 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
     setup.job = Some(match view.method {
         ImageMethod::Raster => RenderJob::Raster { transparent_background: view.transparent },
         ImageMethod::CpuRaytrace => {
-            if view.transparent {
-                return Err(app.tr("render.cpu_opaque_required").to_string());
-            }
             let options = &view.raytrace;
             RenderJob::CpuRaytrace {
-                options: CpuJob {
+                transparent_background: view.transparent,
+                options: Box::new(CpuJob {
+                    denoise: view.studio.denoise,
+                    path: options.path,
+                    lens: view.studio.lens_enabled.then_some(view.studio.lens),
+                    output: studio::cpu_output(view),
                     budget: options.budget,
                     primary_samples: options.primary_samples,
                     progressive: options.progressive,
@@ -87,7 +126,7 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     } else {
                         None
                     },
-                },
+                }),
             }
         }
         ImageMethod::GpuRaytrace => {
@@ -150,6 +189,7 @@ pub(super) fn persist_editor(app: &mut SolveApp, before: &RenderSetup) -> Result
     let old = serde_json::to_value(before).ok();
     let new = serde_json::to_value(&after).map_err(|error| error.to_string())?;
     let saved = app.session.doc.render.setups.get(&app.render_workspace.view.name);
+    let creating = saved.is_none();
     let saved = saved.and_then(|setup| serde_json::to_value(setup).ok());
     let mut patch = serde_json::Map::new();
     if let Some(fields) = new.as_object() {
@@ -163,22 +203,38 @@ pub(super) fn persist_editor(app: &mut SolveApp, before: &RenderSetup) -> Result
         }
     }
     if !patch.is_empty() {
+        // The engine creates missing setups from its legacy defaults. On the first real
+        // numerical edit, preserve the whole visible numerical baseline, including image
+        // size and method; a job-only patch can be inadmissible at the engine's default size.
+        // Navigation keeps its explicit Update shot policy. Merely revealing an editor is
+        // still read-only because an actual edit must have populated the patch first.
+        if creating && let Some(fields) = new.as_object() {
+            patch = fields.iter().filter(|(key, _)| key.as_str() != "camera").map(|(key, value)| (key.clone(), value.clone())).collect();
+        }
         after.validate().map_err(|error| error.to_string())?;
         let name = app.render_workspace.view.name.clone();
         app.run("render.settings.set", serde_json::json!({"name":name,"set":patch}))?;
         app.render_workspace.revision = app.session.revision;
         let camera = app.render_workspace.view.clean_setup.as_ref().map_or(after.camera, |clean| clean.camera);
         app.render_workspace.view.clean_setup = Some(RenderSetup { camera, ..after.clone() });
+        app.render_workspace.view.clean_persisted = true;
         app.render_workspace.view.clean_name = app.render_workspace.view.name.clone();
         materials::refresh_render_revision(app);
         cpu::refresh_render_revision(app);
     }
     if let Some(saved) = app.session.doc.render.setups.get(&app.render_workspace.view.name) {
+        if let Some(RenderJob::CpuRaytrace { options, .. }) = &saved.job {
+            app.render_workspace.view.raytrace.output = options.output.clone();
+            app.render_workspace.view.raytrace.denoise = options.denoise;
+            app.render_workspace.view.raytrace.lens = options.lens;
+            app.render_workspace.view.raytrace.path = options.path;
+        }
         let mut saved = saved.clone();
         saved.camera = after.camera;
         if saved == after {
             let camera = app.render_workspace.view.clean_setup.as_ref().map_or(after.camera, |clean| clean.camera);
             app.render_workspace.view.clean_setup = Some(RenderSetup { camera, ..after });
+            app.render_workspace.view.clean_persisted = true;
             app.render_workspace.view.clean_name = app.render_workspace.view.name.clone();
             app.render_workspace.revision = app.session.revision;
         }
@@ -187,14 +243,33 @@ pub(super) fn persist_editor(app: &mut SolveApp, before: &RenderSetup) -> Result
     Ok(())
 }
 
+/// A missing setup uses the same transient baseline for initial loading and later model edits.
+/// Existing entries, including a legacy job-less setup, retain their saved interpretation.
+fn saved_or_initial(app: &SolveApp) -> RenderSetup {
+    app.session.doc.render.setups.get(&app.render_workspace.view.name).cloned().unwrap_or_else(|| {
+        let mut setup = RenderSetup::default();
+        // Only a new, unsaved setup adopts the useful native image route. Discovery is read-only;
+        // saved Raster, fixed CPU and legacy job-less setups keep their exact interpretation.
+        if !app.preferences.render_legacy_image_defaults && super::image_host(app, ImageMethod::CpuRaytrace).is_ok() {
+            setup.job = Some(RenderJob::CpuRaytrace {
+                transparent_background: false,
+                options: Box::new(CpuJob { progressive: Some(Default::default()), ..Default::default() }),
+            });
+        }
+        setup
+    })
+}
+
 /// A setup switch/reload replaces its numeric editor draft, never a completed image or camera.
 pub(super) fn load(app: &mut SolveApp) {
-    let setup = app.session.doc.render.setups.get(&app.render_workspace.view.name).cloned().unwrap_or_default();
+    let persisted = app.session.doc.render.setups.contains_key(&app.render_workspace.view.name);
+    let setup = saved_or_initial(app);
     load_values(&mut app.render_workspace.view, setup);
     app.render_workspace.view.dirty = false;
     app.render_workspace.revision = app.session.revision;
     // Keep the explicit Restore Saved Camera action: loading options does not navigate.
     app.render_workspace.view.clean_setup = draft(app).ok();
+    app.render_workspace.view.clean_persisted = persisted;
     app.render_workspace.view.clean_name = app.render_workspace.view.name.clone();
     super::light::loaded(app);
 }
@@ -203,6 +278,7 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
     view.method = ImageMethod::Raster;
     view.transparent = false;
     view.raytrace = RaytraceOptions::default();
+    view.cpu_sampling_initialized = false;
     view.cpu = cpu::View::default();
     view.samples = 64;
     view.max_depth = 8;
@@ -211,9 +287,16 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
     view.materials = materials::View::default();
     match &setup.job {
         Some(RenderJob::Raster { transparent_background }) => view.transparent = *transparent_background,
-        Some(RenderJob::CpuRaytrace { options }) => {
+        Some(RenderJob::CpuRaytrace { options, transparent_background }) => {
             view.method = ImageMethod::CpuRaytrace;
+            view.transparent = *transparent_background;
+            view.cpu_sampling_initialized = true;
+            view.studio.denoise = options.denoise;
             view.raytrace = RaytraceOptions {
+                denoise: options.denoise,
+                path: options.path,
+                lens: options.lens,
+                output: options.output.clone(),
                 budget: options.budget,
                 primary_samples: options.primary_samples,
                 progressive: options.progressive,
@@ -226,6 +309,17 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                 shadows: options.shadows,
                 ..Default::default()
             };
+            if let Some(lens) = options.lens {
+                view.studio.lens_enabled = true;
+                view.studio.lens = lens;
+            }
+            if let Some(output) = &options.output {
+                view.studio.tone_map = output.tone_map;
+                view.studio.finishing = output.finishing;
+                view.studio.backdrop_enabled = output.backdrop.is_some();
+                view.studio.backdrop = output.backdrop.unwrap_or_default();
+                view.studio.linear_exr = output.linear_exr;
+            }
             if let Some(environment) = options.environment {
                 view.cpu.environment = cpu::Environment::Constant;
                 view.cpu.color = environment.color;
@@ -294,7 +388,9 @@ pub(super) fn same_model_source(app: &SolveApp, document: &std::sync::Weak<solid
     if app.session.model.is_stale() {
         return false;
     }
-    let Some(source) = document.upgrade() else { return false };
+    let Some(source) = document.upgrade() else {
+        return false;
+    };
     // Exhaustive by design: adding a Document field must update this comparison.
     // Match ergonomics bind references, including vectors and point-cloud data.
     macro_rules! compare_authoring_fields {
@@ -376,7 +472,12 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         }
         return;
     };
-    let saved = app.session.doc.render.setups.get(&app.render_workspace.view.name).cloned().unwrap_or_default();
+    let persisted = app.session.doc.render.setups.contains_key(&app.render_workspace.view.name);
+    let saved = app.session.doc.render.setups.get(&app.render_workspace.view.name).cloned().unwrap_or_else(|| {
+        // An active unsaved setup keeps the baseline captured when it was opened. A missing
+        // entry after Undo of a saved setup, however, returns to the current initial defaults.
+        if app.render_workspace.view.clean_persisted { saved_or_initial(app) } else { clean.clone() }
+    });
     let mut previous = super::ViewState::default();
     load_values(&mut previous, clean.clone());
     let mut updated = super::ViewState::default();
@@ -400,6 +501,7 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
     // editor selection, results and host/job state stay in their existing owners.
     sync!(
         method,
+        cpu_sampling_initialized,
         transparent,
         samples,
         max_depth,
@@ -418,6 +520,10 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         draft.optics,
         draft.stage,
         raytrace.budget,
+        raytrace.denoise,
+        raytrace.output,
+        raytrace.lens,
+        raytrace.path,
         raytrace.primary_samples,
         raytrace.progressive,
         raytrace.preset,
@@ -464,6 +570,7 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         view.studio.hdr = updated.studio.hdr;
     }
     view.clean_setup = next_clean;
+    view.clean_persisted = persisted;
     app.render_workspace.revision = app.session.revision;
     materials::refresh_render_revision(app);
     cpu::refresh_render_revision(app);
@@ -486,7 +593,7 @@ pub(super) fn save(app: &mut SolveApp) -> Result<(), String> {
     if let Some((_, path, digest)) = &capture {
         let mut params = serde_json::json!({"name":name,"path":path,"expected_sha256":digest});
         match &mut setup.job {
-            Some(RenderJob::CpuRaytrace { options }) => {
+            Some(RenderJob::CpuRaytrace { options, .. }) => {
                 let environment = options.hdr.take().ok_or_else(|| app.tr("render.hdr_inspect_required").to_string())?;
                 params["rotation_rad"] = serde_json::json!(environment.rotation_rad);
                 params["intensity"] = serde_json::json!(environment.intensity);
@@ -513,8 +620,15 @@ pub(super) fn save(app: &mut SolveApp) -> Result<(), String> {
             hdr::Target::Gpu => app.render_workspace.view.studio.hdr = hdr::Input::EmbeddedResource { resource },
         }
     }
+    if let Some(RenderJob::CpuRaytrace { options, .. }) = &setup.job {
+        app.render_workspace.view.raytrace.output = options.output.clone();
+        app.render_workspace.view.raytrace.denoise = options.denoise;
+        app.render_workspace.view.raytrace.lens = options.lens;
+        app.render_workspace.view.raytrace.path = options.path;
+    }
     app.render_workspace.view.draft = setup.clone();
     app.render_workspace.view.clean_setup = Some(setup);
+    app.render_workspace.view.clean_persisted = true;
     app.render_workspace.view.clean_name = app.render_workspace.view.name.clone();
     app.render_workspace.view.dirty = false;
     app.render_workspace.revision = app.session.revision;

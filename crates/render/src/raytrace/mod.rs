@@ -10,9 +10,11 @@ use solidcraft_geom::Vec3;
 mod anisotropic_faces;
 pub mod area;
 mod bvh;
+mod denoise;
 pub mod dielectric;
 pub mod emission;
 pub mod image;
+mod indirect;
 pub mod lighting;
 pub mod prepared;
 mod progressive;
@@ -271,7 +273,7 @@ impl Triangle {
             let z = component(delta, kz);
             [component(delta, kx) - sx * z, component(delta, ky) - sy * z, z / dominant]
         });
-        let [[ax, ay, az], [bx, by, bz], [cx, cy, cz]] = projected;
+        let [[ax, ay, _], [bx, by, _], [cx, cy, _]] = projected;
         let weights = [bx * cy - by * cx, cx * ay - cy * ax, ax * by - ay * bx];
         let [u, v, w] = weights;
         if (u < 0.0 || v < 0.0 || w < 0.0) && (u > 0.0 || v > 0.0 || w > 0.0) {
@@ -282,12 +284,12 @@ impl Triangle {
             return None;
         }
         let barycentric = weights.map(|value| value / determinant);
-        let [u, v, w] = barycentric;
-        // Divide before multiplying by depth: very small triangle areas need not
-        // underflow their otherwise well-represented hit distance.
-        // An exact coordinate plane has a direct depth equation. Summing
-        // depths along another dominant ray axis can cancel large tangential
-        // terms into a false positive. No interval or edge policy changes.
+        // Solve depth from the geometric plane, independently of the closed-edge
+        // shear weights. Weighted depths along another ray axis can cancel large
+        // tangential terms into a positive self-hit, even for an outward ray.
+        // This also matters for evaluated CAD faces that differ from a coordinate
+        // plane by a few ULPs; they must not rely on the exact-axis shortcut.
+        // Exact coordinate planes retain their direct interval arithmetic.
         let axis_plane = (0..3).find_map(|axis| {
             let [a, b, c] = self.vertices.map(|point| component(point, axis));
             (a == b && b == c).then_some((axis, a))
@@ -295,7 +297,7 @@ impl Triangle {
         let distance = if let Some((axis, coordinate)) = axis_plane {
             (coordinate - component(ray.origin, axis)) / component(d, axis)
         } else {
-            u * az + v * bz + w * cz
+            normal.dot(self.vertices[0] - ray.origin) / normal.dot(d)
         };
         if !distance.is_finite() || distance < ray.min || distance > ray.max {
             return None;

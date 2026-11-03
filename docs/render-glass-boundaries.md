@@ -41,13 +41,29 @@ grazing angle. Patch identities add four bytes per triangle and their preparatio
 storage is included in admission. Nonmanifold or collapsed adjacency is not used
 to infer a patch.
 
-Projected edge determinants use a compensated difference of products. This
-avoids losing exact shared-edge cancellation on tested GPU compilers. The
-algorithm follows the arithmetic described by
+Projected edge determinants retain the existing compensated expression for
+well-separated products, following
 [Matt Pharr's discussion of Kahan's difference of products](https://pharr.org/matt/blog/2019/11/03/difference-of-floats).
+When four or more leading bits cancel, normalized 12-bit high/low factors supply
+exactly representable partial products. Materialized scalar subtractions recover
+each product residual without requiring a fused `fma`. Compensated summation uses
+the existing integer-defined binary32 addition to establish round-to-nearest,
+ties-to-even boundaries, then rescales the result by a power of two. Choosing
+this arithmetic path leaves the geometric comparisons and distance bounds intact.
+
+The scalar materialization barrier depends on the positive-zero bits of
+`studio_weights.w`. The host always writes that lane as positive zero; only xyz
+contain the three source weights. A retained shader-layout/host-serialization test
+checks the lane's actual offset and bits for implicit and explicit studio inputs.
+The numerical branch adds no owned host or storage buffer.
+
 WGSL [floating-point evaluation rules](https://www.w3.org/TR/WGSL/#floating-point-evaluation)
-permit implementation variation, including expansion of `fma`; backend tests
-are required, and this is not a proof of exact intersection for all WGSL devices.
+permit implementation variation, including expansion of `fma`. The split-product
+oracle checks exact product reconstruction and normal determinant bit patterns
+against an independent f64 reference. Hardware and software Vulkan runs also keep
+the original corner, medium-transition and transport-energy oracles. Floating
+subnormal consumers retain WGSL's permitted handling; backend qualification is
+still required, rather than claiming exact intersection on every WGSL device.
 
 Hit depth also uses an affine base plus local vertex-edge increments. Summing
 three weighted distances can round a distant sharp-rim entry and exit to the

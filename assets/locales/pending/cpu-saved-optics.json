@@ -1,0 +1,42 @@
+{
+  "en": {
+    "render.appearance_editor.discard_saved_edit": "Discard unsaved optical edits",
+    "render.material_cpu_glass_only": "CPU supports certified Glass here; clear-coat and texture maps require GPU path tracing.",
+    "render.material_cpu_optics_limits": "CPU Glass requires a certified planar sheet or axis-aligned box. Transmissive shadows and subsurface scattering are unsupported; authored values are never removed automatically.",
+    "render.material_cpu_saved_runtime_conflict": "Saved CPU optics cannot combine with legacy temporary optical bindings. Save the reviewed optics or remove the conflicting temporary binding.",
+    "render.material_raytrace_required": "Physical Glass requires CPU ray tracing or GPU path tracing.",
+    "render.material_saved_edit_pending": "These optical edits are unsaved. Save reviewed values, remove the saved assignment, or discard the edits. Legacy temporary bindings and unsupported effects cannot override the saved target."
+  },
+  "de": {
+    "render.appearance_editor.discard_saved_edit": "Ungespeicherte Optikänderungen verwerfen",
+    "render.material_cpu_glass_only": "Die CPU unterstützt hier zertifiziertes Glas; Klarlack und Texturkarten benötigen GPU-Pathtracing.",
+    "render.material_cpu_optics_limits": "CPU-Glas benötigt eine zertifizierte ebene Fläche oder achsenparallele Box. Lichtdurchlässige Schatten und Volumenstreuung sind nicht unterstützt; gespeicherte Werte werden nie automatisch entfernt.",
+    "render.material_cpu_saved_runtime_conflict": "Gespeicherte CPU-Optik kann nicht mit temporären optischen Bindungen kombiniert werden. Geprüfte Optik speichern oder die temporäre Bindung entfernen.",
+    "render.material_raytrace_required": "Physikalisches Glas benötigt CPU-Raytracing oder GPU-Pathtracing.",
+    "render.material_saved_edit_pending": "Diese Optikänderungen sind ungespeichert. Geprüfte Werte speichern, die gespeicherte Zuordnung entfernen oder Änderungen verwerfen. Temporäre Bindungen und nicht unterstützte Effekte können das gespeicherte Ziel nicht überschreiben."
+  },
+  "ja": {
+    "render.appearance_editor.discard_saved_edit": "未保存の光学設定の変更を破棄",
+    "render.material_cpu_glass_only": "CPUでは認証済みガラスを使用できます。クリアコートとテクスチャマップにはGPUパストレーシングが必要です。",
+    "render.material_cpu_optics_limits": "CPUガラスには認証済み平面シートまたは軸平行の箱が必要です。透過する影と表面下散乱には未対応です。設定値を自動削除しません。",
+    "render.material_cpu_saved_runtime_conflict": "保存済みCPU光学設定と一時的な光学割り当ては併用できません。確認した設定を保存するか、競合する一時割り当てを削除してください。",
+    "render.material_raytrace_required": "物理ガラスにはCPUレイトレーシングまたはGPUパストレーシングが必要です。",
+    "render.material_saved_edit_pending": "光学設定の変更は未保存です。確認した値を保存するか、保存済み割り当てを削除するか、変更を破棄してください。一時割り当てや未対応の効果で保存済み対象を上書きできません。"
+  },
+  "ko": {
+    "render.appearance_editor.discard_saved_edit": "저장하지 않은 광학 편집 버리기",
+    "render.material_cpu_glass_only": "CPU는 인증된 유리를 지원합니다. 클리어 코트와 텍스처 맵에는 GPU 패스 트레이싱이 필요합니다.",
+    "render.material_cpu_optics_limits": "CPU 유리는 인증된 평면 시트나 축 정렬 상자가 필요합니다. 투과 그림자와 표면하 산란은 지원하지 않으며 작성된 값을 자동 삭제하지 않습니다.",
+    "render.material_cpu_saved_runtime_conflict": "저장된 CPU 광학 설정은 임시 광학 바인딩과 함께 사용할 수 없습니다. 검토한 설정을 저장하거나 충돌하는 임시 바인딩을 제거하세요.",
+    "render.material_raytrace_required": "물리 유리에는 CPU 레이 트레이싱이나 GPU 패스 트레이싱이 필요합니다.",
+    "render.material_saved_edit_pending": "광학 편집을 아직 저장하지 않았습니다. 검토한 값을 저장하거나 저장된 할당을 제거하거나 편집을 버리세요. 임시 바인딩과 지원하지 않는 효과는 저장된 대상을 덮어쓸 수 없습니다."
+  },
+  "zh": {
+    "render.appearance_editor.discard_saved_edit": "放弃未保存的光学编辑",
+    "render.material_cpu_glass_only": "CPU在此支持经过认证的玻璃；清漆和纹理贴图需要GPU路径追踪。",
+    "render.material_cpu_optics_limits": "CPU玻璃需要经过认证的平面薄片或轴对齐盒体。不支持透射阴影和次表面散射，且不会自动删除已设置的值。",
+    "render.material_cpu_saved_runtime_conflict": "已保存的CPU光学设置不能与临时光学绑定组合。请保存已审阅的设置或移除冲突的临时绑定。",
+    "render.material_raytrace_required": "物理玻璃需要CPU光线追踪或GPU路径追踪。",
+    "render.material_saved_edit_pending": "这些光学编辑尚未保存。请保存已审阅的值、移除已保存的分配或放弃编辑。临时绑定和不支持的效果不能覆盖已保存的目标。"
+  }
+}

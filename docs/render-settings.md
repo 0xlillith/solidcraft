@@ -144,7 +144,7 @@ are millimetres, angles are radians and light colours/radiances are linear RGB.
 | Method | Saved fields | Main limits and defaults |
 |---|---|---|
 | `raster` | `transparent_background` | Defaults to false; no nonzero exposure or raytrace controls |
-| `cpu_raytrace` | `options`: optional `progressive`, `primary_samples`, `preset`, `lights`, `punctual_lights`, `area_lights`, `area_samples`, `seed`, `shadows`, constant `environment`, embedded `hdr` | Primary samples 1/4/16 (default 1); shadows true; optional progressive/lists/preset/environment/HDR absent. At most 8 directional, 8 point/spot and 4 rectangular lights; progressive has the narrower contract below. |
+| `cpu_raytrace` | `transparent_background` (default false), `options`: optional `progressive`, `primary_samples`, `preset`, `lights`, `punctual_lights`, `area_lights`, `area_samples`, `seed`, `shadows`, constant `environment`, embedded `hdr`, optional `lens` and `output` presentation | Primary samples 1/4/16 (default 1); shadows true; optional progressive/lists/preset/environment/HDR absent. At most 8 directional, 8 point/spot and 4 rectangular lights; progressive has the narrower contract below. |
 | `gpu_path` | `transparent_background`, `options`: `samples`, `max_depth`, `seed`, `tone_map`, `denoise`, `lens`, `lighting`, sky `environment`, embedded `hdr` | Samples 1..4096 (default 64), depth 1..16 (default 8), seed u32 (default 0), Reinhard tone map, denoise false, optional values absent |
 
 CPU `preset` and explicit `lights` are mutually exclusive. An omitted/null light
@@ -162,12 +162,30 @@ using the existing CPU transport. An absent/null value preserves fixed AA; an
 empty object defaults to 16 samples and seed 0. Samples are 1..64 and the seed is
 u32. `primary_samples` must be 1, output is at most 1,048,576 pixels, and
 `width × height × samples_per_pixel` is at most 16,777,216. Saving checks these
-limits without a render host. Area/LED lights, dielectric and anisotropic-face
-overrides are refused in this mode; the fixed CPU route retains them. Embedded
-HDR and one setup exposure remain compatible. See
+limits without a render host. Rectangular and continuous LED lights retain their
+bounded direct-light integral for each camera sample. Dielectric and anisotropic-face
+overrides retain the existing certified thin-sheet/axis-aligned-box and planar-face
+transport and geometry guards. Embedded HDR and one setup exposure remain compatible. See
 [CPU progressive sampling](render-cpu-progressive.md) for reflection limits,
 work admission and provisional/final publication. The top-level runtime
 `progressive: true` continues to select GPU.
+
+CPU `lens` stores the same `{aperture_radius_mm, focus_distance_mm}` as GPU.
+Positive aperture requires explicit progressive sampling plus a bounded perspective
+setup camera. No second camera is saved; Frame lens edits preserve the saved
+camera and current navigation. Absent/null keeps pinhole behavior; an explicit
+zero aperture remains explicit and keeps the old fixed-AA/orthographic pixels.
+Whole-pupil glass clearance and bounded ray intervals are checked against the
+captured scene at render admission. See [physical thin lens](render-thin-lens.md).
+
+CPU `output` optionally stores `{tone_map, finishing, backdrop, linear_exr}` using
+exactly the shared presentation operators. It has no second exposure/background:
+setup exposure and background remain authoritative. Omission/null preserves the
+original CPU f64 PNG, as does identity presentation with optional raw retention.
+Nonidentity effects apply to every complete progressive pass; only final completion
+retains a raw master. The shared output envelope is 8192 per side and 16,777,216
+pixels, independently of a larger CPU resource profile. See
+[CPU output presentation](render-cpu-output.md).
 
 GPU `lighting` retains the complete RGB ambient radiance, optional sun and at most
 four rectangular lights. Omitted/null lighting keeps the renderer's legacy studio;
@@ -229,8 +247,8 @@ existing runtime request API remains available; it has no inferred CPU/GPU metho
 
 ### Explicit portability boundary
 
-External HDR paths, texture maps, GPU dielectric/clear-coat/texture body bindings and CPU
-reflection, anisotropy, emission, surface-effect and dielectric bindings are not
+External HDR paths, texture maps, temporary GPU clear-coat/texture body bindings and CPU
+reflection, anisotropy, emission and surface-effect bindings are not
 part of this saved job format. Their fields are rejected, even when an unsupported
 list is empty. Runtime requests can still use those existing features with an
 inline setup whose `job` is null. Saving a complete setup must not discard them or
@@ -249,7 +267,8 @@ Named setups live in `render: {setups: {name: setup}, resources?: {sha256: resou
 empty render state is omitted.
 The optional numerical job adds the `render-job-intent` pending format descriptor.
 Embedded HDR adds its own `render-hdr-resources` descriptor.
-The optional CPU sampling field adds `render-cpu-progressive`.
+The optional CPU sampling field adds `render-cpu-progressive`. CPU presentation
+and physical lens intent share the `cpu-output-presentation` pending descriptor.
 No historical format number or migration step is rewritten. Older designs need no
 job transformation: an absent job keeps their common settings and runtime API.
 Pending builds without the descriptor refuse the newer design instead of silently
@@ -274,3 +293,47 @@ the setup stores image configuration, not material assignments.
 
 No new third-party dependency or asset is introduced. `doc` depends on the existing
 pure `render` crate for its shared camera and R1 identifiers, within the L2 → L1 rule.
+
+
+CPU `transparent_background` is stored beside boxed numerical `options`, like
+Raster/GPU, and defaults to false for older designs. True requests straight-alpha
+primary geometry coverage in fixed/progressive PNGs; it does not alter engineering
+appearance opacity or raw EXR. Active bloom, backdrop and photographic operators
+still refuse with transparent output. The existing CPU output pending descriptor
+covers this saved flag. See [transparent CPU PNG](render-cpu-output.md#transparent-png-coverage).
+
+
+## CPU spatial denoising
+
+An explicit CPU job can save `job.options.denoise: true`. The default is false;
+false is omitted from the canonical wire representation, so older CPU setups
+keep their previous image and allocation path. It lowers only to the native
+CPU `raytrace.denoise` option. The corresponding GPU field remains separate.
+
+The optional three-pass filter uses deterministic first-hit geometry guides,
+filters every complete published image pass before presentation, and preserves
+raw film, RNG/sample identity and final-only EXR. Its guide, ping-pong and task
+storage is admitted under the unchanged CPU profile. Filtering shares the
+8192-side/16,777,216-pixel output envelope and never silently reduces size or
+changes the selected executor. Offline validation and save/reopen retain the
+flag without initializing a renderer. See [spatial denoising](render-denoise.md)
+for bypasses, bias, cancellation/work units and retained-master regrade limits.
+
+
+### CPU consumer of portable optics
+
+Stable `optics` rows remain the same saved contract for CPU and GPU. An explicit
+CPU job validates at most eight IOR/Beer targets offline, refuses authored
+transmissive shadows/subsurface and applies its existing strict thin-sheet or
+axis-aligned-box geometry certificate at image admission. A saved general closed
+boundary stays authored as `closed_mesh`; CPU execution requires that exact mesh
+to prove the box subset. No boundary, target, effect or material is silently
+removed to make a job run. See [CPU certified glass](render-raytrace-dielectrics.md).
+Common Glass controls hydrate actual saved numbers without creating a runtime
+override on paint. Their unsaved edits overlay only the selected stable rows in
+captured image settings; Save/replacement and Remove remain explicit document
+commands with one undo. This consumes existing portable fields and adds no format
+number or new design metadata.
+
+
+The optional [CPU opaque path lighting](render-cpu-path.md) consumer is part of the combined source and has executed renderer regressions. It adds bounded progressive diffuse/specular GI only when `path` is authored; existing restrictions and bytes above describe the absent-path route. Mixed glass/anisotropy/volume parity and combined document/engine/UI/native qualification remain incomplete.

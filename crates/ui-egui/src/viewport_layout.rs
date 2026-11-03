@@ -3,7 +3,7 @@ use egui::{Rect, pos2, vec2};
 use solidcraft_engine::geom::{Aabb3, Vec3};
 use solidcraft_engine::render::Camera;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Layout {
     pub viewport: Rect,
     pub drawable: Rect,

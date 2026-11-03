@@ -179,12 +179,12 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
     let mut hdr = None;
     let mut lowered = match job {
         RenderJob::Raster { transparent_background } => json!({"transparent_background":transparent_background}),
-        RenderJob::CpuRaytrace { options } => {
+        RenderJob::CpuRaytrace { options, transparent_background } => {
             hdr = options.hdr.map(SavedHdr::Cpu);
             let raytrace = options.to_runtime(settings.exposure_ev).map_err(|e| bad(command, e.to_string()))?;
             // The legacy CPU path reads EV from RaytraceOptions. There is one saved authority.
             settings.exposure_ev = 0.0;
-            json!({"integrator":"raytrace","raytrace":raytrace})
+            json!({"integrator":"raytrace","raytrace":raytrace,"transparent_background":transparent_background})
         }
         RenderJob::GpuPath { transparent_background, options } => {
             hdr = options.hdr.map(SavedHdr::Gpu);
@@ -216,7 +216,9 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     if params.get("progressive").and_then(Value::as_bool) == Some(true) {
         let hdr = match saved_hdr {
             Some(SavedHdr::Gpu(hdr)) => Some(*hdr),
-            Some(SavedHdr::Cpu(_)) => return Err(bad(command, "saved CPU HDR cannot enter a GPU request")),
+            Some(SavedHdr::Cpu(_)) => {
+                return Err(bad(command, "saved CPU HDR cannot enter a GPU request"));
+            }
             None => None,
         };
         return prepare_progressive(
@@ -269,9 +271,6 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     if input.integrator == Integrator::Raster && input.raytrace.is_some() {
         return Err(bad(command, "raytrace options require integrator: raytrace"));
     }
-    if input.integrator == Integrator::Raytrace && input.transparent_background {
-        return Err(bad(command, "raytrace supports opaque backgrounds only"));
-    }
     if let Some(options) = &input.raytrace {
         options.retained_bytes().map_err(job_error)?;
         options.budget.validate_execution().map_err(job_error)?;
@@ -286,6 +285,21 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
             (defaults.width, defaults.height)
         };
         options.budget.validate_image(dimensions.0, dimensions.1, options.progressive).map_err(job_error)?;
+        if let Some(lens) = options.lens {
+            let camera = input
+                .setup
+                .as_ref()
+                .and_then(|name| s.doc.render.setups.get(name))
+                .map(|setup| setup.camera)
+                .or_else(|| input.settings.as_ref().map(|setup| setup.camera))
+                .or(s.camera)
+                .unwrap_or_default();
+            lens.validate_camera(&camera).map_err(job_error)?;
+        }
+        if let Some(output) = &options.output {
+            output.validate_image(dimensions.0, dimensions.1).map_err(job_error)?;
+            output.presentation(options.exposure_ev, [0; 3], input.transparent_background).validate().map_err(job_error)?;
+        }
     }
     let environment = if let Some(saved_hdr) = saved_hdr {
         let SavedHdr::Cpu(hdr) = saved_hdr else {
@@ -336,6 +350,14 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
         None
     };
     let mut scene = crate::product_scene::extract(s)?;
+    if let Some(bindings) = normalized.as_ref().map(|normalized| &normalized.optics).filter(|bindings| !bindings.is_empty()) {
+        let options = input.raytrace.as_mut().ok_or_else(|| bad(command, "saved CPU optics require a CPU raytrace request"))?;
+        if !options.dielectrics.is_empty() {
+            return Err(bad(command, "saved optics cannot combine with runtime dielectric overrides"));
+        }
+        options.dielectrics = super::optical_bindings::resolve_cpu(s, &scene, bindings, command)?;
+        options.validate().map_err(job_error)?;
+    }
     if environment.is_some() {
         input.raytrace.as_ref().unwrap_or(&RaytraceOptions::default()).validate_environment_reflections(&scene).map_err(job_error)?;
     }
@@ -437,9 +459,26 @@ fn prepare(s: &Session, params: &Value, command: &str) -> Result<Prepared> {
     let transparency = match input.integrator {
         Integrator::Raster => "sorted_alpha_approximation",
         Integrator::Raytrace if refraction => "physical_transmission",
+        Integrator::Raytrace if input.transparent_background => "coverage_alpha",
         Integrator::Raytrace => "opaque_only",
     };
-    let reply = json!({"ignored_controls":ignored,"stage_panels":settings.stage.len(),"stage_transport":"CPU direct/specular only; no diffuse interreflection", "cpu_budget":budget,"cpu_limits":budget.limits(),"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
+    let stage_transport = if request.raytrace.as_ref().is_some_and(|options| options.path.is_some()) {
+        "CPU finite-depth opaque diffuse/specular path lighting"
+    } else {
+        "CPU direct/specular only; no diffuse interreflection"
+    };
+    let mut reply = json!({"ignored_controls":ignored,"stage_panels":settings.stage.len(),"stage_transport":stage_transport, "cpu_budget":budget,"cpu_limits":budget.limits(),"environment":environment_info,"retained_request_bytes":retained_request_bytes,"resolved":resolved,"admission":admission,"request":request,"scene_generation":s.revision,"host":host.kind(),"transparency":transparency,"refraction":refraction,"dielectric_boundaries":if refraction {vec!["thin_sheet","closed_box"]} else {Vec::<&str>::new()}});
+    if request.raytrace.as_ref().is_some_and(|options| options.denoise) {
+        reply["denoising"] = json!({
+            "method":"edge_aware_atrous", "backend":"native_cpu", "passes":3, "steps":[1,2,4],
+            "guides":"deterministic_center_ray_albedo_normal_camera_relative_position_depth",
+            "bypass":"glass, sharp CPU mirror overrides, smooth metal/coat, emitter, background and partial coverage first hits",
+            "limitation":"biased spatial filter; first-hit guides do not reconstruct reflection/refraction or depth-of-field correspondences",
+            "raw_linear_accumulator_preserved":true,"raw_linear_exr_preserved":true,
+            "output_stage":"linear_before_tone_map", "work_units":"one pixel visit per pass, each with at most 25 taps",
+            "checkpoints":"every complete published pass uses the same filter"
+        });
+    }
     Ok(Prepared { replace: input.replace, scene, request, reply, environment, executor: resolved.executor, options: Default::default() })
 }
 
@@ -633,7 +672,7 @@ fn prepare_progressive(
         .filter(|bytes| *bytes <= host.job_limit_bytes())
         .ok_or_else(|| bad(command, "GPU work and retained metadata exceed the per-job limit"))?;
     let refraction = input.progressive && scene.has_transmission();
-    let reply = json!({"stage_panels":settings.stage.len(),"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
+    let reply = json!({"stage_panels":settings.stage.len(),"resolved":resolved,"admission":admission,"request":request,"textures":request.textures.as_ref().map(|resources|resources.summary()),"scene_generation":s.revision,"host":host.kind(),"transparency":if refraction {"physical_transmission"} else if input.transparent_background {"coverage_alpha"} else if input.progressive {"opaque_only"} else {"sorted_alpha_approximation"},"options":options,"environment":request.environment.as_ref().map(|source|source.info()),"refraction":refraction,"dielectric_boundaries": if resolved.executor.as_str() == "gpu-path" {vec!["thin_sheet","closed_box","closed_mesh"]} else {Vec::<&str>::new()}});
     let mut reply = reply;
     if options.denoise {
         reply["denoising"] = json!({

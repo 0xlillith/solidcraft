@@ -1273,6 +1273,11 @@ impl SolveApp {
             if id == "view.render_inspector" {
                 render_workspace::set_inspector_visible(self, v.get("visible").and_then(Value::as_bool).unwrap_or(true));
             }
+            if id == "view.render_live"
+                && let Some(paused) = v.get("paused").and_then(Value::as_bool)
+            {
+                render_workspace::live::set_paused(self, paused);
+            }
             if id == "view.render_browser" {
                 render_workspace::apply_browser_controls(self, v);
             }
@@ -2575,6 +2580,11 @@ impl SolveApp {
 
     fn resolve_fit(&mut self, ctx: &egui::Context) {
         viewport::refresh_layout(self, ctx);
+        if self.fit_waits < Self::FIT_WAITS && render_workspace::wait_entry_fit_layout(self) {
+            self.fit_waits += 1;
+            ctx.request_repaint();
+            return;
+        }
         if self.viewport.layout.is_some()
             && let Some((cam, bounds, animate, shared)) = self.pending_fit.take()
         {
@@ -2598,7 +2608,9 @@ impl SolveApp {
                     self.pending_fit = Some((cam, bounds, animate, shared));
                 } else {
                     self.fit_waits = 0;
+                    let previous = self.cam;
                     self.cam = self.fitted_bounds(cam, &want);
+                    render_workspace::settle_entry_fit(self, cam, bounds, previous);
                 }
                 ctx.request_repaint();
                 return;
@@ -2607,8 +2619,10 @@ impl SolveApp {
             if animate {
                 self.animate_to(to);
             } else {
+                let previous = self.cam;
                 self.cam = to;
                 self.cam_anim = None;
+                render_workspace::settle_entry_fit(self, cam, bounds, previous);
                 // An open's framing settles here, once the layout is known. An open still meshing
                 // takes this as the camera it framed from the outlines, so the framing it does
                 // when the last body is ready isn't mistaken for the user having moved the view.
@@ -2764,6 +2778,7 @@ impl SolveApp {
 
     /// Stop any view animation where it is (the user took over the camera).
     pub fn cancel_view_animation(&mut self) {
+        render_workspace::cancel_entry_fit(self);
         self.pending_fit = None;
         self.cam_anim = None;
     }

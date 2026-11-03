@@ -28,7 +28,10 @@ pub enum RenderJob {
     },
     CpuRaytrace {
         #[serde(default)]
-        options: CpuJob,
+        transparent_background: bool,
+        // Keep numerical CPU intent out of every raster/GPU enum value too.
+        #[serde(default)]
+        options: Box<CpuJob>,
     },
     GpuPath {
         #[serde(default)]
@@ -44,7 +47,19 @@ impl RenderJob {
         match self {
             Self::Raster { .. } if exposure_ev != 0.0 => Err(DocError::Invalid("saved raster rendering requires exposure_ev: 0".into())),
             Self::Raster { .. } => Ok(()),
-            Self::CpuRaytrace { options } => options.to_runtime(exposure_ev).map(|_| ()),
+            Self::CpuRaytrace { options, transparent_background } => {
+                options.to_runtime(exposure_ev)?;
+                if let Some(output) = &options.output {
+                    output
+                        .presentation(exposure_ev, [0; 3], *transparent_background)
+                        .validate()
+                        .map_err(|error| DocError::Invalid(error.to_string()))?;
+                }
+                if let Some(lens) = options.lens {
+                    lens.validate_camera(camera).map_err(|error| DocError::Invalid(error.to_string()))?;
+                }
+                Ok(())
+            }
             Self::GpuPath { options, transparent_background } => {
                 if *transparent_background && options.backdrop.is_some() {
                     return Err(DocError::Invalid("choose a camera backdrop or transparent PNG, not both".into()));
@@ -67,6 +82,14 @@ impl RenderJob {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CpuJob {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<solidcraft_render::job::CpuPathOptions>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub denoise: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<ThinLens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<Box<solidcraft_render::job::OutputOptions>>,
     #[serde(skip_serializing_if = "CpuBudget::is_compact")]
     pub budget: CpuBudget,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +117,10 @@ pub struct CpuJob {
 impl Default for CpuJob {
     fn default() -> Self {
         Self {
+            denoise: false,
+            path: None,
+            lens: None,
+            output: None,
             budget: CpuBudget::Compact,
             progressive: None,
             primary_samples: 1,
@@ -129,6 +156,10 @@ impl CpuJob {
         // a light family that is explicitly absent. This does not rewrite the file.
         let active_area = self.area_lights.as_ref().is_some_and(|lights| !lights.is_empty());
         let options = RaytraceOptions {
+            denoise: self.denoise,
+            path: self.path,
+            lens: self.lens,
+            output: self.output.clone(),
             budget: self.budget,
             progressive: self.progressive,
             primary_samples: self.primary_samples,

@@ -75,6 +75,18 @@ impl Default for View {
     }
 }
 
+/// CPU and GPU editors share presentation intent; CPU transport options remain independent.
+/// Preserve an explicitly saved identity object instead of erasing it on an unedited reload.
+pub(super) fn cpu_output(view: &super::ViewState) -> Option<Box<solidcraft_engine::render::job::OutputOptions>> {
+    let settings = solidcraft_engine::render::job::OutputOptions {
+        tone_map: view.studio.tone_map,
+        finishing: view.studio.finishing,
+        backdrop: view.studio.backdrop_enabled.then_some(view.studio.backdrop),
+        linear_exr: view.studio.linear_exr,
+    };
+    if settings == Default::default() && view.raytrace.output.is_none() { None } else { Some(Box::new(settings)) }
+}
+
 pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
     let view = &app.render_workspace.view.studio;
     params["tone_map"] = json!(view.tone_map);
@@ -415,22 +427,24 @@ pub(super) fn export_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::scenario::publish_target("render:export-format", response.rect);
 }
 pub(super) fn format_choices(app: &mut SolveApp, ui: &mut egui::Ui) -> egui::Response {
+    let available = linear_export_available(app);
     ui.scope(|ui| {
-        let reason = app.tr("render.output_exr_unavailable");
+        let reason = app.tr("render.output_master_unavailable");
         let mut format = usize::from(app.render_workspace.view.studio.export_exr);
         if ui_kit::segmented(
             ui,
             &mut format,
             &["PNG", "EXR"],
             ui_kit::Segments {
-                disabled_reasons: &[None, Some(reason)],
+                disabled_reasons: &[None, (!available).then_some(reason)],
+                targets: &["render:format-png", "render:format-exr"],
                 workspace_accent: true,
                 intrinsic: true,
                 compact: true,
                 ..Default::default()
             },
         ) {
-            app.render_workspace.view.studio.export_exr = false;
+            app.render_workspace.view.studio.export_exr = format == 1;
         }
     })
     .response

@@ -574,6 +574,34 @@ fn main_inlines_few_bvh_walks() {
 }
 
 #[test]
+fn geometry_materialization_lane_keeps_positive_zero_at_the_shader_offset() {
+    let Some(executor) = executor() else { return };
+    let module = naga::front::wgsl::parse_str(SHADER).unwrap();
+    let params = module.types.iter().find(|(_, ty)| ty.name.as_deref() == Some("Params")).unwrap().1;
+    let naga::TypeInner::Struct { members, .. } = &params.inner else { panic!("Params must be a struct") };
+    let offset = members.iter().find(|member| member.name.as_deref() == Some("studio_weights")).unwrap().offset as usize + 12;
+    let mut task = Task::new(
+        executor.context,
+        ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY },
+        request(1),
+        JobOptions::default(),
+        CancelToken::default(),
+    )
+    .unwrap();
+    for weights in [None, Some([0.0; 3]), Some([1.0, 0.5, 0.25])] {
+        task.request.studio_weights = weights;
+        for sample in [0, 1, 4095] {
+            task.sample = sample;
+            let bytes = task.parameters(1);
+            assert_eq!(&bytes[offset..offset + 4], &0u32.to_le_bytes(), "reserved arithmetic lane must remain positive zero");
+        }
+    }
+    task.request.studio_weights = None;
+    task.options.lighting = Some(solidcraft_render::job::StudioLighting { environment: [0.75; 3], ..Default::default() });
+    assert_eq!(&task.parameters(1)[offset..offset + 4], &0u32.to_le_bytes());
+}
+
+#[test]
 fn render_lights_path_visibility_uniform_keeps_the_shader_contract() {
     shader_validates_without_a_device();
     let request = request(4);
@@ -2663,6 +2691,95 @@ fn gpu_rib_total_internal_reflection_retains_origin_residual() {
     }
 }
 #[test]
+fn gpu_split_products_reconstruct_exact_products_and_near_determinants() {
+    use wgpu::util::DeviceExt;
+    let Some(executor) = executor() else { return };
+    let context = &executor.context;
+    let unit = 0x3f800000u32;
+    let c = unit | (13_264_529 - (1 << 23));
+    let d = unit | (2351 * 4513 - (1 << 23));
+    let mut cases =
+        vec![[0x40000000, unit, c, d], [c, d, 0x40000000, unit], [unit, 0x40000000, 0x40000000, unit], [unit + 1, unit + 1, unit, unit + 2]];
+    let mut state = 0x11c731u32;
+    let mut next = || {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        state
+    };
+    while cases.len() < 4096 {
+        let a = f32::from_bits(((110 + next() % 41) << 23) | (next() & 0x7fffff));
+        let b = f32::from_bits(((110 + next() % 41) << 23) | (next() & 0x7fffff));
+        let c = f32::from_bits(((110 + next() % 41) << 23) | (next() & 0x7fffff));
+        let d = (f64::from(a) * f64::from(b) / f64::from(c)) as f32;
+        cases.push([a.to_bits(), b.to_bits(), c.to_bits(), d.to_bits()]);
+    }
+    for [a, b, c, d] in cases.clone() {
+        cases.push([a ^ 0x80000000, b, c ^ 0x80000000, d]);
+    }
+    assert_eq!(cases.len(), 8192);
+    let mut bytes = Vec::with_capacity(4 + cases.len() * 16);
+    bytes.extend((cases.len() as u32).to_le_bytes());
+    for case in &cases {
+        for word in case {
+            bytes.extend(word.to_le_bytes());
+        }
+    }
+    let input = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("split determinant inputs"),
+        contents: &bytes,
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let shader = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("split determinant oracle"),
+        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+    });
+    let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: None,
+        module: &shader,
+        entry_point: Some("split_predicate_reference"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let mut task = Task::new(context.clone(), glass_slab(false), request(128), JobOptions::default(), CancelToken::default()).unwrap();
+    context.queue.write_buffer(&task.uniform, 0, &task.parameters(0));
+    let bind = context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("split determinant oracle"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: task.uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: input.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: task.accumulation.as_entire_binding() },
+        ],
+    });
+    let mut encoder = context.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups((cases.len() as u32).div_ceil(32), 1, 1);
+    }
+    context.queue.submit([encoder.finish()]);
+    task.sample = 1;
+    let values = task.read_linear().unwrap();
+    let word = |low: f32, high: f32| low as u32 | ((high as u32) << 16);
+    let value = |bits| f64::from(f32::from_bits(bits));
+    let normalized = |bits| value((bits & 0x807fffff) | 0x3f800000);
+    for (index, ([a, b, c, d], output)) in cases.iter().zip(values.as_chunks::<2>().0).enumerate() {
+        let product = value(word(output[0][0], output[0][1]));
+        let error = value(word(output[0][2], output[0][3]));
+        assert_eq!(product + error, normalized(*a) * normalized(*b), "exact split product index={index}");
+        let expected = (value(*a) * value(*b) - value(*c) * value(*d)) as f32;
+        for got in [word(output[1][0], output[1][1]), word(output[1][2], output[1][3])] {
+            if expected == 0.0 {
+                assert_eq!(f32::from_bits(got), 0.0, "zero determinant index={index}");
+            } else {
+                assert_eq!(got, expected.to_bits(), "split determinant index={index}, operands={a:08x}/{b:08x}/{c:08x}/{d:08x}");
+            }
+        }
+    }
+}
+
+#[test]
 fn gpu_integer_binary32_add_sub_matches_hardware_bits() {
     use wgpu::util::DeviceExt;
     let Some(executor) = executor() else { return };
@@ -3380,6 +3497,58 @@ fn actual_first_gpu_quantum_is_small_and_cancellation_retains_no_completed_image
 }
 
 #[test]
+fn production_path_workgroup_matches_the_host_dispatch_contract() {
+    let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|error| panic!("{}", error.emit_to_string(SHADER)));
+    let main = module.entry_points.iter().find(|entry| entry.name == "main").unwrap();
+    assert_eq!(main.workgroup_size, [PATH_WORKGROUP_SIZE, 1, 1]);
+}
+
+#[test]
+fn actual_gpu_dispatch_visits_workgroup_tails_and_only_the_current_tile() {
+    let Some(executor) = executor() else { return };
+    for width in [1, 31, 32, 33, 63, 64, 65, 129] {
+        let image = ImageRequest { width, height: 1, ..request(1) };
+        let mut task = Task::new(
+            executor.context.clone(),
+            ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY },
+            image,
+            JobOptions { samples: 2, ..Default::default() },
+            CancelToken::default(),
+        )
+        .unwrap();
+        // The numerical furnace produces an exact nonzero value even on a miss. A skipped
+        // invocation therefore cannot masquerade as a valid zero/background pixel.
+        task.environment = 1.0;
+        task.studio = 0.0;
+        task.complete_sample().unwrap();
+        assert_eq!(task.sample, 1);
+        assert_eq!(task.offset, 0);
+        assert_eq!(
+            task.read_linear().unwrap(),
+            vec![[1.0, 1.0, 1.0, 0.0]; width as usize],
+            "every first-pass pixel, including a partial workgroup, must be written: width={width}"
+        );
+        if width == 129 {
+            for prefix in [64, 128, 129] {
+                task.dispatch_budget = dispatch::Budget::default();
+                task.dispatch().unwrap();
+                let actual = task.read_linear().unwrap();
+                if prefix < width {
+                    assert_eq!((task.sample, task.offset), (1, prefix));
+                    for (index, pixel) in actual.iter().enumerate() {
+                        let value = if index < prefix as usize { 2.0 } else { 1.0 };
+                        assert_eq!(*pixel, [value, value, value, 0.0], "dispatch may update only its own tile: prefix={prefix}, pixel={index}");
+                    }
+                } else {
+                    assert_eq!((task.sample, task.offset), (2, 0));
+                    assert_eq!(actual, vec![[1.0, 1.0, 1.0, 0.0]; width as usize]);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn real_device_loss_retires_the_executor_and_the_sessions_cached_availability() {
     use solidcraft_engine::Session;
     let Some(executor) = executor() else { return };
@@ -3400,4 +3569,202 @@ fn real_device_loss_retires_the_executor_and_the_sessions_cached_availability() 
     assert_eq!(host.admit(&scene, &request(1), JobOptions::default()).unwrap_err().code, ErrorCode::HostUnavailable);
     let backend = session.render_backend();
     assert!(backend.executors.iter().any(|d| d.id.as_str() == "gpu-path" && matches!(d.availability, Availability::Unavailable { .. })));
+}
+
+#[test]
+fn fixed_gpu_previews_match_complete_prefixes_with_finishing_and_final_exr() {
+    let Some(executor) = executor() else { return };
+    let scene = sphere_grid(white(), 8, 16);
+    let request = request(8);
+    let options = JobOptions {
+        samples: 4,
+        max_depth: 3,
+        seed: 47,
+        transmission_samples: 2,
+        linear_exr: true,
+        finishing: solidcraft_render::job::finishing::Finishing {
+            rgb_gain: [1.2, 0.9, 1.1],
+            contrast: 1.1,
+            bloom: Some(solidcraft_render::job::bloom::Bloom { strength: 0.25, threshold: 0.1, radius: 1 }),
+            photographic: solidcraft_render::job::photographic::Photographic { grain: 0.01, seed: 17, ..Default::default() },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let admitted = executor.admit(&scene, &request, options).unwrap();
+    let slot_bytes = u64::from(request.width) * u64::from(request.height) * 8 + 65_536 + 1024;
+    assert_eq!(admitted.encoded_limit + 1024, slot_bytes, "GPU encoder and shared preview slots use the same bound");
+    let host = ImageHost::with_executor(Arc::new(Executor { context: executor.context.clone() })).unwrap();
+    assert_eq!(host.admit(&scene, &request, options).unwrap().estimated_total_bytes, admitted.estimated_total_bytes + 2 * slot_bytes + 1024);
+    let mut task = Task::new(executor.context.clone(), scene.clone(), request.clone(), options, CancelToken::default()).unwrap();
+    task.preview_enabled = true;
+    let mut previews = Vec::new();
+    let mut final_png = None;
+    for _ in 0..10_000 {
+        let poll = task.step(4096).unwrap();
+        if let Some(preview) = task.take_preview() {
+            assert!(matches!(poll, TaskPoll::Pending(_)));
+            assert!(task.exr.is_none(), "provisional output must not create a raw master");
+            previews.push(preview);
+        }
+        if let TaskPoll::Complete(png) = poll {
+            final_png = Some(png);
+            break;
+        }
+    }
+    assert_eq!(previews.iter().map(|p| p.samples_per_pixel).collect::<Vec<_>>(), [1, 2, 3]);
+    for preview in previews {
+        let mut prefix = Task::new(
+            executor.context.clone(),
+            scene.clone(),
+            request.clone(),
+            JobOptions { samples: preview.samples_per_pixel, ..options },
+            CancelToken::default(),
+        )
+        .unwrap();
+        let mut expected = None;
+        for _ in 0..10_000 {
+            if let TaskPoll::Complete(png) = prefix.step(4096).unwrap() {
+                expected = Some(png);
+                break;
+            }
+        }
+        assert_eq!(Some(preview.png), expected, "provisional effects must match the same complete sample prefix");
+    }
+    assert!(final_png.is_some());
+    let master = task.take_linear_exr().unwrap();
+    let mut reference = Task::new(executor.context.clone(), scene, request, options, CancelToken::default()).unwrap();
+    let mut reference_png = None;
+    for _ in 0..10_000 {
+        if let TaskPoll::Complete(png) = reference.step(4096).unwrap() {
+            reference_png = Some(png);
+            break;
+        }
+    }
+    assert_eq!(final_png, reference_png, "publishing previews cannot change final presentation");
+    assert_eq!(Some(master), reference.take_linear_exr(), "provisional effects cannot alter the raw master");
+}
+
+#[test]
+fn adaptive_gpu_checkpoint_target_includes_pilots_without_disabling_final_rendering() {
+    let Some(executor) = executor() else { return };
+    let options = JobOptions {
+        samples: 16,
+        adaptive: Some(solidcraft_render::job::adaptive::AdaptiveSampling { pilot_samples: 16, min_samples: 16, ..Default::default() }),
+        ..Default::default()
+    };
+    assert_eq!(executor.preview_samples(options), Some(32));
+    assert!(executor.preview_unavailable_reason(options).is_none());
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let job = host
+        .submit_with_options(
+            solidcraft_render::job::JobId { session: 9023, serial: 1, generation: 1 },
+            57,
+            ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY },
+            request(2),
+            options,
+        )
+        .unwrap();
+    assert!(job.status().unwrap().preview_unavailable_reason.is_none());
+    let status = job.wait_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Completed, "{:?}", status.error);
+    assert!(job.preview().unwrap().is_none());
+    assert!(job.frame().unwrap().is_some());
+}
+
+#[test]
+fn gpu_ui_box_coat_and_color_map_keep_every_raw_sample_finite() {
+    use image::ImageEncoder;
+    use serde_json::json;
+    use solidcraft_render::{
+        clear_coat::ClearCoat,
+        job::textures::{PlanarFrame, RuntimeTextures, TextureBinding, TextureMap},
+        surface::srgb8_to_linear,
+        texture_input::MapRole,
+    };
+    let Some(executor) = executor() else { return };
+    let mut session = solidcraft_engine::Session::default();
+    session.execute("solid.box", &json!({"length":10,"width":20,"height":5})).unwrap();
+    let captured = solidcraft_engine::product_scene::extract(&session).unwrap();
+    assert_eq!(captured.meshes.len(), 1);
+    let mut encoded_map = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded_map).write_image(&[80, 160, 220, 255], 1, 1, image::ExtendedColorType::Rgba8).unwrap();
+    let color_map = TextureMap::new(encoded_map, MapRole::BaseColor).unwrap();
+    // Retain the exact camera and request from the UI failure. This exercises
+    // the production `main` entry point, not only the BRDF reference kernels.
+    let camera = Camera {
+        target: Vec3::new(10.525041892255036, 11.6661345783332, -1.3589073139218368),
+        yaw: -std::f64::consts::FRAC_PI_4,
+        pitch: 0.6154797086703874,
+        roll: 0.0,
+        distance: 61.06594959585294,
+        fov: 0.0,
+        up: solidcraft_render::UpAxis::Z,
+    };
+    let options: JobOptions = serde_json::from_value(json!({
+        "samples":4,"max_depth":3,"seed":7,"exposure_ev":0.5,"tone_map":"aces_fitted",
+        "lens":{"aperture_radius_mm":0.0,"focus_distance_mm":100.0},
+        "lighting":{"environment":[0.75,0.75,0.75],"sun":null,"area_lights":[]}
+    }))
+    .unwrap();
+    for (coated, mapped) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut source = captured.clone();
+        if coated {
+            let coat = ClearCoat::new(1.0, 0.12, 1.5).unwrap();
+            let body = &mut source.meshes[0];
+            let coat_surface = |color: [u8; 3], surface: Option<OpaqueSurface>| {
+                let [r, g, b] = color.map(srgb8_to_linear);
+                surface.unwrap_or_else(|| OpaqueSurface::new(Vec3::new(r, g, b), 0.0, 0.5, 1.5).unwrap()).with_clear_coat(coat)
+            };
+            body.surface = Some(coat_surface(body.color, body.surface));
+            for face in &mut body.faces {
+                face.surface = Some(coat_surface(face.color, face.surface));
+            }
+        }
+        let textures = mapped.then(|| {
+            Arc::new(
+                RuntimeTextures::new(vec![TextureBinding {
+                    body_index: 0,
+                    body_name: source.meshes[0].name.clone(),
+                    frame: PlanarFrame { origin: [0.0; 3], u: [10.0, 0.0, 0.0], v: [0.0, 10.0, 0.0] },
+                    normal_strength: 1.0,
+                    base_color: Some(color_map.clone()),
+                    normal: None,
+                    roughness: None,
+                    metallic: None,
+                    base_color_mode: Default::default(),
+                    flip_v: false,
+                }])
+                .unwrap(),
+            )
+        });
+        let input = ImageRequest { camera, background: [236, 240, 245], textures, ..request(16) };
+        let mut task = Task::new(executor.context.clone(), source, input, options, CancelToken::default()).unwrap();
+        for sample in 1..=options.samples {
+            task.complete_sample().unwrap();
+            let pixels = task.read_linear().unwrap_or_else(|error| panic!("coat={coated}, map={mapped}, sample={sample}: {error}"));
+            assert_eq!(pixels.len(), 256);
+            assert!(pixels.iter().flatten().all(|value| value.is_finite() && *value >= 0.0));
+            assert!(pixels.iter().all(|pixel| pixel[3] <= 1.0));
+            assert!(pixels.iter().any(|pixel| pixel[3] > 0.0 && pixel[..3].iter().any(|value| *value > 0.0)), "the fixture must shade the box");
+            // A diagnostic fingerprint for comparing the same test with and
+            // without shader instrumentation; not a cross-device golden.
+            let fingerprint = pixels
+                .iter()
+                .flatten()
+                .flat_map(|value| value.to_bits().to_le_bytes())
+                .fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3));
+            eprintln!("UI box raw float fingerprint coat={coated} map={mapped} sample={sample}: {fingerprint:016x}");
+        }
+        let mut completed = None;
+        for _ in 0..10_000 {
+            if let TaskPoll::Complete(png) = task.step(4096).unwrap() {
+                completed = Some(png);
+                break;
+            }
+        }
+        let image = image::load_from_memory(&completed.expect("bounded GPU box render must produce its final PNG")).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (16, 16));
+        assert!(image.pixels().any(|pixel| pixel.0 != image.get_pixel(0, 0).0));
+    }
 }

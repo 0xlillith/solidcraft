@@ -55,6 +55,9 @@ fn handled(id: &str) -> bool {
 }
 
 pub(super) fn busy(app: &SolveApp) -> bool {
+    if super::live::final_pending(app) {
+        return true;
+    }
     let queue = app.session.render_queue_state();
     if queue.running != 0 || queue.waiting != 0 {
         return true;
@@ -148,11 +151,31 @@ pub(super) fn command_info(app: &SolveApp, command: &CommandSpec) -> CommandInfo
 /// No action falls back to a default executor, saved shot or a different result.
 pub(super) fn perform_job(app: &mut SolveApp, id: &str) -> Result<(), String> {
     action_ready(app, id)?;
-    match id {
-        "render.batch" => {
-            let request = super::image_params(app)?;
-            app.run(id, json!({"request":request}))?;
+    if matches!(id, "render.start" | "render.batch" | "render.result.regrade") {
+        let params = match id {
+            "render.batch" => json!({"request":super::image_params(app)?}),
+            "render.result.regrade" => {
+                let source = app.render_workspace.view.completed.ok_or_else(|| app.tr("render.ribbon_no_result").to_string())?;
+                json!({"job":source,"presentation":presentation(app)})
+            }
+            _ => super::image_params(app)?,
+        };
+        let pending = PendingFinal {
+            action: id.into(),
+            params,
+            document: std::sync::Arc::downgrade(&app.session.doc),
+            revision: app.session.revision,
+            model: std::sync::Arc::downgrade(&app.session.model.state()),
+            moves: app.session.pending_moves.clone(),
+            shot: app.render_workspace.view.name.clone(),
+            visual: final_visual(app),
+        };
+        if super::live::defer_final(app, pending.clone()) {
+            return Ok(());
         }
+        return submit_deferred(app, pending);
+    }
+    match id {
         "render.preflight" => {
             let request = super::image_params(app)?;
             let reply = match app.run(id, request.clone()) {
@@ -166,26 +189,14 @@ pub(super) fn perform_job(app: &mut SolveApp, id: &str) -> Result<(), String> {
             inspector::record_check(app, &request, &reply);
             app.set_status(app.tr("render.image_supported").to_string(), false);
         }
-        "render.start" => {
-            let request = super::image_params(app)?;
-            let reply = app.run(id, request)?;
-            let job = serde_json::from_value(reply["job"].clone())
-                .map_err(|e| crate::i18n::format("render.error_job_identity", &[("error", &e.to_string())]))?;
-            app.render_workspace.view.job = Some(job);
-            app.render_workspace.view.job_shot = Some(app.render_workspace.view.name.clone());
-        }
         "render.result.copy" => {
             let job = app.render_workspace.view.completed.ok_or_else(|| app.tr("render.ribbon_no_result").to_string())?;
             app.run(id, json!({"job":job}))?;
         }
-        "render.result.regrade" => {
-            let source = app.render_workspace.view.completed.ok_or_else(|| app.tr("render.ribbon_no_result").to_string())?;
-            let reply = app.run(id, json!({"job":source,"presentation":presentation(app)}))?;
-            let job = serde_json::from_value(reply["job"].clone())
-                .map_err(|error| crate::i18n::format("render.error_regrade_identity", &[("error", &error.to_string())]))?;
-            app.render_workspace.view.job = Some(job);
-        }
         "render.cancel" => {
+            if super::live::cancel_final(app) {
+                return Ok(());
+            }
             let job = app
                 .session
                 .render_queue_state()
@@ -203,6 +214,79 @@ pub(super) fn perform_job(app: &mut SolveApp, id: &str) -> Result<(), String> {
                 super::export_image(app, job, overwrite);
             }
         }
+        _ => return Err(crate::i18n::tr("render.error_job_action").into()),
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+pub(super) struct PendingFinal {
+    action: String,
+    params: serde_json::Value,
+    document: std::sync::Weak<solidcraft_engine::doc::Document>,
+    revision: u64,
+    model: std::sync::Weak<solidcraft_engine::doc::ModelState>,
+    moves: std::collections::BTreeMap<u64, solidcraft_engine::doc::Mat>,
+    shot: String,
+    visual: serde_json::Value,
+}
+fn final_visual(app: &SolveApp) -> serde_json::Value {
+    json!({"request":super::image_request(app).ok(),"presentation":presentation(app),
+        "hidden_bodies":app.session.visibility.hidden_bodies,"hidden_occurrences":app.session.visibility.hidden_occurrences})
+}
+/// Submit the exact click-time request only after live capture/work has released its leases.
+/// This bypasses the pending action's own busy flag, never its captured source guard.
+pub(super) fn submit_deferred(app: &mut SolveApp, pending: PendingFinal) -> Result<(), String> {
+    // A command or automation may have submitted an original-session job while the
+    // live job drained. Never preempt it or bypass normal final-job priority.
+    if busy(app) {
+        return Err(app.tr("render.ribbon_job_active").into());
+    }
+    if !std::sync::Weak::ptr_eq(&pending.document, &std::sync::Arc::downgrade(&app.session.doc))
+        || pending.revision != app.session.revision
+        || !std::sync::Weak::ptr_eq(&pending.model, &std::sync::Arc::downgrade(&app.session.model.state()))
+        || pending.moves != app.session.pending_moves
+        || pending.shot != app.render_workspace.view.name
+        || pending.visual != final_visual(app)
+    {
+        return Err(app.tr("render.live.final_changed").into());
+    }
+    let id = pending.action.as_str();
+    match id {
+        "render.batch" => {
+            app.run(id, pending.params)?;
+        }
+        "render.start" => {
+            let reply = app.run(id, pending.params)?;
+            let job = serde_json::from_value(reply["job"].clone())
+                .map_err(|e| crate::i18n::format("render.error_job_identity", &[("error", &e.to_string())]))?;
+            app.render_workspace.view.job = Some(job);
+            app.render_workspace.view.job_shot = Some(app.render_workspace.view.name.clone());
+            // An explicit UI Render action must show the image being computed. Otherwise
+            // complete passes remain hidden behind the unchanged integrated model preview.
+            // Keep an intentional comparison open and retain the compatibility workflow.
+            if !app.preferences.render_legacy_image_defaults && app.render_workspace.view.compare.is_none() {
+                app.render_workspace.view.auto_result_job = if app.render_workspace.view.result {
+                    None
+                } else {
+                    Some(super::AutoResultJob { job, handle: app.session.render_job_handle(job).map_err(|error| error.to_string())? })
+                };
+                app.render_workspace.view.result = true;
+                app.render_workspace.view.follow_job = true;
+                app.render_workspace.view.result_scale = super::ResultScale::Fit;
+                app.cancel_view_animation();
+                app.viewport.nav = None;
+                app.viewport.key_hold = None;
+                app.viewport.orbit_free = None;
+            }
+        }
+        "render.result.regrade" => {
+            let reply = app.run(id, pending.params)?;
+            let job = serde_json::from_value(reply["job"].clone())
+                .map_err(|error| crate::i18n::format("render.error_regrade_identity", &[("error", &error.to_string())]))?;
+            app.render_workspace.view.job = Some(job);
+        }
+
         _ => return Err(crate::i18n::tr("render.error_job_action").into()),
     }
     Ok(())

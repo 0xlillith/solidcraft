@@ -93,6 +93,26 @@ fn an_empty_pixel_shows_the_background_code_unchanged() {
 }
 
 #[test]
+fn png_and_linear_master_publication_fit_the_existing_metadata_allowance() {
+    let (host, source, _, _) = fixture(true);
+    let frame = source.frame().unwrap().unwrap();
+    let (_, master) = frame.exr.as_ref().unwrap();
+    let metadata = std::mem::size_of::<Running>()
+        + std::mem::size_of::<RenderFrame>()
+        + frame.info.png_sha256.capacity()
+        + master.sha256.capacity()
+        + 2 * crate::MAX_RENDER_ID_BYTES
+        + 32;
+    assert!(metadata <= FRAME_METADATA_BYTES as usize, "actual PNG+EXR metadata {metadata} exceeds {}", FRAME_METADATA_BYTES);
+    assert_eq!(frame.info.png_sha256, format!("{:x}", Sha256::digest(frame.png())));
+    assert_eq!(master.sha256, format!("{:x}", Sha256::digest(frame.linear_exr().unwrap())));
+    assert_eq!(host.admitted_bytes(), frame.png.capacity() as u64 + frame.exr.as_ref().unwrap().0.capacity() as u64 + FRAME_METADATA_BYTES);
+    drop(source);
+    drop(frame);
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
 fn regrade_is_exact_nondestructive_geometry_free_and_flattens_repeated_master_ownership() {
     let (host, source, begins, settings) = fixture(true);
     let original = source.frame().unwrap().unwrap();

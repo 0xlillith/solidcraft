@@ -512,7 +512,12 @@ pub(super) fn commit_environment(app: &mut SolveApp, mut request: Value) -> Resu
 }
 
 fn save(app: &mut SolveApp, setup: RenderSetup) -> Result<(), String> {
-    app.run("render.settings.set", json!({"name":app.render_workspace.view.name,"set":setup}))?;
+    // Numerical environment edits keep the shot's explicit Update camera policy.
+    let mut patch = serde_json::to_value(setup).map_err(|error| error.to_string())?;
+    if let Some(fields) = patch.as_object_mut() {
+        fields.remove("camera");
+    }
+    app.run("render.settings.set", json!({"name":app.render_workspace.view.name,"set":patch}))?;
     setups::load(app);
     Ok(())
 }
@@ -526,7 +531,12 @@ pub(super) fn commit_backdrop(app: &mut SolveApp, color: [u8; 3], transparent: b
             *transparent_background = transparent;
             options.backdrop = None;
         }
-        _ if transparent => return Err(app.tr("render.cpu_opaque_required").into()),
+        Some(RenderJob::CpuRaytrace { options, transparent_background }) => {
+            *transparent_background = transparent;
+            if let Some(output) = &mut options.output {
+                output.backdrop = None;
+            }
+        }
         _ => {}
     }
     save(app, setup)
@@ -564,10 +574,10 @@ fn backdrop(app: &mut SolveApp, ui: &mut egui::Ui) {
     use solidcraft_engine::render::job::finishing::BackdropMode;
     let title = app.tr("render.env_backdrop").to_string();
     ui_kit::section(ui, "render_environment_backdrop", &title, true, |ui| {
-        let gpu = app.render_workspace.view.method == ImageMethod::GpuRaytrace;
+        let raytrace = app.render_workspace.view.method != ImageMethod::Raster;
         let mut mode = if app.render_workspace.view.transparent {
             3
-        } else if app.render_workspace.view.studio.backdrop_enabled && gpu {
+        } else if app.render_workspace.view.studio.backdrop_enabled && raytrace {
             2
         } else {
             1
@@ -578,13 +588,13 @@ fn backdrop(app: &mut SolveApp, ui: &mut egui::Ui) {
             &mut mode,
             &[app.tr("render.environment.world"), app.tr("render.env_colour"), app.tr("render.environment.gradient"), app.tr("render.env_clear")],
             ui_kit::Segments {
-                enabled: &[false, true, gpu && !app.render_workspace.view.transparent, app.render_workspace.view.method != ImageMethod::CpuRaytrace],
+                enabled: &[false, true, raytrace && !app.render_workspace.view.transparent, true],
                 targets: &["render:environment:world", "render:environment:colour", "render:environment:gradient", "render:environment:clear"],
                 ..Default::default()
             },
         );
-        if mode == 2 && !gpu {
-            app.set_status(app.tr("render.environment.needs_gpu").to_string(), true);
+        if mode == 2 && !raytrace {
+            app.set_status(app.tr("render.output_raytrace_only").to_string(), true);
             mode = before_mode;
         }
         if mode != before_mode {
@@ -611,10 +621,10 @@ fn backdrop(app: &mut SolveApp, ui: &mut egui::Ui) {
                 app.set_status(error, true);
             }
         }
-        if mode == 2 || !gpu {
+        if mode == 2 || !raytrace {
             let mut gradient = app.render_workspace.view.studio.backdrop;
             let mut changed = false;
-            ui.add_enabled_ui(gpu && !app.render_workspace.view.transparent, |ui| {
+            ui.add_enabled_ui(raytrace && !app.render_workspace.view.transparent, |ui| {
                 let mut mode = match gradient.mode {
                     BackdropMode::Vertical => 0,
                     BackdropMode::Horizontal => 1,
@@ -673,11 +683,8 @@ fn backdrop(app: &mut SolveApp, ui: &mut egui::Ui) {
         note(app, ui, "render.environment.blur_pending");
         note(app, ui, "render.environment.backdrop_note");
         note(app, ui, "render.environment.world_pending");
-        if !gpu {
-            note(app, ui, "render.environment.gradient_gpu");
-        }
-        if app.render_workspace.view.method == ImageMethod::CpuRaytrace {
-            note(app, ui, "render.cpu_opaque_required");
+        if !raytrace {
+            note(app, ui, "render.output_raytrace_only");
         }
     });
 }
@@ -690,7 +697,10 @@ pub(super) fn commit_gradient(
     let mut setup = setups::snapshot(app)?;
     match &mut setup.job {
         Some(RenderJob::GpuPath { options, .. }) => options.backdrop = enabled.then_some(gradient),
-        _ => return Err(app.tr("render.environment.needs_gpu").into()),
+        Some(RenderJob::CpuRaytrace { options, .. }) => {
+            options.output.get_or_insert_with(Box::default).backdrop = enabled.then_some(gradient);
+        }
+        _ => return Err(app.tr("render.output_raytrace_only").into()),
     }
     save(app, setup)
 }

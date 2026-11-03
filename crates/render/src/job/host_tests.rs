@@ -95,6 +95,146 @@ mod progressive_checkpoints {
     }
 
     #[test]
+    fn two_pass_target_retains_one_snapshot_slot_without_blocking_final() {
+        let (host, job, mut running) = fixture(2);
+        let credits = running.checkpoints.as_ref().unwrap();
+        assert_eq!(credits.capacity, credits.slot_bytes + FRAME_METADATA_BYTES);
+        before_preview(&mut running);
+        assert!(running.advance(1).unwrap());
+        let preview = job.preview().unwrap().unwrap();
+        assert_eq!(preview.info.frame_sequence, 1);
+        assert_eq!(preview.info.samples_per_pixel, 1);
+        let before = preview.png().to_vec();
+        while running.advance(1).unwrap() {}
+        assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+        assert_eq!(job.status().unwrap().preview_retention_skips, 0);
+        assert!(job.preview().unwrap().is_none());
+        let frame = job.frame().unwrap().unwrap();
+        assert_eq!(frame.info.job, job.id());
+        assert_eq!(preview.png(), before, "the sole retained checkpoint remains immutable");
+        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + preview._reservation.bytes);
+        drop(running);
+        drop(job);
+        drop(frame);
+        assert_eq!(host.admitted_bytes(), preview._reservation.bytes);
+        drop(preview);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[test]
+    fn checkpoint_memory_is_independent_of_target_after_two_prepaid_slots() {
+        let mut estimated = Vec::new();
+        for samples in [3, 8, 64] {
+            let (host, job, running) = fixture(samples);
+            estimated.push(host.admitted_bytes());
+            assert_eq!(running.checkpoints.as_ref().unwrap().capacity, 2 * running.checkpoints.as_ref().unwrap().slot_bytes + FRAME_METADATA_BYTES);
+            drop(running);
+            drop(job);
+            assert_eq!(host.admitted_bytes(), 0);
+        }
+        assert!(estimated.windows(2).all(|pair| pair[0] == pair[1]));
+        assert!(std::mem::size_of::<CheckpointCredits>() + 32 <= FRAME_METADATA_BYTES as usize);
+    }
+
+    #[test]
+    fn every_pass_reuses_two_slots_without_consumer_acknowledgement() {
+        let (host, job, mut running) = fixture(8);
+        let initial = host.admitted_bytes();
+        let mut prefixes = Vec::new();
+        for samples in 1..8 {
+            before_preview(&mut running);
+            assert!(running.advance(1).unwrap());
+            let preview = job.preview().unwrap().unwrap();
+            assert_eq!(preview.info.samples_per_pixel, samples);
+            assert_eq!(preview.info.frame_sequence, samples);
+            assert_eq!(preview.info.frame.job, job.id());
+            assert_eq!(preview.info.frame.scene_generation, 19);
+            assert_eq!(preview.info.frame.png_sha256, format!("{:x}", Sha256::digest(preview.png())));
+            prefixes.push(preview.png().to_vec());
+            assert_eq!(host.admitted_bytes(), initial);
+            assert_eq!(job.status().unwrap().preview_retention_skips, 0);
+            // This temporary consumer drops its Arc; the host's old snapshot is
+            // reclaimed by the next publication without an acknowledgement API.
+        }
+        while running.advance(1).unwrap() {}
+        let frame = job.frame().unwrap().unwrap();
+        assert_eq!(frame.info.job, job.id());
+        assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+        assert_eq!(host.admitted_bytes(), frame._reservation.bytes);
+        assert_eq!(prefixes.len(), 7);
+        drop(running);
+        drop(job);
+        drop(frame);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[test]
+    fn pinned_snapshots_skip_publication_then_resume_without_stalling_final_work() {
+        let (host, job, mut running) = fixture(8);
+        let initial = host.admitted_bytes();
+        before_preview(&mut running);
+        assert!(running.advance(1).unwrap());
+        let first = job.preview().unwrap().unwrap();
+        let first_bytes = first.png().to_vec();
+        before_preview(&mut running);
+        assert!(running.advance(1).unwrap());
+        let second = job.preview().unwrap().unwrap();
+        let second_bytes = second.png().to_vec();
+        before_preview(&mut running);
+        assert_eq!(running.pending_png.as_ref().unwrap().preview_samples, Some(3));
+        assert!(running.advance(1).unwrap());
+        assert_eq!(job.status().unwrap().preview_retention_skips, 1);
+        assert!(job.preview().unwrap().is_none());
+        assert!(job.frame().unwrap().is_none());
+        assert_eq!(host.admitted_bytes(), initial);
+        assert_eq!(first.png(), first_bytes);
+        assert_eq!(second.png(), second_bytes);
+        drop(first);
+        for samples in 4..8 {
+            before_preview(&mut running);
+            assert!(running.advance(1).unwrap());
+            let preview = job.preview().unwrap().unwrap();
+            assert_eq!(preview.info.samples_per_pixel, samples);
+            assert_eq!(preview.info.frame_sequence, samples - 1, "sequence counts real publications");
+            assert_eq!(host.admitted_bytes(), initial);
+        }
+        while running.advance(1).unwrap() {}
+        assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+        assert_eq!(job.status().unwrap().preview_retention_skips, 1);
+        assert!(job.preview().unwrap().is_none());
+        assert_eq!(second.png(), second_bytes, "old snapshots remain immutable through final publication");
+        let frame = job.frame().unwrap().unwrap();
+        assert_eq!(host.admitted_bytes(), frame._reservation.bytes + second._reservation.bytes);
+        drop(running);
+        drop(job);
+        drop(frame);
+        assert_eq!(host.admitted_bytes(), second._reservation.bytes);
+        drop(second);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[test]
+    fn retaining_both_slots_never_prevents_completion() {
+        let (host, job, mut running) = fixture(8);
+        before_preview(&mut running);
+        assert!(running.advance(1).unwrap());
+        let first = job.preview().unwrap().unwrap();
+        before_preview(&mut running);
+        assert!(running.advance(1).unwrap());
+        let second = job.preview().unwrap().unwrap();
+        while running.advance(1).unwrap() {}
+        assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+        assert_eq!(job.status().unwrap().preview_retention_skips, 5);
+        assert_eq!(first.info.samples_per_pixel, 1);
+        assert_eq!(second.info.samples_per_pixel, 2);
+        drop(running);
+        drop(job);
+        drop(first);
+        drop(second);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+
+    #[test]
     fn cancellation_before_or_after_digest_cannot_publish_a_late_preview() {
         for finish_digest in [false, true] {
             let (host, job, mut running) = fixture(3);
@@ -500,14 +640,55 @@ fn a_cancel_after_the_last_digest_chunk_still_wins_the_publication_lock() {
 }
 
 #[test]
+fn png_and_exr_reuse_one_sha_state_without_mixing_chunk_boundaries() {
+    let png: Vec<u8> = (0..PNG_HASH_CHUNK_BYTES + 7).map(|i| (i % 251) as u8).collect();
+    let exr: Vec<u8> = (0..PNG_HASH_CHUNK_BYTES * 2 + 19).map(|i| (i % 239) as u8).collect();
+    let mut pending = PendingPng::new(png.clone());
+    pending.exr = Some(exr.clone());
+    let cancel = CancelToken::default();
+    assert!(!pending.step(1, &cancel).unwrap());
+    assert!(pending.png_digest.is_none());
+    assert!(!pending.step(1, &cancel).unwrap());
+    assert_eq!(pending.png_digest.as_ref().unwrap(), &Sha256::digest(&png));
+    assert_eq!(pending.exr_hashed, 0);
+    while !pending.step(1, &cancel).unwrap() {}
+    assert_eq!(pending.digest.finalize(), Sha256::digest(&exr));
+    let metadata = std::mem::size_of::<Running>()
+        + std::mem::size_of::<RenderFrame>()
+        + std::mem::size_of::<RenderPreview>()
+        + 64
+        + 2 * crate::MAX_RENDER_ID_BYTES
+        + 32;
+    assert!(metadata <= FRAME_METADATA_BYTES as usize);
+    eprintln!(
+        "fixed completion metadata: Running {}, final {}, preview {}, combined {metadata}/{}",
+        std::mem::size_of::<Running>(),
+        std::mem::size_of::<RenderFrame>(),
+        std::mem::size_of::<RenderPreview>(),
+        FRAME_METADATA_BYTES
+    );
+}
+
+#[test]
 fn png_digest_metadata_fits_the_existing_allowance_without_changing_admission() {
     // Fixed digest/offset state and the completed frame (including its bounded
     // hex string and backend/executor IDs) fit the existing 1024-byte allowance.
     assert!(std::mem::size_of::<PendingPng>() <= 512);
-    assert!(
-        std::mem::size_of::<Running>() + std::mem::size_of::<RenderFrame>() + 64 + 2 * crate::MAX_RENDER_ID_BYTES + 32
-            <= FRAME_METADATA_BYTES as usize
-    );
+    for linear_master in [false, true] {
+        let metadata = std::mem::size_of::<Running>()
+            + std::mem::size_of::<RenderFrame>()
+            + 64
+            + u32::from(linear_master) as usize * 64
+            + 2 * crate::MAX_RENDER_ID_BYTES
+            + 32;
+        assert!(
+            metadata <= FRAME_METADATA_BYTES as usize,
+            "PNG/EXR completion metadata {metadata} exceeds {} (Running {}, Frame {}, linear_master {linear_master})",
+            FRAME_METADATA_BYTES,
+            std::mem::size_of::<Running>(),
+            std::mem::size_of::<RenderFrame>()
+        );
+    }
     let host = CpuHost::cooperative();
     let expected = admit(&empty(), &request()).unwrap().estimated_total_bytes;
     let job = host.submit(id(70, 1), 1, empty(), request()).unwrap();
@@ -819,4 +1000,331 @@ fn registered_large_pool_is_explicit_finite_and_accounted() {
     assert!(host.0.shared.budget.reserve(600 * 1024 * 1024).is_err());
     drop(lease);
     assert_eq!(host.admitted_bytes(), 0);
+}
+/// A registered executor exercises the shared publication boundary without a device.
+/// Each pass encodes a real, distinct PNG; no final is returned with a preview.
+struct CheckpointExecutor;
+struct CheckpointWork {
+    request: ImageRequest,
+    cancel: CancelToken,
+    samples: u32,
+    target: u32,
+    preview: Option<super::super::ImageWorkPreview>,
+}
+impl ImageWork for CheckpointWork {
+    fn take_preview(&mut self) -> Option<super::super::ImageWorkPreview> {
+        self.preview.take()
+    }
+    fn step(&mut self, _: usize) -> Result<TaskPoll> {
+        self.cancel.check()?;
+        self.samples += 1;
+        let rgba = vec![self.samples as u8; (self.request.width * self.request.height * 4) as usize];
+        let mut task = super::super::PngTask::new(&self.request, rgba, self.cancel.clone())?;
+        let TaskPoll::Complete(png) = task.step(4)? else {
+            return Err(JobError::new(ErrorCode::Internal, "small checkpoint fixture did not encode"));
+        };
+        if self.samples == self.target {
+            Ok(TaskPoll::Complete(png))
+        } else {
+            self.preview = Some(super::super::ImageWorkPreview { png, samples_per_pixel: self.samples });
+            Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.samples), total: u64::from(self.target) }))
+        }
+    }
+}
+impl ImageExecutor for CheckpointExecutor {
+    fn preview_samples(&self, options: JobOptions) -> Option<u32> {
+        Some(options.samples)
+    }
+    fn descriptor(&self) -> Result<ExecutorDescriptor> {
+        CpuExecutor.descriptor()
+    }
+    fn admit(&self, scene: &ProductScene, request: &ImageRequest, _: JobOptions) -> Result<Admission> {
+        admit(scene, request)
+    }
+    fn begin(&self, _: ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
+        Ok(Box::new(CheckpointWork { request, cancel, samples: 0, target: options.samples, preview: None }))
+    }
+}
+
+#[test]
+fn registered_executor_checkpoints_are_bounded_immutable_and_never_final() {
+    let host = ImageHost::cooperative_with(Arc::new(CheckpointExecutor));
+    let request = ImageRequest { width: 2, height: 2, ..request() };
+    let options = JobOptions { samples: 5, ..Default::default() };
+    let base = admit(&empty(), &request).unwrap();
+    let expected = base.estimated_total_bytes + 2 * (base.encoded_limit + FRAME_METADATA_BYTES) + FRAME_METADATA_BYTES;
+    assert_eq!(host.admit(&empty(), &request, options).unwrap().estimated_total_bytes, expected);
+    let job = host.submit_with_options(id(9021, 1), 55, empty(), request, options).unwrap();
+    let mut held = Vec::new();
+    for samples in 1..3 {
+        for _ in 0..8 {
+            host.pump(1).unwrap();
+            if job.preview().unwrap().is_some_and(|preview| preview.info.samples_per_pixel == samples) {
+                break;
+            }
+        }
+        let preview = job.preview().unwrap().unwrap();
+        assert_eq!(preview.info.samples_per_pixel, samples);
+        assert_eq!(preview.info.frame.job, job.id());
+        assert_eq!(preview.info.frame.scene_generation, 55);
+        assert_eq!(preview.info.frame.png_sha256, format!("{:x}", Sha256::digest(preview.png())));
+        assert!(job.frame().unwrap().is_none());
+        held.push(preview);
+    }
+    while host.pump(1).unwrap() {}
+    assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+    assert_eq!(job.status().unwrap().preview_retention_skips, 2);
+    let frame = job.frame().unwrap().unwrap();
+    assert_eq!(frame.info.job, job.id());
+    for snapshot in &held {
+        assert_ne!(snapshot.png(), frame.png());
+        assert_eq!(snapshot.info.frame.png_sha256, format!("{:x}", Sha256::digest(snapshot.png())));
+    }
+    drop(frame);
+    drop(job);
+    assert!(host.admitted_bytes() > 0);
+    drop(held);
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
+fn cancelling_registered_checkpoint_work_preserves_held_snapshot_without_final() {
+    let host = ImageHost::cooperative_with(Arc::new(CheckpointExecutor));
+    let job = host
+        .submit_with_options(
+            id(9022, 1),
+            56,
+            empty(),
+            ImageRequest { width: 2, height: 2, ..request() },
+            JobOptions { samples: 5, ..Default::default() },
+        )
+        .unwrap();
+    while job.preview().unwrap().is_none() {
+        host.pump(1).unwrap();
+    }
+    let held = job.preview().unwrap().unwrap();
+    job.cancel().unwrap();
+    while host.pump(1).unwrap() {}
+    assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
+    assert!(job.preview().unwrap().is_none());
+    assert!(job.frame().unwrap().is_none());
+    assert_eq!(held.info.samples_per_pixel, 1);
+    drop(job);
+    assert_eq!(host.admitted_bytes(), held._reservation.bytes);
+    drop(held);
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
+fn cancellation_phase_precedes_the_actual_work_release_barrier() {
+    let (host, job, mut running, _) = pending_digest_fixture();
+    assert!(!job.work_released());
+    assert!(host.admitted_bytes() > 0);
+    job.cancel().unwrap();
+    assert!(!running.guarded_step(1));
+    assert_eq!(job.status().unwrap().progress.phase, Phase::Cancelled);
+    assert!(!job.work_released(), "terminal status cannot admit a competing near-pool-sized job yet");
+    assert!(host.admitted_bytes() > 0, "the Running owner still holds its work reservation");
+    drop(running);
+    assert!(job.work_released());
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
+fn queued_cancellation_releases_only_when_its_capture_and_reservation_drop() {
+    let host = CpuHost::cooperative();
+    let job = host.submit(id(9030, 1), 60, empty(), request()).unwrap();
+    assert_eq!(job.cancel().unwrap().progress.phase, Phase::Cancelled);
+    assert!(!job.work_released());
+    assert!(host.admitted_bytes() > 0);
+    assert!(!host.pump(1).unwrap());
+    assert!(job.work_released());
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
+fn completed_work_barrier_does_not_claim_external_final_images_are_free() {
+    let (host, job, mut running, _) = pending_digest_fixture();
+    while running.advance(4096).unwrap() {}
+    assert_eq!(job.status().unwrap().progress.phase, Phase::Completed);
+    assert!(!job.work_released());
+    let frame = job.frame().unwrap().unwrap();
+    drop(running);
+    assert!(job.work_released());
+    assert!(host.admitted_bytes() > 0, "completed images have their own retained leases");
+    drop(job);
+    assert!(host.admitted_bytes() > 0);
+    drop(frame);
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[test]
+fn host_shutdown_releases_both_queued_and_active_work_before_signalling() {
+    let (host, active, running, _) = pending_digest_fixture();
+    *host.0.running.lock().unwrap() = Some(running);
+    let queued = host.submit(id(9031, 1), 61, empty(), request()).unwrap();
+    assert!(!active.work_released());
+    assert!(!queued.work_released());
+    let budget = host.0.shared.budget.clone();
+    drop(host);
+    assert!(active.work_released());
+    assert!(queued.work_released());
+    assert_eq!(budget.used.load(Ordering::Acquire), 0);
+}
+
+struct FailingBeginExecutor;
+impl ImageExecutor for FailingBeginExecutor {
+    fn descriptor(&self) -> Result<ExecutorDescriptor> {
+        CpuExecutor.descriptor()
+    }
+    fn admit(&self, scene: &ProductScene, request: &ImageRequest, _: JobOptions) -> Result<Admission> {
+        admit(scene, request)
+    }
+    fn begin(&self, _scene: ProductScene, _: ImageRequest, _: JobOptions, _: CancelToken) -> Result<Box<dyn ImageWork>> {
+        Err(JobError::new(ErrorCode::InvalidScene, "original failing executor fixture"))
+    }
+}
+
+#[test]
+fn failed_begin_releases_captured_scene_and_reservation_before_signalling() {
+    let host = ImageHost::cooperative_with(Arc::new(FailingBeginExecutor));
+    let mesh = Arc::new(Mesh {
+        positions: vec![solidcraft_geom::Vec3::ZERO, solidcraft_geom::Vec3::X, solidcraft_geom::Vec3::Y],
+        normals: vec![solidcraft_geom::Vec3::Z; 3],
+        triangles: vec![[0, 1, 2]],
+        ..Default::default()
+    });
+    let captured = Arc::downgrade(&mesh);
+    let scene = ProductScene {
+        bounds: mesh.bounds(),
+        meshes: vec![crate::ProductMesh {
+            name: "original capture".into(),
+            mesh,
+            color: [128; 3],
+            opacity: 1.0,
+            surface: None,
+            transmission: None,
+            faces: Vec::new(),
+        }],
+    };
+    let job = host.submit(id(9032, 1), 62, scene, request()).unwrap();
+    let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+    assert!(!job.work_released());
+    assert!(captured.upgrade().is_some());
+    assert!(Running::begin(work).is_none());
+    assert!(captured.upgrade().is_none(), "the actual captured mesh must be released before the barrier");
+    let status = job.status().unwrap();
+    assert_eq!(status.progress.phase, Phase::Failed);
+    assert_eq!(status.error.unwrap().message, "original failing executor fixture", "the fixture must reach executor begin");
+    assert!(job.work_released());
+    assert_eq!(host.admitted_bytes(), 0);
+}
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+mod cpu_output_masters {
+    use super::*;
+    use crate::job::{CpuProgressiveOptions, OutputOptions, RaytraceOptions};
+    fn fixture(host: &CpuHost, serial: u64) -> (JobHandle, Running) {
+        let settings = OutputOptions {
+            linear_exr: true,
+            tone_map: crate::job::ToneMap::AcesFitted,
+            finishing: crate::job::finishing::Finishing {
+                bloom: Some(crate::job::bloom::Bloom { strength: 0.2, threshold: 0.0, radius: 1 }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let request = ImageRequest {
+            integrator: Integrator::Raytrace,
+            raytrace: Some(RaytraceOptions {
+                progressive: Some(CpuProgressiveOptions { samples_per_pixel: 3, seed: 9 }),
+                output: Some(Box::new(settings)),
+                lights: Some(Vec::new()),
+                ..Default::default()
+            }),
+            width: 2,
+            height: 2,
+            ..request()
+        };
+        let job = host.submit(id(9040, serial), 63, empty(), request).unwrap();
+        let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+        let running = Running::begin(work).unwrap();
+        (job, running)
+    }
+    fn host() -> CpuHost {
+        ImageHost(Arc::new(Owner {
+            executor: None,
+            shared: CpuHost::shared(MEMORY_LIMIT),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }))
+    }
+    fn hold_checkpoints(job: &JobHandle, running: &mut Running) -> Vec<Arc<RenderPreview>> {
+        let mut held = Vec::new();
+        for _ in 0..100_000 {
+            if let Some(preview) = job.preview().unwrap()
+                && held.last().is_none_or(|last: &Arc<RenderPreview>| last.info.frame_sequence != preview.info.frame_sequence)
+            {
+                held.push(preview);
+            }
+            if running.pending_png.as_ref().is_some_and(|png| png.exr.is_some()) {
+                return held;
+            }
+            assert!(running.advance(1).unwrap());
+        }
+        panic!("small CPU master did not reach its final digest");
+    }
+    #[test]
+    fn cpu_master_and_every_retained_preview_keep_exact_independent_leases() {
+        let host = host();
+        let (job, mut running) = fixture(&host, 1);
+        let held = hold_checkpoints(&job, &mut running);
+        assert_eq!(held.len(), 2);
+        assert!(job.frame().unwrap().is_none());
+        while running.advance(1).unwrap() {}
+        let frame = job.frame().unwrap().unwrap();
+        let raw = frame.linear_exr().unwrap();
+        assert_eq!(frame.info.executor.as_str(), "cpu-raytrace");
+        assert_eq!(frame.linear_master_info().unwrap().sha256, format!("{:x}", Sha256::digest(raw)));
+        assert_eq!(frame._reservation.bytes, frame.png.capacity() as u64 + frame.exr.as_ref().unwrap().0.capacity() as u64 + FRAME_METADATA_BYTES);
+        let preview_bytes: u64 = held.iter().map(|preview| preview._reservation.bytes).sum();
+        let frame_bytes = frame._reservation.bytes;
+        drop(running);
+        assert!(job.work_released());
+        drop(job);
+        assert_eq!(host.admitted_bytes(), frame_bytes + preview_bytes);
+        drop(frame);
+        assert_eq!(host.admitted_bytes(), preview_bytes);
+        drop(held);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
+    #[test]
+    fn cancelling_cpu_master_digest_preserves_previous_final_and_pinned_preview_ownership() {
+        let host = host();
+        let (previous, mut previous_running) = fixture(&host, 1);
+        while previous_running.advance(1).unwrap() {}
+        drop(previous_running);
+        let final_frame = previous.frame().unwrap().unwrap();
+        let previous_png = final_frame.png().to_vec();
+        let previous_raw = final_frame.linear_exr().unwrap().to_vec();
+        let (job, mut running) = fixture(&host, 2);
+        let held = hold_checkpoints(&job, &mut running);
+        assert!(job.frame().unwrap().is_none());
+        job.cancel().unwrap();
+        assert_eq!(running.advance(1).unwrap_err().code, ErrorCode::Cancelled);
+        drop(running);
+        assert!(job.work_released());
+        assert!(job.frame().unwrap().is_none());
+        assert_eq!(final_frame.png(), previous_png);
+        assert_eq!(final_frame.linear_exr().unwrap(), previous_raw);
+        drop(job);
+        drop(previous);
+        let preview_bytes: u64 = held.iter().map(|preview| preview._reservation.bytes).sum();
+        assert_eq!(host.admitted_bytes(), final_frame._reservation.bytes + preview_bytes);
+        drop(final_frame);
+        assert_eq!(host.admitted_bytes(), preview_bytes);
+        drop(held);
+        assert_eq!(host.admitted_bytes(), 0);
+    }
 }

@@ -36,6 +36,43 @@ impl Default for OpticalMaterial {
     }
 }
 impl OpticalMaterial {
+    /// The CPU consumer is a certified subset of the existing saved optical contract.
+    /// Keep authored unsupported values intact and refuse them, never drop effects.
+    pub fn validate_for_cpu(self) -> Result<()> {
+        self.validate()?;
+        if self.shadow_transmission {
+            return Err(DocError::Invalid("CPU certified glass does not support transmissive shadows; disable that authored flag explicitly".into()));
+        }
+        if self.subsurface.is_some() {
+            return Err(DocError::Invalid("CPU certified glass does not support subsurface scattering".into()));
+        }
+        if self.absorption_per_mm.into_iter().any(|v| !(0.0..=100.0).contains(&v)) || !(0.0..=10000.0).contains(&self.thickness_mm) {
+            return Err(DocError::Invalid("CPU glass absorption must be 0..100 per mm and virtual sheet thickness 0..10000 mm".into()));
+        }
+        Ok(())
+    }
+
+    /// A closed optical boundary is accepted only if the CPU producer subsequently
+    /// certifies the captured mesh as its exact axis-aligned-box subset. The saved
+    /// boundary is not rewritten and no arbitrary closed-mesh support is implied.
+    pub fn to_cpu(self, body_index: usize, body_name: &str) -> Result<solidcraft_render::job::DielectricOptions> {
+        self.validate_for_cpu()?;
+        if body_name.is_empty() || body_name.len() > 1024 || body_name.chars().any(char::is_control) {
+            return Err(DocError::Invalid("CPU optical target requires a bounded captured body name".into()));
+        }
+        Ok(solidcraft_render::job::DielectricOptions {
+            body_index,
+            body_name: body_name.into(),
+            boundary: match self.boundary {
+                OpticalBoundary::ThinSheet => solidcraft_render::job::DielectricBoundary::ThinSheet,
+                OpticalBoundary::ClosedBox | OpticalBoundary::ClosedMesh => solidcraft_render::job::DielectricBoundary::ClosedBox,
+            },
+            ior: self.ior,
+            absorption_per_mm: self.absorption_per_mm,
+            thickness_mm: self.thickness_mm,
+        })
+    }
+
     pub fn validate(self) -> Result<()> {
         let error = |message: String| DocError::Invalid(message);
         OpaqueSurface::new(Vec3::ZERO, 0.0, 0.5, self.ior).map_err(|e| error(e.to_string()))?;
@@ -87,6 +124,16 @@ impl OpticalBindings {
             if !seen.insert(&binding.target) {
                 return Err(DocError::Invalid("duplicate portable optical target".into()));
             }
+        }
+        Ok(())
+    }
+    pub fn validate_for_cpu(&self) -> Result<()> {
+        self.validate()?;
+        if self.len() > 8 {
+            return Err(DocError::Invalid("CPU supports at most eight certified optical targets".into()));
+        }
+        for binding in self.iter() {
+            binding.optics.validate_for_cpu()?;
         }
         Ok(())
     }
@@ -165,5 +212,51 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn cpu_optical_consumer_preserves_saved_boundary_and_refuses_unrepresented_effects() {
+        let closed = OpticalMaterial { ior: 1.51, absorption_per_mm: [0.1, 0.02, 0.0], ..Default::default() };
+        let original = serde_json::to_value(closed).unwrap();
+        let cpu = closed.to_cpu(3, "Glass@part-2").unwrap();
+        assert_eq!(cpu.boundary, solidcraft_render::job::DielectricBoundary::ClosedBox);
+        assert_eq!((cpu.body_index, cpu.body_name.as_str()), (3, "Glass@part-2"));
+        assert_eq!((cpu.ior, cpu.absorption_per_mm), (1.51, [0.1, 0.02, 0.0]));
+        assert_eq!(serde_json::to_value(closed).unwrap(), original, "CPU specialization never rewrites the authored closed boundary");
+        let thin = OpticalMaterial { boundary: OpticalBoundary::ThinSheet, thickness_mm: 2.0, ..closed };
+        assert_eq!(thin.to_cpu(0, "Sheet").unwrap().boundary, solidcraft_render::job::DielectricBoundary::ThinSheet);
+        for (value, reason) in [
+            (OpticalMaterial { shadow_transmission: true, ..thin }, "transmissive shadows"),
+            (OpticalMaterial { subsurface: Some(Subsurface { scattering_per_mm: 0.0, anisotropy: 0.0 }), ..closed }, "subsurface"),
+            (OpticalMaterial { absorption_per_mm: [101.0, 0.0, 0.0], ..closed }, "absorption"),
+            (OpticalMaterial { thickness_mm: 10001.0, ..thin }, "thickness"),
+        ] {
+            let before = serde_json::to_value(value).unwrap();
+            assert!(value.to_cpu(0, "Target").unwrap_err().to_string().contains(reason));
+            assert_eq!(serde_json::to_value(value).unwrap(), before);
+        }
+        let mut optics = OpticalBindings::default();
+        for feature in 1..=9 {
+            optics
+                .set(
+                    SavedOptics {
+                        target: RenderBodyTarget { definition: format!("Glass{feature}"), feature, component: 0, occurrence_path: vec![] },
+                        optics: closed,
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        optics.validate().unwrap();
+        assert!(optics.validate_for_cpu().is_err());
+        let target = RenderBodyTarget { definition: "Glass".into(), feature: 1, component: 0, occurrence_path: vec![] };
+        let mut setup = crate::render_settings::RenderSetup {
+            job: Some(crate::render_job::RenderJob::CpuRaytrace { transparent_background: false, options: Default::default() }),
+            ..Default::default()
+        };
+        setup.optics.set(SavedOptics { target, optics: closed }, false).unwrap();
+        setup.validate().unwrap();
+        let wire = serde_json::to_value(&setup).unwrap();
+        assert_eq!(serde_json::from_value::<crate::render_settings::RenderSetup>(wire).unwrap(), setup);
     }
 }
