@@ -1,9 +1,13 @@
-//! One read-only storage buffer: body lookup, planar records and linear RGBA pixels.
+//! One read-only storage buffer: body lookup, planar records and linear RGBA mip chains.
 use solidcore_record::Vec3;
 use solidcraft_geom::prelude::*;
 use solidcraft_render::job::{
     CancelToken, ErrorCode, JobError, Result,
     textures::{BaseColorMode, RuntimeTextures, TextureMap},
+};
+use solidcraft_render::texture_sampling::{
+    TextureView,
+    mips::{MAX_MIP_TAIL_BYTES, MipChain},
 };
 
 fn vector(a: [f64; 3]) -> Vec3 {
@@ -30,12 +34,30 @@ fn pixels(
         return Ok(*record);
     }
     let rgba = map.decode(cancel)?;
+    let view = TextureView::new(&rgba, map.dimensions()).map_err(|error| JobError::new(ErrorCode::InvalidRequest, error.to_string()))?;
+    // Decode roles before averaging: reflectance is linear sRGB; scalar and
+    // tangent-normal channels remain linear data. Alpha never participates.
+    let mips = MipChain::prepare(view, MAX_MIP_TAIL_BYTES, || cancel.is_cancelled())
+        .map_err(|error| JobError::new(if cancel.is_cancelled() { ErrorCode::Cancelled } else { ErrorCode::InvalidRequest }, error.to_string()))?;
     let offset = bytes.len() / 4;
-    for (index, value) in rgba.into_iter().enumerate() {
-        if index % 4096 == 0 {
-            cancel.check()?;
+    let descriptor_words = 4 + mips.level_count() * 4;
+    bytes.resize(bytes.len() + descriptor_words * 4, 0);
+    write_word(bytes, offset, mips.level_count() as u32)?;
+    write_word(bytes, offset + 1, 2)?;
+    for level in 0..mips.level_count() {
+        let dimensions = mips.dimensions(level).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing prepared GPU mip dimensions"))?;
+        let descriptor = offset + 4 + level * 4;
+        let pixel_offset = u32::try_from(bytes.len() / 4).map_err(|_| JobError::new(ErrorCode::LimitExceeded, "GPU mip buffer offset overflow"))?;
+        write_word(bytes, descriptor, pixel_offset)?;
+        write_word(bytes, descriptor + 1, dimensions[0])?;
+        write_word(bytes, descriptor + 2, dimensions[1])?;
+        let pixels = mips.level(level).ok_or_else(|| JobError::new(ErrorCode::Internal, "missing prepared GPU mip pixels"))?;
+        for (index, value) in pixels.rgba().iter().enumerate() {
+            if index % 4096 == 0 {
+                cancel.check()?;
+            }
+            bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes.extend_from_slice(&value.to_le_bytes());
     }
     let record = (u32::try_from(offset).map_err(|_| JobError::new(ErrorCode::LimitExceeded, "texture buffer offset overflow"))?, map.dimensions());
     shared.insert(map.identity(), record);
@@ -45,9 +67,11 @@ pub(super) fn flatten(resources: Option<&RuntimeTextures>, body_count: usize, or
     let Some(resources) = resources else {
         return Ok(vec![0; 16]);
     };
-    let header = 4 + body_count + 1;
+    let header = (4 + body_count + 1).next_multiple_of(4);
     let record_words = resources.bindings().len() * 24;
-    let mut bytes = super::scene::reserved((header + record_words) * 4 + resources.summary().linear_pixel_bytes as usize)?;
+    let capacity = usize::try_from(packed_bytes(resources, body_count))
+        .map_err(|_| JobError::new(ErrorCode::LimitExceeded, "GPU mip buffer capacity overflow"))?;
+    let mut bytes = super::scene::reserved(capacity)?;
     bytes.resize((header + record_words) * 4, 0);
     write_word(&mut bytes, 0, (body_count + 1) as u32)?;
     let mut shared = std::collections::BTreeMap::new();
@@ -70,6 +94,15 @@ pub(super) fn flatten(resources: Option<&RuntimeTextures>, body_count: usize, or
         let (normal, normal_size) = pixels(&mut bytes, binding.normal.as_ref(), cancel, &mut shared)?;
         let (roughness, roughness_size) = pixels(&mut bytes, binding.roughness.as_ref(), cancel, &mut shared)?;
         let (metallic, metallic_size) = pixels(&mut bytes, binding.metallic.as_ref(), cancel, &mut shared)?;
+        let roles = if metallic != 0 {
+            4
+        } else if roughness != 0 {
+            3
+        } else if normal != 0 {
+            2
+        } else {
+            1
+        };
         let flags = u32::from(binding.flip_v) | (u32::from(binding.base_color_mode == BaseColorMode::Replace) << 1);
         for (offset, value) in [
             (3, base),
@@ -86,10 +119,19 @@ pub(super) fn flatten(resources: Option<&RuntimeTextures>, body_count: usize, or
             (20, metallic),
             (21, metallic_size[0]),
             (22, metallic_size[1]),
+            (23, roles),
         ] {
             write_word(&mut bytes, record + offset, value)?;
         }
     }
     cancel.check()?;
     Ok(bytes)
+}
+
+/// Conservative storage-buffer admission, including every mip and its record.
+/// A floor-halved chain is less than twice its base even for a 1xN map. Prepay
+/// descriptors for all four roles, including sources deduplicated during packing.
+pub(super) fn packed_bytes(resources: &RuntimeTextures, body_count: usize) -> u64 {
+    let bindings = resources.bindings().len() as u64;
+    4 * ((5 + body_count as u64).next_multiple_of(4) + bindings * 24) + bindings * 4 * (4 + 12 * 4) * 4 + resources.summary().linear_pixel_bytes * 2
 }

@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::{io::Cursor, sync::Arc};
 
 pub mod normalization;
+pub(crate) mod png_metadata;
 
 pub const MAX_TEXTURE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_TEXTURE_EDGE: u32 = 2048;
-const MAX_CODEC_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const MAX_CODEC_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +53,15 @@ pub struct TextureInfo {
     pub rgba_bytes: u64,
     pub role: MapRole,
     pub interpretation: Interpretation,
+}
+
+/// An explicit base-color role means normalized sRGB samples. Reject conflicting
+/// encoded declarations; data roles preserve their numerical channels unchanged.
+pub fn validate_color_declarations(bytes: &[u8], role: MapRole) -> Result<()> {
+    if role == MapRole::BaseColor && bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        png_metadata::validate_srgb_declarations(bytes)?;
+    }
+    Ok(())
 }
 
 /// Header-admitted source. Full decoding must succeed before publishing pixels.
@@ -100,6 +110,10 @@ impl TextureSource {
     }
     pub fn new(bytes: Vec<u8>, role: MapRole) -> Result<Self> {
         let format = admitted_format(&bytes, bytes.capacity())?;
+        if format == ImageFormat::Png {
+            png_metadata::validate(&bytes)?;
+            validate_color_declarations(&bytes, role)?;
+        }
         let (width, height) = guarded(|| {
             let mut decoder = reader(&bytes, format).into_decoder().map_err(|e| invalid(e.to_string()))?;
             if !matches!(decoder.color_type(), image::ColorType::L8 | image::ColorType::La8 | image::ColorType::Rgb8 | image::ColorType::Rgba8) {
@@ -123,8 +137,30 @@ impl TextureSource {
     pub fn info(&self) -> &TextureInfo {
         &self.info
     }
+    /// Complete static-source metadata admission before portable publication.
+    /// This bounded scan belongs on the caller's existing import worker. It does
+    /// not replace pixel decoding or the cooperative image worker's own checks.
+    pub fn validate_static_source(&self) -> Result<()> {
+        if self.format == ImageFormat::Png {
+            let mut metadata = png_metadata::PngMetadata::new(true, true);
+            while !metadata.step(&self.bytes)? {}
+        }
+        Ok(())
+    }
+    /// Share admitted encoded ownership with the cooperative native row worker.
+    #[cfg(feature = "raytrace-cpu")]
+    pub(crate) fn png_encoded(&self) -> Result<Arc<Vec<u8>>> {
+        if self.format != ImageFormat::Png || self.bytes.get(24).copied() != Some(8) || self.bytes.get(28).copied() != Some(0) {
+            return Err(invalid("CPU row preparation supports noninterlaced 8-bit PNG only"));
+        }
+        Ok(self.bytes.clone())
+    }
     /// Bounded whole-image codec work, intended for a caller-owned worker. Cancellation is
     /// checked at the codec boundary, not during PNG/JPEG decoding. No partial image escapes.
+    #[cfg(all(test, feature = "raytrace-cpu"))]
+    pub(crate) fn encoded_weak(&self) -> std::sync::Weak<Vec<u8>> {
+        Arc::downgrade(&self.bytes)
+    }
     pub fn decode(&self, cancelled: impl Fn() -> bool) -> Result<DecodedTexture> {
         if cancelled() {
             return Err(invalid("texture decoding cancelled"));
