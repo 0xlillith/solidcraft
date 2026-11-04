@@ -79,6 +79,7 @@ pub mod render;
 pub mod render_library;
 pub mod render_lights;
 pub mod render_stage;
+pub mod render_surface_resources;
 pub mod render_ui;
 pub mod section;
 pub mod sheet;
