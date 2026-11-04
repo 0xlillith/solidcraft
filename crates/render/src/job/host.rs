@@ -1271,10 +1271,20 @@ impl Running {
             }
             let mut reservation = credits.acquire()?;
             if reservation.is_none() {
-                // A headless client need not acknowledge snapshots: release our old
-                // slot before deciding that both images are retained by consumers.
-                let released = data.preview.take();
+                // Reclaim a host-only snapshot without removing a consumer's pinned
+                // latest pass. Unwrap under the data lock so a racing Weak upgrade
+                // either pins the Arc we restore or observes its payload released.
+                let released = match data.preview.take().map(Arc::try_unwrap) {
+                    Some(Ok(preview)) => Some(preview),
+                    Some(Err(preview)) => {
+                        data.preview = Some(preview);
+                        None
+                    }
+                    None => None,
+                };
                 drop(data);
+                // Returning its lease locks the credit ledger; keep that outside
+                // the status/publication lock before retrying the free slot.
                 drop(released);
                 reservation = credits.acquire()?;
                 data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render preview publication lock poisoned"))?;

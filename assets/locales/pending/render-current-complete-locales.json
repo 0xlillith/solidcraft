@@ -2,7 +2,7 @@
   "ar": {
     "cmd.view.render_live": "إيقاف التصيير المباشر مؤقتًا أو استئنافه",
     "prefs.render_legacy_image_defaults": "استخدام الإعدادات الافتراضية السابقة لصور التصيير",
-    "prefs.render_legacy_image_defaults_help": "الاحتفاظ بسير العمل اليدوي السابق للصور: بدء الإعدادات الجديدة بالتصيير النقطي على CPU، والإبقاء على أخذ العينات الثابت عند اختيار تتبع الأشعة على CPU، وفتح الصور المصيّرة صراحةً. لا تتغير الإعدادات المحفوظة.",
+    "prefs.render_legacy_image_defaults_help": "الاحتفاظ بسير العمل اليدوي السابق: إعدادات جديدة بالتصيير النقطي على CPU، وأخذ العينات الثابت لتتبع الأشعة على CPU، وفتح النتائج يدويًا. إعادة ملاءمة العرض عند دخول التصيير، وتبديل اللقطات دون استعادة كاميراتها، واستخدام التأطير والتنقل السابقين. تعطيل التحديث التلقائي للصورة المباشرة. لا تتغير الإعدادات المحفوظة.",
     "render.adaptive.pilot_progress": "تمريرات تمهيدية تكيفية · {current}/{target}",
     "render.adaptive.preview_help": "توجّه الصور التمهيدية توزيع العينات ولا تدخل في الصورة النهائية. تستخدم تكرارات التصيير ميزانية منفصلة لكل بكسل؛ ولا يمثّل عدد التكرارات عددًا موحدًا من العينات لكل بكسل.",
     "render.adaptive.production_progress": "التصيير التكيفي · {current}/{target} تكرارات",
@@ -40,7 +40,7 @@
   "he": {
     "cmd.view.render_live": "השהיה או חידוש של הדמיה חיה",
     "prefs.render_legacy_image_defaults": "שימוש בברירות המחדל הקודמות לתמונות הדמיה",
-    "prefs.render_legacy_image_defaults_help": "שמירה על תהליך העבודה הידני הקודם: להתחיל הגדרות חדשות ברסטר CPU, להשאיר דגימה קבועה בעת בחירת עקיבת קרניים ב־CPU ולפתוח תמונות שהודמו במפורש. הגדרות שמורות אינן משתנות.",
+    "prefs.render_legacy_image_defaults_help": "שמירה על תהליך העבודה הידני הקודם: הגדרות חדשות ברסטר CPU, דגימה קבועה בעקיבת קרניים ב־CPU ופתיחת התוצאות ידנית. התאמת התצוגה מחדש בכניסה להדמיה, מעבר בין צילומים בלי לשחזר את המצלמות שלהם ושימוש במסגור ובניווט הקודמים. עדכון אוטומטי של התמונה החיה מושבת. הגדרות שמורות אינן משתנות.",
     "render.adaptive.pilot_progress": "מעברים מקדימים אדפטיביים · {current}/{target}",
     "render.adaptive.preview_help": "התמונות המקדימות מנחות את הקצאת הדגימות ואינן נכללות בתמונה הסופית. איטרציות ההדמיה משתמשות בתקציב נפרד לכל פיקסל; מספר האיטרציות אינו מספר דגימות אחיד לכל פיקסל.",
     "render.adaptive.production_progress": "הדמיה אדפטיבית · {current}/{target} איטרציות",
@@ -78,7 +78,7 @@
   "vi": {
     "cmd.view.render_live": "Tạm dừng hoặc tiếp tục kết xuất trực tiếp",
     "prefs.render_legacy_image_defaults": "Dùng mặc định ảnh Kết xuất trước đây",
-    "prefs.render_legacy_image_defaults_help": "Giữ quy trình hình ảnh thủ công trước đây: bắt đầu thiết lập mới bằng raster CPU, giữ lấy mẫu cố định khi chọn dò tia CPU và chủ động mở ảnh đã kết xuất. Các thiết lập đã lưu không thay đổi.",
+    "prefs.render_legacy_image_defaults_help": "Giữ quy trình hình ảnh thủ công trước đây: thiết lập mới dùng raster CPU, dò tia CPU dùng lấy mẫu cố định và mở kết quả thủ công. Căn vừa lại khung nhìn khi vào Kết xuất, chuyển góc chụp mà không khôi phục camera đã lưu, đồng thời dùng cách lấy khung hình và điều hướng trước đây. Tắt phản hồi ảnh trực tiếp tự động. Các thiết lập đã lưu không thay đổi.",
     "render.adaptive.pilot_progress": "Các lượt thăm dò thích ứng · {current}/{target}",
     "render.adaptive.preview_help": "Ảnh thăm dò định hướng việc phân bổ mẫu và không được đưa vào ảnh cuối cùng. Các vòng kết xuất sử dụng ngân sách riêng cho từng pixel; số vòng không phải số mẫu đồng đều trên mỗi pixel.",
     "render.adaptive.production_progress": "Kết xuất thích ứng · {current}/{target} vòng lặp",

@@ -188,12 +188,14 @@ captured HDR or constant environments, directional lights and point lights. Refl
 bindings require explicit confirmation after a document change; reusing a name cannot
 redirect them to another body. Check and the current job display their separate HDR
 capture metadata. See [CPU workspace controls](render-cpu-workspace.md) for units,
-limits and the immutable capture contract. The common Glass editor supports the
-CPU certified sheet/box subset and stable saved targets; the Lights editor
-exposes point/spot and rectangular lights. Emission, surface effects and
-anisotropy retain their bounded API contracts. Optional opaque path lighting has
-its own Sampling controls and explicitly refuses saved or temporary optical
-bindings rather than removing them.
+limits and the immutable capture contract. The common Glass editor supports stable
+saved targets. Without Indirect lighting, CPU Glass uses the certified sheet/box
+subset. With Indirect lighting, [general Glass](render-cpu-general-glass.md) adds
+certified closed meshes under its geometry, transmission and scattering restrictions.
+The Lights editor exposes point/spot and rectangular lights. Emission, surface effects
+and anisotropy retain their bounded API contracts. Indirect lighting has its own
+Sampling controls and validates saved or temporary optical bindings against the
+selected transport; unsupported combinations refuse without removing the bindings.
 
 **GPU path tracing** preserves asynchronous shader preparation and its timing display.
 Its independent image device requires Vulkan; the live viewport may use another backend.
@@ -399,8 +401,9 @@ for each open document, and loading a setup preserves completed images and resul
 | CPU ray tracing | Transparency, fixed AA or progressive SPP/seed, resource profile, optional opaque path depth, guided noise reduction, physical lens, tone map/finishing/backdrop and raw EXR retention, certified saved optical bindings, preset or custom directional lights, point/spot and area lights with samples/seed, shadows, constant RGB environment or embedded HDR with rotation/intensity/samples, setup exposure |
 | GPU path tracing | Transparency, samples/depth/seed, tone map, denoise, lens, RGB studio lighting/sun/area lights, procedural sky or embedded HDR with rotation/intensity/explicit colour assumption, setup exposure |
 
-CPU path lighting and certified optical bindings are mutually exclusive;
-incompatible saved intent refuses before HDR IO or scene capture. Opening a GPU
+CPU path lighting can combine with certified optical bindings under the
+[general Glass restrictions](render-cpu-general-glass.md). Incompatible saved
+intent still refuses before HDR IO or scene capture. Opening a GPU
 setup retains non-power-of-two sample counts,
 RGB environment values, exact sky gradients and radians. Explicit empty light lists,
 black environments and absent settings remain distinct. The only exposure authority

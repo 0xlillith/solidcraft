@@ -188,7 +188,14 @@ mod progressive_checkpoints {
         assert_eq!(running.pending_png.as_ref().unwrap().preview_samples, Some(3));
         assert!(running.advance(1).unwrap());
         assert_eq!(job.status().unwrap().preview_retention_skips, 1);
-        assert!(job.preview().unwrap().is_none());
+        let retained = job.preview().unwrap().expect("a skipped publication must keep the latest published preview available");
+        assert!(Arc::ptr_eq(&retained, &second), "a pinned latest preview must retain its existing allocation and lease");
+        let status = job.status().unwrap();
+        let preview = status.preview.expect("status must still identify the latest published complete pass");
+        assert_eq!(preview.frame_sequence, 2);
+        assert_eq!(preview.samples_per_pixel, 2);
+        assert_eq!(preview.frame.png_sha256, second.info.frame.png_sha256);
+        drop(retained);
         assert!(job.frame().unwrap().is_none());
         assert_eq!(host.admitted_bytes(), initial);
         assert_eq!(first.png(), first_bytes);
@@ -1439,7 +1446,7 @@ mod cpu_adaptive_checkpoints {
         assert_eq!(running.checkpoint_target, 64);
         let credits = running.checkpoints.as_ref().unwrap();
         assert_eq!(credits.capacity, 2 * credits.slot_bytes + FRAME_METADATA_BYTES);
-        let mut held = Vec::new();
+        let mut held: Vec<Arc<RenderPreview>> = Vec::new();
         let mut saw_reset_production = false;
         let mut published = Vec::new();
         for _ in 0..200_000 {
@@ -1450,8 +1457,21 @@ mod cpu_adaptive_checkpoints {
                 if absolute == 17 {
                     drop(held.remove(0));
                 }
+                let before = job.status().unwrap();
                 assert!(running.advance(1).unwrap());
-                if let Some(preview) = job.preview().unwrap() {
+                let status = job.status().unwrap();
+                let preview = job.preview().unwrap().expect("publication or retention keeps a complete pass available");
+                if status.preview_retention_skips != before.preview_retention_skips {
+                    assert!((3..=16).contains(&absolute), "only the two pinned pilot snapshots skip publication");
+                    assert_eq!(status.preview_retention_skips, before.preview_retention_skips + 1);
+                    let retained = held.last().unwrap();
+                    assert_eq!(retained.info.samples_per_pixel, 2);
+                    assert!(Arc::ptr_eq(&preview, retained), "a skipped pass keeps the pinned second publication");
+                    assert_eq!(serde_json::to_value(&preview.info).unwrap(), serde_json::to_value(&retained.info).unwrap());
+                    assert_eq!(serde_json::to_value(&status.preview).unwrap(), serde_json::to_value(&before.preview).unwrap());
+                    assert_eq!(serde_json::to_value(status.preview.as_ref().unwrap()).unwrap(), serde_json::to_value(&retained.info).unwrap());
+                    assert_eq!(preview.info.frame.png_sha256, format!("{:x}", Sha256::digest(preview.png())));
+                } else {
                     let metadata = preview.info.adaptive.unwrap();
                     assert_eq!(preview.info.samples_per_pixel, absolute);
                     assert_eq!(metadata.pilot_samples, 16);
@@ -1480,7 +1500,7 @@ mod cpu_adaptive_checkpoints {
         assert!(published.contains(&17) && published.contains(&63));
         let status = job.status().unwrap();
         assert_eq!(status.progress.phase, Phase::Completed, "{:?}", status.error);
-        assert!(status.preview_retention_skips >= 14);
+        assert_eq!(status.preview_retention_skips, 14);
         assert!(job.preview().unwrap().is_none());
         let report = status.sampling.unwrap();
         assert_eq!((report.pilot_samples_per_pixel, report.minimum_production_samples, report.maximum_production_samples), (16, 16, 16));
