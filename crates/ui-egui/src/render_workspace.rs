@@ -1138,6 +1138,9 @@ fn switch_celestial_method(app: &mut SolveApp, method: ImageMethod, enable_indir
             if next.studio.volume.is_some_and(|volume| volume.active()) {
                 return Err(app.tr("render.cpu_volume_path_required").into());
             }
+            if next.studio.caustics.is_some() {
+                return Err(app.tr("render.caustics_path_required").into());
+            }
             if celestial_switch_active(app) {
                 return Err(app.tr("render.cpu_celestial_switch").into());
             }
@@ -1211,7 +1214,7 @@ fn select_image_method(app: &mut SolveApp, method: ImageMethod) {
     if method != app.render_workspace.view.method
         && method != ImageMethod::Raster
         && app.render_workspace.view.method != ImageMethod::Raster
-        && (celestial_switch_active(app) || app.render_workspace.view.studio.volume.is_some())
+        && (celestial_switch_active(app) || app.render_workspace.view.studio.volume.is_some() || app.render_workspace.view.studio.caustics.is_some())
     {
         let result = if app.render_workspace.view.studio.volume.is_some() {
             switch_volume_method(app, method, false)
@@ -1255,7 +1258,8 @@ fn method_selector(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn method_dropdown(app: &mut SolveApp, ui: &mut egui::Ui) -> egui::Response {
     let current = app.render_workspace.view.method;
     let label = app.tr(current.label()).to_string();
-    let bounded = celestial_switch_active(app) || app.render_workspace.view.studio.volume.is_some();
+    let bounded =
+        celestial_switch_active(app) || app.render_workspace.view.studio.volume.is_some() || app.render_workspace.view.studio.caustics.is_some();
     let width = ui.available_width().min(crate::theme::Tokens::get().form_card_width);
     let choices = |ui: &mut egui::Ui| {
         for (method, handle) in [
@@ -1276,7 +1280,10 @@ fn method_dropdown(app: &mut SolveApp, ui: &mut egui::Ui) -> egui::Response {
             }
         }
         let volume_path = app.render_workspace.view.studio.volume.is_some_and(|volume| volume.active());
-        if current == ImageMethod::GpuRaytrace && (celestial_switch_active(app) || volume_path) && app.render_workspace.view.raytrace.path.is_none() {
+        if current == ImageMethod::GpuRaytrace
+            && (celestial_switch_active(app) || volume_path || app.render_workspace.view.studio.caustics.is_some())
+            && app.render_workspace.view.raytrace.path.is_none()
+        {
             let sampling = app.render_workspace.view.raytrace.progressive.unwrap_or_default();
             let detail = crate::i18n::format(
                 if volume_path { "render.cpu_volume_enable_path_plan" } else { "render.cpu_celestial_adopt" },
