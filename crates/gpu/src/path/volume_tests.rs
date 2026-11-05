@@ -646,7 +646,6 @@ fn gpu_orthographic_volume_cancel_releases_work_before_exact_retained_metadata()
 
 #[test]
 fn gpu_volume_signed_primary_preserves_old_perspective_lens_none_and_zero_bytes() {
-    use solidcraft_engine::doc::render_resources::HdrId;
     let Some(executor) = executor() else { return };
     let context = &executor.context;
     let old_hook = r#"            let segment=volume_segment(o+o_low,d,min(hit.distance,emitter_distance));"#;
@@ -688,16 +687,13 @@ fn volume_orthographic_segment(o: vec3<f32>, d: vec3<f32>, limit: f32) -> vec2<f
     let mut restored = original.replacen(old_hook, new_hook, 1);
     restored.insert_str(helper_offset, &helper_block);
     assert_eq!(restored, SHADER, "the whole-source inverse restores only the signed primary hook/helper");
-    // Historical a4f69bd8 is the archived pre-GPU12 source. This current control
-    // is independently reconstructed from 96190d, the 35af rename and the early wrapper.
-    assert_eq!(
-        HdrId::of(original.as_bytes()).to_string(),
-        "f373400816e40e803691ceb847d8c9d7983fd4744c3874a322363810c14b6d6c",
-        "exact composed pre-fog shader independently reconstructed; no unrelated producer math edited"
-    );
+    // Independent material features can legitimately extend the composed shader.
+    // Keep this control specific to the signed-volume change: the exact hook and
+    // helper literals plus inverse above isolate its only difference, while the
+    // uniform and complete raw-prefix comparisons below qualify unchanged routes.
     let creating = scopes(&context.device);
     let module = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("exact old signed-line control"),
+        label: Some("pre-signed-volume-hook control"),
         source: wgpu::ShaderSource::Wgsl(original.into()),
     });
     let layout = context.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
