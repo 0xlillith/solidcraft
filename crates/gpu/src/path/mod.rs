@@ -25,6 +25,7 @@ mod adaptive;
 mod denoise;
 mod dispatch;
 mod media_hierarchy;
+mod photons;
 mod scene;
 #[cfg(test)]
 mod tests;
@@ -42,7 +43,13 @@ const SHADER: &str = concat!(
 ",
     include_str!("aging.wgsl"),
     "\n",
-    include_str!("punctual.wgsl")
+    include_str!("punctual.wgsl"),
+    "\n",
+    include_str!("glass.wgsl"),
+    "\n",
+    include_str!("glass_lighting.wgsl"),
+    "\n",
+    include_str!("photons_disabled.wgsl")
 );
 const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
 const PARAMETER_BYTES: usize = 2080;
@@ -151,10 +158,11 @@ fn device_limits(supported: wgpu::Limits) -> Result<wgpu::Limits> {
     // downlevel defaults unnecessarily capped large CAD geometry at 128 MiB.
     let storage = supported.max_storage_buffer_binding_size.min(1024 * 1024 * 1024);
     let buffer = supported.max_buffer_size.min(1024 * 1024 * 1024);
+    let optional_photon_buffers = supported.max_storage_buffers_per_shader_stage.min(7);
     let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(supported);
     limits.max_storage_buffer_binding_size = storage.min(buffer);
     limits.max_buffer_size = buffer;
-    limits.max_storage_buffers_per_shader_stage = PATH_STORAGE_BUFFERS;
+    limits.max_storage_buffers_per_shader_stage = optional_photon_buffers;
     Ok(limits)
 }
 fn open_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
@@ -182,6 +190,11 @@ struct Context {
     pipeline: wgpu::ComputePipeline,
     // Built and warmed by the first denoised job, then shared by later ones.
     denoise: std::sync::OnceLock<denoise::Pipelines>,
+    // Only authored caustics compile/retain the seven-storage-buffer variant.
+    photons: std::sync::OnceLock<photons::Pipelines>,
+    // Optical hard-light connections are specialized away in the legacy program.
+    glass: std::sync::OnceLock<GlassPipelines>,
+    photon_glass: std::sync::OnceLock<GlassPipelines>,
     layout: wgpu::BindGroupLayout,
 }
 impl Context {
@@ -268,8 +281,85 @@ impl Executor {
         checked(scopes)?;
         drop(compiling);
         warm_up(&device, &queue, &pipeline, &placeholder_bind(&device, &layout, 7)?, &healthy)?;
-        Ok(Self { context: Arc::new(Context { healthy, device, queue, pipeline, layout, denoise: std::sync::OnceLock::new() }) })
+        Ok(Self {
+            context: Arc::new(Context {
+                healthy,
+                device,
+                queue,
+                pipeline,
+                layout,
+                denoise: std::sync::OnceLock::new(),
+                photons: std::sync::OnceLock::new(),
+                glass: std::sync::OnceLock::new(),
+                photon_glass: std::sync::OnceLock::new(),
+            }),
+        })
     }
+}
+
+fn needs_glass_lighting(scene: &ProductScene) -> bool {
+    let active = |transmission: Option<solidcraft_render::transmission::Transmission>| {
+        transmission.is_some_and(|material| {
+            material.model().is_some_and(|model| model.roughness > 0.0) || material.subsurface().is_some_and(|medium| medium.active())
+        })
+    };
+    scene.meshes.iter().any(|body| active(body.transmission) || body.faces.iter().any(|face| active(face.transmission)))
+}
+
+#[derive(Clone)]
+struct GlassPipelines {
+    camera: wgpu::ComputePipeline,
+    resolve: wgpu::ComputePipeline,
+}
+
+// One request and camera value per path in the largest admitted tile, reusing
+// the accumulation binding. No extra image plane or storage binding is needed.
+fn glass_tile_bytes(scene: &ProductScene, request: &ImageRequest) -> u64 {
+    if needs_glass_lighting(scene) { (u64::from(request.width) * u64::from(request.height)).min(u64::from(dispatch::MAX_PATHS)) * 128 } else { 0 }
+}
+
+fn glass_pipeline(context: &Context, layout: &wgpu::BindGroupLayout, caustics: bool, cancel: &CancelToken) -> Result<GlassPipelines> {
+    cancel.check()?;
+    let slot = if caustics { &context.photon_glass } else { &context.glass };
+    if let Some(pipeline) = slot.get() {
+        return Ok(pipeline.clone());
+    }
+    let source = if caustics { std::borrow::Cow::Owned(photons::shader_source()?) } else { std::borrow::Cow::Borrowed(SHADER) };
+    let compiling = one_compile_at_a_time();
+    cancel.check()?;
+    let device = &context.device;
+    let scopes = scopes(device);
+    let module = device
+        .create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("gpu-path optical hard lights"), source: wgpu::ShaderSource::Wgsl(source) });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("gpu-path optical hard lights"),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
+    let constants = [("GLASS_DELTA_LIGHTS", 1.0)];
+    let pipeline = |entry| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("gpu-path optical hard lights"),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some(entry),
+            compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+            cache: None,
+        })
+    };
+    let camera = pipeline("main");
+    checked(scopes)?;
+    cancel.check()?;
+    let resolve = checked_creation(device, || Ok(pipeline("optical_resolve")))?;
+    let pipelines = GlassPipelines { camera, resolve };
+    cancel.check()?;
+    drop(compiling);
+    let placeholder = placeholder_bind(device, layout, if caustics { 8 } else { 7 })?;
+    warm_up(device, &context.queue, &pipelines.camera, &placeholder, &context.healthy)?;
+    cancel.check()?;
+    warm_up(device, &context.queue, &pipelines.resolve, &placeholder, &context.healthy)?;
+    cancel.check()?;
+    Ok(slot.get_or_init(|| pipelines).clone())
 }
 
 /// Native drivers compile the path pipeline for minutes and gigabytes on a cold shader cache.
@@ -344,6 +434,7 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
     options.validate()?;
+    photons::validate_scene(scene, options)?;
     if request.studio_weights.is_some_and(|weights| weights.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))) {
         return Err(JobError::new(ErrorCode::InvalidRequest, "invalid studio visibility weights"));
     }
@@ -414,8 +505,11 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     // serialized + device geometry + accumulation/readback/RGBA/PNG. These phases don't overlap.
     let pixels = u64::from(request.width) * u64::from(request.height);
     let denoise_bytes = pixels * if options.denoise { denoise::BYTES_PER_PIXEL + if options.adaptive.is_some() { 16 } else { 0 } } else { 0 };
+    let optical_tile_bytes = glass_tile_bytes(scene, request);
     admission.pixel_scratch_bytes = pixels * 64 + denoise_bytes;
     let vertex_bytes = scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
+    let model_bytes = admission.triangles * scene::model_bytes_per_triangle(scene);
+    admission.geometry_bytes += model_bytes;
     let triangle_preparation =
         (admission.triangles * 400_u64.max(scene::planar_preparation_bytes_per_triangle() as u64)).max(scene::medium_preparation_bytes(scene));
     admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8)
@@ -425,6 +519,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         + 2 * DIRECTIONAL_PARAMETER_BYTES
         + 2 * PUNCTUAL_PARAMETER_BYTES
         + 2 * PUNCTUAL_COUNTER_BYTES;
+    // Optional material lane is retained in serialized/device geometry while
+    // preparation also owns its serialization scratch. Legacy scenes add zero.
+    admission.preparation_bytes += model_bytes * 2;
     admission.preparation_bytes += request.environment.as_ref().map_or(0, |source| source.admitted_bytes());
     if let Some(textures) = &request.textures {
         textures.validate_scene(scene)?;
@@ -451,8 +548,12 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     // Two pilot/budget planes plus a second readback plane. Adaptive denoising's
     // independent normalized preview input is included in denoise_bytes above.
     let adaptive_bytes = pixels * if options.adaptive.is_some() { 48 } else { 0 };
-    admission.pixel_scratch_bytes += adaptive_bytes;
-    admission.preparation_bytes += adaptive_bytes;
+    admission.pixel_scratch_bytes += adaptive_bytes + optical_tile_bytes;
+    admission.preparation_bytes += adaptive_bytes + optical_tile_bytes;
+    admission.preparation_bytes = admission
+        .preparation_bytes
+        .checked_add(photons::admission_bytes(options.caustics)?)
+        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "caustic photon admission overflow"))?;
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
     if admission.estimated_total_bytes > GPU_PATH_LIMITS.max_scratch_bytes {
         return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its bounded 8 GiB admission estimate"));
@@ -461,6 +562,12 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
 }
 
 impl ImageExecutor for Executor {
+    fn supports_glass_models(&self) -> bool {
+        true
+    }
+    fn supports_caustics(&self) -> bool {
+        true
+    }
     fn preview_samples(&self, options: JobOptions) -> Option<u32> {
         options.preview_target().ok()
     }
@@ -508,6 +615,18 @@ impl ImageExecutor for Executor {
         self.context.ensure_available()?;
         let a = admission(scene, request, options)?;
         let device_limits = self.context.device.limits();
+        if let Some(caustics) = options.caustics {
+            if device_limits.max_storage_buffers_per_shader_stage < 7 {
+                return Err(JobError::new(
+                    ErrorCode::HostUnavailable,
+                    "caustics require seven GPU storage buffers; ordinary GPU images remain available",
+                ));
+            }
+            let photon_bytes = photons::buffer_bytes(caustics)?;
+            if photon_bytes > device_limits.max_storage_buffer_binding_size || photon_bytes > device_limits.max_buffer_size {
+                return Err(JobError::new(ErrorCode::LimitExceeded, "caustic photon storage exceeds the selected GPU buffer limit"));
+            }
+        }
         if PARAMETER_BYTES as u64 > device_limits.max_uniform_buffer_binding_size
             || PARAMETER_BYTES as u64 > device_limits.max_buffer_size
             || FAILURE_BYTES > device_limits.max_storage_buffer_binding_size
@@ -515,7 +634,9 @@ impl ImageExecutor for Executor {
             return Err(JobError::new(ErrorCode::LimitExceeded, "GPU light parameters or diagnostic storage exceed device buffer limits"));
         }
         let limit = device_limits.max_storage_buffer_binding_size;
-        let geometry_bytes = 16 + a.triangles.max(1) * 100 + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
+        let geometry_bytes = 16
+            + a.triangles.max(1) * (100 + scene::model_bytes_per_triangle(scene))
+            + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
         let texture_bytes = request
             .textures
             .as_ref()
@@ -523,11 +644,13 @@ impl ImageExecutor for Executor {
         let environment_bytes =
             request.environment.as_ref().map_or(48, |source| 16 + u64::from(source.info().width) * u64::from(source.info().height) * 32);
         let node_bytes = a.triangles.max(1) * 64;
+        let accumulation_bytes = u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 }
+            + glass_tile_bytes(scene, request);
         if node_bytes > limit
             || texture_bytes > limit
             || environment_bytes > limit
             || geometry_bytes > limit
-            || u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 } > limit
+            || accumulation_bytes > limit
             || (options.denoise && u64::from(request.width) * u64::from(request.height) * 48 > limit)
         {
             return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path storage buffer exceeds this device's limit"));
@@ -613,6 +736,9 @@ struct Task {
     failures: wgpu::Buffer,
     readback: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    render_pipeline: wgpu::ComputePipeline,
+    optical_resolve: Option<wgpu::ComputePipeline>,
+    photons: Option<photons::Resources>,
     denoiser: Option<denoise::Resources>,
     sample: u32,
     lane: u32,
@@ -661,6 +787,25 @@ impl Task {
         let texture_upload = textures::flatten(request.textures.as_deref(), scene.meshes.len(), request.camera.target, &cancel)?;
         request.textures = None; // GPU upload owns decoded pixels; release captured source bytes.
         let upload = scene::flatten_with_media(&scene, request.camera.target, &cancel, options.nested_media)?;
+        photons::validate_punctual_origins(&scene, request.camera.target, options, upload.epsilon, &cancel)?;
+        let source_count = options.lighting.map_or_else(
+            || if request.environment.is_none() { 3 } else { 0 },
+            |lighting| lighting.directional_lights.iter().count() as u32 + lighting.punctual_lights.iter().count() as u32,
+        );
+        let photons = options.caustics.map(|options| photons::Resources::new(&context, options, &upload.nodes, source_count)).transpose()?;
+        cancel.check()?;
+        let glass_lighting = needs_glass_lighting(&scene);
+        let optical_tile_bytes = glass_tile_bytes(&scene, &request);
+        let optical_pipelines = if glass_lighting {
+            Some(glass_pipeline(&context, photons.as_ref().map_or(&context.layout, |resources| &resources.layout), photons.is_some(), &cancel)?)
+        } else {
+            None
+        };
+        let render_pipeline = optical_pipelines.as_ref().map_or_else(
+            || photons.as_ref().map_or_else(|| context.pipeline.clone(), |resources| resources.render.clone()),
+            |pipelines| pipelines.camera.clone(),
+        );
+        let optical_resolve = optical_pipelines.map(|pipelines| pipelines.resolve);
         let bvh_ms = start.elapsed().as_secs_f64() * 1000.0;
         let mut upload_bytes = (upload.geometry.len() + upload.nodes.len() + texture_upload.len()) as u64;
         let environment_bytes = prepare_environment(&request, &cancel)?;
@@ -682,7 +827,7 @@ impl Task {
             let size = u64::from(request.width) * u64::from(request.height) * 16;
             let accumulation = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("path accumulation"),
-                size: size * if options.adaptive.is_some() { 3 } else { 1 },
+                size: size * if options.adaptive.is_some() { 3 } else { 1 } + optical_tile_bytes,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
@@ -705,7 +850,14 @@ impl Task {
                 .collect();
             entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
             entries.push(wgpu::BindGroupEntry { binding: 6, resource: failures.as_entire_binding() });
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("gpu-path"), layout: &context.layout, entries: &entries });
+            if let Some(resources) = &photons {
+                entries.push(wgpu::BindGroupEntry { binding: 7, resource: resources.buffer.as_entire_binding() });
+            }
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("gpu-path"),
+                layout: photons.as_ref().map_or(&context.layout, |resources| &resources.layout),
+                entries: &entries,
+            });
             let denoiser = if options.denoise {
                 Some(denoise::Resources::new(
                     &context,
@@ -725,6 +877,23 @@ impl Task {
         let upload_ms = uploading.elapsed().as_secs_f64() * 1000.0;
         log::info!("gpu-path BVH {bvh_ms:.3} ms, upload {upload_bytes} bytes in {upload_ms:.3} ms");
         cancel.check()?;
+        if let Some(resources) = &photons {
+            resources.warm_up_actual(&context, &uniform, &bind, &cancel)?;
+        }
+        if glass_lighting {
+            cancel.check()?;
+            context.ensure_available()?;
+            checked_creation(&context.device, || {
+                context.queue.write_buffer(&uniform, 0, &[0; PARAMETER_BYTES]);
+                Ok(())
+            })?;
+            warm_up(&context.device, &context.queue, &render_pipeline, &bind, &context.healthy)?;
+            cancel.check()?;
+            if let Some(resolve) = &optical_resolve {
+                warm_up(&context.device, &context.queue, resolve, &bind, &context.healthy)?;
+            };
+            cancel.check()?;
+        }
         Ok(Self {
             dispatch_budget: Default::default(),
             context,
@@ -736,6 +905,9 @@ impl Task {
             failures,
             readback,
             bind,
+            render_pipeline,
+            optical_resolve,
+            photons,
             denoiser,
             sample: 0,
             lane: 0,
@@ -886,6 +1058,13 @@ impl Task {
     fn dispatch(&mut self) -> Result<()> {
         self.cancel.check()?;
         self.context.ensure_available()?;
+        if let Some(resources) = self.photons.as_ref().filter(|resources| !resources.ready()) {
+            let parameters = self.parameters(resources.count())?;
+            if let Some(resources) = &mut self.photons {
+                resources.step(&self.context, &self.uniform, &self.bind, &parameters, &self.cancel)?;
+            }
+            return Ok(());
+        }
         let dispatch_started = Instant::now();
         let pixels = self.request.width * self.request.height;
         let count = self.dispatch_budget.count(pixels - self.offset);
@@ -895,7 +1074,13 @@ impl Task {
         let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path tile") });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("path tile"), timestamp_writes: None });
-            pass.set_pipeline(&context.pipeline);
+            pass.set_pipeline(&self.render_pipeline);
+            pass.set_bind_group(0, &self.bind, &[]);
+            pass.dispatch_workgroups(count.div_ceil(PATH_WORKGROUP_SIZE), 1, 1);
+        }
+        if let Some(resolve) = &self.optical_resolve {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("path optical resolve"), timestamp_writes: None });
+            pass.set_pipeline(resolve);
             pass.set_bind_group(0, &self.bind, &[]);
             pass.dispatch_workgroups(count.div_ceil(PATH_WORKGROUP_SIZE), 1, 1);
         }
@@ -922,6 +1107,7 @@ impl Task {
         let maximum = (self.request.width * self.request.height)
             .div_ceil(dispatch::MIN_PATHS)
             .checked_mul(self.options.transmission_samples)
+            .and_then(|count| count.checked_add(self.photons.as_ref().map_or(0, photons::Resources::maximum_quanta)))
             .ok_or_else(|| gpu("test sample wave count overflow"))?;
         for _ in 0..maximum {
             self.dispatch()?;
@@ -972,6 +1158,18 @@ impl Task {
                 None
             };
             let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
+            if word(7) & 16 != 0 {
+                return Err(JobError::new(ErrorCode::InvalidScene, "rough optical response exceeds GPU arithmetic precision"));
+            }
+            if word(7) & 8 != 0 {
+                return Err(JobError::new(ErrorCode::InvalidScene, "optical light-event count exceeds the admitted camera depth"));
+            }
+            if word(7) & 4 != 0 {
+                return Err(JobError::new(ErrorCode::InvalidScene, "caustic photon medium origin or transition is ambiguous"));
+            }
+            if word(7) & 2 != 0 {
+                return Err(JobError::new(ErrorCode::InvalidScene, "positive-thickness index-matched sheet has no finite grazing optical path"));
+            }
             if word(7) != 0 {
                 return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative pilot/production path radiance"));
             }
@@ -1093,6 +1291,9 @@ impl ImageWork for Task {
         if self.sample < self.target_samples() {
             let before = self.sample;
             self.dispatch()?;
+            if let Some(resources) = self.photons.as_ref().filter(|resources| !resources.ready()) {
+                return Ok(TaskPoll::Pending(resources.progress()));
+            }
             if self.preview_enabled && self.sample > before && self.sample < self.target_samples() {
                 // sample advances only after every tile and Fresnel stratum of
                 // the pass. Readback cannot observe a partially updated film.
