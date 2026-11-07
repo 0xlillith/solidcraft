@@ -108,6 +108,9 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
             RenderJob::CpuRaytrace {
                 transparent_background: view.transparent,
                 options: Box::new(CpuJob {
+                    environment_importance_sampling: options.environment_importance_sampling,
+                    texture_filtering: view.studio.texture_filtering,
+                    metal_energy_compensation: view.studio.metal_energy_compensation,
                     caustics: view.studio.caustics,
                     volume: view.studio.volume,
                     sun: view.studio.sun_enabled.then_some(view.studio.sun),
@@ -155,6 +158,8 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
             RenderJob::GpuPath {
                 transparent_background: view.transparent,
                 options: Box::new(GpuJob {
+                    texture_filtering: studio.texture_filtering,
+                    metal_energy_compensation: studio.metal_energy_compensation,
                     caustics: studio.caustics,
                     samples: view.samples,
                     max_depth: view.max_depth,
@@ -326,7 +331,10 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                 view.studio.lighting_enabled = true;
             }
             view.studio.caustics = options.caustics;
+            view.studio.texture_filtering = options.texture_filtering;
+            view.studio.metal_energy_compensation = options.metal_energy_compensation;
             view.raytrace = RaytraceOptions {
+                environment_importance_sampling: options.environment_importance_sampling,
                 caustics: options.caustics,
                 sun: options.sun.map(Box::new),
                 volume: options.volume,
@@ -385,6 +393,8 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
             view.seed = options.seed;
             view.studio.aging = options.aging.clone();
             view.studio.caustics = options.caustics;
+            view.studio.texture_filtering = options.texture_filtering;
+            view.studio.metal_energy_compensation = options.metal_energy_compensation;
             view.studio.nested_media = options.nested_media;
             view.studio.volume = options.volume;
             view.studio.adaptive = options.adaptive;
@@ -569,6 +579,7 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         draft.coats,
         draft.stage,
         raytrace.budget,
+        raytrace.environment_importance_sampling,
         raytrace.denoise,
         raytrace.output,
         raytrace.lens,
@@ -595,6 +606,8 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         cpu.samples,
         studio.aging,
         studio.nested_media,
+        studio.texture_filtering,
+        studio.metal_energy_compensation,
         studio.caustics,
         studio.volume,
         studio.adaptive,
