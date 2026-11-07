@@ -40,6 +40,8 @@ macro_rules! path_shader {
             "u;\n",
             include_str!("path.wgsl"),
             "\n",
+            include_str!("metal_energy.wgsl"),
+            "\n",
             include_str!("shadows.wgsl"),
             "\n",
             include_str!("textures.wgsl"),
@@ -238,9 +240,13 @@ impl Context {
             return Ok(pipeline);
         }
         let scopes = scopes(&self.device);
+        // RADV's one-medium opaque specialization corrupts shading normals
+        // after texture sampling (the mapped Lambertian plane loses its rim
+        // light). Keep the qualified full producer for every textured scene.
+        let specialize_opaque = opaque && !maps;
         let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("gpu-path captured scene"),
-            source: wgpu::ShaderSource::Wgsl(scene_shader(opaque).into()),
+            source: wgpu::ShaderSource::Wgsl(scene_shader(specialize_opaque).into()),
         });
         let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu-path captured scene"),
@@ -253,7 +259,7 @@ impl Context {
             module: &shader,
             entry_point: Some("main"),
             compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &[("OPAQUE_SCENE", f64::from(u8::from(opaque))), ("HAS_TEXTURES", f64::from(u8::from(maps)))],
+                constants: &[("OPAQUE_SCENE", f64::from(u8::from(specialize_opaque))), ("HAS_TEXTURES", f64::from(u8::from(maps)))],
                 ..Default::default()
             },
             cache: None,
@@ -475,12 +481,15 @@ fn descriptor() -> Result<ExecutorDescriptor> {
     Ok(ExecutorDescriptor {
         id: ExecutorId::new("gpu-path").map_err(gpu)?,
         availability: Availability::Available,
-        profiles: vec![RenderProfile {
-            mode: RenderMode::Preview,
-            operation: RenderOperation::Image,
-            formats: vec![RenderFormat::Png],
-            features: vec![RenderFeature::Pbr, RenderFeature::Progressive, RenderFeature::Refraction, RenderFeature::Hdri],
-        }],
+        profiles: [RenderMode::Preview, RenderMode::Final]
+            .into_iter()
+            .map(|mode| RenderProfile {
+                mode,
+                operation: RenderOperation::Image,
+                formats: vec![RenderFormat::Png],
+                features: vec![RenderFeature::Pbr, RenderFeature::Progressive, RenderFeature::Refraction, RenderFeature::Hdri],
+            })
+            .collect(),
         limits: GPU_PATH_LIMITS,
         scratch: ScratchLayout { sample_scale: 1, sample_bytes_per_pixel: 16, output_bytes_per_pixel: 16, encoding_bytes_per_pixel: 16 },
     })
@@ -568,6 +577,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         return Err(JobError::new(ErrorCode::InvalidRequest, "gpu-path requires a bounded finite camera"));
     }
     let mut admission = admit_geometry_with_limits(scene, request, MAX_TRIANGLES, MAX_GPU_PATH_BODIES, 2 * 1024 * 1024 * 1024, GPU_PATH_LIMITS)?;
+    if let Some(caustics) = options.caustics.filter(|caustics| caustics.refresh_per_pass) {
+        admission.caustic_work = caustics.refresh_work(options.preview_target()?)?;
+    }
     if scene
         .meshes
         .iter()
@@ -586,7 +598,17 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     admission.geometry_bytes += model_bytes;
     let triangle_preparation =
         (admission.triangles * 400_u64.max(scene::planar_preparation_bytes_per_triangle() as u64)).max(scene::medium_preparation_bytes(scene));
-    admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8)
+    let optical_triangles = scene
+        .meshes
+        .iter()
+        .filter(|body| body.transmission.is_some() || body.faces.iter().any(|face| face.transmission.is_some()))
+        .try_fold(0_usize, |n, body| {
+            n.checked_add(body.mesh.triangles.len()).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "optical triangle count overflow"))
+        })?;
+    let optical_contact_bytes = solidcraft_render::optical_boundary::ContactIndex::required_bytes(optical_triangles)?
+        .checked_add(optical_triangles as u64 * std::mem::size_of::<usize>() as u64)
+        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "optical contact byte overflow"))?;
+    admission.preparation_bytes = (triangle_preparation + vertex_bytes * 2 + admission.face_appearances * 8 + optical_contact_bytes)
         .max(admission.triangles * 264 + vertex_bytes * 2 + pixels * 32 + denoise_bytes)
         .max(admission.triangles * 132 + vertex_bytes + admission.pixel_scratch_bytes)
         + 1_048_576
@@ -598,6 +620,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     admission.preparation_bytes += model_bytes * 2;
     admission.preparation_bytes += request.environment.as_ref().map_or(0, |source| source.admitted_bytes());
     if let Some(textures) = &request.textures {
+        if textures.filtering() != options.texture_filtering {
+            return Err(JobError::new(ErrorCode::InvalidRequest, "captured GPU texture filtering does not match the requested policy"));
+        }
         textures.validate_scene(scene)?;
         admission.preparation_bytes += textures.working_bytes();
     }
@@ -717,16 +742,45 @@ impl ImageExecutor for Executor {
         let node_bytes = a.triangles.max(1) * 64;
         let accumulation_bytes = u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 }
             + glass_tile_bytes(scene, request);
+        if texture_bytes > limit || texture_bytes > device_limits.max_buffer_size {
+            return Err(JobError::new(
+                ErrorCode::LimitExceeded,
+                format!(
+                    "packed texture pyramids require {texture_bytes} bytes; selected GPU storage buffer limit is {limit} bytes; use CPU with an admitted resource profile or explicitly reduce authored texture sources"
+                ),
+            ));
+        }
         if node_bytes > limit
-            || texture_bytes > limit
             || environment_bytes > limit
             || geometry_bytes > limit
             || accumulation_bytes > limit
-            || (options.denoise && u64::from(request.width) * u64::from(request.height) * 48 > limit)
+            || (options.denoise && u64::from(request.width) * u64::from(request.height) * denoise::GUIDE_BYTES_PER_PIXEL > limit)
         {
             return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path storage buffer exceeds this device's limit"));
         }
         Ok(a)
+    }
+    fn validate_prepared(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions, cancel: &CancelToken) -> Result<()> {
+        self.context.ensure_available()?;
+        cancel.check()?;
+        validate_punctual_origin(options, request.camera.target)?;
+        options.aging.gpu_layers([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
+        if let Some(volume) = options.volume.filter(|volume| volume.active()) {
+            volume.relative_bounds([request.camera.target.x, request.camera.target.y, request.camera.target.z])?;
+        }
+        if let Some(resources) = &request.textures {
+            resources.validate_scene(scene)?;
+        }
+        // Reuse the production conversions and certificates, including retained-f32
+        // contacts, exact medium containment, map decoding and environment PDFs.
+        // Begin currently rebuilds these immutable uploads; no GPU work is queued.
+        let texture_upload = textures::flatten(request.textures.as_deref(), scene.meshes.len(), request.camera.target, cancel)?;
+        let upload = scene::flatten_with_media(scene, request.camera.target, cancel, options.nested_media)?;
+        photons::validate_punctual_origins(scene, request.camera.target, options, upload.epsilon, cancel)?;
+        let environment = prepare_environment(request, cancel)?;
+        photons::source_distribution(options, request, &upload.nodes, upload.photon_guide, environment.1)?;
+        drop((texture_upload, upload, environment));
+        cancel.check()
     }
     fn begin(&self, scene: ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Box<dyn ImageWork>> {
         self.admit(&scene, &request, options)?;
@@ -737,11 +791,13 @@ impl ImageExecutor for Executor {
 }
 
 /// Build all fallible CPU environment data before opening GPU error scopes.
-fn prepare_environment(request: &ImageRequest, cancel: &CancelToken) -> Result<Vec<u8>> {
+fn prepare_environment(request: &ImageRequest, cancel: &CancelToken) -> Result<(Vec<u8>, f64)> {
     cancel.check()?;
     let mut environment_bytes = Vec::new();
+    let mut luminance_integral = 0.0;
     if let Some(source) = &request.environment {
         let prepared = source.prepare(cancel)?;
+        luminance_integral = prepared.luminance_integral() * source.info().intensity;
         environment_bytes = scene::reserved(16 + prepared.texels().len() * 32)?;
         let [width, height] = prepared.dimensions();
         for x in [width, height, width * height, 0] {
@@ -760,7 +816,7 @@ fn prepare_environment(request: &ImageRequest, cancel: &CancelToken) -> Result<V
     } else {
         environment_bytes.resize(48, 0);
     }
-    Ok(environment_bytes)
+    Ok((environment_bytes, luminance_integral))
 }
 
 fn punctual_parameters(light: &solidcraft_render::job::PunctualLightOptions, origin: Vec3) -> [[f32; 4]; 5] {
@@ -869,11 +925,14 @@ impl Task {
         volume[2][3] = if upload.active_glass_model { 1.0 } else { 0.0 };
         photons::validate_punctual_origins(&scene, request.camera.target, options, upload.epsilon, &cancel)?;
         let bvh_ms = start.elapsed().as_secs_f64() * 1000.0;
-        let source_count = options.lighting.map_or_else(
-            || if request.environment.is_none() { 3 } else { 0 },
-            |lighting| lighting.directional_lights.iter().count() as u32 + lighting.punctual_lights.iter().count() as u32,
-        );
-        let photons = options.caustics.map(|options| photons::Resources::new(&context, options, &upload.nodes, source_count)).transpose()?;
+        let (environment_bytes, environment_power) = prepare_environment(&request, &cancel)?;
+        let source_distribution = photons::source_distribution(options, &request, &upload.nodes, upload.photon_guide, environment_power)?;
+        let photons = options
+            .caustics
+            .map(|options| {
+                photons::Resources::new(&context, options, &upload.nodes, upload.photon_guide, upload.photon_bounds, source_distribution.as_ref())
+            })
+            .transpose()?;
         cancel.check()?;
         let glass_lighting = needs_glass_lighting(&scene);
         let optical_tile_bytes = glass_tile_bytes(&scene, &request);
@@ -892,7 +951,6 @@ impl Task {
         let optical_resolve = optical_pipelines.map(|pipelines| pipelines.resolve);
         cancel.check()?;
         let mut upload_bytes = (upload.geometry.len() + upload.nodes.len() + texture_upload.len()) as u64;
-        let environment_bytes = prepare_environment(&request, &cancel)?;
         cancel.check()?;
         let uploading = Instant::now();
         drop(scene);
@@ -1063,7 +1121,11 @@ impl Task {
         );
         scene::vector(
             &mut bytes,
-            Vec3::new(lighting.directional_lights.iter().count() as f64, lighting.punctual_lights.iter().count() as f64, 0.0),
+            Vec3::new(
+                lighting.directional_lights.iter().count() as f64,
+                lighting.punctual_lights.iter().count() as f64,
+                f64::from(u8::from(self.options.metal_energy_compensation)),
+            ),
             lighting.area_lights.iter().count() as f32,
         );
         for light in lighting.area_lights.iter() {
@@ -1146,6 +1208,15 @@ impl Task {
     fn dispatch(&mut self) -> Result<()> {
         self.cancel.check()?;
         self.context.ensure_available()?;
+        // The previous pass has already reached preview publication. Refresh
+        // before any tile of the new pass, never between Fresnel strata.
+        if self.offset == 0
+            && self.lane == 0
+            && self.options.caustics.is_some_and(|caustics| caustics.refresh_per_pass)
+            && let Some(resources) = &mut self.photons
+        {
+            resources.ensure_pass(self.sample)?;
+        }
         if let Some(resources) = self.photons.as_ref().filter(|resources| !resources.ready()) {
             let parameters = self.parameters(resources.count())?;
             if let Some(resources) = &mut self.photons {
@@ -1379,7 +1450,9 @@ impl ImageWork for Task {
         if self.sample < self.target_samples() {
             let before = self.sample;
             self.dispatch()?;
-            if let Some(resources) = self.photons.as_ref().filter(|resources| !resources.ready()) {
+            if self.sample == 0
+                && let Some(resources) = self.photons.as_ref().filter(|resources| !resources.ready())
+            {
                 return Ok(TaskPoll::Pending(resources.progress()));
             }
             if self.preview_enabled && self.sample > before && self.sample < self.target_samples() {

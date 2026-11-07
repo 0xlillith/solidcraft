@@ -195,7 +195,8 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
     if let Some(output) = &options.output {
         output.presentation(options.exposure_ev, request.background, request.transparent_background).validate()?;
     }
-    options.budget.validate_image(request.width, request.height, options.camera_sampling()?)?;
+    let camera_sampling = options.camera_sampling()?;
+    options.budget.validate_image(request.width, request.height, camera_sampling)?;
     if let Some(lens) = options.lens {
         lens.validate_camera(&request.camera)?;
     }
@@ -206,6 +207,12 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
     let map_bytes =
         request.textures.as_ref().map_or(Ok(0), |maps| job::textures::cpu_cache::CpuTextureCache::required_bytes(maps, scene, options))?;
     let mut a = job::image::admit_raytrace_source(scene, request, options.budget)?;
+    if let Some(caustics) = options.caustics {
+        a.caustic_work = caustics.refresh_work(camera_sampling.map_or(0, |sampling| sampling.samples_per_pixel))?;
+        if a.caustic_work.is_some_and(|work| work.max_light_path_events > options.budget.limits().max_work_units) {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "CPU photon refresh light-path events exceed the selected profile work limit"));
+        }
+    }
     if let Some(lens) = options.lens.filter(|lens| lens.aperture_radius_mm > 0.0) {
         // Bound every possible pupil/pixel ray against the same captured clip
         // interval used by ImageTask, before allocating or starting transport.
@@ -233,7 +240,7 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
         .ok_or_else(|| invalid("spatial attempt count overflow"))?;
     for (index, body) in scene.meshes.iter().enumerate() {
         if body.opacity != 1.0 || body.faces.iter().any(|f| f.opacity != 1.0) {
-            return Err(invalid("raytrace requires opaque body and face appearances"));
+            return Err(JobError::new(ErrorCode::InvalidScene, format!("raytrace requires opaque body and face appearances: {}", body.name)));
         }
         let has_coat = body.surface.is_some_and(|surface| surface.clear_coat().is_some())
             || body.faces.iter().any(|face| face.surface.is_some_and(|surface| surface.clear_coat().is_some()));
@@ -646,7 +653,7 @@ pub struct ImageTask {
     pixel: usize,
     sample: u8,
     spatial: u8,
-    primary_coverage: u16,
+    primary_coverage: u32,
     spatial_radiance: Vec3,
     finish_spatial: bool,
     emit_spatial_pixel: bool,
@@ -744,14 +751,18 @@ impl ImageTask {
         if input.is_some() {
             options.validate_environment_reflections(&scene)?;
         }
-        let extra = input.as_ref().map_or(Ok(0), |e| e.required_bytes()).map_err(environment_error)?;
+        let extra =
+            input.as_ref().map_or(Ok(0), |e| e.required_bytes_with_importance(options.environment_importance_sampling)).map_err(environment_error)?;
         admission.estimated_total_bytes = admission
             .estimated_total_bytes
             .checked_add(extra)
             .filter(|v| *v <= options.budget.limits().max_job_bytes)
             .ok_or_else(|| error(TraceError::MemoryLimit))?;
         admission.preparation_bytes = admission.preparation_bytes.checked_add(extra).ok_or_else(|| error(TraceError::MemoryLimit))?;
-        let environment = input.map(|e| e.begin()).transpose().map_err(environment_error)?;
+        let environment = input
+            .map(|e| e.begin(options.environment_importance_sampling, options.caustics.is_some_and(|c| c.power_weighted_sources && c.environment)))
+            .transpose()
+            .map_err(environment_error)?;
         let lights = lighting(&options)?;
         let mut work = WorkBudget::new(options.budget.limits().max_work_units).map_err(error)?;
         work.charge(certified_work, &cancel).map_err(error)?;
@@ -943,7 +954,7 @@ impl ImageTask {
             (Phase::Preparing, done, total)
         } else if self.glass.first().is_some_and(|glass| !glass.ready()) {
             (Phase::Preparing, 0, 1)
-        } else if self.bvh.is_some() && self.caustics.first().is_some_and(|map| !map.ready()) {
+        } else if self.bvh.is_some() && self.caustics.first().is_some_and(caustics::Task::initial_preparation) {
             let (done, total) = self.caustics.first().map_or((0, 1), caustics::Task::progress);
             (Phase::Preparing, done, total)
         } else if self.bvh.is_some() && self.denoise.first().is_some_and(|guides| !guides.ready()) {
@@ -1025,7 +1036,14 @@ impl ImageTask {
                 .map_err(|_| invalid("invalid scalar surface"))?,
         };
         self.triangles.push(Triangle::new(vertices).map_err(error)?);
-        self.looks.push(Look { body_index: self.body, face, has_face_override: look.is_some(), surface, normals, vertices });
+        self.looks.push(Look {
+            body_index: self.body,
+            face,
+            has_face_override: look.is_some(),
+            surface: surface.with_metal_energy_compensation(self.options.metal_energy_compensation),
+            normals,
+            vertices,
+        });
         self.triangle += 1;
         Ok(())
     }
@@ -1044,7 +1062,7 @@ impl ImageTask {
                 .as_deref()
                 .is_some_and(|o| !o.identity_display() || (o.linear_exr && self.progressive.as_ref().is_none_or(|p| p.film.samples() == p.target)))
     }
-    fn append_linear(&mut self, radiance: Vec3, covered: u16, samples: u16) -> job::Result<()> {
+    fn append_linear(&mut self, radiance: Vec3, covered: u32, samples: u32) -> job::Result<()> {
         if !self.needs_linear_pass() {
             return Ok(());
         }
@@ -1078,10 +1096,10 @@ impl ImageTask {
         };
         let final_pass = self.progressive.as_ref().is_none_or(|p| p.film.samples() == p.target);
         let coverage_samples = match &self.progressive {
-            Some(progressive) => u16::try_from(progressive.film.samples()).map_err(|_| invalid("CPU coverage sample count overflow"))?,
+            Some(progressive) => progressive.film.samples(),
             None if self.options.primary_samples == 1 => 1,
-            None => u16::from(self.options.primary_samples)
-                .checked_mul(u16::from(self.sample_count()))
+            None => u32::from(self.options.primary_samples)
+                .checked_mul(u32::from(self.sample_count()))
                 .ok_or_else(|| invalid("CPU spatial coverage sample count overflow"))?,
         };
         let presentation = settings.presentation(self.options.exposure_ev, self.request.background, self.request.transparent_background);
@@ -1218,8 +1236,8 @@ impl ImageTask {
         }
         if self.emit_spatial_pixel {
             self.work.tick(&self.cancel).map_err(error)?;
-            let attempts = u16::from(self.options.primary_samples)
-                .checked_mul(u16::from(self.sample_count()))
+            let attempts = u32::from(self.options.primary_samples)
+                .checked_mul(u32::from(self.sample_count()))
                 .filter(|n| *n <= 1024)
                 .ok_or_else(|| invalid("spatial coverage bound"))?;
             self.append_linear(self.spatial_radiance, self.primary_coverage, attempts)?;
@@ -2087,14 +2105,24 @@ impl ImageTask {
                     .ok_or_else(|| invalid("missing environment preparation"))?
                     .prepare_one(|| self.cancel.is_cancelled())
                     .map_err(environment_error)?;
-            } else if self.bvh.is_some() && self.caustics.first().is_some_and(|map| !map.ready()) {
+            } else if self.bvh.is_some()
+                && self.caustics.first().is_some_and(|map| {
+                    !map.ready() || (self.pixel == 0 && self.progressive.as_ref().is_some_and(|p| map.refresh_due(p.film.samples())))
+                })
+            {
                 caustics::step(self)?;
             } else if self.bvh.is_some() && self.denoise.first().is_some_and(|guides| !guides.ready()) {
                 let bvh = self.bvh.as_ref().ok_or_else(|| invalid("missing CPU guide BVH"))?;
+                let glass = self
+                    .glass
+                    .first()
+                    .map(super::denoise::GlassCertification::Path)
+                    .or_else(|| self.optical.first().map(|optical| super::denoise::GlassCertification::Legacy(&optical.certificates)));
                 self.denoise.first_mut().ok_or_else(|| invalid("missing CPU guide task"))?.step(
                     PreparedScene { bvh, primitives: &self.looks, source: &self.scene },
                     &self.request,
                     &self.options,
+                    glass,
                     self.clip,
                     &self.effects,
                     self.maps.first_mut(),
@@ -2307,10 +2335,14 @@ fn area_sample_key(pixel: u64, spatial: u8, spatial_samples: u8, film_sample: u3
     if spatial_samples == 1 && film_sample == 0 {
         return Ok(pixel);
     }
+    // Keep existing sample identities byte-for-byte. Added ordinals use a
+    // distinct domain and a full-cap stride to avoid aliasing adjacent pixels.
+    let (stride, domain) =
+        if film_sample < 4096 { (4096 * 16, 0x4152_4541_5341_4d50) } else { (u64::from(job::MAX_CPU_SAMPLES_PER_PIXEL) * 16, 0xc152_4541_5341_4d50) };
     pixel
-        .checked_mul(u64::from(job::MAX_CPU_SAMPLES_PER_PIXEL) * 16)
+        .checked_mul(stride)
         .and_then(|key| key.checked_add(u64::from(film_sample) * 16 + u64::from(spatial)))
-        .map(|key| key ^ 0x4152_4541_5341_4d50)
+        .map(|key| key ^ domain)
         .ok_or_else(|| invalid("area-light sample identity overflow"))
 }
 
@@ -2318,8 +2350,8 @@ fn area_sample_key(pixel: u64, spatial: u8, spatial_samples: u8, film_sample: u3
 /// opaque f64 route untouched, including its unexposed display backplate.
 fn composite_spatial_alpha(
     premultiplied: Vec3,
-    covered: u16,
-    attempts: u16,
+    covered: u32,
+    attempts: u32,
     background: [u8; 3],
     exposure: f64,
     transparent: bool,
@@ -2327,7 +2359,7 @@ fn composite_spatial_alpha(
     if !transparent {
         return composite_spatial(premultiplied, covered, attempts, background, exposure);
     }
-    if attempts == 0 || u32::from(attempts) > job::MAX_CPU_SAMPLES_PER_PIXEL || covered > attempts || !bounded_radiance(premultiplied) {
+    if attempts == 0 || attempts > job::MAX_CPU_SAMPLES_PER_PIXEL || covered > attempts || !bounded_radiance(premultiplied) {
         return Err(invalid("invalid transparent coverage/radiance"));
     }
     if covered == 0 {
@@ -2345,8 +2377,8 @@ fn composite_spatial_alpha(
     Ok([encode8(display.x), encode8(display.y), encode8(display.z), alpha])
 }
 
-fn composite_spatial(premultiplied: Vec3, covered: u16, attempts: u16, background: [u8; 3], exposure: f64) -> job::Result<[u8; 4]> {
-    if attempts == 0 || u32::from(attempts) > job::MAX_CPU_SAMPLES_PER_PIXEL || covered > attempts || !bounded_radiance(premultiplied) {
+fn composite_spatial(premultiplied: Vec3, covered: u32, attempts: u32, background: [u8; 3], exposure: f64) -> job::Result<[u8; 4]> {
+    if attempts == 0 || attempts > job::MAX_CPU_SAMPLES_PER_PIXEL || covered > attempts || !bounded_radiance(premultiplied) {
         return Err(invalid("invalid spatial coverage/radiance"));
     }
     if covered == 0 {
