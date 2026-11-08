@@ -1512,7 +1512,9 @@ fn saved_cpu_denoise_reports_its_actual_native_request_and_keeps_regrade_raw() {
     s.execute(
         "render.settings.set",
         &json!({"name":"CPU denoise","set":{"width":8,"height":8,
-        "job":{"method":"cpu_raytrace","options":{"denoise":true,"progressive":{"samples_per_pixel":3,"seed":81},"output":{"linear_exr":true}}}}}),
+        "job":{"method":"cpu_raytrace","options":{"threads":2,"supersampling":2,"denoise":true,
+            "denoise_settings":{"passes":2,"strength":0.5,"firefly_suppression":false},"denoise_diagnostics":true,
+            "progressive":{"samples_per_pixel":3,"seed":81},"output":{"linear_exr":true}}}}}),
     )
     .unwrap();
     s = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
@@ -1524,7 +1526,13 @@ fn saved_cpu_denoise_reports_its_actual_native_request_and_keeps_regrade_raw() {
     assert_eq!(checked["resolved"]["executor"], "cpu-raytrace");
     assert_eq!(checked["request"]["raytrace"]["denoise"], true);
     assert_eq!(checked["denoising"]["backend"], "native_cpu");
-    assert_eq!(checked["denoising"]["passes"], 3);
+    assert_eq!(checked["denoising"]["passes"], 2);
+    assert_eq!(checked["denoising"]["steps"], json!([1, 2]));
+    assert_eq!(checked["denoising"]["settings"], json!({"passes":2,"strength":0.5,"firefly_suppression":false}));
+    assert_eq!(checked["denoising"]["outlier_policy"], "disabled");
+    assert_eq!(checked["request"]["raytrace"]["threads"], 2);
+    assert_eq!(checked["request"]["raytrace"]["supersampling"], 2);
+    assert_eq!(checked["request"]["raytrace"]["denoise_diagnostics"], true);
     assert_eq!(checked["denoising"]["raw_linear_accumulator_preserved"], true);
     let started = s.execute("render.start", &json!({"setup":"CPU denoise"})).unwrap();
     let id: JobId = serde_json::from_value(started["job"].clone()).unwrap();
@@ -1534,13 +1542,43 @@ fn saved_cpu_denoise_reports_its_actual_native_request_and_keeps_regrade_raw() {
     assert_eq!(json!(status.request), checked["request"]);
     let frame = handle.frame().unwrap().unwrap();
     let raw = frame.linear_exr().unwrap().to_vec();
+    assert_eq!((frame.info.width, frame.info.height), (8, 8));
+    assert_eq!(image::load_from_memory(frame.png()).unwrap().to_rgba8().dimensions(), (8, 8));
+    let report = status.denoise_diagnostics.unwrap();
+    assert_eq!((report.width, report.height), (16, 16));
+    assert_eq!(report.counts.iter().sum::<u64>(), 256);
+    let mask = frame.denoise_mask_png().unwrap().to_vec();
+    let mask_info = frame.denoise_mask_info().unwrap();
+    assert_eq!((mask_info.width, mask_info.height), (8, 8));
+    assert_eq!(mask_info.bytes, mask.len() as u64);
+    assert_ne!(mask_info.sha256, frame.info.png_sha256);
+    let decoded = image::load_from_memory(&mask).unwrap().to_rgba8();
+    assert_eq!(decoded.dimensions(), (8, 8));
+    assert!(decoded.pixels().all(|pixel| solidcraft_render::job::DenoiseGuideClass::ALL.iter().any(|class| class.color() == pixel.0)));
+    let status_reply = s.execute("render.status", &json!({"job":id})).unwrap();
+    assert_eq!(status_reply["denoise_mask"], json!(mask_info));
+    assert_eq!(status_reply["denoise_diagnostics"], json!(report));
+    let viewed = s.execute("render.result.view", &json!({"view":"denoise_mask"})).unwrap();
+    assert_eq!(viewed, json!({"view":"denoise_mask","job":id}));
+    let path = std::env::temp_dir().join(format!("solidcraft-cpu-guide-mask-{}-{}.png", std::process::id(), id.session));
+    let exported = s.execute("render.export", &json!({"job":id,"path":path,"format":"denoise_mask"})).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), mask);
+    assert_eq!(exported["format"], "denoise_mask");
+    assert_eq!(exported["encoding"], "categorical_srgb");
+    assert_eq!(exported["denoise_mask"], json!(mask_info));
+    assert_eq!(exported["frame"]["png_sha256"], frame.info.png_sha256);
+    std::fs::remove_file(path).unwrap();
     let result = s.execute("render.result.regrade", &json!({"job":id,"presentation":{"exposure_ev":-1.0}})).unwrap();
     let derivative: JobId = serde_json::from_value(result["job"].clone()).unwrap();
     let derivative = s.render_job_handle(derivative).unwrap();
     let finished = derivative.wait_timeout(std::time::Duration::from_secs(30)).unwrap();
     assert_eq!(finished.progress.phase, Phase::Completed);
     assert!(!finished.presentation.as_ref().unwrap().denoise_applied, "regrade never pretends to reconstruct absent geometry guides");
-    assert_eq!(derivative.frame().unwrap().unwrap().linear_exr().unwrap(), raw);
+    let derivative_frame = derivative.frame().unwrap().unwrap();
+    assert_eq!(derivative_frame.linear_exr().unwrap(), raw);
+    assert_eq!(derivative_frame.denoise_mask_png().unwrap(), mask);
+    assert_eq!(json!(derivative_frame.denoise_mask_info()), json!(Some(mask_info)));
+    assert_eq!(finished.denoise_diagnostics, Some(report));
     assert_eq!(frame.linear_exr().unwrap(), raw);
     assert!(Arc::ptr_eq(&document, &s.doc));
     assert_eq!((s.revision, s.evaluations, s.undo.len(), s.redo.len()), before);
@@ -3686,4 +3724,31 @@ fn saved_final_cpu_image_preserves_mode_executor_and_authored_quality_through_st
     assert_eq!(options.progressive.unwrap().samples_per_pixel, 3);
     assert!(job.frame().unwrap().unwrap().linear_master_info().is_some());
     assert!(Arc::ptr_eq(&before, &session.doc));
+}
+
+#[cfg(all(feature = "raytrace-cpu", not(target_arch = "wasm32")))]
+#[test]
+fn cpu_quality_limits_refuse_before_input_io_and_scene_capture() {
+    let mut s = Session::default();
+    let host = CpuHost::for_platform().unwrap();
+    s.set_render_job_host(Some(host.clone())).unwrap();
+    let document = s.doc.clone();
+    let before = (s.revision, s.evaluations, s.undo.len(), s.redo.len());
+    for (width, height, options) in [
+        (1024, 1024, json!({"supersampling":2,"progressive":{"samples_per_pixel":8}})),
+        (8, 8, json!({"threads":65})),
+        (8, 8, json!({"supersampling":3})),
+        (8, 8, json!({"denoise_settings":{"passes":4}})),
+        (8193, 1, json!({"budget":"workstation","denoise_diagnostics":true})),
+    ] {
+        let request = json!({"integrator":"raytrace","settings":{"width":width,"height":height},
+            "raytrace":options,"environment":{"path":"must-not-open-quality-controls.hdr"}});
+        for command in ["render.preflight", "render.start"] {
+            let error = s.execute(command, &request).unwrap_err().to_string();
+            assert!(!error.contains("must-not-open-quality-controls.hdr"), "quality must refuse before source IO: {error}");
+            assert_eq!(host.admitted_bytes(), 0);
+            assert!(Arc::ptr_eq(&document, &s.doc));
+            assert_eq!(before, (s.revision, s.evaluations, s.undo.len(), s.redo.len()));
+        }
+    }
 }

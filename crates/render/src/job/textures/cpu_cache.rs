@@ -52,8 +52,8 @@ struct Hit {
 }
 pub(crate) struct CpuTextureCache {
     resources: Arc<RuntimeTextures>,
-    maps: Vec<PreparedMap>,
-    bindings: Vec<Binding>,
+    maps: Arc<Vec<PreparedMap>>,
+    bindings: Arc<Vec<Binding>>,
     current: Vec<MapTask>,
     binding: usize,
     role: usize,
@@ -94,7 +94,7 @@ impl CpuTextureCache {
         let slots = Self::slots(resources) as u64;
         resources
             .cpu_source_bytes()?
-            .checked_add(size_of::<Self>() as u64)
+            .checked_add(size_of::<Self>() as u64 + 2 * (size_of::<Vec<u8>>() + 2 * size_of::<usize>()) as u64)
             .and_then(|n| n.checked_add(resources.bindings().len() as u64 * size_of::<Binding>() as u64))
             .and_then(|n| n.checked_add(slots * (size_of::<PreparedMap>() as u64 + 11 * PreparedMap::level_metadata_bytes())))
             .and_then(|n| n.checked_add(resources.summary().mip_pixel_bytes))
@@ -110,8 +110,8 @@ impl CpuTextureCache {
             })
         })?;
         Ok(Self {
-            maps: reserve(Self::slots(&resources))?,
-            bindings: reserve(resources.bindings().len())?,
+            maps: Arc::new(reserve(Self::slots(&resources))?),
+            bindings: Arc::new(reserve(resources.bindings().len())?),
             current: reserve(1)?,
             resources,
             binding: 0,
@@ -121,6 +121,26 @@ impl CpuTextureCache {
             hit: None,
             prepared_rows: 0,
             total_rows,
+        })
+    }
+    /// Prepared texels and binding tables are shared; each worker owns only its hit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn fork_ready(&self) -> Result<Self> {
+        if !self.ready {
+            return Err(invalid("CPU worker requires completely prepared texture maps"));
+        }
+        Ok(Self {
+            resources: self.resources.clone(),
+            maps: self.maps.clone(),
+            bindings: self.bindings.clone(),
+            current: Vec::new(),
+            binding: self.binding,
+            role: self.role,
+            scan: 0,
+            ready: true,
+            hit: None,
+            prepared_rows: self.prepared_rows,
+            total_rows: self.total_rows,
         })
     }
     pub(crate) fn ready(&self) -> bool {
@@ -145,9 +165,9 @@ impl CpuTextureCache {
                     return Err(limit());
                 }
                 let index = self.maps.len();
-                self.maps.push(prepared);
-                *self
-                    .bindings
+                Arc::get_mut(&mut self.maps).ok_or_else(|| invalid("CPU prepared maps are shared before preparation completed"))?.push(prepared);
+                *Arc::get_mut(&mut self.bindings)
+                    .ok_or_else(|| invalid("CPU map bindings are shared before preparation completed"))?
                     .get_mut(self.binding)
                     .and_then(|b| b.maps.get_mut(self.role))
                     .ok_or_else(|| invalid("CPU map binding cursor disappeared"))? = Some(index);
@@ -160,7 +180,9 @@ impl CpuTextureCache {
         cancel.check()?;
         if self.binding == self.resources.bindings().len() {
             // At most128 fixed-size records; sort_unstable allocates no heap.
-            self.bindings.sort_unstable_by_key(|b| b.body);
+            Arc::get_mut(&mut self.bindings)
+                .ok_or_else(|| invalid("CPU map bindings are shared before preparation completed"))?
+                .sort_unstable_by_key(|b| b.body);
             self.ready = true;
             return Ok(true);
         }
@@ -169,7 +191,11 @@ impl CpuTextureCache {
                 return Err(limit());
             }
             let source = self.resources.bindings().get(self.binding).ok_or_else(|| invalid("CPU source binding disappeared"))?;
-            self.bindings.push(Binding { body: source.body_index, source: self.binding, maps: [None; 4] });
+            Arc::get_mut(&mut self.bindings).ok_or_else(|| invalid("CPU map bindings are shared before preparation completed"))?.push(Binding {
+                body: source.body_index,
+                source: self.binding,
+                maps: [None; 4],
+            });
             return Ok(false);
         }
         if self.role == 4 {
@@ -188,8 +214,8 @@ impl CpuTextureCache {
             if prepared.identity().0 == source.identity() {
                 let total_rows =
                     self.total_rows.checked_sub(u64::from(source.dimensions()[1])).filter(|rows| *rows >= self.prepared_rows).ok_or_else(limit)?;
-                *self
-                    .bindings
+                *Arc::get_mut(&mut self.bindings)
+                    .ok_or_else(|| invalid("CPU map bindings are shared before preparation completed"))?
                     .get_mut(self.binding)
                     .and_then(|b| b.maps.get_mut(self.role))
                     .ok_or_else(|| invalid("CPU map binding cursor disappeared"))? = Some(self.scan);

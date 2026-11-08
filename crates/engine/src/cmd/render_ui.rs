@@ -65,12 +65,12 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("settings")
         .noundo()
         .doc_only()
-        .params("width, height: 1..16384; custom?: bool. Validated Render output draft request; headless echo only, no design edits or job."),
+        .params("width, height: 1..8192, at most 33554432 output pixels; custom?: bool. Validated Render output draft request; headless echo only, no design edits or job."),
     CommandSpec::new("render.result.view", "View Render Image", result_view)
         .icon("render_image")
         .noundo()
         .doc_only()
-        .params("view: model|image|fit|actual. Validated result canvas request; headless echo only, never starts a job."),
+        .params("view: model|image|fit|actual|denoise_mask. Guide-mask view requires a selected completed result captured with denoising diagnostics. Validated result canvas request; headless echo only, never starts a job."),
     CommandSpec::new("render.result.close", "Close Render Image", close_result)
         .icon("close")
         .key("Escape")
@@ -259,9 +259,7 @@ struct OutputSize {
 }
 fn output_size(_: &mut Session, params: &Value) -> Result<Value> {
     let input: OutputSize = serde_json::from_value(params.clone()).map_err(|e| bad("render.output.size", e.to_string()))?;
-    if !(1..=16384).contains(&input.width) || !(1..=16384).contains(&input.height) {
-        return Err(bad("render.output.size", "dimensions must be in 1..16384"));
-    }
+    solidcraft_render::job::supersampled_dimensions(input.width, input.height, 1).map_err(|error| bad("render.output.size", error.to_string()))?;
     let mut reply = json!({"width":input.width,"height":input.height});
     if input.custom {
         reply["custom"] = json!(true);
@@ -275,8 +273,18 @@ struct ResultView {
 }
 fn result_view(s: &mut Session, params: &Value) -> Result<Value> {
     let input: ResultView = serde_json::from_value(params.clone()).map_err(|e| bad("render.result.view", e.to_string()))?;
-    if !matches!(input.view.as_str(), "model" | "image" | "fit" | "actual") {
-        return Err(bad("render.result.view", "view must be model, image, fit or actual"));
+    if !matches!(input.view.as_str(), "model" | "image" | "fit" | "actual" | "denoise_mask") {
+        return Err(bad("render.result.view", "view must be model, image, fit, actual or denoise_mask"));
+    }
+    if input.view == "denoise_mask" {
+        s.render_jobs.collect().map_err(crate::render_jobs::job_error)?;
+        let job = s.render_selected_result().ok_or_else(|| bad("render.result.view", "no completed result is selected"))?;
+        let frame = s.render_jobs.frame(job).map_err(crate::render_jobs::job_error)?;
+        if frame.denoise_mask_png().is_none() {
+            return Err(bad("render.result.view", "the selected result has no denoising guide mask"));
+        }
+        s.render_jobs.set_comparison(None);
+        return Ok(json!({"view":input.view,"job":job}));
     }
     if input.view == "model" {
         s.render_jobs.set_comparison(None);
@@ -307,6 +315,10 @@ fn output_viewer_requests_are_validated_headless_echoes() {
         let request = json!({"view":view});
         assert_eq!(s.execute("render.result.view", &request).unwrap(), request);
     }
+    assert!(s.execute("render.result.view", &json!({"view":"denoise_mask"})).is_err());
+    assert_eq!(s.execute("render.output.size", &json!({"width":7680,"height":4320})).unwrap(), json!({"width":7680,"height":4320}));
+    assert!(s.execute("render.output.size", &json!({"width":8193,"height":1})).is_err());
+    assert!(s.execute("render.output.size", &json!({"width":8192,"height":8192})).is_err());
     assert_eq!(s.execute("render.result.close", &json!({})).unwrap(), json!({"view":"model"}));
     for request in
         [json!(null), json!({}), json!({"width":0,"height":1}), json!({"width":u64::MAX,"height":1}), json!({"width":1,"height":1,"extra":true})]

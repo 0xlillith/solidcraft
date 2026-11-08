@@ -4,7 +4,7 @@ use super::image::{error, invalid, primary_ray};
 use super::prepared::{PreparedScene, SharedHit};
 use super::{Hit, Ray, WorkBudget, dielectric, glass_mesh, reflection};
 use crate::job::{
-    CancelToken, DielectricBoundary, DielectricOptions, ImageRequest, RaytraceOptions, ReflectionMode, Result,
+    CancelToken, DenoiseGuideClass as GuideClass, DielectricBoundary, DielectricOptions, ImageRequest, RaytraceOptions, ReflectionMode, Result,
     denoise::{Guide, SurfaceGuide},
 };
 use solidcore_record::Vec3;
@@ -133,21 +133,33 @@ fn glass_branches(
     boundary: CertifiedBoundary,
     ray: Ray,
     hit: SharedHit<'_>,
-) -> Option<(Option<Launch>, Option<Forward>)> {
+) -> std::result::Result<(Option<Launch>, Option<Forward>), GuideClass> {
     let thin = input.boundary == DielectricBoundary::ThinSheet;
     let needed = if thin { 2 } else { 3 };
-    if lens_active(options)
-        || options.path.is_some_and(|path| path.max_depth < needed)
-        || input.model.is_some_and(|model| !model.is_identity())
-        || input.subsurface.is_some_and(|medium| medium.active())
-        || !boundary.unambiguous(hit)
-        || (!thin && !hit.front_face)
-    {
-        return None;
+    if lens_active(options) {
+        return Err(GuideClass::DepthOfField);
     }
-    let (interface, normal) = glass_interface(options, ray, hit, 1.0, input.ior)?;
+    if options.path.is_some_and(|path| path.max_depth < needed) {
+        return Err(GuideClass::PathDepth);
+    }
+    if input.model.is_some_and(|model| !model.is_identity()) {
+        return Err(GuideClass::UnsupportedMaterial);
+    }
+    if input.subsurface.is_some_and(|medium| medium.active()) {
+        return Err(GuideClass::Volume);
+    }
+    if !boundary.unambiguous(hit) {
+        return Err(match boundary {
+            CertifiedBoundary::Path(_) => GuideClass::NestedMedium,
+            CertifiedBoundary::Legacy(_) => GuideClass::DegeneratePath,
+        });
+    }
+    if !thin && !hit.front_face {
+        return Err(GuideClass::NestedMedium);
+    }
+    let (interface, normal) = glass_interface(options, ray, hit, 1.0, input.ior).ok_or(GuideClass::DegeneratePath)?;
     let (interface, reflects, transmits) = if thin {
-        let (sheet, reflected, transmitted) = dielectric::thin_sheet(ray.direction(), normal, input).ok()?;
+        let (sheet, reflected, transmitted) = dielectric::thin_sheet(ray.direction(), normal, input).map_err(|_| GuideClass::DegeneratePath)?;
         (sheet, reflected != Vec3::ZERO, transmitted != Vec3::ZERO)
     } else {
         (interface, interface.reflectance > 0.0, interface.reflectance < 1.0)
@@ -155,23 +167,23 @@ fn glass_branches(
     let geometric = hit.oriented_geometric_normal();
     let reflected = if reflects {
         if interface.reflected.dot(geometric) <= 0.0 {
-            return None;
+            return Err(GuideClass::DegeneratePath);
         }
-        Some(boundary.launch(hit, interface.reflected)?)
+        Some(boundary.launch(hit, interface.reflected).ok_or(GuideClass::DegeneratePath)?)
     } else {
         None
     };
     let forward = if transmits {
-        let direction = interface.transmitted?;
+        let direction = interface.transmitted.ok_or(GuideClass::TotalInternalReflection)?;
         if direction.dot(geometric) >= 0.0 {
-            return None;
+            return Err(GuideClass::DegeneratePath);
         }
         let segment = if thin { Segment::Transmitted } else { Segment::GlassExit(index) };
-        Some(Forward { launch: boundary.launch(hit, direction)?, segment })
+        Some(Forward { launch: boundary.launch(hit, direction).ok_or(GuideClass::DegeneratePath)?, segment })
     } else {
         None
     };
-    Some((reflected, forward))
+    Ok((reflected, forward))
 }
 fn glass_exit(
     options: &RaytraceOptions,
@@ -179,24 +191,25 @@ fn glass_exit(
     certification: Option<GlassCertification<'_>>,
     ray: Ray,
     hit: SharedHit<'_>,
-) -> Option<Launch> {
-    let input = options.dielectrics.get(index)?;
-    let boundary = certification?.boundary(index)?;
+) -> std::result::Result<Launch, GuideClass> {
+    let input = options.dielectrics.get(index).ok_or(GuideClass::Unavailable)?;
+    let boundary = certification.and_then(|value| value.boundary(index)).ok_or(GuideClass::Unavailable)?;
     if hit.body_index != input.body_index || hit.front_face || !boundary.unambiguous(hit) {
-        return None;
+        return Err(GuideClass::IncompatibleExit);
     }
-    let (interface, _) = glass_interface(options, ray, hit, input.ior, 1.0)?;
-    let direction = interface.transmitted?;
+    let (interface, _) = glass_interface(options, ray, hit, input.ior, 1.0).ok_or(GuideClass::DegeneratePath)?;
+    let direction = interface.transmitted.ok_or(GuideClass::TotalInternalReflection)?;
     if direction.dot(hit.oriented_geometric_normal()) >= 0.0
-        || dielectric::attenuation(input.absorption_per_mm, ray.origin().dist(hit.position)).ok()? == Vec3::ZERO
+        || dielectric::attenuation(input.absorption_per_mm, ray.origin().dist(hit.position)).map_err(|_| GuideClass::DegeneratePath)? == Vec3::ZERO
     {
-        return None;
+        return Err(GuideClass::DegeneratePath);
     }
-    boundary.launch(hit, direction)
+    boundary.launch(hit, direction).ok_or(GuideClass::DegeneratePath)
 }
 
 pub(super) struct Guides {
     pixels: Vec<Guide>,
+    classes: Option<Vec<GuideClass>>,
     count: usize,
     cursor: Option<TraceCursor>,
     ray: Option<Ray>,
@@ -206,25 +219,43 @@ pub(super) struct Guides {
     classified: bool,
     effect_cursor: usize,
     effect: Option<usize>,
-    pending: Option<Guide>,
+    pending: Option<(Guide, GuideClass)>,
     optical: Option<OpticalWalk>,
 }
 impl Guides {
     pub(super) fn required_bytes(width: u32, height: u32) -> Result<u64> {
+        Self::required_bytes_with_diagnostics(width, height, false)
+    }
+    pub(super) fn required_bytes_with_diagnostics(width: u32, height: u32, diagnostics: bool) -> Result<u64> {
+        let class_bytes = if diagnostics { std::mem::size_of::<GuideClass>() as u64 } else { 0 };
         (u64::from(width) * u64::from(height))
-            .checked_mul(crate::job::denoise::GUIDE_BYTES)
+            .checked_mul(crate::job::denoise::GUIDE_BYTES + class_bytes)
             .and_then(|v| v.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or_else(|| invalid("CPU denoising guide size overflow"))
     }
     pub(super) fn new(width: u32, height: u32) -> Result<Self> {
+        Self::new_with_diagnostics(width, height, false)
+    }
+    pub(super) fn new_with_diagnostics(width: u32, height: u32, diagnostics: bool) -> Result<Self> {
         let count = usize::try_from(u64::from(width) * u64::from(height)).map_err(|_| invalid("CPU guide dimensions overflow"))?;
         let mut pixels = Vec::new();
         pixels.try_reserve_exact(count).map_err(|_| error(super::TraceError::AllocationFailed))?;
         if count == 0 || pixels.capacity() != count {
             return Err(invalid("CPU guide capacity exceeds admission"));
         }
+        let classes = if diagnostics {
+            let mut classes = Vec::new();
+            classes.try_reserve_exact(count).map_err(|_| error(super::TraceError::AllocationFailed))?;
+            if classes.capacity() != count {
+                return Err(invalid("CPU guide diagnostic capacity exceeds admission"));
+            }
+            Some(classes)
+        } else {
+            None
+        };
         Ok(Self {
             pixels,
+            classes,
             count,
             cursor: None,
             ray: None,
@@ -259,11 +290,27 @@ impl Guides {
         }
         Ok(&self.pixels)
     }
-    fn append(&mut self, guide: Guide, work: &mut WorkBudget, cancel: &CancelToken) -> Result<()> {
+    pub(super) fn classes(&self) -> Result<&[GuideClass]> {
+        let classes = self.classes.as_deref().ok_or_else(|| invalid("CPU guide diagnostics were not requested"))?;
+        if !self.ready() || classes.len() != self.count {
+            return Err(invalid("CPU guide diagnostics are incomplete"));
+        }
+        Ok(classes)
+    }
+    fn bypass(&mut self, reason: GuideClass) {
+        self.pending = Some((Guide::default(), reason));
+    }
+    fn append(&mut self, guide: Guide, class: GuideClass, work: &mut WorkBudget, cancel: &CancelToken) -> Result<()> {
         work.tick(cancel).map_err(error)?;
         guide.validate()?;
-        if self.ready() {
-            return Err(invalid("CPU denoising guide cursor exceeds admission"));
+        if self.ready() || class.eligible() != (guide.body != 0) {
+            return Err(invalid("CPU denoising guide cursor or classification is invalid"));
+        }
+        if let Some(classes) = &mut self.classes {
+            if classes.len() != self.pixels.len() || classes.len() >= classes.capacity() {
+                return Err(invalid("CPU guide diagnostic cursor exceeds admission"));
+            }
+            classes.push(class);
         }
         self.pixels.push(guide);
         self.ray = None;
@@ -300,7 +347,7 @@ impl Guides {
             self.optical = Some(OpticalWalk { primary, reflected: SurfaceGuide::default(), footprint, segment: forward.segment, forward: None });
             self.launch(forward.launch);
         } else {
-            self.pending = Some(Guide::default());
+            self.bypass(GuideClass::DegeneratePath);
         }
     }
     fn endpoint(&mut self, mut guide: Guide) {
@@ -319,7 +366,7 @@ impl Guides {
                 body
             };
             let Some(identity) = Guide::optical_body(optical.primary, optical.reflected.body, transmitted) else {
-                self.pending = Some(Guide::default());
+                self.bypass(GuideClass::IdentityLimit);
                 return;
             };
             if transmitted != 0 {
@@ -327,7 +374,8 @@ impl Guides {
             }
             guide.body = identity;
         }
-        self.pending = Some(guide);
+        let class = if self.optical.is_some() { GuideClass::Optical } else { GuideClass::Surface };
+        self.pending = Some((guide, class));
     }
     /// A continuation creates one ray, visits one BVH node/triangle, scans one
     /// bounded emitter/effect row, or resolves/stores one guide. The normal image budget is shared.
@@ -349,8 +397,8 @@ impl Guides {
         if self.ready() {
             return Err(invalid("CPU denoising guides are already complete"));
         }
-        if let Some(guide) = self.pending {
-            return self.append(guide, work, cancel);
+        if let Some((guide, class)) = self.pending {
+            return self.append(guide, class, work, cancel);
         }
         if self.ray.is_none() {
             work.tick(cancel).map_err(error)?;
@@ -409,41 +457,53 @@ impl Guides {
             return Ok(());
         }
         if self.analytic_emitter {
-            return self.append(Guide::default(), work, cancel);
+            return self.append(Guide::default(), GuideClass::Emitter, work, cancel);
         }
         let Some(hit) = self.hit else {
-            return self.append(Guide::default(), work, cancel);
+            return self.append(Guide::default(), GuideClass::Background, work, cancel);
         };
         work.tick(cancel).map_err(error)?;
         let mut shared = scene.resolve_hit(ray, hit).map_err(error)?;
         if !self.classified {
             self.classified = true;
             if is_emitter(options, shared) {
-                self.pending = Some(Guide::default());
+                self.bypass(GuideClass::Emitter);
                 return Ok(());
             }
             if let Some(mut walk) = self.optical
                 && let Segment::GlassExit(index) = walk.segment
             {
-                if let Some(launch) = glass_exit(options, index, glass, ray, shared) {
-                    walk.segment = Segment::Transmitted;
-                    self.optical = Some(walk);
-                    self.launch(launch);
-                } else {
-                    self.pending = Some(Guide::default());
+                match glass_exit(options, index, glass, ray, shared) {
+                    Ok(launch) => {
+                        walk.segment = Segment::Transmitted;
+                        self.optical = Some(walk);
+                        self.launch(launch);
+                    }
+                    Err(reason) => self.bypass(reason),
                 }
                 return Ok(());
             }
             if let Some((index, input)) = options.dielectrics.iter().enumerate().find(|(_, input)| input.body_index == shared.body_index) {
-                let branches = glass
-                    .filter(|glass| self.optical.is_none() && glass.outside(options, request, ray))
-                    .and_then(|glass| glass.boundary(index))
-                    .and_then(|boundary| glass_branches(options, index, input, boundary, ray, shared));
-                if let Some((reflected, forward)) = branches {
-                    let (_, _, footprint) = guide_geometry(request, shared.position);
-                    self.begin_optical(body_id(shared)?, footprint, reflected, forward);
+                let branches = if self.optical.is_some() {
+                    Err(GuideClass::FurtherTransmission)
+                } else if let Some(glass) = glass {
+                    if glass.outside(options, request, ray) {
+                        glass
+                            .boundary(index)
+                            .ok_or(GuideClass::Unavailable)
+                            .and_then(|boundary| glass_branches(options, index, input, boundary, ray, shared))
+                    } else {
+                        Err(GuideClass::NestedMedium)
+                    }
                 } else {
-                    self.pending = Some(Guide::default());
+                    Err(GuideClass::Unavailable)
+                };
+                match branches {
+                    Ok((reflected, forward)) => {
+                        let (_, _, footprint) = guide_geometry(request, shared.position);
+                        self.begin_optical(body_id(shared)?, footprint, reflected, forward);
+                    }
+                    Err(reason) => self.bypass(reason),
                 }
                 return Ok(());
             }
@@ -538,12 +598,19 @@ impl Guides {
         let geometric = shared.oriented_geometric_normal();
         let (relative, depth, surface_footprint) = guide_geometry(request, shared.position);
         let body = body_id(shared)?;
-        if self.optical.is_none()
-            && (mirror || (near_perfect && !active_coat && (options.path.is_some() || reflection.is_some())))
-            && !lens_active(options)
-            && options.path.is_none_or(|path| path.max_depth >= 2)
-            && glass.is_none_or(|glass| glass.outside(options, request, ray))
-        {
+        if self.optical.is_none() && (mirror || (near_perfect && !active_coat && (options.path.is_some() || reflection.is_some()))) {
+            if lens_active(options) {
+                self.bypass(GuideClass::DepthOfField);
+                return Ok(());
+            }
+            if options.path.is_some_and(|path| path.max_depth < 2) {
+                self.bypass(GuideClass::PathDepth);
+                return Ok(());
+            }
+            if glass.is_some_and(|glass| !glass.outside(options, request, ray)) {
+                self.bypass(GuideClass::NestedMedium);
+                return Ok(());
+            }
             let reflected = reflection::mirror(shared.surface, shared.shading_normal, -ray.direction())
                 .ok()
                 .flatten()
@@ -554,7 +621,7 @@ impl Guides {
             return Ok(());
         }
         if mirror || smooth_metal || sharp_coat {
-            self.pending = Some(Guide::default());
+            self.bypass(if self.optical.is_some() { GuideClass::ReflectiveEndpoint } else { GuideClass::UnsupportedMaterial });
             return Ok(());
         }
         let normal = if shared.shading_normal.dot(-ray.direction()) > 0.0 { shared.shading_normal } else { geometric };
@@ -571,5 +638,70 @@ impl Guides {
         guide.validate()?;
         self.endpoint(guide);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit() -> SharedHit<'static> {
+        SharedHit {
+            body_index: 0,
+            body_name: "glass",
+            primitive_index: 0,
+            distance_mm: 1.0,
+            position: Vec3::ZERO,
+            geometric_normal: Vec3::new(0.0, 0.0, 1.0),
+            front_face: true,
+            shading_normal: Vec3::new(0.0, 0.0, 1.0),
+            surface: crate::surface::OpaqueSurface::new(Vec3::new(0.5, 0.5, 0.5), 0.0, 0.5, 1.5).unwrap(),
+            vertices: [Vec3::new(-1.0, -1.0, 0.0), Vec3::new(1.0, -1.0, 0.0), Vec3::new(0.0, 2.0, 0.0)],
+            barycentric: [1.0 / 3.0; 3],
+        }
+    }
+
+    #[test]
+    fn optical_branch_diagnostics_explain_actual_policy_bypasses() {
+        let mut options = RaytraceOptions { path: Some(crate::job::CpuPathOptions { max_depth: 3 }), ..Default::default() };
+        let mut input = dielectric::tests::input(DielectricBoundary::ThinSheet);
+        let boundary = CertifiedBoundary::Legacy(dielectric::Certificate::ThinSheet);
+        let ray = Ray::new(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0), 0.0, 10.0).unwrap();
+        assert!(glass_branches(&options, 0, &input, boundary, ray, hit()).is_ok());
+        options.lens = Some(crate::job::ThinLens { aperture_radius_mm: 0.1, focus_distance_mm: 1.0 });
+        assert_eq!(glass_branches(&options, 0, &input, boundary, ray, hit()).err(), Some(GuideClass::DepthOfField));
+        options.lens = None;
+        options.path.as_mut().unwrap().max_depth = 1;
+        assert_eq!(glass_branches(&options, 0, &input, boundary, ray, hit()).err(), Some(GuideClass::PathDepth));
+        options.path.as_mut().unwrap().max_depth = 3;
+        input.model = Some(crate::glass_model::GlassModel { roughness: 0.2, ..Default::default() });
+        assert_eq!(glass_branches(&options, 0, &input, boundary, ray, hit()).err(), Some(GuideClass::UnsupportedMaterial));
+        input.model = None;
+        assert!(glass_branches(&options, 0, &input, boundary, ray, hit()).is_ok());
+    }
+
+    #[test]
+    fn diagnostic_plane_is_optional_bounded_and_cancellation_safe() {
+        assert_eq!(std::mem::size_of::<Guide>(), 96);
+        assert_eq!(Guides::required_bytes_with_diagnostics(3, 1, true).unwrap() - Guides::required_bytes(3, 1).unwrap(), 3);
+        let mut disabled = Guides::new(1, 1).unwrap();
+        assert!(disabled.classes.is_none());
+        let cancel = CancelToken::default();
+        let mut work = WorkBudget::new(100).unwrap();
+        disabled.append(Guide::default(), GuideClass::Background, &mut work, &cancel).unwrap();
+        assert!(disabled.ready());
+        assert!(disabled.classes().is_err());
+        let mut guides = Guides::new_with_diagnostics(3, 1, true).unwrap();
+        assert!(guides.classes().is_err());
+        for class in [GuideClass::Background, GuideClass::Emitter, GuideClass::NestedMedium] {
+            guides.append(Guide::default(), class, &mut work, &cancel).unwrap();
+        }
+        assert_eq!(guides.classes().unwrap(), &[GuideClass::Background, GuideClass::Emitter, GuideClass::NestedMedium]);
+        assert_eq!(guides.classes.as_ref().unwrap().capacity(), 3);
+        let mut interrupted = Guides::new_with_diagnostics(1, 1, true).unwrap();
+        cancel.cancel();
+        assert!(interrupted.append(Guide::default(), GuideClass::Emitter, &mut work, &cancel).is_err());
+        assert!(interrupted.pixels.is_empty());
+        assert!(interrupted.classes.as_ref().unwrap().is_empty());
     }
 }

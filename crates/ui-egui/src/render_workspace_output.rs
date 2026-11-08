@@ -265,7 +265,7 @@ pub(super) fn scene_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         let lens = if app.cam.fov > 0.0 { format!("{:.0}°", app.cam.fov.to_degrees()) } else { app.tr("render.stage_orthographic").to_string() };
         let aspect = super::shot::aspect_label(app, &view.draft);
         let frame = format!("{} · {lens} · {aspect}", view.name);
-        let format = if view.studio.export_exr { "EXR" } else { "PNG" };
+        let format = studio::export_format_label(app);
         let output = format!("{} × {} · {format} · {}", view.draft.width, view.draft.height, app.tr(view.method.label()));
         for (stage, summary, icon) in [
             (super::Stage::Look, look, "appearance"),
@@ -469,15 +469,14 @@ fn renderer_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let side = match app.render_workspace.view.method {
-        ImageMethod::CpuRaytrace => 16384,
-        ImageMethod::GpuRaytrace => 8192,
+        ImageMethod::CpuRaytrace | ImageMethod::GpuRaytrace => solidcraft_engine::render::job::MAX_OUTPUT_DIMENSION,
         ImageMethod::Raster => 4096,
     };
     let before = [app.render_workspace.view.draft.width, app.render_workspace.view.draft.height];
     app.render_workspace.view.inspector.resolution.observe(before);
     let mut width = before[0];
     let mut height = before[1];
-    let [w, h] = ui_kit::number_pair(ui, app.tr("render.output_dimensions"), [&mut width, &mut height], 1..=side, 1.0, " px");
+    let [w, h] = ui_kit::number_pair_preserving(ui, app.tr("render.output_dimensions"), [&mut width, &mut height], 1..=side, 1.0, " px");
     crate::scenario::publish_target("render:output-width", w.rect);
     crate::scenario::publish_target("render:output-height", h.rect);
     let edit = if w.changed() {
@@ -505,6 +504,7 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ("720", crate::i18n::tr("render.size_hd").to_string(), Some((1280, 720))),
         ("1080", crate::i18n::tr("render.size_full_hd").to_string(), Some((1920, 1080))),
         ("4k", crate::i18n::tr("render.size_4k_uhd").to_string(), Some((3840, 2160))),
+        ("8k", crate::i18n::tr("render.size_8k_uhd").to_string(), Some((7680, 4320))),
         ("largest", largest_label, largest),
     ]
     .chunks(2)
@@ -544,6 +544,7 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     if cpu::image_limits(app).fit(size.0, size.1, None) != Some(size) {
         ui_kit::text(ui, &size_limit_reason(app, before[0], before[1]), ui_kit::Text::Error("render.output_over_budget"));
     }
+    super::quality::supersampling_controls(app, ui);
     studio::export_controls(app, ui);
     let raytrace = app.render_workspace.view.method != ImageMethod::Raster;
     if !raytrace {
@@ -699,26 +700,22 @@ pub(super) fn sampling_editor(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 fn path_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let label = app.tr("render.children.samples").to_string();
-    let mut samples = app.render_workspace.view.samples.clamp(1, solidcraft_engine::render::job::MAX_SAMPLES_PER_PIXEL);
+    let mut samples = app.render_workspace.view.samples;
     let response = ui_kit::row(ui, &label, |ui| {
-        ui_kit::slider(
-            ui,
-            &mut samples,
-            1..=solidcraft_engine::render::job::MAX_SAMPLES_PER_PIXEL,
-            ui_kit::Slider { integer: true, step: Some(1.0), format: |v| format!("{v:.0}"), ..Default::default() },
-        )
+        let field = ui_kit::number_field_preserving(ui, &mut samples, 1..=super::quality::MAX_UI_SAMPLES, 1.0, "");
+        crate::scenario::publish_target("render:gpu-samples", field.rect);
+        field
     });
-    crate::scenario::publish_target("render:gpu-samples", response.rect);
-    if response.changed() {
+    let preset = super::quality::sample_presets(ui, &mut samples, 1..=super::quality::MAX_UI_SAMPLES, "render:gpu-samples-preset");
+    if response.changed() || preset {
         app.render_workspace.view.samples = if app.preferences.render_legacy_image_defaults {
-            samples
-                .checked_next_power_of_two()
-                .unwrap_or(solidcraft_engine::render::job::MAX_SAMPLES_PER_PIXEL)
-                .min(solidcraft_engine::render::job::MAX_SAMPLES_PER_PIXEL)
+            samples.checked_next_power_of_two().unwrap_or(super::quality::MAX_UI_SAMPLES).min(super::quality::MAX_UI_SAMPLES)
         } else {
             samples
         };
+        app.render_workspace.view.dirty = true;
     }
+    super::quality::legacy_samples_note(app, ui, app.render_workspace.view.samples);
     let label = app.tr("render.children.depth").to_string();
     let mut depth = app.render_workspace.view.max_depth.clamp(1, u32::from(solidcraft_engine::render::job::MAX_PATH_DEPTH));
     let response =
@@ -730,13 +727,12 @@ fn path_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let label = app.tr("render.children.seed").to_string();
     let response = ui_kit::row(ui, &label, |ui| ui_kit::number_field(ui, &mut app.render_workspace.view.seed, 0..=u32::MAX, 1.0, ""));
     crate::scenario::publish_target("render:gpu-seed", response.rect);
-    let label = app.tr("render.children.denoise").to_string();
-    let response = ui_kit::checkbox(ui, &label, &mut app.render_workspace.view.studio.denoise);
-    crate::scenario::publish_target("render:gpu-denoise", response.rect);
-    ui_kit::text(ui, app.tr("render.studio_denoise_help"), ui_kit::Text::Note("render.studio_denoise_help"));
+    super::quality::denoise_controls(app, ui);
 }
 fn cpu_sampling(app: &mut SolveApp, ui: &mut egui::Ui) {
     super::cpu_sampling_controls(app, ui);
+    super::quality::cpu_threads_controls(app, ui);
+    super::quality::denoise_controls(app, ui);
     let mut reflections = app.render_workspace.view.raytrace.reflections.clone().unwrap_or_default();
     if app.render_workspace.view.raytrace.reflections.is_none() {
         ui_kit::text(ui, app.tr("render.cpu_reflection_empty"), ui_kit::Text::Note("render.cpu_reflection_empty"));
@@ -761,6 +757,7 @@ pub(super) fn check_editor(app: &mut SolveApp, ui: &mut egui::Ui) {
     editor_section(app, ui, "render_check_check", "render.children.check", check_controls);
     editor_section(app, ui, "render_check_request", "render.children.request", request_controls);
     editor_section(app, ui, "render_check_renderers", "render.children.renderers", renderer_status);
+    editor_section(app, ui, "render_check_denoising", "render.denoise_diagnostics_title", super::quality::diagnostics);
     let title = app.tr("render.children.under_hood").to_string();
     ui_kit::section(ui, "render_check_under_hood", &title, false, |ui| diagnostics(app, ui));
 }
@@ -850,7 +847,7 @@ fn request_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     );
     for (key, value) in [
         ("render.children.method", app.tr(view.method.label()).to_string()),
-        ("render.output_image", format!("{} × {} · {}", view.draft.width, view.draft.height, if view.studio.export_exr { "EXR" } else { "PNG" })),
+        ("render.output_image", format!("{} × {} · {}", view.draft.width, view.draft.height, studio::export_format_label(app))),
         ("render.children.sampling", sampling),
         ("render.children.memory", memory),
         ("render.children.hdr", hdr),
@@ -986,6 +983,14 @@ fn quality_selection(app: &SolveApp) -> usize {
         .unwrap_or(3)
 }
 
+fn quality_plan_samples(plan: &Value) -> Option<u64> {
+    if plan["variant"] == "cpu_progressive_png" {
+        plan["cpu_options"]["progressive"]["samples_per_pixel"].as_u64()
+    } else {
+        plan["gpu_options"]["samples"].as_u64()
+    }
+}
+
 fn quality_reason(app: &SolveApp, index: usize) -> Option<&str> {
     if index == 3 {
         return None;
@@ -997,6 +1002,9 @@ fn quality_reason(app: &SolveApp, index: usize) -> Option<&str> {
         return Some(app.tr("render.cpu_quality_progressive_required"));
     }
     match app.render_workspace.view.inspector.quality_plans.as_ref().and_then(|plans| plans.get(index)) {
+        Some(Ok(plan)) if quality_plan_samples(plan).is_some_and(|samples| samples > u64::from(super::quality::MAX_UI_SAMPLES)) => {
+            Some(app.tr("render.quality_preset_limit"))
+        }
         Some(Ok(_)) => None,
         Some(Err(reason)) => Some(reason),
         None => Some(app.tr("render.error_quality_projection")),
@@ -1127,10 +1135,11 @@ pub(super) fn check_summary(app: &SolveApp) -> String {
     format!("{} · {}", app.tr("render.output_check"), app.tr(state))
 }
 
-const SIZE_PRESETS: [(&str, &str, Option<(u32, u32)>); 5] = [
+const SIZE_PRESETS: [(&str, &str, Option<(u32, u32)>); 6] = [
     ("720", "render.size_preview", Some((1280, 720))),
     ("1080", "render.size_full_hd", Some((1920, 1080))),
     ("4k", "render.size_4k", Some((3840, 2160))),
+    ("8k", "render.size_8k_uhd", Some((7680, 4320))),
     ("square", "render.size_square", Some((2048, 2048))),
     ("custom", "render.size_custom", None),
 ];
@@ -1390,6 +1399,9 @@ pub(super) fn apply_quality_transaction(app: &mut SolveApp, plan: &Value) -> Res
 }
 
 pub(super) fn apply_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
+    if quality_plan_samples(plan).is_some_and(|samples| samples > u64::from(super::quality::MAX_UI_SAMPLES)) {
+        return Err(app.tr("render.quality_preset_limit").to_string());
+    }
     if app.render_workspace.view.method == ImageMethod::CpuRaytrace {
         return apply_cpu_quality(app, plan);
     }
@@ -1444,9 +1456,11 @@ fn apply_cpu_quality(app: &mut SolveApp, plan: &Value) -> Result<(), String> {
         return Err(app.tr("render.error_quality_bounds").to_string());
     }
     let sampling = cpu_camera_sampling(Some(progressive), view.studio.adaptive, budget).map_err(|error| error.to_string())?;
-    budget.validate_image(width, height, sampling).map_err(|error| error.to_string())?;
+    let (trace_width, trace_height) =
+        solidcraft_engine::render::job::supersampled_dimensions(width, height, view.studio.supersampling).map_err(|error| error.to_string())?;
+    budget.validate_image(trace_width, trace_height, sampling).map_err(|error| error.to_string())?;
     if view.studio.denoise {
-        solidcraft_engine::render::job::validate_cpu_denoise_image(width, height).map_err(|error| error.to_string())?;
+        solidcraft_engine::render::job::validate_cpu_denoise_image(trace_width, trace_height).map_err(|error| error.to_string())?;
     }
     let view = &mut app.render_workspace.view;
     view.draft.width = width;

@@ -236,21 +236,21 @@ impl State {
         }
     }
 }
-fn variates(task: &ImageTask, state: &State, domain: u64) -> job::Result<[f64; 2]> {
+fn variates(task: &TransportContext<'_>, state: &State, domain: u64) -> job::Result<[f64; 2]> {
     let p = task.progressive.as_ref().ok_or_else(|| invalid("CPU path needs progressive film"))?;
     p.variates(task.pixel, (0x5041_5448_0000_u64 + u64::from(state.depth) * 0x10000).wrapping_add(domain))
 }
-fn remaining_depth(task: &ImageTask, state: &State) -> job::Result<u8> {
+fn remaining_depth(task: &TransportContext<'_>, state: &State) -> job::Result<u8> {
     Ok(task.options.path.ok_or_else(|| invalid("CPU path settings disappeared"))?.max_depth.saturating_sub(state.depth))
 }
-fn continuing(task: &ImageTask, state: &State) -> job::Result<bool> {
+fn continuing(task: &TransportContext<'_>, state: &State) -> job::Result<bool> {
     Ok(remaining_depth(task, state)? > 1)
 }
-fn owned_caustic_tail(task: &ImageTask, state: &State) -> Option<job::CausticOptions> {
+fn owned_caustic_tail(task: &TransportContext<'_>, state: &State) -> Option<job::CausticOptions> {
     let events = state.smooth_caustic_chain?;
     task.options.caustics.filter(|caustics| events > 0 && events < caustics.max_depth)
 }
-pub(super) fn environment_sample(task: &ImageTask, u: [f64; 2]) -> job::Result<(Vec3, Vec3, f64)> {
+pub(super) fn environment_sample(task: &TransportContext<'_>, u: [f64; 2]) -> job::Result<(Vec3, Vec3, f64)> {
     if let Some(environment) = &task.environment {
         let env = environment.view().map_err(environment_error)?;
         env.require_linear_srgb().map_err(environment_error)?;
@@ -266,16 +266,16 @@ pub(super) fn environment_sample(task: &ImageTask, u: [f64; 2]) -> job::Result<(
     };
     Ok((direction, radiance, indirect::ENVIRONMENT_PDF))
 }
-pub(super) fn advanced_normals(task: &ImageTask) -> bool {
+pub(super) fn advanced_normals(task: &TransportContext<'_>) -> bool {
     // An HG collision adds phase transport inside the medium. Its closure does
     // not use a boundary normal, so HG alone keeps the smooth interface policy.
     task.options.caustics.is_some()
         || task.options.dielectrics.iter().any(|input| input.model.is_some_and(|model| model.roughness > 0.0 || model.spectral()))
 }
-fn vertex_lighting(task: &ImageTask, state: &State) -> bool {
+fn vertex_lighting(task: &TransportContext<'_>, state: &State) -> bool {
     task.options.caustics.is_none() || !state.sampled_continuous
 }
-fn shared<'a>(task: &'a ImageTask, state: &State) -> job::Result<super::super::prepared::SharedHit<'a>> {
+fn shared<'a>(task: &'a TransportContext<'_>, state: &State) -> job::Result<super::super::prepared::SharedHit<'a>> {
     let mut hit = unaged(task, state)?;
     if let Some(aging) = task.aging.first() {
         let changed = aging.surface()?;
@@ -284,7 +284,7 @@ fn shared<'a>(task: &'a ImageTask, state: &State) -> job::Result<super::super::p
     }
     Ok(hit)
 }
-fn unaged<'a>(task: &'a ImageTask, state: &State) -> job::Result<super::super::prepared::SharedHit<'a>> {
+fn unaged<'a>(task: &'a TransportContext<'_>, state: &State) -> job::Result<super::super::prepared::SharedHit<'a>> {
     let mut hit = unmapped(task, state)?;
     if let Some(maps) = task.maps.first() {
         let mapped = maps.surface()?;
@@ -293,9 +293,9 @@ fn unaged<'a>(task: &'a ImageTask, state: &State) -> job::Result<super::super::p
     }
     Ok(hit)
 }
-fn unmapped<'a>(task: &'a ImageTask, state: &State) -> job::Result<super::super::prepared::SharedHit<'a>> {
+fn unmapped<'a>(task: &'a TransportContext<'_>, state: &State) -> job::Result<super::super::prepared::SharedHit<'a>> {
     let bvh = task.bvh.as_ref().ok_or_else(|| invalid("CPU path BVH missing"))?;
-    let scene = PreparedScene { bvh, primitives: &task.looks, source: &task.scene };
+    let scene = PreparedScene { bvh, primitives: task.looks, source: task.scene };
     let mut hit = scene
         .resolve_hit(state.ray.ok_or_else(|| invalid("CPU path ray missing"))?, state.hit.ok_or_else(|| invalid("CPU path hit missing"))?)
         .map_err(error)?;
@@ -307,7 +307,7 @@ fn unmapped<'a>(task: &'a ImageTask, state: &State) -> job::Result<super::super:
     }
     Ok(hit)
 }
-fn response(task: &ImageTask, state: &State, direction: Vec3) -> job::Result<Vec3> {
+fn response(task: &TransportContext<'_>, state: &State, direction: Vec3) -> job::Result<Vec3> {
     if state.volume.is_some()
         && let Some(phase) = volume::response(task, state, direction)?
     {
@@ -323,7 +323,7 @@ fn response(task: &ImageTask, state: &State, direction: Vec3) -> job::Result<Vec
         .map(|f| f * hit.shading_normal.dot(direction).max(0.0))
         .map_err(|_| invalid("CPU path direct response"))
 }
-fn light_weight(task: &ImageTask, state: &State, direction: Vec3, pdf: f64, samples: u32) -> job::Result<f64> {
+fn light_weight(task: &TransportContext<'_>, state: &State, direction: Vec3, pdf: f64, samples: u32) -> job::Result<f64> {
     if !continuing(task, state)? || state.optical.is_some() || state.volume.is_some() {
         return Ok(1.0);
     }
@@ -332,7 +332,7 @@ fn light_weight(task: &ImageTask, state: &State, direction: Vec3, pdf: f64, samp
     let bsdf = indirect::surface_pdf(hit.surface, hit.shading_normal, view, direction).map_err(error)?;
     power_weight(f64::from(samples) * pdf, bsdf).map_err(error)
 }
-fn queue(task: &ImageTask, state: &mut State, value: Vec3, ray: Option<Ray>, next: Stage) -> job::Result<()> {
+fn queue(task: &TransportContext<'_>, state: &mut State, value: Vec3, ray: Option<Ray>, next: Stage) -> job::Result<()> {
     state.contribution = multiply(state.throughput, value);
     super::super::lighting::validate_radiance(state.contribution).map_err(error)?;
     state.after_shadow = next;
@@ -380,14 +380,26 @@ fn bounded_shadow(hit: super::super::prepared::SharedHit<'_>, point: Vec3, direc
 }
 
 pub(super) fn step(task: &mut ImageTask) -> job::Result<()> {
-    // Move only the prepaid vector header. The large continuation, including its
-    // traversal stacks, stays in place through each bounded transport step.
+    // The same borrowed transport context serves serial continuations and native
+    // worker batches; only the owner mutates the film in pixel order.
     let mut paths = std::mem::take(&mut task.path);
-    let result = paths.last_mut().ok_or_else(|| invalid("CPU path continuation missing")).and_then(|state| advance_or_commit(task, state));
+    let (result, completed, coverage, pupil) = {
+        let mut context = TransportContext::from_image(task);
+        let result =
+            paths.last_mut().ok_or_else(|| invalid("CPU path continuation missing")).and_then(|state| advance_or_commit(&mut context, state));
+        (result, context.completed, context.primary_coverage, context.pupil_sample)
+    };
     task.path = paths;
-    result
+    task.primary_coverage = coverage;
+    task.pupil_sample = pupil;
+    result?;
+    if let Some(radiance) = completed {
+        task.finish_sample(radiance)?;
+    }
+    Ok(())
 }
-fn advance_or_commit(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
+
+pub(super) fn advance_or_commit(task: &mut TransportContext<'_>, state: &mut State) -> job::Result<()> {
     if state.stage == Stage::Commit {
         task.finish_sample(state.radiance)?;
         let mut origins = std::mem::take(&mut state.origins);
@@ -397,14 +409,14 @@ fn advance_or_commit(task: &mut ImageTask, state: &mut State) -> job::Result<()>
     }
     advance(task, state)
 }
-fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
+fn advance(task: &mut TransportContext<'_>, state: &mut State) -> job::Result<()> {
     if state.stage == Stage::GlassLighting {
         return glass_lighting::step(task, state);
     }
     if matches!(state.stage, Stage::Origin | Stage::MediumOrigin) {
         let origin = state.origins.first_mut().ok_or_else(|| invalid("CPU primary-origin certificate missing"))?;
         if origin.ready() {
-            task.work.tick(&task.cancel).map_err(error)?;
+            task.work.tick(task.cancel).map_err(error)?;
             let (media, len, start) = origin.result()?;
             let optical = state.optical.as_mut().ok_or_else(|| invalid("CPU initial medium state missing"))?;
             if state.stage == Stage::MediumOrigin {
@@ -426,16 +438,16 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
             origin.step(
                 certificate,
                 &task.options.dielectrics,
-                PreparedScene { bvh, primitives: &task.looks, source: &task.scene },
-                &mut task.work,
-                &task.cancel,
+                PreparedScene { bvh, primitives: task.looks, source: task.scene },
+                task.work,
+                task.cancel,
             )?;
         }
         return Ok(());
     }
 
     if state.stage == Stage::Shadow && scattering::needs_shadow_setup(state) {
-        task.work.tick(&task.cancel).map_err(error)?;
+        task.work.tick(task.cancel).map_err(error)?;
         scattering::shadow_setup(task, state)?;
         return Ok(());
     }
@@ -445,7 +457,7 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
         let complete = if state.optical.is_some() {
             let looks = &task.looks;
             let inputs = &task.options.dielectrics;
-            cursor.step_ordered(bvh, &mut task.work, &task.cancel, |new, old| {
+            cursor.step_ordered(bvh, task.work, task.cancel, |new, old| {
                 let optical = |hit: super::super::Hit| {
                     looks.get(hit.primitive_index).is_some_and(|look| inputs.iter().any(|input| input.body_index == look.body_index))
                 };
@@ -459,7 +471,7 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
                 }
             })
         } else {
-            cursor.step(bvh, &mut task.work, &task.cancel)
+            cursor.step(bvh, task.work, task.cancel)
         }
         .map_err(error)?;
         let Some(hit) = complete else {
@@ -494,7 +506,7 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
         }
         return Ok(());
     }
-    task.work.tick(&task.cancel).map_err(error)?;
+    task.work.tick(task.cancel).map_err(error)?;
     let track_texture_distance = task.options.texture_filtering && !task.maps.is_empty();
     match state.stage {
         Stage::New => {
@@ -509,7 +521,7 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
             let mut physical_origin = None;
             let ray = if let Some(lens) = task.options.lens.filter(|l| l.aperture_radius_mm > 0.0) {
                 let pupil = task.pupil_sample.take().ok_or_else(|| invalid("CPU path pupil missing"))?;
-                let ray = lens_primary_ray(&task.request, x, y, task.clip, lens, pupil).map_err(error)?;
+                let ray = lens_primary_ray(task.request, x, y, task.clip, lens, pupil).map_err(error)?;
                 if !task.glass.is_empty() || volume::enabled(task) || track_texture_distance {
                     let (right, up, _) = task.request.camera.basis();
                     let radius = lens.aperture_radius_mm * pupil[0].sqrt();
@@ -518,7 +530,7 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
                 }
                 ray
             } else {
-                let ray = primary_ray(&task.request, x, y, task.clip).map_err(error)?;
+                let ray = primary_ray(task.request, x, y, task.clip).map_err(error)?;
                 if (!task.glass.is_empty() || volume::enabled(task) || track_texture_distance) && task.request.camera.fov > 0.0 {
                     physical_origin = Some(task.request.camera.eye());
                 }
@@ -719,9 +731,9 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
                 // use the same receiver-plane footprint representation.
                 let footprint = if state.depth == 0 {
                     primary_footprint(
-                        &task.request,
-                        &task.options,
-                        task.progressive.as_ref(),
+                        task.request,
+                        task.options,
+                        task.progressive,
                         task.pixel,
                         task.spatial,
                         task.clip,
@@ -766,7 +778,7 @@ fn advance(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
                     hit.position,
                     hit.geometric_normal,
                     hit.body_index,
-                    super::super::aging::eligible(&task.options, hit.body_index, hit.body_name),
+                    super::super::aging::eligible(task.options, hit.body_index, hit.body_name),
                 )
             };
             let aging = task.aging.first_mut().ok_or_else(|| invalid("CPU path aging task disappeared"))?;
@@ -1074,7 +1086,7 @@ struct GlassPath {
 fn current(optical: &GlassPath) -> job::Result<Option<usize>> {
     if optical.len == 0 { Ok(None) } else { optical.media.get(optical.len - 1).copied().map(Some).ok_or_else(|| invalid("CPU medium stack index")) }
 }
-fn beer(task: &ImageTask, state: &mut State, to: Vec3, shadow: bool) -> job::Result<()> {
+fn beer(task: &TransportContext<'_>, state: &mut State, to: Vec3, shadow: bool) -> job::Result<()> {
     let optical = state.optical.as_ref().ok_or_else(|| invalid("CPU glass segment state missing"))?;
     let from = if shadow { optical.shadow_start } else { optical.segment_start };
     if let Some(index) = current(optical)? {
@@ -1108,7 +1120,7 @@ fn thin_probability(r: Vec3, t: Vec3) -> job::Result<f64> {
     Ok(if reflected + transmitted == 0.0 { 0.0 } else { reflected / (reflected + transmitted) })
 }
 fn interface_cursor(
-    task: &ImageTask,
+    task: &TransportContext<'_>,
     index: usize,
     hit: SharedHit<'_>,
     direction: Vec3,
@@ -1136,7 +1148,7 @@ fn interface_cursor(
     let cursor = TraceCursor::from_plane(ray, region.primitive_begin..region.primitive_end, hit.vertices);
     Ok((ray, cursor))
 }
-fn glass_one(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
+fn glass_one(task: &mut TransportContext<'_>, state: &mut State) -> job::Result<()> {
     let hit = unmapped(task, state)?;
     let optical = state.optical.as_mut().ok_or_else(|| invalid("CPU glass selector state missing"))?;
     if let Some(input) = task.options.dielectrics.get(optical.selector) {
@@ -1266,7 +1278,7 @@ fn glass_one(task: &mut ImageTask, state: &mut State) -> job::Result<()> {
     state.stage = Stage::Trace;
     Ok(())
 }
-fn defer_mis(task: &ImageTask, state: &mut State, direction: Vec3, pdf: f64, count: u32) -> job::Result<()> {
+fn defer_mis(task: &TransportContext<'_>, state: &mut State, direction: Vec3, pdf: f64, count: u32) -> job::Result<()> {
     if state.volume.is_some() {
         if continuing(task, state)? {
             let bsdf = if let Some(phase) = volume::response(task, state, direction)? {
@@ -1294,12 +1306,12 @@ fn defer_mis(task: &ImageTask, state: &mut State, direction: Vec3, pdf: f64, cou
     state.optical.as_mut().ok_or_else(|| invalid("CPU glass NEE state missing"))?.shadow_mis = Some([f64::from(count) * pdf, bsdf]);
     Ok(())
 }
-fn shadow_beer(task: &ImageTask, state: &mut State) -> job::Result<()> {
+fn shadow_beer(task: &TransportContext<'_>, state: &mut State) -> job::Result<()> {
     let optical = state.optical.as_ref().ok_or_else(|| invalid("CPU glass visibility state missing"))?;
     if let Some(hit) = optical.shadow_hit {
         let ray = optical.shadow_current.ok_or_else(|| invalid("CPU glass visibility ray missing"))?;
         let bvh = task.bvh.as_ref().ok_or_else(|| invalid("CPU glass visibility BVH missing"))?;
-        let shared = PreparedScene { bvh, primitives: &task.looks, source: &task.scene }.resolve_hit(ray, hit).map_err(error)?;
+        let shared = PreparedScene { bvh, primitives: task.looks, source: task.scene }.resolve_hit(ray, hit).map_err(error)?;
         beer(task, state, shared.position, true)?;
         let optical = state.optical.as_mut().ok_or_else(|| invalid("CPU glass visibility state missing"))?;
         optical.selector = 0;
@@ -1315,12 +1327,12 @@ fn shadow_beer(task: &ImageTask, state: &mut State) -> job::Result<()> {
     }
     Ok(())
 }
-fn shadow_glass(task: &ImageTask, state: &mut State) -> job::Result<()> {
+fn shadow_glass(task: &TransportContext<'_>, state: &mut State) -> job::Result<()> {
     let optical = state.optical.as_ref().ok_or_else(|| invalid("CPU glass visibility state missing"))?;
     let ray = optical.shadow_current.ok_or_else(|| invalid("CPU glass visibility ray missing"))?;
     let hit = optical.shadow_hit.ok_or_else(|| invalid("CPU glass visibility hit missing"))?;
     let bvh = task.bvh.as_ref().ok_or_else(|| invalid("CPU glass visibility BVH missing"))?;
-    let hit = PreparedScene { bvh, primitives: &task.looks, source: &task.scene }.resolve_hit(ray, hit).map_err(error)?;
+    let hit = PreparedScene { bvh, primitives: task.looks, source: task.scene }.resolve_hit(ray, hit).map_err(error)?;
     let optical = state.optical.as_mut().ok_or_else(|| invalid("CPU glass visibility state missing"))?;
     if let Some(input) = task.options.dielectrics.get(optical.selector) {
         if input.body_index == hit.body_index && input.body_name == hit.body_name {

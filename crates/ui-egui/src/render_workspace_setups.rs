@@ -122,6 +122,10 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     aging: view.studio.aging.clone(),
                     adaptive: view.studio.adaptive,
                     denoise: view.studio.denoise,
+                    denoise_settings: view.studio.denoise_settings,
+                    denoise_diagnostics: view.studio.denoise_diagnostics,
+                    supersampling: view.studio.supersampling,
+                    threads: options.threads,
                     path: options.path,
                     lens: view.studio.lens_enabled.then_some(view.studio.lens),
                     output: studio::cpu_output(view),
@@ -174,6 +178,9 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     linear_exr: studio.linear_exr,
                     tone_map: studio.tone_map,
                     denoise: studio.denoise,
+                    denoise_settings: studio.denoise_settings,
+                    denoise_diagnostics: studio.denoise_diagnostics,
+                    supersampling: studio.supersampling,
                     lens: studio.lens_enabled.then_some(studio.lens),
                     lighting: if studio.lighting_enabled {
                         Some(StudioLighting {
@@ -255,6 +262,10 @@ pub(super) fn persist_editor(app: &mut SolveApp, before: &RenderSetup) -> Result
         if let Some(RenderJob::CpuRaytrace { options, .. }) = &saved.job {
             app.render_workspace.view.raytrace.output = options.output.clone();
             app.render_workspace.view.raytrace.denoise = options.denoise;
+            app.render_workspace.view.raytrace.denoise_settings = options.denoise_settings;
+            app.render_workspace.view.raytrace.denoise_diagnostics = options.denoise_diagnostics;
+            app.render_workspace.view.raytrace.supersampling = options.supersampling;
+            app.render_workspace.view.raytrace.threads = options.threads;
             app.render_workspace.view.raytrace.lens = options.lens;
             app.render_workspace.view.raytrace.path = options.path;
             app.render_workspace.view.raytrace.volume = options.volume;
@@ -323,6 +334,9 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
             view.cpu_sampling_initialized = true;
             view.studio.volume = options.volume;
             view.studio.denoise = options.denoise;
+            view.studio.denoise_settings = options.denoise_settings;
+            view.studio.denoise_diagnostics = options.denoise_diagnostics;
+            view.studio.supersampling = options.supersampling;
             view.studio.aging = options.aging.clone();
             view.studio.adaptive = options.adaptive;
             view.studio.sun_enabled = options.sun.is_some();
@@ -340,6 +354,10 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                 volume: options.volume,
                 adaptive: options.adaptive.map(Box::new),
                 denoise: options.denoise,
+                denoise_settings: options.denoise_settings,
+                denoise_diagnostics: options.denoise_diagnostics,
+                supersampling: options.supersampling,
+                threads: options.threads,
                 path: options.path,
                 lens: options.lens,
                 output: options.output.clone(),
@@ -405,6 +423,9 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
             view.studio.linear_exr = options.linear_exr;
             view.studio.tone_map = options.tone_map;
             view.studio.denoise = options.denoise;
+            view.studio.denoise_settings = options.denoise_settings;
+            view.studio.denoise_diagnostics = options.denoise_diagnostics;
+            view.studio.supersampling = options.supersampling;
             if let Some(lens) = options.lens {
                 view.studio.lens_enabled = true;
                 view.studio.lens = lens;
@@ -581,6 +602,10 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         raytrace.budget,
         raytrace.environment_importance_sampling,
         raytrace.denoise,
+        raytrace.denoise_settings,
+        raytrace.denoise_diagnostics,
+        raytrace.supersampling,
+        raytrace.threads,
         raytrace.output,
         raytrace.lens,
         raytrace.path,
@@ -618,6 +643,9 @@ pub(super) fn sync_revision(app: &mut SolveApp) {
         studio.linear_exr,
         studio.tone_map,
         studio.denoise,
+        studio.denoise_settings,
+        studio.denoise_diagnostics,
+        studio.supersampling,
         studio.lens_enabled,
         studio.lens,
         studio.lighting_enabled,
@@ -725,6 +753,10 @@ fn save_with_camera(app: &mut SolveApp, save_camera: bool) -> Result<(), String>
     if let Some(RenderJob::CpuRaytrace { options, .. }) = &setup.job {
         app.render_workspace.view.raytrace.output = options.output.clone();
         app.render_workspace.view.raytrace.denoise = options.denoise;
+        app.render_workspace.view.raytrace.denoise_settings = options.denoise_settings;
+        app.render_workspace.view.raytrace.denoise_diagnostics = options.denoise_diagnostics;
+        app.render_workspace.view.raytrace.supersampling = options.supersampling;
+        app.render_workspace.view.raytrace.threads = options.threads;
         app.render_workspace.view.raytrace.lens = options.lens;
         app.render_workspace.view.raytrace.path = options.path;
         app.render_workspace.view.raytrace.volume = options.volume;

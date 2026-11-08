@@ -50,9 +50,11 @@ pub(super) fn adaptive_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 _ => "render.children.coverage_error",
             };
             let response = ui_kit::row(ui, app.tr(label), |ui| match key {
-                "render.adaptive_pilots" => ui_kit::number_field(ui, &mut options.pilot_samples, 16..=256, 1.0, ""),
+                "render.adaptive_pilots" => {
+                    ui_kit::number_field_preserving(ui, &mut options.pilot_samples, 16..=super::quality::MAX_UI_SAMPLES, 1.0, "")
+                }
                 "render.adaptive_minimum" => {
-                    ui_kit::number_field(ui, &mut options.min_samples, 16..=solidcraft_engine::render::job::MAX_SAMPLES_PER_PIXEL, 1.0, "")
+                    ui_kit::number_field_preserving(ui, &mut options.min_samples, 16..=super::quality::MAX_UI_SAMPLES, 1.0, "")
                 }
                 "render.adaptive_relative" => ui_kit::number_field(ui, &mut options.relative_error, 0.0..=1.0, 0.005, ""),
                 "render.adaptive_absolute" => ui_kit::number_field(ui, &mut options.absolute_error, 0.000001..=1e6, 0.001, ""),

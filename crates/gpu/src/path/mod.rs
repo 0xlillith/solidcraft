@@ -163,10 +163,11 @@ fn device_limits(supported: wgpu::Limits) -> Result<wgpu::Limits> {
     if supported.max_storage_buffers_per_shader_stage < PATH_STORAGE_BUFFERS {
         return Err(gpu("gpu-path requires six storage buffers per shader stage"));
     }
-    // Query first: never request unsupported storage or buffer sizes. The old
-    // downlevel defaults unnecessarily capped large CAD geometry at 128 MiB.
-    let storage = supported.max_storage_buffer_binding_size.min(1024 * 1024 * 1024);
-    let buffer = supported.max_buffer_size.min(1024 * 1024 * 1024);
+    // Query first: never request unsupported storage or buffer sizes. The
+    // finite host budget bounds each request without an artificial 1 GiB cap that
+    // would reject otherwise admitted 8K guides or X2 accumulation buffers.
+    let storage = supported.max_storage_buffer_binding_size.min(GPU_PATH_LIMITS.max_scratch_bytes);
+    let buffer = supported.max_buffer_size.min(GPU_PATH_LIMITS.max_scratch_bytes);
     let optional_photon_buffers = supported.max_storage_buffers_per_shader_stage.min(7);
     let mut limits = wgpu::Limits::downlevel_defaults().using_resolution(supported);
     limits.max_storage_buffer_binding_size = storage.min(buffer);
@@ -512,11 +513,20 @@ fn use_opaque_pipeline(scene: &ProductScene, options: JobOptions) -> bool {
         && scene.meshes.iter().all(|body| body.opacity == 1.0 && body.faces.iter().all(|face| face.opacity == 1.0))
 }
 
+fn trace_request(request: &ImageRequest, options: JobOptions) -> Result<ImageRequest> {
+    let mut trace = request.clone();
+    (trace.width, trace.height) = solidcraft_render::job::supersampled_dimensions(request.width, request.height, options.supersampling)?;
+    Ok(trace)
+}
+
 fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
     if request.integrator != solidcraft_render::job::Integrator::Raster || request.raytrace.is_some() {
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
     options.validate()?;
+    let output = request;
+    let trace = trace_request(request, options)?;
+    let request = &trace;
     photons::validate_scene(scene, options)?;
     if request.studio_weights.is_some_and(|weights| weights.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))) {
         return Err(JobError::new(ErrorCode::InvalidRequest, "invalid studio visibility weights"));
@@ -576,7 +586,16 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     {
         return Err(JobError::new(ErrorCode::InvalidRequest, "gpu-path requires a bounded finite camera"));
     }
-    let mut admission = admit_geometry_with_limits(scene, request, MAX_TRIANGLES, MAX_GPU_PATH_BODIES, 2 * 1024 * 1024 * 1024, GPU_PATH_LIMITS)?;
+    // Public output admission remains 8K. Only the bounded internal trace grid
+    // may double both dimensions; device and complete job byte caps still apply.
+    let trace_limits = solidcraft_render::RenderLimits {
+        max_dimension: u64::from(solidcraft_render::job::MAX_TRACE_DIMENSION),
+        max_pixels: solidcraft_render::job::MAX_TRACE_PIXELS,
+        ..GPU_PATH_LIMITS
+    };
+    let mut admission = admit_geometry_with_limits(scene, request, MAX_TRIANGLES, MAX_GPU_PATH_BODIES, 2 * 1024 * 1024 * 1024, trace_limits)?;
+    let output_pixels = u64::from(output.width) * u64::from(output.height);
+    admission.encoded_limit = output_pixels * 8 + 65_536;
     if let Some(caustics) = options.caustics.filter(|caustics| caustics.refresh_per_pass) {
         admission.caustic_work = caustics.refresh_work(options.preview_target()?)?;
     }
@@ -590,7 +609,8 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     // Peak preparation: f64 triangles + nodes + serialized upload. After preparation:
     // serialized + device geometry + accumulation/readback/RGBA/PNG. These phases don't overlap.
     let pixels = u64::from(request.width) * u64::from(request.height);
-    let denoise_bytes = pixels * if options.denoise { denoise::BYTES_PER_PIXEL + if options.adaptive.is_some() { 16 } else { 0 } } else { 0 };
+    let denoise_bytes = pixels
+        * if options.denoise || options.denoise_diagnostics { denoise::BYTES_PER_PIXEL + if options.adaptive.is_some() { 16 } else { 0 } } else { 0 };
     let optical_tile_bytes = glass_tile_bytes(scene, request);
     admission.pixel_scratch_bytes = pixels * 64 + denoise_bytes;
     let vertex_bytes = scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
@@ -629,10 +649,10 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     if options.linear_exr {
         admission.preparation_bytes = admission
             .preparation_bytes
-            .checked_add(solidcraft_render::job::linear_exr::encoded_limit(request.width, request.height)?)
+            .checked_add(solidcraft_render::job::linear_exr::encoded_limit(output.width, output.height)?)
             .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "linear master admission overflow"))?;
     }
-    let bloom_bytes = options.finishing.bloom.map_or(Ok(0), |b| b.scratch_bytes(request.width, request.height))?;
+    let bloom_bytes = options.finishing.bloom.map_or(Ok(0), |b| b.scratch_bytes(output.width, output.height))?;
     admission.pixel_scratch_bytes = admission
         .pixel_scratch_bytes
         .checked_add(bloom_bytes)
@@ -641,7 +661,7 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         .preparation_bytes
         .checked_add(bloom_bytes)
         .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "bloom preparation estimate overflow"))?;
-    let photo_bytes = options.finishing.photographic.scratch_bytes(request.width, request.height)?;
+    let photo_bytes = options.finishing.photographic.scratch_bytes(output.width, output.height)?;
     admission.pixel_scratch_bytes += photo_bytes;
     admission.preparation_bytes += photo_bytes;
     // Two pilot/budget planes plus a second readback plane. Adaptive denoising's
@@ -653,14 +673,110 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
         .preparation_bytes
         .checked_add(photons::admission_bytes(options.caustics)?)
         .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "caustic photon admission overflow"))?;
+    // Resolve overlaps the raw trace readback with one final-grid float image.
+    // Diagnostics reuse guide/filter/readback buffers, but retain a separate
+    // final-grid RGBA plane and its bounded PNG after the beauty image completes.
+    let resolve_bytes = output_pixels * if options.supersampling == 2 { 16 } else { 0 };
+    let diagnostic_bytes = if options.denoise_diagnostics { output_pixels * 12 + 65_536 } else { 0 };
+    admission.pixel_scratch_bytes += resolve_bytes + diagnostic_bytes;
+    admission.preparation_bytes += resolve_bytes + diagnostic_bytes;
     admission.estimated_total_bytes = admission.geometry_bytes + admission.preparation_bytes;
     if admission.estimated_total_bytes > GPU_PATH_LIMITS.max_scratch_bytes {
-        return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path job exceeds its bounded 8 GiB admission estimate"));
+        return Err(JobError::new(
+            ErrorCode::LimitExceeded,
+            format!(
+                "gpu-path job requires {} bytes; the bounded GPU host limit is {} bytes",
+                admission.estimated_total_bytes, GPU_PATH_LIMITS.max_scratch_bytes
+            ),
+        ));
     }
     Ok(admission)
 }
 
+/// Pure device-bound validation. Large-grid preflight tests call this without
+/// allocating a film, guide plane or any other image-sized GPU resource.
+fn admit_device_resources(
+    scene: &ProductScene,
+    request: &ImageRequest,
+    options: JobOptions,
+    a: &Admission,
+    device_limits: &wgpu::Limits,
+) -> Result<()> {
+    if let Some(caustics) = options.caustics {
+        if device_limits.max_storage_buffers_per_shader_stage < 7 {
+            return Err(JobError::new(
+                ErrorCode::HostUnavailable,
+                "caustics require seven GPU storage buffers; ordinary GPU images remain available",
+            ));
+        }
+        let photon_bytes = photons::buffer_bytes(caustics)?;
+        if photon_bytes > device_limits.max_storage_buffer_binding_size || photon_bytes > device_limits.max_buffer_size {
+            return Err(JobError::new(ErrorCode::LimitExceeded, "caustic photon storage exceeds the selected GPU buffer limit"));
+        }
+    }
+    if PARAMETER_BYTES as u64 > device_limits.max_uniform_buffer_binding_size
+        || PARAMETER_BYTES as u64 > device_limits.max_buffer_size
+        || FAILURE_BYTES > device_limits.max_storage_buffer_binding_size
+    {
+        return Err(JobError::new(ErrorCode::LimitExceeded, "GPU light parameters or diagnostic storage exceed device buffer limits"));
+    }
+    let limit = device_limits.max_storage_buffer_binding_size;
+    let geometry_bytes = 16
+        + a.triangles.max(1) * (100 + scene::model_bytes_per_triangle(scene))
+        + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
+    let texture_bytes = request.textures.as_ref().map_or(16, |t| textures::packed_bytes(t, scene.meshes.len()));
+    let environment_bytes =
+        request.environment.as_ref().map_or(48, |source| 16 + u64::from(source.info().width) * u64::from(source.info().height) * 32);
+    let node_bytes = a.triangles.max(1) * 64;
+    let accumulation_bytes =
+        u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 } + glass_tile_bytes(scene, request);
+    if texture_bytes > limit || texture_bytes > device_limits.max_buffer_size {
+        return Err(JobError::new(
+            ErrorCode::LimitExceeded,
+            format!(
+                "packed texture pyramids require {texture_bytes} bytes; selected GPU storage buffer limit is {limit} bytes; use CPU with an admitted resource profile or explicitly reduce authored texture sources"
+            ),
+        ));
+    }
+    let pixels = u64::from(request.width) * u64::from(request.height);
+    let guide_bytes = pixels * if options.denoise || options.denoise_diagnostics { denoise::GUIDE_BYTES_PER_PIXEL } else { 0 };
+    for (name, bytes) in [
+        ("BVH", node_bytes),
+        ("environment", environment_bytes),
+        ("geometry", geometry_bytes),
+        ("accumulation", accumulation_bytes),
+        ("denoising guides", guide_bytes),
+    ] {
+        if bytes > limit || bytes > device_limits.max_buffer_size {
+            return Err(JobError::new(
+                ErrorCode::LimitExceeded,
+                format!(
+                    "gpu-path {name} storage buffer requires {bytes} bytes for the {} x {} internal trace grid; selected GPU binding/buffer limits are {}/{} bytes",
+                    request.width, request.height, limit, device_limits.max_buffer_size,
+                ),
+            ));
+        }
+    }
+    let readback_bytes = pixels * 16 * if options.adaptive.is_some() { 2 } else { 1 } + FAILURE_BYTES;
+    if readback_bytes > device_limits.max_buffer_size {
+        return Err(JobError::new(
+            ErrorCode::LimitExceeded,
+            format!("gpu-path readback requires {readback_bytes} bytes; selected GPU buffer limit is {} bytes", device_limits.max_buffer_size,),
+        ));
+    }
+    Ok(())
+}
+
 impl ImageExecutor for Executor {
+    fn supports_supersampling(&self) -> bool {
+        true
+    }
+    fn supports_denoise_controls(&self) -> bool {
+        true
+    }
+    fn supports_denoise_diagnostics(&self) -> bool {
+        true
+    }
     fn supports_glass_models(&self) -> bool {
         true
     }
@@ -713,51 +829,9 @@ impl ImageExecutor for Executor {
     fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
         self.context.ensure_available()?;
         let a = admission(scene, request, options)?;
-        let device_limits = self.context.device.limits();
-        if let Some(caustics) = options.caustics {
-            if device_limits.max_storage_buffers_per_shader_stage < 7 {
-                return Err(JobError::new(
-                    ErrorCode::HostUnavailable,
-                    "caustics require seven GPU storage buffers; ordinary GPU images remain available",
-                ));
-            }
-            let photon_bytes = photons::buffer_bytes(caustics)?;
-            if photon_bytes > device_limits.max_storage_buffer_binding_size || photon_bytes > device_limits.max_buffer_size {
-                return Err(JobError::new(ErrorCode::LimitExceeded, "caustic photon storage exceeds the selected GPU buffer limit"));
-            }
-        }
-        if PARAMETER_BYTES as u64 > device_limits.max_uniform_buffer_binding_size
-            || PARAMETER_BYTES as u64 > device_limits.max_buffer_size
-            || FAILURE_BYTES > device_limits.max_storage_buffer_binding_size
-        {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "GPU light parameters or diagnostic storage exceed device buffer limits"));
-        }
-        let limit = device_limits.max_storage_buffer_binding_size;
-        let geometry_bytes = 16
-            + a.triangles.max(1) * (100 + scene::model_bytes_per_triangle(scene))
-            + scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
-        let texture_bytes = request.textures.as_ref().map_or(16, |t| textures::packed_bytes(t, scene.meshes.len()));
-        let environment_bytes =
-            request.environment.as_ref().map_or(48, |source| 16 + u64::from(source.info().width) * u64::from(source.info().height) * 32);
-        let node_bytes = a.triangles.max(1) * 64;
-        let accumulation_bytes = u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 }
-            + glass_tile_bytes(scene, request);
-        if texture_bytes > limit || texture_bytes > device_limits.max_buffer_size {
-            return Err(JobError::new(
-                ErrorCode::LimitExceeded,
-                format!(
-                    "packed texture pyramids require {texture_bytes} bytes; selected GPU storage buffer limit is {limit} bytes; use CPU with an admitted resource profile or explicitly reduce authored texture sources"
-                ),
-            ));
-        }
-        if node_bytes > limit
-            || environment_bytes > limit
-            || geometry_bytes > limit
-            || accumulation_bytes > limit
-            || (options.denoise && u64::from(request.width) * u64::from(request.height) * denoise::GUIDE_BYTES_PER_PIXEL > limit)
-        {
-            return Err(JobError::new(ErrorCode::LimitExceeded, "gpu-path storage buffer exceeds this device's limit"));
-        }
+        let trace = trace_request(request, options)?;
+        let request = &trace;
+        admit_device_resources(scene, request, options, &a, &self.context.device.limits())?;
         Ok(a)
     }
     fn validate_prepared(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions, cancel: &CancelToken) -> Result<()> {
@@ -856,6 +930,7 @@ struct Task {
     dispatch_budget: dispatch::Budget,
     context: Arc<Context>,
     request: ImageRequest,
+    output_request: ImageRequest,
     options: JobOptions,
     #[cfg(test)]
     opaque_scene: bool,
@@ -871,6 +946,9 @@ struct Task {
     optical_resolve: Option<wgpu::ComputePipeline>,
     photons: Option<photons::Resources>,
     denoiser: Option<denoise::Resources>,
+    denoise_diagnostics: Option<solidcraft_render::job::DenoiseDiagnostics>,
+    denoise_mask_png: Option<PngTask>,
+    denoise_mask: Option<Vec<u8>>,
     sample: u32,
     lane: u32,
     sampling_report: Option<solidcraft_render::job::adaptive::SamplingReport>,
@@ -899,6 +977,8 @@ impl Task {
     fn new(context: Arc<Context>, scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
         cancel.check()?;
         options.validate()?;
+        let output_request = ImageRequest { environment: None, textures: None, ..request.clone() };
+        request = trace_request(&request, options)?;
         validate_punctual_origin(options, request.camera.target)?;
         let opaque_scene = use_opaque_pipeline(&scene, options);
         let has_textures = request.textures.is_some();
@@ -1000,7 +1080,7 @@ impl Task {
                 layout: photons.as_ref().map_or(&context.layout, |resources| &resources.layout),
                 entries: &entries,
             });
-            let denoiser = if options.denoise {
+            let denoiser = if options.denoise || options.denoise_diagnostics {
                 Some(denoise::Resources::new(
                     &context,
                     &uniform,
@@ -1044,6 +1124,7 @@ impl Task {
             has_textures,
             context,
             request,
+            output_request,
             options,
             cancel,
             uniform,
@@ -1055,6 +1136,9 @@ impl Task {
             optical_resolve,
             photons,
             denoiser,
+            denoise_diagnostics: None,
+            denoise_mask_png: None,
+            denoise_mask: None,
             sample: 0,
             lane: 0,
             sampling_report: None,
@@ -1392,6 +1476,12 @@ impl Task {
 use solidcraft_render::job::presentation::Display;
 
 impl ImageWork for Task {
+    fn denoise_diagnostics(&self) -> Option<solidcraft_render::job::DenoiseDiagnostics> {
+        self.denoise_diagnostics
+    }
+    fn take_denoise_mask(&mut self) -> Option<Vec<u8>> {
+        self.denoise_mask.take()
+    }
     fn punctual_diagnostics(&self) -> Option<solidcraft_render::job::PunctualDiagnostics> {
         self.options.lighting.filter(|l| !l.punctual_lights.is_empty()).map(|_| self.punctual_diagnostics.get())
     }
@@ -1412,6 +1502,13 @@ impl ImageWork for Task {
         // here never changes accumulated samples or final output. The image host
         // takes every publication immediately after this quantum.
         self.preview = None;
+        if let Some(png) = &mut self.denoise_mask_png {
+            if let TaskPoll::Complete(bytes) = png.step(units)? {
+                self.denoise_mask = Some(bytes);
+                self.denoise_mask_png = None;
+            }
+            return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.output_request.height) }));
+        }
         if let Some(png) = &mut self.png {
             let poll = png.step(units)?;
             if self.encoding_preview
@@ -1434,8 +1531,8 @@ impl ImageWork for Task {
                 self.photographic = Some(task);
                 return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done, total }));
             }
-            self.png = Some(PngTask::new(&self.request, task.finish()?, self.cancel.clone())?);
-            return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }));
+            self.png = Some(PngTask::new(&self.output_request, task.finish()?, self.cancel.clone())?);
+            return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.output_request.height) }));
         }
         if let Some(mut bloom) = self.bloom_work.take() {
             if !bloom.step(8)? {
@@ -1459,13 +1556,22 @@ impl ImageWork for Task {
                 // sample advances only after every tile and Fresnel stratum of
                 // the pass. Readback cannot observe a partially updated film.
                 self.encoding_preview = true;
-                let linear = self.read_checkpoint()?;
+                let linear = self.resolve_output(self.read_checkpoint()?)?;
                 return self.finish_output(linear);
             }
             return Ok(TaskPoll::Pending(Progress { phase: Phase::Running, done: u64::from(self.sample), total: u64::from(self.target_samples()) }));
         }
         if self.sampling_report.is_none() && (self.options.adaptive.is_some() || self.options.transmission_samples != 1) {
             self.sampling_report = Some(adaptive::report(self)?);
+        }
+        if self.options.denoise_diagnostics && self.denoise_diagnostics.is_none() {
+            // Validate raw radiance before publishing a diagnostic. The class
+            // pass writes only filter scratch, never the transport accumulator.
+            drop(self.read_linear()?);
+            let (report, rgba) = self.denoiser.as_ref().ok_or_else(|| gpu("missing denoise diagnostic resources"))?.diagnostics(self)?;
+            self.denoise_diagnostics = Some(report);
+            self.denoise_mask_png = Some(PngTask::new(&self.output_request, rgba, self.cancel.clone())?);
+            return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.output_request.height) }));
         }
         if self.exr_work.is_none() {
             log::info!("gpu-path {} spp, {:.3} ms/spp", self.sample, self.started.elapsed().as_secs_f64() * 1000.0 / f64::from(self.sample));
@@ -1474,17 +1580,21 @@ impl ImageWork for Task {
             if !work.step(4)? {
                 let done = work.completed_rows();
                 self.exr_work = Some(work);
-                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done, total: u64::from(self.request.height) }));
+                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done, total: u64::from(self.output_request.height) }));
             }
             let (bytes, pixels) = work.finish()?;
             self.exr = Some(bytes);
             pixels
         } else {
-            let pixels = self.read_linear()?;
+            let pixels = self.resolve_output(self.read_linear()?)?;
             if self.options.linear_exr {
-                self.exr_work =
-                    Some(solidcraft_render::job::linear_exr::ExrTask::new(self.request.width, self.request.height, pixels, self.cancel.clone())?);
-                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }));
+                self.exr_work = Some(solidcraft_render::job::linear_exr::ExrTask::new(
+                    self.output_request.width,
+                    self.output_request.height,
+                    pixels,
+                    self.cancel.clone(),
+                )?);
+                return Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.output_request.height) }));
             }
             pixels
         };
@@ -1492,8 +1602,21 @@ impl ImageWork for Task {
     }
 }
 impl Task {
+    fn resolve_output(&self, linear: Vec<[f32; 4]>) -> Result<Vec<[f32; 4]>> {
+        if self.options.supersampling == 1 {
+            return Ok(linear);
+        }
+        solidcraft_render::job::resolve_supersampling(
+            self.output_request.width,
+            self.output_request.height,
+            self.options.supersampling,
+            &linear,
+            &self.cancel,
+        )
+    }
+
     fn finish_output(&mut self, mut linear: Vec<[f32; 4]>) -> Result<TaskPoll> {
-        if let Some(denoiser) = &self.denoiser {
+        if let Some(denoiser) = self.denoiser.as_ref().filter(|_| self.options.denoise) {
             // Diagnose the raw path buffer before filtering: never hide invalid media
             // or nonfinite radiance by replacing a pixel with neighbouring values.
             drop(linear);
@@ -1502,15 +1625,20 @@ impl Task {
             } else {
                 denoiser.run(self)?;
             }
-            linear = self.read_linear_buffer(denoiser.output())?;
+            linear = self.resolve_output(self.read_linear_buffer(denoiser.output(self.options.denoise_settings.passes))?)?;
         }
         if let Some(options) = self.options.finishing.bloom.filter(|options| options.active()) {
-            self.bloom_work =
-                Some(solidcraft_render::job::bloom::BloomTask::new(self.request.width, self.request.height, linear, options, self.cancel.clone())?);
+            self.bloom_work = Some(solidcraft_render::job::bloom::BloomTask::new(
+                self.output_request.width,
+                self.output_request.height,
+                linear,
+                options,
+                self.cancel.clone(),
+            )?);
             return Ok(TaskPoll::Pending(Progress {
                 phase: Phase::Encoding,
                 done: 0,
-                total: u64::from(self.request.height) * 4 + u64::from(self.request.width) * 3,
+                total: u64::from(self.output_request.height) * 4 + u64::from(self.output_request.width) * 3,
             }));
         }
         self.encode_output(linear, None)
@@ -1525,8 +1653,8 @@ impl Task {
         let display = Display {
             finishing: self.options.finishing,
             backdrop: self.options.backdrop,
-            width: self.request.width,
-            height: self.request.height,
+            width: self.output_request.width,
+            height: self.output_request.height,
             exposure: 2.0f64.powf(self.options.exposure_ev),
             tone_map: self.options.tone_map,
             background: self.request.background.map(solidcraft_render::surface::srgb8_to_linear),
@@ -1556,17 +1684,17 @@ impl Task {
         })?;
         if self.options.finishing.photographic.active() {
             self.photographic = Some(solidcraft_render::job::photographic::PhotographicTask::new(
-                self.request.width,
-                self.request.height,
+                self.output_request.width,
+                self.output_request.height,
                 rgba,
                 linear,
                 self.options.finishing.photographic,
                 self.cancel.clone(),
             )?);
         } else {
-            self.png = Some(PngTask::new(&self.request, rgba, self.cancel.clone())?);
+            self.png = Some(PngTask::new(&self.output_request, rgba, self.cancel.clone())?);
         }
-        Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.request.height) }))
+        Ok(TaskPoll::Pending(Progress { phase: Phase::Encoding, done: 0, total: u64::from(self.output_request.height) }))
     }
 }
 

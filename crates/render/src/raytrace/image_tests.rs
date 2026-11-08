@@ -29,6 +29,7 @@ fn emission_fixture(reverse: bool) -> (ProductScene, ImageRequest, RaytraceOptio
     request.camera.fov = 0.0;
     request.camera.set_view(crate::StandardView::Top);
     let options = RaytraceOptions {
+        threads: 1,
         lights: Some(Vec::new()),
         emissions: Some(vec![job::SurfaceEmission {
             body_index: 0,
@@ -295,6 +296,7 @@ fn actual_png_has_analytic_lit_and_cast_shadow_pixels() {
     request.camera.distance = 50.0;
     request.camera.set_view(crate::StandardView::Top);
     let options = RaytraceOptions {
+        threads: 1,
         lights: Some(vec![job::DirectionalLightOptions { direction: [-1.0, 0.0, 1.0], color: [1.0; 3], intensity: 1.0 }]),
         ..Default::default()
     };
@@ -348,7 +350,10 @@ fn triangle_task(cancel: CancelToken) -> ImageTask {
     let mut request = request();
     request.camera.distance = 50.0;
     request.camera.set_view(crate::StandardView::Top);
-    ImageTask::new(scene, request, cancel, Default::default()).unwrap()
+    // These fixtures inspect owner-local continuations between serial work quanta.
+    let options = RaytraceOptions { threads: 1, ..Default::default() };
+    request.raytrace = Some(options.clone());
+    ImageTask::new(scene, request, cancel, options).unwrap()
 }
 #[test]
 fn face_looks_cost_one_unit_per_triangle_and_the_first_entry_wins() {
@@ -467,17 +472,17 @@ fn runtime_presets_reach_the_lighting_consumer() {
         (job::LightingPreset::WarmCool, StudioPreset::WarmCool),
         (job::LightingPreset::KeyRim, StudioPreset::KeyRim),
     ] {
-        let options = RaytraceOptions { preset: Some(runtime), ..Default::default() };
+        let options = RaytraceOptions { threads: 1, preset: Some(runtime), ..Default::default() };
         assert_eq!(lighting(&options).unwrap(), Lighting::preset(expected).unwrap());
     }
-    let conflict = RaytraceOptions { preset: Some(job::LightingPreset::Neutral), lights: Some(Vec::new()), ..Default::default() };
+    let conflict = RaytraceOptions { threads: 1, preset: Some(job::LightingPreset::Neutral), lights: Some(Vec::new()), ..Default::default() };
     assert_eq!(lighting(&conflict).err().unwrap().code, ErrorCode::InvalidRequest);
 }
 #[test]
 fn warm_cool_preset_changes_actual_triangle_png() {
     fn render(preset: job::LightingPreset) -> Vec<u8> {
         let initial = triangle_task(CancelToken::default());
-        let options = RaytraceOptions { preset: Some(preset), ..Default::default() };
+        let options = RaytraceOptions { threads: 1, preset: Some(preset), ..Default::default() };
         let mut request = initial.request.clone();
         request.raytrace = Some(options.clone());
         let mut task = ImageTask::new(initial.scene.clone(), request, CancelToken::default(), options).unwrap();
@@ -605,6 +610,7 @@ fn reflected_hit_adds_surface_emission_with_the_current_path_throughput() {
     request.camera.fov = 0.0;
     request.camera.set_view(crate::StandardView::Top);
     let options = RaytraceOptions {
+        threads: 1,
         lights: Some(Vec::new()),
         shadows: false,
         emissions: Some(vec![job::SurfaceEmission {
@@ -668,7 +674,7 @@ fn procedural_effects_change_completed_pngs_independently_and_zero_is_byte_ident
         request.height = 32;
         request.camera.distance = 40.0;
         request.camera.set_view(crate::StandardView::Top);
-        let options = RaytraceOptions { surface_effects: effect.map(|e| vec![e]), shadows: false, ..Default::default() };
+        let options = RaytraceOptions { threads: 1, surface_effects: effect.map(|e| vec![e]), shadows: false, ..Default::default() };
         request.raytrace = Some(options.clone());
         let mut task = ImageTask::new(scene.clone(), request, CancelToken::default(), options).unwrap();
         for _ in 0..100_000 {
@@ -702,7 +708,7 @@ fn surface_target_refusals_are_atomic_before_pixels_or_bvh_allocation() {
         SurfaceEffect { body: "missing".into(), frame: Default::default(), repeat_mm: [20.0; 3], roughness_amplitude: 0.2, bump_amplitude_mm: 0.0 };
     let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
     for effects in [vec![effect.clone()], vec![effect.clone(), effect]] {
-        let options = RaytraceOptions { surface_effects: Some(effects), ..Default::default() };
+        let options = RaytraceOptions { threads: 1, surface_effects: Some(effects), ..Default::default() };
         let mut request = request();
         request.raytrace = Some(options.clone());
         assert_eq!(admit(&scene, &request, &options).unwrap_err().code, ErrorCode::InvalidRequest);
@@ -733,6 +739,7 @@ fn surface_consumer_fixture() -> (ProductScene, ImageRequest, RaytraceOptions) {
         }],
     };
     let options = RaytraceOptions {
+        threads: 1,
         surface_effects: Some(vec![SurfaceEffect {
             body: "Coupon".into(),
             frame: Default::default(),
@@ -982,6 +989,7 @@ fn reflected_surface_effect_uses_changed_shading_and_resets_before_emitting_seco
     request.camera.set_view(crate::StandardView::Top);
     for mode in [job::ReflectionMode::Mirror, job::ReflectionMode::RoughSpecular] {
         let options = RaytraceOptions {
+            threads: 1,
             surface_effects: Some(vec![effect.clone()]),
             lights: Some(Vec::new()),
             shadows: false,
@@ -1012,6 +1020,7 @@ fn dielectric_triangle_task(cancel: CancelToken) -> ImageTask {
     let task = triangle_task(cancel.clone());
     let mut request = task.request;
     let options = RaytraceOptions {
+        threads: 1,
         dielectrics: vec![job::DielectricOptions {
             model: None,
             shadow_transmission: false,
@@ -1078,6 +1087,7 @@ fn dielectric_fixed_stack_and_path_caps_return_typed_failures() {
 #[test]
 fn dielectric_image_path_applies_radiance_eta_squared_at_each_interface() {
     let options = RaytraceOptions {
+        threads: 1,
         dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)],
         lights: Some(Vec::new()),
         shadows: false,
@@ -1163,6 +1173,7 @@ fn dielectric_branches_sum_inside_each_spatial_and_reflection_attempt() {
     for spatial in [1, 4, 16] {
         for attempts in [1, 4, 16] {
             let options = RaytraceOptions {
+                threads: 1,
                 primary_samples: spatial,
                 dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)],
                 environment: Some(job::RaytraceEnvironmentOptions { color: [1.0; 3], intensity: 1.0 }),
@@ -1382,7 +1393,8 @@ fn optical_reuse_rejects_an_undrained_branch_and_a_selected_primary() {
 #[test]
 fn optical_admission_bills_capacity_and_refuses_ambiguous_effect_and_environment_contracts() {
     let scene = dielectric::tests::scene(dielectric::tests::box_body(2.0));
-    let mut options = RaytraceOptions { dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)], ..Default::default() };
+    let mut options =
+        RaytraceOptions { threads: 1, dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)], ..Default::default() };
     let name = scene.meshes[0].name.clone();
     let bytes = options.retained_bytes().unwrap();
     assert_eq!(
@@ -1392,7 +1404,7 @@ fn optical_admission_bills_capacity_and_refuses_ambiguous_effect_and_environment
     );
     let mut request = dielectric::tests::request(options.clone());
     let with_optics = admit(&scene, &request, &options).unwrap();
-    let plain = RaytraceOptions::default();
+    let plain = RaytraceOptions { threads: 1, ..Default::default() };
     let plain_request = ImageRequest { raytrace: Some(plain.clone()), ..request.clone() };
     let without_optics = admit(&scene, &plain_request, &plain).unwrap();
     assert_eq!(
@@ -1512,6 +1524,7 @@ fn progressive_optics_fixture(samples: u32, thin: bool, ior: f64, cancel: Cancel
     material.absorption_per_mm = [0.1, 0.2, 0.0];
     material.thickness_mm = if thin { 8.0 } else { 0.0 };
     let options = RaytraceOptions {
+        threads: 1,
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed: 83 }),
         dielectrics: vec![material],
         environment: Some(job::RaytraceEnvironmentOptions { color: [1.0; 3], intensity: 1.0 }),
@@ -1845,6 +1858,7 @@ fn denoised_plane(samples: u32, denoise: bool, output: Option<job::OutputOptions
     request.width = 13;
     request.height = 13;
     let options = RaytraceOptions {
+        threads: 1,
         denoise,
         output: output.map(Box::new),
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed: 7 }),
@@ -1947,9 +1961,9 @@ fn cpu_denoising_admits_actual_guides_and_colour_scratch_only_when_enabled() {
     let mut request = plain.request.clone();
     request.width = 8193;
     request.height = 1;
-    let options = RaytraceOptions { denoise: true, budget: job::CpuBudget::Workstation, ..Default::default() };
+    let options = RaytraceOptions { threads: 1, denoise: true, budget: job::CpuBudget::Workstation, ..Default::default() };
     request.raytrace = Some(options.clone());
-    assert!(admit(&plain.scene, &request, &options).unwrap_err().message.contains("CPU denoising"));
+    assert!(admit(&plain.scene, &request, &options).unwrap_err().message.contains("linear EXR"));
 }
 #[test]
 fn cpu_denoising_guides_and_filter_keep_cancellation_and_cumulative_work() {
@@ -2098,6 +2112,7 @@ fn denoise_optical_fixture(boundary: Option<job::DielectricBoundary>, path: bool
     request.camera.fov = 0.5;
     request.camera.set_view(crate::StandardView::Top);
     let mut options = RaytraceOptions {
+        threads: 1,
         denoise: true,
         shadows: true,
         lights: Some(Vec::new()),
@@ -2343,6 +2358,7 @@ fn adaptive_certified_optics_drain_pilot_branches_and_keep_exact_independent_pro
 fn prepaid_legacy_certificate_and_standalone_cursor_share_cumulative_work_and_exact_output() {
     let scene = dielectric::tests::scene(dielectric::tests::box_body(2.0));
     let options = RaytraceOptions {
+        threads: 1,
         dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)],
         lights: Some(Vec::new()),
         environment: Some(job::RaytraceEnvironmentOptions { color: [1.0; 3], intensity: 1.0 }),
@@ -2408,7 +2424,8 @@ fn prepaid_legacy_certificate_and_standalone_cursor_share_cumulative_work_and_ex
 #[test]
 fn standalone_legacy_preparation_cancellation_never_advances_or_allocates_pixels() {
     let scene = dielectric::tests::scene(dielectric::tests::box_body(2.0));
-    let options = RaytraceOptions { dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)], ..Default::default() };
+    let options =
+        RaytraceOptions { threads: 1, dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)], ..Default::default() };
     let request = dielectric::tests::request(options.clone());
     let cancel = CancelToken::default();
     let mut task = ImageTask::new(scene, request, cancel.clone(), options).unwrap();
@@ -2471,6 +2488,7 @@ fn mapped_wood_fixture() -> (ProductScene, ImageRequest, RaytraceOptions) {
     request.camera.distance = 1.25;
     request.textures = Some(Arc::new(textures));
     let options = RaytraceOptions {
+        threads: 1,
         lights: Some(vec![job::DirectionalLightOptions { direction: [0., 0., 1.], color: [1.; 3], intensity: std::f64::consts::PI }]),
         shadows: false,
         ..Default::default()
@@ -2614,4 +2632,117 @@ fn cpu_wood_preparation_cancel_and_role_work_limit_never_publish_partial_pixels(
     cancel.cancel();
     assert_eq!(task.step(1).err().unwrap().code, ErrorCode::Cancelled);
     assert!(!task.done);
+}
+
+#[test]
+fn diagnostic_admission_bills_internal_classes_final_mask_and_complete_codec_bound() {
+    let plain = denoised_plane(2, true, None);
+    let options = RaytraceOptions { denoise_diagnostics: true, ..plain.options.clone() };
+    let request = ImageRequest { raytrace: Some(options.clone()), ..plain.request.clone() };
+    let diagnostics = admit(&plain.scene, &request, &options).unwrap();
+    assert_eq!(
+        diagnostics.estimated_total_bytes - plain.admission.estimated_total_bytes,
+        169 + 169 * 4 + plain.admission.encoded_limit,
+        "one internal class byte, one final RGBA mask and one separately retained bounded PNG"
+    );
+    let options = RaytraceOptions { supersampling: 2, denoise_diagnostics: true, ..options };
+    let request = ImageRequest { raytrace: Some(options.clone()), ..request };
+    let high = admit(&plain.scene, &request, &options).unwrap();
+    assert!(high.estimated_total_bytes > diagnostics.estimated_total_bytes + 169 * 3 * 96);
+    assert_eq!(high.encoded_limit, diagnostics.encoded_limit, "supersampling never enlarges retained PNG dimensions");
+}
+
+#[test]
+fn cpu_supersample_resolve_and_mask_stages_cancel_or_exhaust_before_publication() {
+    for phase in ["diagnostics", "denoise_mask", "resolve"] {
+        for cancellation in [false, true] {
+            let cancel = CancelToken::default();
+            let mut task = job::output::OutputTask::new_with_quality(
+                2,
+                2,
+                65_568,
+                vec![[1.0; 4]; 16],
+                Vec::new(),
+                job::presentation::Presentation::default(),
+                false,
+                true,
+                false,
+                job::DenoiseSettings::default(),
+                2,
+                true,
+                1,
+                cancel.clone(),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+            let classes = [job::DenoiseGuideClass::Surface; 16];
+            for _ in 0..1000 {
+                if task.stage_name() == phase {
+                    break;
+                }
+                assert!(matches!(task.step_with_diagnostics(None, Some(&classes), None, &mut |_| Ok(())).unwrap(), TaskPoll::Pending(_)));
+            }
+            assert_eq!(task.stage_name(), phase);
+            if cancellation {
+                cancel.cancel();
+            }
+            let error = task
+                .step_with_diagnostics(None, Some(&classes), None, &mut |_| {
+                    Err(JobError::new(ErrorCode::LimitExceeded, "test shared work exhausted"))
+                })
+                .err()
+                .unwrap();
+            assert_eq!(error.code, if cancellation { ErrorCode::Cancelled } else { ErrorCode::LimitExceeded });
+            assert!(task.finish().is_err());
+        }
+    }
+}
+
+#[test]
+fn cpu_direct_owner_publication_checks_budget_and_cancel_before_mutating_film_or_continuation() {
+    for cancellation in [false, true] {
+        let original = denoised_plane(2, false, None);
+        let options = original.options;
+        let request = ImageRequest { width: 1, height: 1, raytrace: Some(options.clone()), ..original.request };
+        let mut task = ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap();
+        for _ in 0..20_000 {
+            if task.primary_coverage == 1 && task.pending.is_some() {
+                break;
+            }
+            assert!(matches!(task.step_with_previews(1).unwrap(), ImagePoll::Pending(_)));
+        }
+        assert_eq!(task.primary_coverage, 1);
+        let pending = task.pending.as_ref().unwrap();
+        let before = (
+            task.pixel,
+            task.primary_coverage,
+            task.sample,
+            pending.ray.origin(),
+            pending.ray.direction(),
+            task.progressive.as_ref().unwrap().film.samples(),
+            task.work.used(),
+        );
+        if cancellation {
+            task.cancel.cancel();
+        } else {
+            task.work.limit = task.work.used();
+        }
+        let error = task.finish_sample(Vec3::ZERO).unwrap_err();
+        assert_eq!(error.code, if cancellation { ErrorCode::Cancelled } else { ErrorCode::LimitExceeded });
+        let pending = task.pending.as_ref().expect("failed publication retains its drained transport continuation");
+        assert_eq!(
+            (
+                task.pixel,
+                task.primary_coverage,
+                task.sample,
+                pending.ray.origin(),
+                pending.ray.direction(),
+                task.progressive.as_ref().unwrap().film.samples(),
+                task.work.used()
+            ),
+            before
+        );
+        assert!(!task.done && task.pixels.is_empty());
+        assert!(task.take_linear_exr().is_none());
+    }
 }

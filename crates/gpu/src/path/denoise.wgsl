@@ -1,4 +1,4 @@
-// Original three-pass edge-avoiding a-trous filter inspired by Dammertz et al.
+// Original bounded edge-avoiding a-trous filter inspired by Dammertz et al.
 // Inputs/outputs keep accumulated linear premultiplied radiance and raw alpha.
 struct FilterParams { image: vec4<u32>, work: vec4<u32> };
 @group(0) @binding(0) var<uniform> f: FilterParams;
@@ -36,7 +36,7 @@ fn atrous(@builtin(global_invocation_id) gid:vec3<u32>) {
     let samples=f32(f.work.y);
     let color=c.xyz/samples;
     let center_peak=max_component(color);
-    let first_pass=f.image.z==1u && !optical;
+    let first_pass=f.image.z==1u && !optical && f.work.w!=0u;
     var support_count=0u;
     var support_peak=0.0;
     for(var y=-2;y<=2;y+=1) { for(var x=-2;x<=2;x+=1) {
@@ -79,5 +79,20 @@ fn atrous(@builtin(global_invocation_id) gid:vec3<u32>) {
         if mean_peak>limit { mean*=limit/mean_peak; }
     }
     // The centre always contributes; retain original coverage without filtering.
-    filtered[pixel]=vec4<f32>(mean,c.w);
+    filtered[pixel]=vec4<f32>(mix(c.xyz,mean,bitcast<f32>(f.work.z)),c.w);
+}
+
+// Stable DenoiseGuideClass codes. This diagnostic writes only the filter scratch
+// output, never accumulation or guide data. Coverage matches the filter gate.
+@compute @workgroup_size(64)
+fn guide_classes(@builtin(global_invocation_id) gid:vec3<u32>) {
+    let pixel=f.image.w+gid.x;
+    if gid.x>=f.work.x || pixel>=f.image.x*f.image.y {return;}
+    let guide=guides[pixel*6u];
+    var reason=u32(guide.x);
+    if guide.w!=0.0 {
+        reason=select(1u,2u,guide.w<0.0);
+        if source[pixel].w<f32(f.work.y)*0.999 {reason=16u;}
+    }
+    filtered[pixel]=vec4<f32>(f32(reason),0.0,0.0,1.0);
 }

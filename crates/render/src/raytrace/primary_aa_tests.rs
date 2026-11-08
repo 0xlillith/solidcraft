@@ -241,6 +241,7 @@ fn progressive_area_fixture(samples: u32, led: bool) -> ImageTask {
         faces: Vec::new(),
     };
     let mut options = RaytraceOptions {
+        threads: 1,
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed: 9 }),
         lights: Some(Vec::new()),
         shadows: true,
@@ -392,6 +393,7 @@ fn fixture(samples: u8, r: u8, left: Option<bool>) -> ImageTask {
     };
     let bounds = meshes.iter().fold(Aabb3::EMPTY, |b, m| b.union(&m.mesh.bounds()));
     let options = RaytraceOptions {
+        threads: 1,
         primary_samples: samples,
         lights: Some(Vec::new()),
         shadows: false,
@@ -478,7 +480,7 @@ fn transient_options_are_strict_default_one_and_do_not_serialize_a_new_default_f
     assert_eq!(omitted.primary_samples, 1);
     assert!(!serde_json::to_value(&omitted).unwrap().as_object().unwrap().contains_key("primary_samples"));
     for n in [0, 2, 8, 17, 255] {
-        assert!(RaytraceOptions { primary_samples: n, ..Default::default() }.validate().is_err());
+        assert!(RaytraceOptions { threads: 1, primary_samples: n, ..Default::default() }.validate().is_err());
     }
     for raw in [
         r#"{"primary_samples":-1}"#,
@@ -986,6 +988,7 @@ fn cpu_lens_pupil_continuations_observe_cancel_and_one_cumulative_work_budget() 
 fn cpu_lens_admission_keeps_the_whole_pupil_outside_certified_glass() {
     let scene = dielectric::tests::scene(dielectric::tests::box_body(8.0));
     let options = RaytraceOptions {
+        threads: 1,
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: 4, seed: 9 }),
         lens: Some(job::ThinLens { aperture_radius_mm: 1.99, focus_distance_mm: 10.0 }),
         dielectrics: vec![dielectric::tests::input(job::DielectricBoundary::ClosedBox)],
@@ -1305,6 +1308,7 @@ fn path_fixture(samples: u32, depth: u8, ceiling: bool) -> ImageTask {
     }
     let scene = ProductScene { bounds: meshes.iter().fold(Aabb3::EMPTY, |b, m| b.union(&m.mesh.bounds())), meshes };
     let options = RaytraceOptions {
+        threads: 1,
         path: Some(job::CpuPathOptions { max_depth: depth }),
         budget: job::CpuBudget::Studio,
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed: 9 }),
@@ -2998,6 +3002,7 @@ mod adaptive_cpu_images {
             }],
         };
         let options = RaytraceOptions {
+            threads: 1,
             adaptive: Some(Box::new(policy())),
             progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: 48, seed: 9 }),
             denoise,
@@ -3046,6 +3051,98 @@ mod adaptive_cpu_images {
             }
         }
         panic!("bounded adaptive image did not finish");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn worker_fixture(threads: u16, path: bool, supersampling: u32, lens: bool) -> ImageTask {
+        let original = adaptive_fixture(true, path, lens);
+        let point = |x, y| {
+            let (o, d) = original.request.camera.ray(x, y, 17.0, 17.0);
+            o + d * (-o.z / d.z)
+        };
+        // 289 native pixels require multiple batches even with four 64-pixel
+        // workers. The quarter-pixel boundary also splits an X2 trace pixel,
+        // giving both grids real stopped and still-active production pixels.
+        let positions = vec![point(0.0, 0.0), point(8.25, 0.0), point(8.25, 17.0), point(0.0, 17.0)];
+        let mut scene = original.scene;
+        let mesh = Arc::make_mut(&mut scene.meshes[0].mesh);
+        mesh.positions = positions;
+        scene.bounds = mesh.bounds();
+        let options = RaytraceOptions { threads, supersampling, ..original.options };
+        let request = ImageRequest { width: 17, height: 17, raytrace: Some(options.clone()), ..original.request };
+        ImageTask::new(scene, request, CancelToken::default(), options).unwrap()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn first_worker_batch(task: &mut ImageTask) {
+        for _ in 0..100_000 {
+            if !task.parallel.is_empty() {
+                break;
+            }
+            assert!(matches!(task.step_with_previews(1).unwrap(), ImagePoll::Pending(_)));
+        }
+        assert_eq!(task.parallel.len(), 1, "adaptive transport must actually use its native pool");
+        let count = task.request.width as usize * task.request.height as usize;
+        assert!(task.pixel > 0 && task.pixel < count, "the first batch leaves a nonzero cursor within this sweep");
+        assert_eq!(task.progressive.as_ref().unwrap().film.samples(), 0);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_adaptive_workers_preserve_pilot_and_production_outputs_counts_and_work() {
+        for (path, supersampling, lens) in [(false, 1, false), (true, 1, false), (false, 2, false), (true, 2, true)] {
+            let serial = finish(worker_fixture(1, path, supersampling, lens), 64);
+            let report = &serial.1;
+            let count = u64::from(17 * supersampling).pow(2);
+            assert!(report.minimum_production_samples < report.maximum_production_samples, "the fixture needs heterogeneous production allocation");
+            assert!(report.production_samples < count * 48, "at least one pixel stops before the production cap");
+            assert_eq!(report.primary_path_evaluations, count * 16 + report.production_samples);
+            assert!(serial.0.2.is_some(), "raw production radiance is compared as well as every displayed prefix");
+            for threads in [2, 4] {
+                let mut task = worker_fixture(threads, path, supersampling, lens);
+                first_worker_batch(&mut task);
+                assert_eq!(
+                    serial,
+                    finish(task, 64),
+                    "threads {threads}, path {path}, supersampling {supersampling}, lens {lens}: parallel lookahead preserves every seed, ordinal, count and work debit"
+                );
+            }
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_adaptive_batches_cancel_or_exhaust_shared_work_without_publishing_future_pixels() {
+        for path in [false, true] {
+            for threads in [2, 4] {
+                for cancellation in [false, true] {
+                    let mut task = worker_fixture(threads, path, 1, false);
+                    first_worker_batch(&mut task);
+                    let before = {
+                        let p = task.progressive.as_ref().unwrap();
+                        (task.pixel, p.film.samples(), p.film.identity(task.pixel, p.options.seed).unwrap())
+                    };
+                    let work = task.work.used();
+                    if cancellation {
+                        task.cancel.cancel();
+                    } else {
+                        task.work.limit = work + 1;
+                    }
+                    assert_eq!(
+                        task.step_with_previews(1).err().unwrap().code,
+                        if cancellation { ErrorCode::Cancelled } else { ErrorCode::LimitExceeded }
+                    );
+                    let p = task.progressive.as_ref().unwrap();
+                    assert_eq!(
+                        (task.pixel, p.film.samples(), p.film.identity(task.pixel, p.options.seed).unwrap()),
+                        before,
+                        "a failed future batch cannot advance the owner or consume an adaptive sample identity"
+                    );
+                    assert!(task.work.used() <= work + 1);
+                    if cancellation {
+                        assert_eq!(task.work.used(), work);
+                    }
+                    assert!(task.take_linear_exr().is_none() && task.take_denoise_mask().is_none());
+                    assert!(task.sampling_report().is_none());
+                }
+            }
+        }
     }
     fn hits(pixel: u64, seed: u32, count: u32) -> u32 {
         match pixel {
@@ -3560,6 +3657,7 @@ fn cpu_general_glass_fixture(samples: u32, nested: bool, ior: f64) -> ImageTask 
         })
         .collect();
     let options = RaytraceOptions {
+        threads: 1,
         path: Some(job::CpuPathOptions { max_depth: 16 }),
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed: 9 }),
         budget: job::CpuBudget::Studio,
@@ -3603,6 +3701,7 @@ fn opus_serial_optics_fixture(count: usize, depth: u8, inside_last: bool) -> Ima
         })
         .collect();
     let options = RaytraceOptions {
+        threads: 1,
         path: Some(job::CpuPathOptions { max_depth: depth }),
         progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: 1, seed: 9 }),
         budget: job::CpuBudget::Studio,
@@ -4982,6 +5081,7 @@ fn cpu_volume_fixture(samples: u32, depth: u8, perspective: bool, opaque: bool, 
         ..base.request.camera
     };
     let options = RaytraceOptions {
+        threads: 1,
         volume,
         path: Some(job::CpuPathOptions { max_depth: depth }),
         budget: job::CpuBudget::Studio,
@@ -7290,5 +7390,254 @@ fn cpu_power_weighted_photons_preserve_single_source_prefix_and_refreshed_energy
         let actual = path_mean(make(weighted, true, true)).0;
         let expected = 0.96 / std::f64::consts::PI;
         assert!(actual.into_iter().all(|value| (value - expected).abs() < expected * 0.20), "two-source refreshed energy: {actual:?}");
+    }
+}
+
+// Native workers use the same ordered transport/film contract as the explicit
+// serial continuation fixtures above. These tests compare bytes and real work.
+#[cfg(not(target_arch = "wasm32"))]
+fn worker_quality_fixture(threads: u16, supersampling: u32, denoise: bool, diagnostics: bool) -> ImageTask {
+    let original = path_fixture(4, 3, true);
+    let options = RaytraceOptions {
+        threads,
+        supersampling,
+        denoise,
+        denoise_diagnostics: diagnostics,
+        output: Some(Box::new(job::OutputOptions { linear_exr: true, ..Default::default() })),
+        ..original.options
+    };
+    let request = ImageRequest { width: 17, height: 11, raytrace: Some(options.clone()), ..original.request };
+    ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_camera_workers_preserve_every_path_and_direct_prefix_raw_master_and_work() {
+    let serial = complete_presentation(worker_quality_fixture(1, 1, false, false), 1);
+    for threads in [2, 4] {
+        assert_eq!(
+            serial,
+            complete_presentation(worker_quality_fixture(threads, 1, false, false), 16384),
+            "absolute sample identities and pixel merge order must not depend on native scheduling"
+        );
+    }
+    let direct = |threads| {
+        let original = progressive_fixture(4, 19, Some(true), 0.0);
+        let options =
+            RaytraceOptions { threads, output: Some(Box::new(job::OutputOptions { linear_exr: true, ..Default::default() })), ..original.options };
+        let request = ImageRequest { width: 17, height: 11, transparent_background: true, raytrace: Some(options.clone()), ..original.request };
+        ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap()
+    };
+    let serial = complete_presentation(direct(1), 1);
+    for threads in [2, 4] {
+        assert_eq!(serial, complete_presentation(direct(threads), 16384));
+    }
+
+    for primary in [1, 4, 16] {
+        let fixed = |threads| {
+            let original = fixture(primary, 4, Some(true));
+            let options = RaytraceOptions {
+                threads,
+                output: Some(Box::new(job::OutputOptions { linear_exr: true, ..Default::default() })),
+                ..original.options
+            };
+            let request = ImageRequest { width: 9, height: 7, transparent_background: true, raytrace: Some(options.clone()), ..original.request };
+            ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap()
+        };
+        let serial = complete_presentation(fixed(1), 1);
+        for threads in [2, 4] {
+            assert_eq!(serial, complete_presentation(fixed(threads), 16384));
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_photon_workers_preserve_deposit_order_refreshed_maps_and_image_prefixes() {
+    let render = |threads| {
+        let original = cpu_directional_caustic_fixture(512, 3.0);
+        let mut options = original.options;
+        options.threads = threads;
+        options.progressive.as_mut().unwrap().samples_per_pixel = 3;
+        options.caustics.as_mut().unwrap().refresh_per_pass = true;
+        let request = ImageRequest { width: 9, height: 7, raytrace: Some(options.clone()), ..original.request };
+        let mut task = ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap();
+        let mut maps = Vec::new();
+        let mut previews = Vec::new();
+        for _ in 0..500_000 {
+            if let Some(map) = task.caustics.first()
+                && map.ready()
+                && map.test_epoch() as usize == maps.len()
+            {
+                maps.push(map.test_deposits());
+            }
+            match task.step_with_previews(1).unwrap() {
+                ImagePoll::Pending(_) => {}
+                ImagePoll::Preview { samples_per_pixel, png } => previews.push((samples_per_pixel, png)),
+                ImagePoll::Complete(png) => {
+                    assert_eq!(task.parallel.capacity(), 0, "completed jobs release their reusable native pool");
+                    return (maps, previews, png, task.take_linear_exr().unwrap(), task.work.used());
+                }
+            }
+        }
+        panic!("bounded parallel photon fixture did not finish")
+    };
+    let serial = render(1);
+    assert_eq!(serial.0.len(), 3);
+    assert!(serial.0.iter().all(|map| !map.is_empty()));
+    for threads in [2, 4] {
+        assert_eq!(serial, render(threads));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_worker_batches_cancel_or_exhaust_one_shared_budget_before_film_publication() {
+    for threads in [2, 4] {
+        for cancellation in [false, true] {
+            let mut task = worker_quality_fixture(threads, 1, false, false);
+            for _ in 0..100_000 {
+                if task.bvh.is_some() && task.progressive.as_ref().is_some_and(|p| p.film.ready()) {
+                    break;
+                }
+                assert!(matches!(task.step_with_previews(1).unwrap(), ImagePoll::Pending(_)));
+            }
+            assert!(task.bvh.is_some());
+            assert_eq!(task.pixel, 0);
+            let before = task.work.used();
+            if cancellation {
+                task.cancel.cancel();
+            } else {
+                task.work.limit = before + 1;
+            }
+            assert_eq!(task.step_with_previews(1).err().unwrap().code, if cancellation { ErrorCode::Cancelled } else { ErrorCode::LimitExceeded });
+            assert!(task.work.used() <= before + 1);
+            assert_eq!(task.progressive.as_ref().unwrap().film.samples(), 0);
+            assert_eq!(task.pixel, 0, "an incomplete batch cannot publish a prefix");
+            assert!(task.take_linear_exr().is_none() && task.take_denoise_mask().is_none());
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cpu_supersampling_filters_internal_grid_preserves_raw_and_returns_final_dimensions() {
+    let plain = complete_presentation(worker_quality_fixture(1, 2, false, false), 1);
+    let filtered = complete_presentation(worker_quality_fixture(2, 2, true, false), 16384);
+    assert_eq!(plain.2, filtered.2, "raw EXR resolves unfiltered linear transport independently of display denoising");
+    assert_eq!(plain, complete_presentation(worker_quality_fixture(4, 2, false, false), 16384));
+    for (_, png) in &filtered.0 {
+        assert_eq!(::image::load_from_memory(png).unwrap().to_rgba8().dimensions(), (17, 11));
+    }
+    assert_eq!(::image::load_from_memory(&filtered.1).unwrap().to_rgba8().dimensions(), (17, 11));
+    assert_eq!(native_exr_pixels(filtered.2.as_ref().unwrap()).dimensions(), (17, 11));
+    let mut task = worker_quality_fixture(2, 2, true, true);
+    assert_eq!((task.request.width, task.request.height), (34, 22));
+    for _ in 0..500_000 {
+        match task.step_with_previews(4).unwrap() {
+            ImagePoll::Pending(_) => {}
+            ImagePoll::Preview { .. } => assert!(task.take_denoise_mask().is_none()),
+            ImagePoll::Complete(png) => {
+                assert_eq!(png, filtered.1, "diagnostic collection does not change filtering or radiance");
+                let report = task.denoise_diagnostics().unwrap();
+                assert_eq!((report.width, report.height), (34, 22));
+                assert_eq!(report.counts.iter().sum::<u64>(), 34 * 22);
+                let mask = ::image::load_from_memory(&task.take_denoise_mask().unwrap()).unwrap().to_rgba8();
+                assert_eq!(mask.dimensions(), (17, 11));
+                assert!(task.take_denoise_mask().is_none());
+                return;
+            }
+        }
+    }
+    panic!("bounded supersampled diagnostics did not finish")
+}
+
+#[test]
+fn supersampling_is_scene_linear_premultiplied_and_exact_coverage_rounds_up() {
+    let cancel = CancelToken::default();
+    let source = vec![[4.0, 0.0, 0.0, 1.0], [0.0; 4], [0.0, 2.0, 0.0, 0.5], [0.0; 4]];
+    assert_eq!(job::resolve_supersampling(1, 1, 2, &source, &cancel).unwrap(), [[1.0, 0.5, 0.0, 0.375]]);
+    assert!(job::resolve_supersampling(1, 1, 2, &source[..3], &cancel).is_err());
+    let mut invalid = source.clone();
+    invalid[1][0] = 1.0;
+    assert!(job::resolve_supersampling(1, 1, 2, &invalid, &cancel).is_err());
+    let alpha = (5.0_f64 / 6.0) as f32;
+    let mut task = job::output::OutputTask::new_with_quality(
+        1,
+        1,
+        65_544,
+        vec![[alpha; 4]; 4],
+        Vec::new(),
+        job::presentation::Presentation { transparent_background: true, ..Default::default() },
+        false,
+        true,
+        false,
+        job::DenoiseSettings::default(),
+        2,
+        true,
+        6,
+        cancel,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    let classes = [job::DenoiseGuideClass::Surface; 4];
+    for _ in 0..1000 {
+        if let TaskPoll::Complete(png) = task.step_with_diagnostics(None, Some(&classes), None, &mut |_| Ok(())).unwrap() {
+            let rgba = ::image::load_from_memory(&png).unwrap().to_rgba8();
+            assert_eq!(rgba.get_pixel(0, 0).0, [188, 188, 188, 213], "5/6 coverage must not round to212 after FLOAT32 resolve");
+            let report = task.denoise_diagnostics().unwrap();
+            assert_eq!(report.pixels(job::DenoiseGuideClass::PartialCoverage), 4);
+            let mask = ::image::load_from_memory(&task.take_denoise_mask().unwrap()).unwrap().to_rgba8();
+            assert_eq!(mask.get_pixel(0, 0).0, job::DenoiseGuideClass::PartialCoverage.color());
+            let (_, exr) = task.finish().unwrap();
+            assert_eq!(native_exr_pixels(&exr.unwrap()).get_pixel(0, 0).0, [alpha; 4]);
+            return;
+        }
+    }
+    panic!("synthetic supersample output did not finish")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "manual native renderer timing probe; run alone with --ignored --nocapture"]
+fn cpu_parallel_timing_probe() {
+    use sha2::{Digest, Sha256};
+    let mut reference = None;
+    for threads in [1, 2, 4, 8, 16] {
+        let mut seconds = Vec::new();
+        for repetition in 0..3 {
+            let original = path_fixture(8, 3, true);
+            let options = RaytraceOptions {
+                threads,
+                output: Some(Box::new(job::OutputOptions { linear_exr: true, ..Default::default() })),
+                ..original.options
+            };
+            let request = ImageRequest { width: 128, height: 72, raytrace: Some(options.clone()), ..original.request };
+            let began = std::time::Instant::now();
+            let mut task = ImageTask::new(original.scene, request, CancelToken::default(), options).unwrap();
+            let mut completed = None;
+            for _ in 0..10_000_000 {
+                if let ImagePoll::Complete(png) = task.step_with_previews(16384).unwrap() {
+                    completed = Some((png, task.take_linear_exr().unwrap(), task.work.used()));
+                    break;
+                }
+            }
+            let elapsed = began.elapsed().as_secs_f64();
+            let (png, raw, work) = completed.expect("bounded timing fixture completed");
+            let identity = (format!("{:x}", Sha256::digest(&png)), format!("{:x}", Sha256::digest(&raw)), work);
+            if let Some(reference) = &reference {
+                assert_eq!(&identity, reference);
+            } else {
+                reference = Some(identity);
+            }
+            seconds.push(elapsed);
+            println!(
+                "{}",
+                serde_json::json!({"kind":"cpu_runtime_sample","threads":threads,"repetition":repetition,
+                "width":128,"height":72,"samples_per_pixel":8,"seconds":elapsed,"work_units":work})
+            );
+        }
+        seconds.sort_by(f64::total_cmp);
+        println!("{}", serde_json::json!({"kind":"cpu_runtime_median","threads":threads,"seconds":seconds[1]}));
     }
 }

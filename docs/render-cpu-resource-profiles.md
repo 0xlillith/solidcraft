@@ -11,8 +11,8 @@ A CPU image must not inherit a small interactive-preview ceiling when the owner 
 | Envelope | Compact | Studio | Workstation |
 |---|---:|---:|---:|
 | Maximum side | 4,096 px | 8,192 px | 16,384 px |
-| Fixed-sampling pixels | 4,194,304 | 16,777,216 | 67,108,864 |
-| Progressive pixels | 1,048,576 | 16,777,216 | 67,108,864 |
+| Fixed-sampling internal pixels | 4,194,304 | 16,777,216 | 134,217,728 |
+| Progressive internal pixels | 1,048,576 | 16,777,216 | 134,217,728 |
 | Progressive samples/pixel | 64 | 1,024 | 65,536 |
 | Total camera samples | 16,777,216 | 4,294,967,296 | 1,099,511,627,776 |
 | Captured triangles | 262,144 | 2,000,000 | 8,000,000 |
@@ -20,6 +20,12 @@ A CPU image must not inherit a small interactive-preview ceiling when the owner 
 | Retained source geometry | 128 MiB | 1 GiB | 4 GiB |
 | Complete job admission | 384 MiB | 3 GiB | 12 GiB |
 | Cumulative work units | 1,000,000,000 | 1,000,000,000,000 | 256,000,000,000,000 |
+
+With [X2 supersampling](render-quality-controls.md), these dimensions and pixel
+counts apply to the internal grid, while the selected output size remains
+unchanged. The new output UI stops at 8K UHD and offers sample selections through
+128; legacy native-size/API intent is preserved. Denoising, diagnostics and
+shared output presentation have their own final 8192-side/33,554,432-pixel cap.
 
 Every column is an intersection of limits: a scene that fits the triangle count may still exceed its complete byte estimate. Similarly, a sample count within the per-pixel limit may exceed the total camera-sample or cumulative traversal-work limit. No claim is made that all maxima can be reached simultaneously or within a particular time.
 
@@ -55,7 +61,7 @@ Large intent can be saved and reopened without a render host. Executing Studio o
 
 The source-capture gate, dimensions, camera-sample bound, BVH construction, film, encoded checkpoints, environment input, retained request and host reservation consume the same selected policy. Ray tracing no longer adds raster projected-triangle lists to its estimate: its own BVH, captured looks and film are charged instead, alongside a conservative pixel/codec allowance.
 
-The native CPU host has a finite 16 GiB logical reservation pool on 64-bit platforms, including retained results and previews. It does not allocate that amount at startup, promise that physical RAM is available, or account for the rest of the CAD application or other processes. Per-job profiles remain smaller. Cooperative and registered GPU host pools retain their original 512 MiB limit; this change is not a GPU-memory expansion.
+The native CPU host has a finite 16 GiB logical reservation pool on 64-bit platforms, including retained results and previews. It does not allocate that amount at startup, promise that physical RAM is available, or account for the rest of the CAD application or other processes. Per-job profiles remain smaller. The cooperative host and each registered GPU executor retain independent pool limits; selecting a CPU profile never changes a GPU reservation.
 
 Fallible allocation, actual vector-capacity checks, checked arithmetic, bounded work quanta, cancellation checks and final-only publication remain required. A failed or cancelled job must release its working reservations and preserve the previous completed result. Every retained progressive checkpoint is still conservatively charged; this increment does not implement tiled/out-of-core rendering or unbounded preview retention.
 
@@ -63,7 +69,7 @@ Fallible allocation, actual vector-capacity checks, checked arithmetic, bounded 
 
 The new pending-format descriptor is `render-cpu-budget`. Old intent has Compact semantics; larger intent is not discarded on reopen. The independent GPU sampling flag remains separate from CPU progressive sampling. Visual material edits still do not change engineering material properties.
 
-Resource-profile selection alone does not enable CPU diffuse global illumination, adaptive sampling, multithreaded transport, arbitrary dielectric geometry, texture displacement or EXR output. Optional [opaque path lighting](render-cpu-path.md) and [output presentation](render-cpu-output.md) have their own explicit contracts. The existing optical-combination restrictions remain explicit. Raising an admission ceiling is not a performance optimization or a claim that every large scene is practical yet.
+Resource-profile selection alone does not enable CPU diffuse global illumination, adaptive sampling, arbitrary dielectric geometry, texture displacement or EXR output. Native CPU worker selection is described separately in [quality controls](render-quality-controls.md). Optional [opaque path lighting](render-cpu-path.md) and [output presentation](render-cpu-output.md) have their own explicit contracts. The existing optical-combination restrictions remain explicit. Raising an admission ceiling is not a performance optimization or a claim that every large scene is practical yet.
 
 ## Regression coverage
 

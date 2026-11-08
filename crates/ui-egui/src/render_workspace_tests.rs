@@ -3818,6 +3818,9 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
                 seed: 1977,
                 tone_map: ToneMap::AcesFitted,
                 denoise: true,
+                denoise_settings: Default::default(),
+                denoise_diagnostics: false,
+                supersampling: 1,
                 lens: Some(ThinLens { aperture_radius_mm: 0.5, focus_distance_mm: 123.0 }),
                 lighting: Some(StudioLighting {
                     punctual_lights: Default::default(),
@@ -4380,6 +4383,7 @@ fn cpu_progressive_sample_editor_uses_the_selected_profile_without_rewriting_exi
     use solidcraft_engine::render::job::{CpuBudget, CpuProgressiveOptions};
     for budget in [CpuBudget::Compact, CpuBudget::Studio, CpuBudget::Workstation] {
         let maximum = budget.limits().max_samples_per_pixel;
+        let edit_maximum = maximum.min(quality::MAX_UI_SAMPLES);
         let mut h = Harness::new();
         h.call("ui.resize", json!({"width":1600,"height":2600}));
         enter(&mut h.app, true).unwrap();
@@ -4404,8 +4408,8 @@ fn cpu_progressive_sample_editor_uses_the_selected_profile_without_rewriting_exi
         assert!(Arc::ptr_eq(&before, &h.app.session.doc));
         assert_eq!(h.app.session.undo.len(), undo);
 
-        // A real edit respects the chosen profile, rather than offering the Workstation cap
-        // under Compact and failing later when the person tries to save or start rendering.
+        // A real edit respects both the selected profile and the 128-spp UI ceiling.
+        // Painting and unrelated edits continue to preserve existing authored sample intent.
         for _ in 0..8 {
             let field = crate::scenario::rect_of("render:cpu-spp-field").unwrap();
             let inspector = crate::scenario::rect_of("render:inspector").unwrap();
@@ -4430,7 +4434,7 @@ fn cpu_progressive_sample_editor_uses_the_selected_profile_without_rewriting_exi
         h.step(&json!({"text":(maximum + 1).to_string()})).unwrap();
         h.step(&json!({"key":"Enter"})).unwrap();
         h.frames(3);
-        assert_eq!(h.app.render_workspace.view.raytrace.progressive, Some(CpuProgressiveOptions { samples_per_pixel: maximum, seed: 82 }));
+        assert_eq!(h.app.render_workspace.view.raytrace.progressive, Some(CpuProgressiveOptions { samples_per_pixel: edit_maximum, seed: 82 }));
         assert_eq!((h.app.render_workspace.view.draft.width, h.app.render_workspace.view.draft.height), (8, 8));
         assert!(image_request(&h.app).is_ok());
         assert!(h.app.render_workspace.view.job.is_none(), "editing samples must never start a job");
@@ -15944,4 +15948,281 @@ fn texture_filtering_keeps_exact_cpu_gpu_saved_and_temporary_intent_after_reopen
         assert!(h.app.render_workspace.view.studio.metal_energy_compensation);
         assert_eq!(setups::draft(&h.app).unwrap(), draft);
     }
+}
+
+fn render_quality_controls_fixture(method: ImageMethod, samples: u32) -> Harness {
+    use solidcraft_engine::render::job::{CpuBudget, CpuProgressiveOptions};
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1600,"height":3200}));
+    enter(&mut h.app, true).unwrap();
+    h.app.render_workspace.view.live_paused = true;
+    h.app.preferences.render_legacy_image_defaults = false;
+    select_image_method(&mut h.app, method);
+    h.app.render_workspace.view.draft.width = 32;
+    h.app.render_workspace.view.draft.height = 16;
+    h.app.render_workspace.view.samples = samples;
+    h.app.render_workspace.view.raytrace.budget = CpuBudget::Workstation;
+    h.app.render_workspace.view.raytrace.progressive = Some(CpuProgressiveOptions { samples_per_pixel: samples, seed: 81 });
+    setups::save(&mut h.app).unwrap();
+    h
+}
+
+fn render_quality_reveal_sampling(h: &mut Harness, method: ImageMethod) {
+    inspector::select_editor(&mut h.app, inspector::Editor::Sampling);
+    h.frames(3);
+    let target = if method == ImageMethod::CpuRaytrace { "render:cpu-spp" } else { "render:gpu-samples" };
+    if crate::scenario::rect_of(target).is_none() {
+        let key = if method == ImageMethod::CpuRaytrace { "render.children.cpu" } else { "render.children.path" };
+        h.step(&json!({"click":{"handle":format!("dialog:section:{}",h.app.tr(key))}})).unwrap();
+        h.frames(3);
+    }
+}
+
+fn render_quality_edit_number(h: &mut Harness, handle: &str, value: &str) {
+    let field = crate::scenario::rect_of(handle).unwrap();
+    let at = egui::pos2(field.right() - 10.0, field.center().y);
+    h.step(&json!({"click":[at.x,at.y],"double":true})).unwrap();
+    h.step(&json!({"key":"A","cmd":true})).unwrap();
+    h.step(&json!({"text":value})).unwrap();
+    h.step(&json!({"key":"Enter"})).unwrap();
+    h.frames(3);
+}
+
+#[test]
+fn render_quality_settings_roundtrip_offline_runtime_and_one_step_undo() {
+    use solidcraft_engine::render::job::DenoiseSettings;
+    for method in [ImageMethod::CpuRaytrace, ImageMethod::GpuRaytrace] {
+        let mut h = render_quality_controls_fixture(method, 32);
+        let name = h.app.render_workspace.view.name.clone();
+        let saved = h.app.session.doc.render.setups[&name].clone();
+        h.app.cam.yaw += 0.3;
+        let camera = h.app.cam;
+        let before = setups::draft(&h.app).unwrap();
+        let undo = h.app.session.undo.len();
+        let settings = DenoiseSettings { passes: 2, strength: 0.45, firefly_suppression: false };
+        h.app.render_workspace.view.studio.supersampling = 2;
+        h.app.render_workspace.view.studio.denoise = false;
+        h.app.render_workspace.view.studio.denoise_settings = settings;
+        h.app.render_workspace.view.studio.denoise_diagnostics = true;
+        if method == ImageMethod::CpuRaytrace {
+            h.app.render_workspace.view.raytrace.threads = 7;
+        }
+        setups::persist_editor(&mut h.app, &before).unwrap();
+        let changed = h.app.session.doc.render.setups[&name].clone();
+        assert_eq!(changed.camera, saved.camera, "quality edits do not capture navigation");
+        assert_eq!((changed.width, changed.height), (32, 16), "supersampling preserves final dimensions");
+        assert_eq!(h.app.cam, camera);
+        assert_eq!(h.app.session.undo.len(), undo + 1);
+        let request = image_request(&h.app).unwrap();
+        let options = &request["settings"]["job"]["options"];
+        assert_eq!(options["supersampling"], 2);
+        assert!(!options["denoise"].as_bool().unwrap_or(false));
+        assert_eq!(options["denoise_settings"], json!(settings));
+        assert_eq!(options["denoise_diagnostics"], true);
+        let mut runtime = json!({});
+        if method == ImageMethod::CpuRaytrace {
+            assert_eq!(options["threads"], 7);
+            cpu::params(&h.app, &mut runtime).unwrap();
+            runtime = runtime["raytrace"].clone();
+        } else {
+            studio::params(&h.app, &mut runtime).unwrap();
+        }
+        assert!(!runtime["denoise"].as_bool().unwrap_or(false));
+        for key in ["supersampling", "denoise_settings", "denoise_diagnostics"] {
+            assert_eq!(runtime[key], options[key], "runtime input adapter must retain {key}");
+        }
+        let bytes = solidcraft_engine::io::write_design_container(&h.app.session.doc).unwrap();
+        let reopened = solidcraft_engine::io::read_design(&bytes).unwrap();
+        assert_eq!(reopened.render.setups[&name], changed);
+        h.app.run("edit.undo", json!({})).unwrap();
+        setups::sync_revision(&mut h.app);
+        assert_eq!(h.app.session.doc.render.setups[&name], saved);
+        assert_eq!(h.app.render_workspace.view.studio.supersampling, 1);
+        assert_eq!(h.app.render_workspace.view.studio.denoise_settings, Default::default());
+        assert!(!h.app.render_workspace.view.studio.denoise_diagnostics);
+        h.app.run("edit.redo", json!({})).unwrap();
+        setups::sync_revision(&mut h.app);
+        assert_eq!(h.app.session.doc.render.setups[&name], changed);
+        assert_eq!(h.app.render_workspace.view.studio.supersampling, 2);
+        assert_eq!(h.app.render_workspace.view.studio.denoise_settings, settings);
+        assert!(h.app.render_workspace.view.studio.denoise_diagnostics);
+        if method == ImageMethod::CpuRaytrace {
+            assert_eq!(h.app.render_workspace.view.raytrace.threads, 7);
+        }
+        h.app.session = Session::new(reopened);
+        reset_document(&mut h.app);
+        h.app.render_workspace.view.name = name;
+        h.app.render_workspace.view.live_paused = true;
+        setups::load(&mut h.app);
+        assert_eq!(h.app.render_workspace.view.studio.supersampling, 2);
+        assert_eq!(h.app.render_workspace.view.studio.denoise_settings, settings);
+        assert!(h.app.render_workspace.view.studio.denoise_diagnostics);
+        assert!(h.app.render_workspace.view.job.is_none(), "quality editing and offline reopen never launch a render");
+    }
+}
+
+#[test]
+fn render_quality_widgets_preserve_legacy_samples_and_bound_new_pointer_selections() {
+    for method in [ImageMethod::CpuRaytrace, ImageMethod::GpuRaytrace] {
+        let mut h = render_quality_controls_fixture(method, 512);
+        if method == ImageMethod::CpuRaytrace {
+            h.app.render_workspace.view.studio.adaptive = Some(Default::default());
+            setups::save(&mut h.app).unwrap();
+        }
+        let name = h.app.render_workspace.view.name.clone();
+        let document = h.app.session.doc.clone();
+        let undo = h.app.session.undo.len();
+        render_quality_reveal_sampling(&mut h, method);
+        h.frames(3);
+        assert!(Arc::ptr_eq(&document, &h.app.session.doc), "painting a legacy sample budget must not rewrite it");
+        assert_eq!(h.app.session.undo.len(), undo);
+        let options = image_request(&h.app).unwrap()["settings"]["job"]["options"].clone();
+        let key = if method == ImageMethod::CpuRaytrace { "render:cpu-samples-preset:128" } else { "render:gpu-samples-preset:128" };
+        assert_eq!(
+            if method == ImageMethod::CpuRaytrace { options["progressive"]["samples_per_pixel"].clone() } else { options["samples"].clone() },
+            512
+        );
+        h.step(&json!({"click":{"handle":key}})).unwrap();
+        h.frames(3);
+        let options = serde_json::to_value(&h.app.session.doc.render.setups[&name]).unwrap()["job"]["options"].clone();
+        assert_eq!(
+            if method == ImageMethod::CpuRaytrace { options["progressive"]["samples_per_pixel"].clone() } else { options["samples"].clone() },
+            128
+        );
+        assert_eq!(h.app.session.undo.len(), undo + 1);
+        assert!(!h.app.render_workspace.view.studio.denoise);
+        h.step(&json!({"click":{"handle":"render:denoise-diagnostics"}})).unwrap();
+        h.frames(3);
+        assert!(h.app.render_workspace.view.studio.denoise_diagnostics, "mask collection is selectable with filtering off");
+        assert!(!h.app.render_workspace.view.studio.denoise);
+        assert!(image_request(&h.app).unwrap()["settings"]["job"]["options"]["denoise_diagnostics"].as_bool().unwrap());
+        h.step(&json!({"click":{"handle":"render:denoise-enable"}})).unwrap();
+        h.frames(3);
+        h.step(&json!({"click":{"handle":"render:denoise-firefly"}})).unwrap();
+        render_quality_edit_number(&mut h, "render:denoise-passes", "2");
+        assert_eq!(h.app.render_workspace.view.studio.denoise_settings.passes, 2);
+        assert!(!h.app.render_workspace.view.studio.denoise_settings.firefly_suppression);
+        assert!(h.app.render_workspace.view.studio.denoise);
+        let selected = setups::draft(&h.app).unwrap();
+        setups::load(&mut h.app);
+        assert_eq!(setups::draft(&h.app).unwrap(), selected);
+        assert!(h.app.render_workspace.view.job.is_none());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn render_quality_cpu_worker_controls_and_8k_supersampling_are_saved_ui_choices() {
+    let mut cpu = render_quality_controls_fixture(ImageMethod::CpuRaytrace, 8);
+    render_quality_reveal_sampling(&mut cpu, ImageMethod::CpuRaytrace);
+    for (target, expected) in [("single", 1), ("custom", 2)] {
+        cpu.step(&json!({"click":{"handle":format!("render:cpu-threads:{target}")}})).unwrap();
+        cpu.frames(3);
+        assert_eq!(cpu.app.render_workspace.view.raytrace.threads, expected);
+    }
+    render_quality_edit_number(&mut cpu, "render:cpu-threads-field", "8");
+    assert_eq!(cpu.app.render_workspace.view.raytrace.threads, 8);
+    assert_eq!(image_request(&cpu.app).unwrap()["settings"]["job"]["options"]["threads"], 8);
+    cpu.step(&json!({"click":{"handle":"render:cpu-threads:auto"}})).unwrap();
+    cpu.frames(3);
+    assert_eq!(cpu.app.render_workspace.view.raytrace.threads, 0);
+    setups::load(&mut cpu.app);
+    assert_eq!(cpu.app.render_workspace.view.raytrace.threads, 0);
+    let profile = cpu.app.render_workspace.view.raytrace.budget;
+    cpu.app.render_workspace.view.studio.supersampling = 2;
+    cpu.app.render_workspace.view.draft.width = 8192;
+    cpu.app.render_workspace.view.draft.height = 8192;
+    assert!(cpu::validate_progressive_image(&cpu.app).is_err(), "8K does not permit a square image beyond the output pixel envelope");
+    assert_eq!(cpu.app.render_workspace.view.raytrace.budget, profile, "preflight never promotes the CPU resource profile");
+
+    let mut gpu = render_quality_controls_fixture(ImageMethod::GpuRaytrace, 32);
+    inspector::select_editor(&mut gpu.app, inspector::Editor::Output);
+    gpu.frames(3);
+    let undo = gpu.app.session.undo.len();
+    gpu.step(&json!({"click":{"handle":"render:size:8k"}})).unwrap();
+    gpu.frames(3);
+    assert_eq!((gpu.app.render_workspace.view.draft.width, gpu.app.render_workspace.view.draft.height), (7680, 4320));
+    gpu.step(&json!({"click":{"handle":"render:supersampling:x2"}})).unwrap();
+    gpu.frames(3);
+    let request = image_request(&gpu.app).unwrap();
+    assert_eq!((request["settings"]["width"].as_u64(), request["settings"]["height"].as_u64()), (Some(7680), Some(4320)));
+    assert_eq!(request["settings"]["job"]["options"]["supersampling"], 2);
+    assert_eq!(gpu.app.session.undo.len(), undo + 2);
+    assert!(gpu.app.render_workspace.view.job.is_none());
+    setups::load(&mut gpu.app);
+    assert_eq!(gpu.app.render_workspace.view.studio.supersampling, 2);
+    gpu.app.run("edit.undo", json!({})).unwrap();
+    setups::sync_revision(&mut gpu.app);
+    assert_eq!(gpu.app.render_workspace.view.studio.supersampling, 1);
+    assert_eq!((gpu.app.render_workspace.view.draft.width, gpu.app.render_workspace.view.draft.height), (7680, 4320));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn render_quality_denoise_mask_displays_categorical_receipt_exports_and_returns_to_image() {
+    use solidcraft_engine::render::job::{CpuHost, Phase};
+    let mut h = output_viewer_fixture();
+    h.app.render_workspace.view.live_paused = true;
+    let host = CpuHost::for_platform().unwrap();
+    h.app.session.set_render_job_host(Some(host.clone())).unwrap();
+    h.app.render_workspace.image_host = Some(host);
+    h.app.run("solid.box", json!({"length":5,"width":4,"height":3,"body_name":"Mask subject"})).unwrap();
+    let request = json!({"settings":{"width":16,"height":8,"camera":h.app.cam,"job":{"method":"cpu_raytrace",
+        "options":{"threads":1,"progressive":{"samples_per_pixel":2,"seed":81},
+            "supersampling":2,"denoise":false,"denoise_diagnostics":true}}}});
+    let reply = h.app.run("render.start", request).unwrap();
+    let job = serde_json::from_value(reply["job"].clone()).unwrap();
+    let handle = h.app.session.render_job_handle(job).unwrap();
+    let status = handle.wait_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(status.progress.phase, Phase::Completed, "{:?}", status.error);
+    let report = status.denoise_diagnostics.unwrap();
+    assert_eq!((report.width, report.height, report.counts.iter().sum::<u64>()), (32, 16, 512));
+    let frame = handle.frame().unwrap().unwrap();
+    let metadata = frame.denoise_mask_info().unwrap().clone();
+    assert_eq!((metadata.width, metadata.height), (16, 8));
+    cache_render_images(&mut h.app, &h.ctx);
+    let original_texture = h.app.render_workspace.image.as_ref().unwrap().1.as_ref().unwrap().id();
+    let original_sha = h.app.render_workspace.image_info.as_ref().unwrap().png_sha256.clone();
+    assert!(quality::mask_available(&h.app));
+    h.app.run("render.result.view", json!({"view":"denoise_mask"})).unwrap();
+    let mut output = displayed_result_pass(&mut h, |_| {});
+    assert!(quality::mask_active(&h.app));
+    assert_eq!(inspect_state(&h.app)["displayed_receipt"]["kind"], "denoise_mask");
+    assert_eq!(inspect_state(&h.app)["displayed_receipt"]["job"], json!(job));
+    let texture = h.app.render_workspace.denoise_mask_image.as_ref().unwrap().1.as_ref().unwrap();
+    assert_eq!(texture.size(), [16, 8]);
+    assert_eq!(output.textures_delta.set.get(&texture.id()).unwrap().first().unwrap().options, egui::TextureOptions::NEAREST);
+    output.textures_delta.clear();
+    assert_eq!(h.app.render_workspace.denoise_mask_info.as_ref().unwrap().png_sha256, metadata.sha256);
+    assert_eq!(h.app.render_workspace.image_info.as_ref().unwrap().png_sha256, original_sha);
+    assert!(ribbon::action_ready(&h.app, "render.result.copy").is_err());
+    let path = h.dir.join("denoising-mask.png");
+    h.app.session.execute("render.export", &json!({"job":job,"format":"denoise_mask","path":path})).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), frame.denoise_mask_png().unwrap());
+    // Exercise the full native UI's actual pointer targets, not just the view
+    // command. The Image segment previously shared a persistent ID with Live
+    // in the comparison strip and activated comparison on this exact click.
+    h.frames(3);
+    assert!(!h.app.universal_panel_host_enabled(), "cover the native production layout");
+    for (target, kind, mask) in
+        [("render:result:image", "final", false), ("render:result:denoise-mask", "denoise_mask", true), ("render:result:image", "final", false)]
+    {
+        assert!(h.app.render_workspace.view.compare.is_none());
+        assert!(h.app.session.render_comparison().is_none());
+        h.step(&json!({"click":{"handle":target}})).unwrap();
+        h.frames(3);
+        assert_eq!(quality::mask_active(&h.app), mask, "{target}");
+        assert!(h.app.render_workspace.view.compare.is_none(), "{target} must not activate Live/Render comparison");
+        assert!(h.app.session.render_comparison().is_none(), "{target} must not change comparison in the engine");
+        assert_eq!(h.app.render_workspace.view.completed, Some(job), "{target}");
+        let receipt = inspect_state(&h.app)["displayed_receipt"].clone();
+        assert_eq!(receipt["kind"], kind, "{target}");
+        assert_eq!(receipt["job"], json!(job), "{target}");
+        assert_eq!((receipt["width"].as_u64(), receipt["height"].as_u64()), (Some(16), Some(8)), "{target}");
+    }
+    assert_eq!(h.app.render_workspace.image.as_ref().unwrap().1.as_ref().unwrap().id(), original_texture);
+    h.app.run("render.result.view", json!({"view":"denoise_mask"})).unwrap();
+    reset_document(&mut h.app);
+    assert!(!quality::mask_active(&h.app));
+    assert!(h.app.render_workspace.denoise_mask_image.is_none());
 }

@@ -52,6 +52,9 @@ impl Default for EnvironmentRequest {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProgressiveStart {
+    supersampling: Option<u32>,
+    denoise_settings: solidcraft_render::job::DenoiseSettings,
+    denoise_diagnostics: bool,
     caustics: Option<solidcraft_render::job::CausticOptions>,
     studio_weights: Option<[f64; 3]>,
     aging: solidcraft_doc::render_aging::SavedAgingStack,
@@ -199,6 +202,7 @@ fn normalize_saved_job(s: &Session, params: &Value, command: &str) -> Result<Opt
             "samples":options.samples,"max_depth":options.max_depth,"seed":options.seed,
             "lens":options.lens,"lighting":options.lighting,"tone_map":options.tone_map,
             "denoise":options.denoise,"environment":options.environment,
+            "supersampling":options.supersampling,"denoise_settings":options.denoise_settings,"denoise_diagnostics":options.denoise_diagnostics,
             "finishing":options.finishing,"backdrop":options.backdrop,"linear_exr":options.linear_exr,
             "texture_filtering":options.texture_filtering,"metal_energy_compensation":options.metal_energy_compensation,"caustics":options.caustics,"adaptive":options.adaptive,"transmission_samples":options.transmission_samples,"volume":options.volume,"nested_media":options.nested_media,"aging":options.aging
             })
@@ -252,7 +256,7 @@ pub(crate) fn prepare_with_metadata(
         params.get("raytrace").and_then(Value::as_object).is_some_and(|o| ["clear_coats", "textures"].iter().any(|key| o.contains_key(*key)));
     if gpu_raytrace
         || params.get("environment").is_some_and(|e| e.get("kind").is_some())
-        || ["lens", "lighting", "tone_map"].iter().any(|key| params.get(*key).is_some())
+        || ["lens", "lighting", "tone_map", "supersampling", "denoise_settings", "denoise_diagnostics"].iter().any(|key| params.get(*key).is_some())
         || params.get("denoise").is_some_and(|value| value != &json!(false))
     {
         return Err(bad(
@@ -356,7 +360,15 @@ pub(crate) fn prepare_with_metadata(
             let defaults = RenderSetup::default();
             (defaults.width, defaults.height)
         };
-        options.budget.validate_image(dimensions.0, dimensions.1, options.camera_sampling().map_err(job_error)?).map_err(job_error)?;
+        let trace_dimensions = if options.supersampling == 1 && !options.denoise && !options.denoise_diagnostics {
+            dimensions
+        } else {
+            solidcraft_render::job::supersampled_dimensions(dimensions.0, dimensions.1, options.supersampling).map_err(job_error)?
+        };
+        options.budget.validate_image(trace_dimensions.0, trace_dimensions.1, options.camera_sampling().map_err(job_error)?).map_err(job_error)?;
+        if options.denoise || options.denoise_diagnostics {
+            solidcraft_render::job::validate_cpu_denoise_image(trace_dimensions.0, trace_dimensions.1).map_err(job_error)?;
+        }
         if let Some(lens) = options.lens {
             let camera = input
                 .setup
@@ -608,10 +620,12 @@ pub(crate) fn prepare_with_metadata(
     if !coats.is_empty() {
         reply["coats"] = json!(coats);
     }
-    if request.raytrace.as_ref().is_some_and(|options| options.denoise) {
+    if let Some(options) = request.raytrace.as_ref().filter(|options| options.denoise) {
         reply["denoising"] = json!({
-            "method":"edge_aware_atrous", "backend":"native_cpu", "passes":3, "steps":[1,2,4],
-            "outlier_policy":DENOISE_OUTLIER_POLICY,
+            "method":"edge_aware_atrous", "backend":"native_cpu", "passes":options.denoise_settings.passes,
+            "steps":denoise_steps(options.denoise_settings.passes), "settings":options.denoise_settings,
+            "diagnostics_requested":options.denoise_diagnostics,
+            "outlier_policy":if options.denoise_settings.firefly_suppression {DENOISE_OUTLIER_POLICY} else {"disabled"},
             "optical_policy":DENOISE_OPTICAL_POLICY,
             "guides":"deterministic_center_ray_albedo_normal_camera_relative_position_depth",
             "bypass":"unsupported or ambiguous optical paths, emitter, background and partial coverage",
@@ -741,6 +755,9 @@ fn prepare_progressive(
     options.lighting = input.lighting;
     options.tone_map = input.tone_map.unwrap_or_default();
     options.denoise = input.denoise;
+    options.denoise_settings = input.denoise_settings;
+    options.denoise_diagnostics = input.denoise_diagnostics;
+    options.supersampling = input.supersampling.unwrap_or(1);
     options.finishing = input.finishing;
     options.backdrop = input.backdrop;
     options.linear_exr = input.linear_exr;
@@ -753,6 +770,7 @@ fn prepare_progressive(
     options.adaptive = input.adaptive;
     options.transmission_samples = input.transmission_samples.unwrap_or(1);
     options.validate().map_err(job_error)?;
+    solidcraft_render::job::supersampled_dimensions(settings.width, settings.height, options.supersampling).map_err(job_error)?;
     if let Some(super::environment::Input::BuiltinHdr { id, .. }) = &input.environment
         && options.lighting.as_ref().is_some_and(|lighting| lighting.sun.is_some())
         && super::library::owns_sun(id, command)?
@@ -854,8 +872,10 @@ fn prepare_progressive(
     }
     if options.denoise {
         reply["denoising"] = json!({
-            "method":"edge_aware_atrous", "passes":3, "steps":[1,2,4],
-            "outlier_policy":DENOISE_OUTLIER_POLICY,
+            "method":"edge_aware_atrous", "passes":options.denoise_settings.passes,
+            "steps":denoise_steps(options.denoise_settings.passes), "settings":options.denoise_settings,
+            "diagnostics_requested":options.denoise_diagnostics,
+            "outlier_policy":if options.denoise_settings.firefly_suppression {DENOISE_OUTLIER_POLICY} else {"disabled"},
             "optical_policy":DENOISE_OPTICAL_POLICY,
             "guides":"deterministic_center_ray_albedo_normal_position_depth",
             "bypass":"unsupported or ambiguous optical paths, emitter, background and partial coverage",
@@ -994,11 +1014,19 @@ enum ExportFormat {
     #[default]
     Png,
     Exr,
+    DenoiseMask,
 }
 impl ExportFormat {
-    fn extension(self) -> &'static str {
+    fn name(self) -> &'static str {
         match self {
             Self::Png => "png",
+            Self::Exr => "exr",
+            Self::DenoiseMask => "denoise_mask",
+        }
+    }
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Png | Self::DenoiseMask => "png",
             Self::Exr => "exr",
         }
     }
@@ -1030,6 +1058,9 @@ pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
     let frame = s.render_jobs.frame(job).map_err(job_error)?;
     let bytes = match input.format {
         ExportFormat::Png => frame.png(),
+        ExportFormat::DenoiseMask => frame
+            .denoise_mask_png()
+            .ok_or_else(|| bad("render.export", "this completed job has no guide mask; enable denoising diagnostics before rendering"))?,
         ExportFormat::Exr => frame
             .linear_exr()
             .ok_or_else(|| bad("render.export", "this completed job has no raw linear master; enable retention before rendering"))?,
@@ -1040,8 +1071,12 @@ pub(super) fn export(s: &mut Session, params: &Value) -> Result<Value> {
         if input.overwrite { solidcraft_io::write_atomic(path, bytes, false) } else { solidcraft_io::safe_write::create_atomic(path, bytes) };
     result.map_err(|e| bad("render.export", format!("could not export completed {}: {e}", input.format.extension())))?;
     Ok(
-        json!({"job":job,"path":input.path,"bytes":bytes.len(),"format":input.format.extension(),"encoding":if input.format==ExportFormat::Exr {"scene_linear_srgb_d65"} else {"srgb"},"alpha":if input.format==ExportFormat::Exr {"coverage_premultiplied"} else {"straight"},"frame":frame.info,"linear_master":frame.linear_master_info(),"presentation":frame.presentation()}),
+        json!({"job":job,"path":input.path,"bytes":bytes.len(),"format":input.format.name(),"encoding":match input.format {ExportFormat::Exr=>"scene_linear_srgb_d65",ExportFormat::DenoiseMask=>"categorical_srgb",ExportFormat::Png=>"srgb"},"alpha":match input.format {ExportFormat::Exr=>"coverage_premultiplied",ExportFormat::DenoiseMask=>"opaque",ExportFormat::Png=>"straight"},"frame":frame.info,"linear_master":frame.linear_master_info(),"presentation":frame.presentation(),"denoise_mask":frame.denoise_mask_info()}),
     )
+}
+
+fn denoise_steps(passes: u32) -> Vec<u32> {
+    (0..passes.min(3)).map(|pass| 1 << pass).collect()
 }
 
 fn validate_studio_weights(weights: Option<[f64; 3]>, command: &str) -> Result<Option<[f64; 3]>> {

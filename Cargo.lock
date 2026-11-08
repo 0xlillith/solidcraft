@@ -4288,6 +4288,7 @@ dependencies = [
  "image",
  "moxcms",
  "png",
+ "rayon",
  "robust",
  "serde",
  "serde_json",

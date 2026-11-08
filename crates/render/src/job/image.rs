@@ -135,15 +135,31 @@ fn admit_source(scene: &ProductScene, request: &ImageRequest, max_triangles: u64
 /// Ray tracing has no raster projected-triangle lists. Keep a conservative
 /// pixel/codec allowance, then let the ray tracer charge its actual BVH and film.
 #[cfg(feature = "raytrace-cpu")]
-pub(crate) fn admit_raytrace_source(scene: &ProductScene, request: &ImageRequest, budget: super::CpuBudget) -> Result<Admission> {
+pub(crate) fn admit_raytrace_source(
+    scene: &ProductScene,
+    request: &ImageRequest,
+    budget: super::CpuBudget,
+    dimensions: (u32, u32),
+) -> Result<Admission> {
     budget.validate_execution()?;
     budget.validate_image(
-        request.width,
-        request.height,
+        dimensions.0,
+        dimensions.1,
         request.raytrace.as_ref().map(super::RaytraceOptions::camera_sampling).transpose()?.flatten(),
     )?;
-    let source = admit_source_with_budget(scene, request, budget.limits().max_triangles, budget)?;
+    let limits = budget.limits();
+    let source = admit_source_with_dimensions(
+        scene,
+        request,
+        limits.max_triangles,
+        limits.max_bodies,
+        limits.max_geometry_bytes,
+        budget.image_limits(false),
+        dimensions,
+    )?;
     let mut a = source.admission;
+    // The codec and retained previews have the requested final dimensions.
+    a.encoded_limit = u64::from(request.width) * u64::from(request.height) * 8 + 65_536;
     a.pixel_scratch_bytes = source.raster_scratch_bytes;
     a.preparation_bytes = PREPARATION_METADATA_BYTES;
     a.estimated_total_bytes = a
@@ -179,7 +195,7 @@ pub fn admit_geometry_with_limits(
         || max_geometry_bytes == 0
         || max_geometry_bytes > 4 * 1024 * 1024 * 1024
         || image_limits.max_dimension > 16_384
-        || image_limits.max_pixels > 67_108_864
+        || image_limits.max_pixels > 134_217_728
         || image_limits.max_scratch_bytes > super::NATIVE_CPU_POOL_BYTES
     {
         return Err(limit("registered source envelope exceeds implementation bounds"));
@@ -194,6 +210,19 @@ fn admit_source_with_limits(
     max_bodies: usize,
     max_geometry_bytes: u64,
     image_limits: crate::RenderLimits,
+) -> Result<Source> {
+    admit_source_with_dimensions(scene, request, max_triangles, max_bodies, max_geometry_bytes, image_limits, (request.width, request.height))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_source_with_dimensions(
+    scene: &ProductScene,
+    request: &ImageRequest,
+    max_triangles: u64,
+    max_bodies: usize,
+    max_geometry_bytes: u64,
+    image_limits: crate::RenderLimits,
+    dimensions: (u32, u32),
 ) -> Result<Source> {
     if !request.camera.is_valid() {
         return Err(JobError::new(ErrorCode::InvalidRequest, "invalid image camera"));
@@ -217,8 +246,8 @@ fn admit_source_with_limits(
             backend: None,
             mode: RenderMode::Preview,
             operation: RenderOperation::Image,
-            width: u64::from(request.width),
-            height: u64::from(request.height),
+            width: u64::from(dimensions.0),
+            height: u64::from(dimensions.1),
             format: Some(RenderFormat::Png),
             features: Vec::new(),
             policy: Default::default(),
@@ -259,7 +288,7 @@ fn admit_source_with_limits(
             return Err(invalid("invalid body opacity"));
         }
     }
-    let encoded_limit = u64::from(request.width) * u64::from(request.height) * 8 + 65_536;
+    let encoded_limit = u64::from(dimensions.0) * u64::from(dimensions.1) * 8 + 65_536;
     Ok(Source {
         admission: Admission {
             triangles,
