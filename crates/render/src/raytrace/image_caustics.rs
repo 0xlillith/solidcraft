@@ -134,10 +134,13 @@ impl Task {
             .ok_or_else(|| error(TraceError::MemoryLimit))
     }
     pub(super) fn new(options: job::CausticOptions) -> job::Result<Self> {
+        Self::with_capacity(options, options.photons as usize)
+    }
+    fn with_capacity(options: job::CausticOptions, capacity: usize) -> job::Result<Self> {
         Self::required_bytes(options)?;
         Ok(Self {
-            photons: reserve(options.photons as usize)?,
-            scratch: reserve(options.photons as usize)?,
+            photons: reserve(capacity)?,
+            scratch: reserve(capacity)?,
             options,
             guide_bounds: Bounds::empty(),
             guide_region: 0,
@@ -164,6 +167,92 @@ impl Task {
             end: 0,
             out: 0,
         })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn worker(options: job::CausticOptions, capacity: usize) -> job::Result<Self> {
+        Self::with_capacity(options, capacity)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn worker_bytes(capacity: usize) -> job::Result<u64> {
+        (capacity as u64)
+            .checked_mul(2 * std::mem::size_of::<Photon>() as u64)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
+            .ok_or_else(|| error(TraceError::MemoryLimit))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn parallel_ready(&self) -> bool {
+        self.stage == Stage::Emit && self.path.is_none() && self.ordinal < self.options.photons
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn parallel_sources(&self, task: &ImageTask) -> bool {
+        !task.lights.lights().is_empty()
+            || task.options.punctual_lights.as_ref().is_some_and(|lights| !lights.is_empty())
+            || (self.options.area_lights && task.options.area_lights.as_ref().is_some_and(|lights| !lights.is_empty()))
+            || (self.options.environment && (task.environment.is_some() || task.options.sky.is_some() || task.options.environment.is_some()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn batch_bounds(&self) -> job::Result<(u32, u32)> {
+        if !self.parallel_ready() {
+            return Err(invalid("CPU photon batch is not at an emission boundary"));
+        }
+        Ok((self.ordinal, self.options.photons))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn begin_batch(&mut self, source: &Self, begin: u32) -> job::Result<()> {
+        if !source.parallel_ready() || begin > source.options.photons || self.path.is_some() {
+            return Err(invalid("CPU photon batch has invalid source or ordinal"));
+        }
+        self.photons.clear();
+        self.scratch.clear();
+        self.options = source.options;
+        self.guide_bounds = source.guide_bounds;
+        self.guide_region = source.guide_region;
+        self.guide = source.guide;
+        self.source_powers = source.source_powers;
+        self.source_cursor = source.source_cursor;
+        self.sky_row = source.sky_row;
+        self.sky_integral = source.sky_integral;
+        self.sources = source.sources;
+        self.pass = source.pass;
+        self.ordinal = begin;
+        self.stage = Stage::Emit;
+        self.begin = begin as usize;
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn trace_batch(&mut self, task: &mut TransportContext<'_>, end: u32) -> job::Result<()> {
+        if end < self.ordinal || end > self.options.photons || end as usize - self.begin > self.photons.capacity() {
+            return Err(invalid("CPU photon batch exceeds its admitted range"));
+        }
+        while self.ordinal < end {
+            task.cancel.check()?;
+            advance(self, task)?;
+            if self.stage == Stage::Sort {
+                // A source-free or empty scene has no deposits. Preserve the
+                // bounded batch boundary without entering its local sort.
+                self.ordinal = end;
+            }
+        }
+        if self.path.is_some() {
+            return Err(invalid("CPU photon batch ended inside a path"));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn merge_batch(&mut self, worker: &mut Self) -> job::Result<()> {
+        if worker.begin != self.ordinal as usize || worker.pass != self.pass || worker.path.is_some() {
+            return Err(invalid("CPU photon batches must merge in ordinal order"));
+        }
+        for photon in worker.photons.drain(..) {
+            if self.photons.len() == self.photons.capacity() || self.scratch.len() == self.scratch.capacity() {
+                return Err(error(TraceError::MemoryLimit));
+            }
+            self.photons.push(photon);
+            self.scratch.push(Photon::default());
+        }
+        worker.scratch.clear();
+        self.ordinal = worker.ordinal;
+        Ok(())
     }
     pub(super) fn ready(&self) -> bool {
         self.stage == Stage::Ready
@@ -277,8 +366,8 @@ fn candidate(
     }
     Ok(())
 }
-fn prepared(task: &ImageTask) -> job::Result<PreparedScene<'_>> {
-    Ok(PreparedScene { bvh: task.bvh.as_ref().ok_or_else(|| invalid("CPU caustic BVH missing"))?, primitives: &task.looks, source: &task.scene })
+fn prepared<'a>(task: &'a TransportContext<'_>) -> job::Result<PreparedScene<'a>> {
+    Ok(PreparedScene { bvh: task.bvh.as_ref().ok_or_else(|| invalid("CPU caustic BVH missing"))?, primitives: task.looks, source: task.scene })
 }
 fn normal_basis(n: Vec3, x: f64, y: f64, z: f64) -> job::Result<Vec3> {
     let tangent =
@@ -288,7 +377,7 @@ fn normal_basis(n: Vec3, x: f64, y: f64, z: f64) -> job::Result<Vec3> {
 pub(super) fn smooth_interface(input: &job::DielectricOptions) -> bool {
     input.boundary != job::DielectricBoundary::ThinSheet && input.model.unwrap_or_default().roughness == 0.0
 }
-fn prepare_guide(map: &mut Task, task: &ImageTask) -> job::Result<()> {
+fn prepare_guide(map: &mut Task, task: &TransportContext<'_>) -> job::Result<()> {
     if map.guide_region < task.options.dielectrics.len() {
         let certificate = task.glass.first().ok_or_else(|| invalid("CPU caustic optical bounds certificate missing"))?;
         map.guide_bounds = map.guide_bounds.include(certificate.region(map.guide_region)?.bounds);
@@ -306,7 +395,7 @@ fn prepare_guide(map: &mut Task, task: &ImageTask) -> job::Result<()> {
     map.stage = if map.options.power_weighted_sources { Stage::SourcePowers } else { Stage::Emit };
     Ok(())
 }
-fn bounding_disk(task: &ImageTask, guide: Option<PhotonGuide>, toward: Vec3, [u, v]: [f64; 2]) -> job::Result<Option<(Vec3, f64)>> {
+fn bounding_disk(task: &TransportContext<'_>, guide: Option<PhotonGuide>, toward: Vec3, [u, v]: [f64; 2]) -> job::Result<Option<(Vec3, f64)>> {
     let bounds = task.scene.bounds;
     let center = bounds.min * 0.5 + bounds.max * 0.5;
     let radius = (bounds.max - bounds.min).len() * 0.5;
@@ -334,7 +423,7 @@ fn bounding_disk(task: &ImageTask, guide: Option<PhotonGuide>, toward: Vec3, [u,
 
 // One source (or one sky row) per charged preparation step; immutable proposal
 // storage is retained across map refreshes and never rescanned per photon.
-fn prepare_source_powers(map: &mut Task, task: &ImageTask) -> job::Result<()> {
+fn prepare_source_powers(map: &mut Task, task: &TransportContext<'_>) -> job::Result<()> {
     use job::photon_sources as power;
     let directional = task.lights.lights().len();
     let punctual = task.options.punctual_lights.as_ref().map_or(0, Vec::len);
@@ -403,7 +492,7 @@ fn spot_feather(cosine: f64, outer: f64, inner: f64) -> f64 {
     feather * feather * (3.0 - 2.0 * feather)
 }
 
-fn emit(map: &mut Task, task: &ImageTask) -> job::Result<()> {
+fn emit(map: &mut Task, task: &TransportContext<'_>) -> job::Result<()> {
     let directional = task.lights.lights().len();
     let punctual = task.options.punctual_lights.as_ref().map_or(0, Vec::len);
     let area = if map.options.area_lights { task.options.area_lights.as_deref().unwrap_or(&[]) } else { &[] };
@@ -549,12 +638,12 @@ fn current(path: &Path) -> job::Result<Option<usize>> {
 fn wavelength(path: &Path) -> job::Result<f64> {
     WAVELENGTHS_NM.get(usize::from(path.channel.unwrap_or(1))).copied().ok_or_else(|| invalid("CPU caustic wavelength channel"))
 }
-fn ior(task: &ImageTask, path: &Path, index: Option<usize>) -> job::Result<f64> {
+fn ior(task: &TransportContext<'_>, path: &Path, index: Option<usize>) -> job::Result<f64> {
     let Some(index) = index else { return Ok(1.0) };
     let input = task.options.dielectrics.get(index).ok_or_else(|| invalid("CPU caustic medium disappeared"))?;
     input.model.unwrap_or_default().ior(input.ior, wavelength(path)?).map_err(model_error)
 }
-fn select_spectrum(map: &Task, task: &ImageTask, path: &mut Path, index: usize) -> job::Result<()> {
+fn select_spectrum(map: &Task, task: &TransportContext<'_>, path: &mut Path, index: usize) -> job::Result<()> {
     if path.channel.is_some() {
         return Ok(());
     }
@@ -575,7 +664,7 @@ fn select_spectrum(map: &Task, task: &ImageTask, path: &mut Path, index: usize) 
     path.channel = Some(channel);
     Ok(())
 }
-fn launch(task: &ImageTask, path: &mut Path, index: usize, hit: SharedHit<'_>, direction: Vec3) -> job::Result<()> {
+fn launch(task: &TransportContext<'_>, path: &mut Path, index: usize, hit: SharedHit<'_>, direction: Vec3) -> job::Result<()> {
     let region = task.glass.first().ok_or_else(|| invalid("CPU caustic glass certificate missing"))?.region(index)?;
     let ray = Ray::new(hit.position, direction, 0.0_f64.next_up(), super::super::MAX_DISTANCE_MM).map_err(error)?;
     path.ray = ray;
@@ -598,7 +687,7 @@ fn smooth_sheet(input: &job::DielectricOptions, path: &Path, normal: Vec3) -> jo
     Ok((r, t))
 }
 
-fn resolve(map: &mut Task, task: &ImageTask, path: &mut Path) -> job::Result<bool> {
+fn resolve(map: &mut Task, task: &TransportContext<'_>, path: &mut Path) -> job::Result<bool> {
     let geometry = path.hit.map(|hit| prepared(task)?.resolve_hit(path.ray, hit).map_err(error)).transpose()?;
     let emitter = path.emitter.filter(|(_, distance, _)| geometry.as_ref().is_none_or(|hit| *distance < hit.distance_mm));
     let endpoint = if let Some((_, _, position)) = emitter {
@@ -764,7 +853,7 @@ fn resolve(map: &mut Task, task: &ImageTask, path: &mut Path) -> job::Result<boo
     map.stage = Stage::Trace;
     Ok(false)
 }
-fn sheet(map: &mut Task, task: &ImageTask, path: &mut Path) -> job::Result<bool> {
+fn sheet(map: &mut Task, task: &TransportContext<'_>, path: &mut Path) -> job::Result<bool> {
     let sheet = path.sheet.ok_or_else(|| invalid("CPU caustic rough sheet continuation missing"))?;
     let input = task.options.dielectrics.get(sheet.index).ok_or_else(|| invalid("CPU caustic rough sheet material missing"))?;
     let model = input.model.unwrap_or_default();
@@ -847,24 +936,26 @@ fn sort(map: &mut Task) -> job::Result<()> {
     Ok(())
 }
 pub(super) fn step(task: &mut ImageTask) -> job::Result<()> {
-    // Move the prepaid vector header, keeping the large photon path state in place.
     let mut maps = std::mem::take(&mut task.caustics);
     let pass = task.progressive.as_ref().map_or(0, |p| p.film.samples());
-    let result = maps
-        .last_mut()
-        .ok_or_else(|| invalid("CPU caustic task missing"))
-        .and_then(|map| if map.refresh_due(pass) { map.refresh(pass, &mut task.work, &task.cancel) } else { advance(map, task) });
+    let result = {
+        let mut context = TransportContext::from_image(task);
+        maps.last_mut()
+            .ok_or_else(|| invalid("CPU caustic task missing"))
+            .and_then(|map| if map.refresh_due(pass) { map.refresh(pass, context.work, context.cancel) } else { advance(map, &mut context) })
+    };
     task.caustics = maps;
     result
 }
-fn advance(map: &mut Task, task: &mut ImageTask) -> job::Result<()> {
+
+fn advance(map: &mut Task, task: &mut TransportContext<'_>) -> job::Result<()> {
     if map.stage == Stage::Trace {
         let path = map.path.as_mut().ok_or_else(|| invalid("CPU caustic path missing"))?;
         let complete = path
             .cursor
             .as_mut()
             .ok_or_else(|| invalid("CPU caustic trace cursor missing"))?
-            .step_ordered(task.bvh.as_ref().ok_or_else(|| invalid("CPU caustic BVH missing"))?, &mut task.work, &task.cancel, |new, old| {
+            .step_ordered(task.bvh.as_ref().ok_or_else(|| invalid("CPU caustic BVH missing"))?, task.work, task.cancel, |new, old| {
                 let optical = |hit: super::super::Hit| {
                     task.looks
                         .get(hit.primitive_index)
@@ -888,17 +979,17 @@ fn advance(map: &mut Task, task: &mut ImageTask) -> job::Result<()> {
     }
     if map.stage == Stage::Origin && map.path.as_ref().and_then(|path| path.origin.as_ref()).is_some_and(|origin| !origin.ready()) {
         let scene =
-            PreparedScene { bvh: task.bvh.as_ref().ok_or_else(|| invalid("CPU caustic BVH missing"))?, primitives: &task.looks, source: &task.scene };
+            PreparedScene { bvh: task.bvh.as_ref().ok_or_else(|| invalid("CPU caustic BVH missing"))?, primitives: task.looks, source: task.scene };
         map.path.as_mut().and_then(|path| path.origin.as_mut()).ok_or_else(|| invalid("CPU caustic origin classifier missing"))?.step(
             task.glass.first().ok_or_else(|| invalid("CPU caustic glass certificate missing"))?,
             &task.options.dielectrics,
             scene,
-            &mut task.work,
-            &task.cancel,
+            task.work,
+            task.cancel,
         )?;
         return Ok(());
     }
-    task.work.tick(&task.cancel).map_err(error)?;
+    task.work.tick(task.cancel).map_err(error)?;
     match map.stage {
         Stage::GuideBounds => prepare_guide(map, task),
         Stage::SourcePowers => prepare_source_powers(map, task),
@@ -964,7 +1055,7 @@ pub(super) struct Gather {
     index: usize,
     end: usize,
 }
-fn next(task: &ImageTask, cursor: &mut Gather, position: Vec3) -> job::Result<Option<Option<(Photon, f64)>>> {
+fn next(task: &TransportContext<'_>, cursor: &mut Gather, position: Vec3) -> job::Result<Option<Option<(Photon, f64)>>> {
     let map = task.caustics.first().filter(|map| map.ready()).ok_or_else(|| invalid("CPU caustic map is incomplete"))?;
     let center = if let Some(center) = cursor.cell {
         center
@@ -988,7 +1079,7 @@ fn next(task: &ImageTask, cursor: &mut Gather, position: Vec3) -> job::Result<Op
     cursor.end = map.photons.partition_point(|photon| photon.cell <= key);
     Ok(Some(None))
 }
-fn source_allows(task: &ImageTask, photon: Photon, position: Vec3) -> job::Result<bool> {
+fn source_allows(task: &TransportContext<'_>, photon: Photon, position: Vec3) -> job::Result<bool> {
     if photon.source == u32::MAX {
         return Ok(true);
     }
@@ -1000,7 +1091,13 @@ fn source_allows(task: &ImageTask, photon: Photon, position: Vec3) -> job::Resul
         .ok_or_else(|| invalid("CPU caustic receiver source identity disappeared"))?;
     Ok(position.dist(Vec3::new(input.position_mm[0], input.position_mm[1], input.position_mm[2])) >= input.minimum_distance_mm)
 }
-pub(super) fn gather(task: &ImageTask, cursor: &mut Gather, hit: SharedHit<'_>, view: Vec3, camera_remaining: u8) -> job::Result<Option<Vec3>> {
+pub(super) fn gather(
+    task: &TransportContext<'_>,
+    cursor: &mut Gather,
+    hit: SharedHit<'_>,
+    view: Vec3,
+    camera_remaining: u8,
+) -> job::Result<Option<Vec3>> {
     let Some(visit) = next(task, cursor, hit.position)? else { return Ok(None) };
     let Some((photon, radius)) = visit else { return Ok(Some(Vec3::ZERO)) };
     let geometric = hit.oriented_geometric_normal();
@@ -1036,7 +1133,7 @@ pub(super) struct RoughReceiver {
     pub nt: f64,
     pub wavelength_nm: f64,
 }
-pub(super) fn gather_rough(task: &ImageTask, cursor: &mut Gather, receiver: RoughReceiver) -> job::Result<Option<Vec3>> {
+pub(super) fn gather_rough(task: &TransportContext<'_>, cursor: &mut Gather, receiver: RoughReceiver) -> job::Result<Option<Vec3>> {
     let Some(visit) = next(task, cursor, receiver.position)? else { return Ok(None) };
     let Some((photon, radius)) = visit else { return Ok(Some(Vec3::ZERO)) };
     if photon.kind != ReceiverKind::Rough
@@ -1059,7 +1156,7 @@ pub(super) fn gather_rough(task: &ImageTask, cursor: &mut Gather, receiver: Roug
     Ok(Some(photon.flux * (value * measure / (PI * radius.powi(2)))))
 }
 pub(super) fn gather_volume(
-    task: &ImageTask,
+    task: &TransportContext<'_>,
     cursor: &mut Gather,
     position: Vec3,
     body: usize,

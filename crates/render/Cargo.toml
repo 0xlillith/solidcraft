@@ -10,7 +10,7 @@ workspace = true
 
 [features]
 default = []
-raytrace-cpu = []
+raytrace-cpu = ["dep:rayon"]
 
 [dependencies]
 solidcore-record = { workspace = true }
@@ -24,6 +24,9 @@ robust = { workspace = true }
 sha2 = { workspace = true }
 web-time = { workspace = true }
 weezl = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 flate2 = "1"

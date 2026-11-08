@@ -23,6 +23,9 @@ fn xyz(a: [f64; 4]) -> [f64; 3] {
 // Independent f64 gather oracle: all inputs are averaged linear values, so the
 // GPU's accumulated-sample scaling is absent from this numerical implementation.
 fn reference(width: usize, input: &[[f64; 4]], guides: &[Guide], step: usize) -> Vec<[f64; 4]> {
+    reference_settings(width, input, guides, step, 1.0, true)
+}
+fn reference_settings(width: usize, input: &[[f64; 4]], guides: &[Guide], step: usize, strength: f64, fireflies: bool) -> Vec<[f64; 4]> {
     let height = input.len() / width;
     let kernel = [1.0, 4.0, 6.0, 4.0, 1.0];
     input
@@ -89,7 +92,7 @@ fn reference(width: usize, input: &[[f64; 4]], guides: &[Guide], step: usize) ->
             for v in result.iter_mut().take(3) {
                 *v /= total;
             }
-            if support.len() >= 5 {
+            if fireflies && support.len() >= 5 {
                 let support_peak = support.into_iter().fold(0.0, f64::max);
                 let cap = 2.0 * support_peak + 0.25;
                 let peak = maximum(xyz(result));
@@ -98,6 +101,9 @@ fn reference(width: usize, input: &[[f64; 4]], guides: &[Guide], step: usize) ->
                         *v *= cap / peak;
                     }
                 }
+            }
+            for (value, original) in result.iter_mut().take(3).zip(center) {
+                *value = original * (1.0 - strength) + *value * strength;
             }
             result[3] = center[3];
             result
@@ -318,7 +324,7 @@ fn gpu_atrous_matches_f64_with_firefly_line_and_material_boundary() {
     let before = task.read_linear_buffer(&raw).unwrap();
     filter.run_filter(&task, false).unwrap();
     assert_eq!(before, task.read_linear_buffer(&raw).unwrap());
-    let actual = task.read_linear_buffer(filter.output()).unwrap();
+    let actual = task.read_linear_buffer(filter.output(3)).unwrap();
     let first_pass = reference(13, &input, &guides, 1);
     assert!(first_pass[isolated][0] < 1.5);
     let expected = reference(13, &reference(13, &first_pass, &guides, 2), &guides, 4);
@@ -370,7 +376,7 @@ fn gpu_optical_filter_preserves_edges_on_the_same_reflected_body() {
         let packed: Vec<_> = guides.iter().flatten().flatten().flat_map(|x| (*x as f32).to_le_bytes()).collect();
         context.queue.write_buffer(&filter._guides, 0, &packed);
         filter.run_filter(&task, false).unwrap();
-        let actual = task.read_linear_buffer(filter.output()).unwrap();
+        let actual = task.read_linear_buffer(filter.output(3)).unwrap();
         assert!(actual[12][0] > 0.799, "reflected edge {edge}: {:?}", actual[12]);
         assert_eq!(task.read_linear_buffer(&raw).unwrap(), input);
     }
@@ -431,7 +437,11 @@ fn gpu_denoise_optical_guides_track_branches_and_certified_snell_endpoints() {
         read_guides(&context, &filter._guides)
     };
     let tag = |reflection: u32, transmission: u32| 0xa0000000_u32 | (1_u32 << 18) | (reflection << 9) | transmission;
-    let empty = vec![[0.0; 4]; 6];
+    let bypass = |reason: DenoiseGuideClass| {
+        let mut guides = vec![[0.0; 4]; 6];
+        guides[0][0] = reason.code() as f32;
+        guides
+    };
     let mut mirror = base.clone();
     mirror.surface = Some(OpaqueSurface::new(Vec3::new(1.0, 1.0, 1.0), 1.0, 0.045, 1.5).unwrap());
     let guide = probe(vec![mirror.clone(), reflected.clone()], options);
@@ -441,7 +451,7 @@ fn gpu_denoise_optical_guides_track_branches_and_certified_snell_endpoints() {
     assert!((guide[2][1] - (6.0 * incident.tan()) as f32).abs() < 2e-5);
     assert!(guide[2][3] >= 1.6, "the endpoint behind the camera retains the primary footprint");
     let lens = ThinLens { aperture_radius_mm: 0.1, focus_distance_mm: 4.0 };
-    assert_eq!(probe(vec![mirror, reflected.clone()], JobOptions { lens: Some(lens), ..options }), empty);
+    assert_eq!(probe(vec![mirror, reflected.clone()], JobOptions { lens: Some(lens), ..options }), bypass(DenoiseGuideClass::DepthOfField));
 
     let mut thin = base.clone();
     thin.surface = Some(OpaqueSurface::new(Vec3::ZERO, 0.0, 0.7, 1.5).unwrap());
@@ -453,14 +463,18 @@ fn gpu_denoise_optical_guides_track_branches_and_certified_snell_endpoints() {
     assert_eq!(&guide[4][..3], &[0.0, 0.0, -1.0]);
     assert_eq!(&guide[1][..3], &[0.0, 0.0, 1.0]);
     assert!((guide[2][1] - (3.0 * incident.tan()) as f32).abs() < 2e-5);
-    assert_eq!(probe(vec![thin.clone(), transmitted.clone()], options), empty, "both weighted branches need an opaque endpoint");
+    assert_eq!(
+        probe(vec![thin.clone(), transmitted.clone()], options),
+        bypass(DenoiseGuideClass::Background),
+        "both weighted branches need an opaque endpoint"
+    );
     let emitter = AreaLight { center: [0.0, 2.0, 5.0], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0], radiance: [1.0; 3] };
     let blocked = StudioLighting { area_lights: AreaLights::new(&[emitter]).unwrap(), ..Default::default() };
-    assert_eq!(probe(thin_scene, JobOptions { lighting: Some(blocked), ..options }), empty);
+    assert_eq!(probe(thin_scene, JobOptions { lighting: Some(blocked), ..options }), bypass(DenoiseGuideClass::Emitter));
     let film = GlassModel { roughness: 0.0, dispersion: None, thin_film: Some(ThinFilm { ior: 1.35, thickness_nm: 200.0 }) };
     let mut modeled = thin.clone();
     modeled.transmission = Some(modeled.transmission.unwrap().with_model(film).unwrap());
-    assert_eq!(probe(vec![modeled, reflected.clone(), transmitted.clone()], options), empty);
+    assert_eq!(probe(vec![modeled, reflected.clone(), transmitted.clone()], options), bypass(DenoiseGuideClass::UnsupportedMaterial));
     let mut matched = thin.clone();
     matched.surface = base.surface;
     let guide = probe(vec![matched, reflected.clone(), transmitted.clone()], options);
@@ -477,7 +491,7 @@ fn gpu_denoise_optical_guides_track_branches_and_certified_snell_endpoints() {
     let internal = (incident.sin() / 1.5).asin();
     let snell_y = 2.0 * incident.tan() + internal.tan();
     assert!((f64::from(guide[2][1]) - snell_y).abs() < 2e-5, "Snell displacement {guide:?} vs {snell_y}");
-    assert_eq!(probe(closed_scene, JobOptions { max_depth: 2, ..options }), empty);
+    assert_eq!(probe(closed_scene, JobOptions { max_depth: 2, ..options }), bypass(DenoiseGuideClass::PathDepth));
 }
 
 #[test]
@@ -504,10 +518,10 @@ fn gpu_denoise_default_false_is_identical_and_true_preserves_raw() {
             filter.run(&task).unwrap();
             assert!(filter.guides_ready.load(Ordering::Relaxed));
             assert_eq!(raw, task.read_linear().unwrap());
-            let filtered = task.read_linear_buffer(filter.output()).unwrap();
+            let filtered = task.read_linear_buffer(filter.output(3)).unwrap();
             assert!(filtered.iter().all(|p| p.iter().all(|v| v.is_finite())));
             let guides = read_guides(&context, &filter._guides);
-            assert_eq!(guides[0], [0.0; 4]);
+            assert_eq!(guides[0], [DenoiseGuideClass::Background.code() as f32, 0.0, 0.0, 0.0]);
             let center = (4 * 8 + 4) * 6;
             assert_eq!(guides[center], [0.5, 0.5, 0.5, 1.0]);
             assert_eq!(guides[center + 1], [0.0, 0.0, 1.0, 16.0]);
@@ -549,4 +563,145 @@ fn gpu_denoise_preflight_reports_limits_without_changing_document() {
     params["denoise"] = serde_json::json!(false);
     let reply = session.execute("render.preflight", &params).unwrap();
     assert!(reply.get("denoising").is_none());
+}
+
+#[test]
+fn gpu_denoise_controls_match_f64_keep_alpha_and_leave_raw_unchanged() {
+    use solidcraft_render::job::DenoiseSettings;
+    let Some(context) = context() else { return };
+    let (mut input, guides) = fixture(13);
+    input[6 * 13 + 6] = [512.0, 128.0, 32.0, 1.0];
+    input[0][3] = 0.5;
+    let samples = 4;
+    let bytes: Vec<_> = input.iter().flatten().flat_map(|value| (*value as f32 * samples as f32).to_le_bytes()).collect();
+    let raw = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("denoise control radiance"),
+        contents: &bytes,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    });
+    let dummy = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("unused control geometry"),
+        contents: &[0; 64],
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+    let mut task = Task::new(context.clone(), plane(), request(13), JobOptions::default(), CancelToken::default()).unwrap();
+    task.sample = samples;
+    let filter = Resources::new(&context, &task.uniform, [&dummy, &dummy, &dummy, &dummy, &dummy], &raw, bytes.len() as u64, false).unwrap();
+    let packed: Vec<_> = guides.iter().flatten().flatten().flat_map(|value| (*value as f32).to_le_bytes()).collect();
+    context.queue.write_buffer(&filter._guides, 0, &packed);
+    let raw_before = task.read_linear_buffer(&raw).unwrap();
+    for (passes, strength, firefly_suppression) in [(1, 0.0, true), (1, 1.0, false), (1, 1.0, true), (2, 0.4, true), (3, 0.6, false)] {
+        task.options.denoise_settings = DenoiseSettings { passes, strength, firefly_suppression };
+        filter.run_filter(&task, false).unwrap();
+        let actual = task.read_linear_buffer(filter.output(passes)).unwrap();
+        let mut expected = input.clone();
+        for pass in 0..passes {
+            expected = reference_settings(13, &expected, &guides, 1 << pass, strength, firefly_suppression);
+        }
+        for (actual, expected) in actual.iter().zip(&expected) {
+            assert_eq!(actual[3].to_bits(), (expected[3] as f32).to_bits());
+            for (a, e) in actual[..3].iter().zip(&expected[..3]) {
+                assert!((f64::from(*a) - *e).abs() < 3e-5 * e.abs().max(1.0), "passes={passes} strength={strength}: {actual:?} vs {expected:?}");
+            }
+        }
+        if strength == 0.0 {
+            assert_eq!(actual, raw_before);
+        }
+        assert_eq!(task.read_linear_buffer(&raw).unwrap(), raw_before);
+    }
+}
+
+#[test]
+fn gpu_supersampling_admission_charges_internal_pixels_and_final_mask() {
+    let scene = plane();
+    let output = request(8);
+    let trace = request(16);
+    let native = super::super::admission(&scene, &trace, JobOptions::default()).unwrap();
+    let options = JobOptions { supersampling: 2, ..Default::default() };
+    let sampled = super::super::admission(&scene, &output, options).unwrap();
+    assert_eq!(sampled.pixel_scratch_bytes, native.pixel_scratch_bytes + 8 * 8 * 16);
+    assert_eq!(sampled.encoded_limit, 8 * 8 * 8 + 65_536);
+    let diagnostic = super::super::admission(&scene, &output, JobOptions { denoise_diagnostics: true, ..options }).unwrap();
+    assert_eq!(diagnostic.pixel_scratch_bytes - sampled.pixel_scratch_bytes, 16 * 16 * 128 + 8 * 8 * 12 + 65_536);
+    assert!(
+        super::super::admission(
+            &scene,
+            &ImageRequest { width: 7680, height: 4320, ..output.clone() },
+            JobOptions { samples: 128, ..Default::default() }
+        )
+        .is_ok()
+    );
+    for supersampling in [0, 3, u32::MAX] {
+        assert!(super::super::admission(&scene, &output, JobOptions { supersampling, ..Default::default() }).is_err());
+    }
+    assert!(super::super::admission(&scene, &request(8192), JobOptions::default()).is_err(), "8K output is also bounded by total pixels");
+}
+
+#[test]
+fn gpu_supersampling_raw_master_uses_linear_rgba_and_selected_output_size() {
+    let Some(context) = context() else { return };
+    let options = JobOptions { samples: 2, supersampling: 2, linear_exr: true, ..Default::default() };
+    let mut task = Task::new(context.clone(), plane(), request(4), options, CancelToken::default()).unwrap();
+    assert_eq!((task.request.width, task.request.height), (8, 8));
+    while task.sample < options.samples {
+        task.complete_sample().unwrap();
+    }
+    let input = task.read_linear().unwrap();
+    let mut expected = Vec::new();
+    for y in 0..4 {
+        for x in 0..4 {
+            let positions = [(2 * y) * 8 + 2 * x, (2 * y) * 8 + 2 * x + 1, (2 * y + 1) * 8 + 2 * x, (2 * y + 1) * 8 + 2 * x + 1];
+            expected
+                .push(std::array::from_fn(|channel| (positions.into_iter().map(|index| f64::from(input[index][channel])).sum::<f64>() / 4.0) as f32));
+        }
+    }
+    let mut expected_exr = solidcraft_render::job::linear_exr::ExrTask::new(4, 4, expected, CancelToken::default()).unwrap();
+    while !expected_exr.step(4).unwrap() {}
+    let (expected_exr, _) = expected_exr.finish().unwrap();
+    let mut png = None;
+    for _ in 0..100 {
+        if let TaskPoll::Complete(bytes) = task.step(4).unwrap() {
+            png = Some(bytes);
+            break;
+        }
+    }
+    let png = image::load_from_memory(&png.unwrap()).unwrap().to_rgba8();
+    assert_eq!(png.dimensions(), (4, 4));
+    assert_eq!(task.take_linear_exr().unwrap(), expected_exr);
+    assert_eq!(task.read_linear().unwrap(), input, "resolution never mutates the transport accumulator");
+}
+
+#[test]
+fn gpu_denoise_diagnostics_preserve_beauty_and_export_a_categorical_final_size_mask() {
+    let Some(context) = context() else { return };
+    let mut beauty = Vec::new();
+    let mut masters = Vec::new();
+    for enabled in [false, true] {
+        let options = JobOptions { samples: 2, supersampling: 2, linear_exr: true, denoise_diagnostics: enabled, ..Default::default() };
+        let mut task = Task::new(context.clone(), plane(), request(8), options, CancelToken::default()).unwrap();
+        for _ in 0..200 {
+            if let TaskPoll::Complete(png) = task.step(4).unwrap() {
+                beauty.push(png);
+                break;
+            }
+        }
+        masters.push(task.take_linear_exr().unwrap());
+        if enabled {
+            let report = task.denoise_diagnostics().unwrap();
+            assert_eq!((report.width, report.height), (16, 16));
+            assert_eq!(report.counts.iter().sum::<u64>(), 256);
+            assert!(report.pixels(DenoiseGuideClass::Surface) > 0);
+            assert!(report.pixels(DenoiseGuideClass::Background) > 0);
+            let mask = image::load_from_memory(&task.take_denoise_mask().unwrap()).unwrap().to_rgba8();
+            assert_eq!(mask.dimensions(), (8, 8));
+            assert!(mask.pixels().all(|pixel| DenoiseGuideClass::ALL.iter().any(|class| class.color() == pixel.0)));
+            assert!(task.take_denoise_mask().is_none());
+        } else {
+            assert!(task.denoise_diagnostics().is_none());
+            assert!(task.take_denoise_mask().is_none());
+        }
+    }
+    assert_eq!(beauty.len(), 2);
+    assert_eq!(beauty[0], beauty[1]);
+    assert_eq!(masters[0], masters[1]);
 }

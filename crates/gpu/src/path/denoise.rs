@@ -1,5 +1,6 @@
 //! Optional output filtering; never writes the Monte Carlo accumulation buffer.
 use super::{Context, Result, SHADER, TIMEOUT, Task, checked, placeholder_bind, scopes, warm_up};
+use solidcraft_render::job::{DenoiseDiagnostics, DenoiseGuideClass, resolve_denoise_class};
 use std::sync::atomic::{AtomicBool, Ordering};
 use wgpu::util::DeviceExt;
 
@@ -16,6 +17,7 @@ mod tests;
 pub(super) struct Pipelines {
     guide: wgpu::ComputePipeline,
     filter: wgpu::ComputePipeline,
+    classify: wgpu::ComputePipeline,
     filter_layout: wgpu::BindGroupLayout,
 }
 
@@ -68,10 +70,19 @@ impl Pipelines {
             compilation_options: Default::default(),
             cache: None,
         });
+        let classify = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("denoise guide classes"),
+            layout: Some(&layout),
+            module: &shader,
+            entry_point: Some("guide_classes"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
         checked(error_scopes)?;
         warm_up(device, &context.queue, &guide, &placeholder_bind(device, &context.layout, 7)?, &context.healthy)?;
         warm_up(device, &context.queue, &filter, &placeholder_bind(device, &filter_layout, 4)?, &context.healthy)?;
-        Ok(Self { guide, filter, filter_layout })
+        warm_up(device, &context.queue, &classify, &placeholder_bind(device, &filter_layout, 4)?, &context.healthy)?;
+        Ok(Self { guide, filter, classify, filter_layout })
     }
 
     fn shared(context: &Context) -> Result<&Self> {
@@ -89,9 +100,11 @@ pub(super) struct Resources {
     guide_pipeline: wgpu::ComputePipeline,
     guide_bind: wgpu::BindGroup,
     filter_pipeline: wgpu::ComputePipeline,
+    classify_pipeline: wgpu::ComputePipeline,
     filter_uniform: wgpu::Buffer,
     filter_binds: Vec<wgpu::BindGroup>,
     output: wgpu::Buffer,
+    temporary: wgpu::Buffer,
     // Retained for diagnostic tests; bind groups also retain the guide allocation.
     _guides: wgpu::Buffer,
 }
@@ -155,15 +168,17 @@ impl Resources {
             guide_pipeline: pipelines.guide.clone(),
             guide_bind,
             filter_pipeline: pipelines.filter.clone(),
+            classify_pipeline: pipelines.classify.clone(),
             filter_uniform,
             filter_binds,
             output,
+            temporary,
             _guides: guides,
         })
     }
 
-    pub(super) fn output(&self) -> &wgpu::Buffer {
-        &self.output
+    pub(super) fn output(&self, passes: u32) -> &wgpu::Buffer {
+        if passes == 2 { &self.temporary } else { &self.output }
     }
 
     pub(super) fn run(&self, task: &Task) -> Result<()> {
@@ -174,13 +189,18 @@ impl Resources {
         self.run_with_input(task, true)
     }
     fn run_with_input(&self, task: &Task, preview: bool) -> Result<()> {
+        self.ensure_guides(task)?;
+        self.run_filter(task, preview)
+    }
+
+    fn ensure_guides(&self, task: &Task) -> Result<()> {
         // Each job owns immutable scene, camera and material inputs. Once all
         // guide tiles finish, every checkpoint can reuse them.
         if !self.guides_ready.load(Ordering::Relaxed) {
             self.generate_guides(task)?;
             self.guides_ready.store(true, Ordering::Relaxed);
         }
-        self.run_filter(task, preview)
+        task.cancel.check()
     }
 
     fn generate_guides(&self, task: &Task) -> Result<()> {
@@ -209,9 +229,87 @@ impl Resources {
         task.cancel.check()
     }
 
+    /// Read exact guide classifications through the already admitted colour
+    /// scratch/readback buffers. No image-sized JSON or second guide plane exists.
+    pub(super) fn diagnostics(&self, task: &Task) -> Result<(DenoiseDiagnostics, Vec<u8>)> {
+        self.ensure_guides(task)?;
+        let pixels = task.request.width * task.request.height;
+        let bind = self.filter_binds.first().ok_or_else(|| super::gpu("missing diagnostic bind group"))?;
+        let mut budget = super::dispatch::Budget::default();
+        let mut offset = 0;
+        while offset < pixels {
+            task.cancel.check()?;
+            let count = budget.count(pixels - offset);
+            let mut bytes = Vec::with_capacity(32);
+            for word in [task.request.width, task.request.height, 0, offset, count, task.normalization_samples(), 0, 0] {
+                bytes.extend_from_slice(&word.to_le_bytes());
+            }
+            task.context.queue.write_buffer(&self.filter_uniform, 0, &bytes);
+            let started = std::time::Instant::now();
+            dispatch(&task.context, &self.classify_pipeline, bind, count)?;
+            budget.observe(count, started.elapsed());
+            offset += count;
+        }
+        let context = &task.context;
+        let byte_count = u64::from(pixels) * 16;
+        let error_scopes = scopes(&context.device);
+        let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("denoise mask readback") });
+        encoder.copy_buffer_to_buffer(&self.output, 0, &task.readback, 0, byte_count);
+        let submission = context.queue.submit([encoder.finish()]);
+        checked(error_scopes)?;
+        let slice = task.readback.slice(..byte_count);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        context.wait(submission, TIMEOUT)?;
+        rx.try_recv().map_err(super::gpu)?.map_err(super::gpu)?;
+        let data = slice.get_mapped_range().map_err(super::gpu)?;
+        let result = (|| {
+            let mut report = DenoiseDiagnostics::new(task.request.width, task.request.height);
+            let output = &task.output_request;
+            let capacity = usize::try_from(u64::from(output.width) * u64::from(output.height) * 4)
+                .map_err(|_| super::gpu("denoise mask exceeds address space"))?;
+            let mut rgba = super::scene::reserved(capacity)?;
+            let scale = task.options.supersampling as usize;
+            for y in 0..output.height as usize {
+                task.cancel.check()?;
+                for x in 0..output.width as usize {
+                    let mut classes = [DenoiseGuideClass::Unavailable; 4];
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let pixel = (y * scale + dy) * task.request.width as usize + x * scale + dx;
+                            let bytes: [u8; 4] = data
+                                .get(pixel * 16..pixel * 16 + 4)
+                                .and_then(|bytes| bytes.try_into().ok())
+                                .ok_or_else(|| super::gpu("missing denoise guide classification"))?;
+                            let code = f32::from_le_bytes(bytes);
+                            if !code.is_finite() || code < 0.0 || code.fract() != 0.0 {
+                                return Err(super::gpu("invalid denoise guide classification"));
+                            }
+                            let class =
+                                DenoiseGuideClass::from_code(code as u32).ok_or_else(|| super::gpu("unknown denoise guide classification"))?;
+                            report.record(class);
+                            *classes.get_mut(dy * scale + dx).ok_or_else(|| super::gpu("invalid diagnostic supersample scale"))? = class;
+                        }
+                    }
+                    let class = resolve_denoise_class(classes.into_iter().take(scale * scale));
+                    rgba.extend_from_slice(&class.color());
+                }
+            }
+            task.cancel.check()?;
+            Ok((report, rgba))
+        })();
+        drop(data);
+        task.readback.unmap();
+        result
+    }
+
     fn run_filter(&self, task: &Task, preview: bool) -> Result<()> {
         let pixels = task.request.width * task.request.height;
-        for (pass, bind) in self.filter_binds.iter().enumerate() {
+        let settings = task.options.denoise_settings;
+        settings.validate()?;
+        for (pass, bind) in self.filter_binds.iter().take(settings.passes as usize).enumerate() {
             let bind = if preview && pass == 0 {
                 &self.adaptive.as_ref().ok_or_else(|| super::gpu("missing adaptive denoise preview input"))?.filter_bind
             } else {
@@ -223,7 +321,16 @@ impl Resources {
                 task.cancel.check()?;
                 let count = budget.count(pixels - offset);
                 let mut bytes = Vec::with_capacity(32);
-                for word in [task.request.width, task.request.height, 1 << pass, offset, count, task.normalization_samples(), 0, 0] {
+                for word in [
+                    task.request.width,
+                    task.request.height,
+                    1 << pass,
+                    offset,
+                    count,
+                    task.normalization_samples(),
+                    (settings.strength as f32).to_bits(),
+                    u32::from(settings.firefly_suppression),
+                ] {
                     bytes.extend_from_slice(&word.to_le_bytes());
                 }
                 task.context.queue.write_buffer(&self.filter_uniform, 0, &bytes);

@@ -218,7 +218,19 @@ impl AdaptiveCameraFilm {
     /// None means this production pixel has already reached its pilot allocation;
     /// the caller must perform skip_one WITHOUT tracing or consuming a variate.
     pub fn sampling_identity(&self, index: usize) -> Result<Option<SamplingIdentity>> {
-        let counts = self.ordered(index)?;
+        self.identity_for_counts(self.ordered(index)?)
+    }
+    /// Native camera workers may inspect any uncommitted pixel in the current
+    /// sweep while the owner holds the film immutable. Publication still uses
+    /// sampling_identity/add/skip_one and must follow the exact owner cursor.
+    #[cfg(any(feature = "raytrace-cpu", test))]
+    pub(crate) fn sampling_identity_in_pass(&self, index: usize) -> Result<Option<SamplingIdentity>> {
+        if !self.ready() || self.stage == Stage::Reset || self.stage == Stage::Done || index < self.next_pixel || index >= self.count {
+            return Err(invalid("adaptive sampling needs an uncommitted pixel in the active sweep"));
+        }
+        self.identity_for_counts(self.counts.pixel(index)?)
+    }
+    fn identity_for_counts(&self, counts: PixelCounts) -> Result<Option<SamplingIdentity>> {
         if self.stage == Stage::Pilot {
             if self.completed >= self.options.pilot_samples {
                 return Err(invalid("complete pilots require an explicit production reset"));

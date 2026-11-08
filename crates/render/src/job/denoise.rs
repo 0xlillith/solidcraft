@@ -1,6 +1,6 @@
 //! Original bounded CPU a-trous output filter. Raw film and transport are never borrowed mutably.
 //! The independent f64 gather oracle remains in the renderer tests, outside this implementation.
-use super::{CancelToken, ErrorCode, JobError, Result};
+use super::{CancelToken, DenoiseSettings, ErrorCode, JobError, Result};
 
 pub(crate) const GUIDE_BYTES: u64 = 96;
 pub(crate) const MAX_STEP_PIXELS: usize = 256;
@@ -93,9 +93,14 @@ pub(crate) struct DenoiseTask {
     destination: Vec<[f32; 4]>,
     pixel: usize,
     pass: usize,
+    settings: DenoiseSettings,
 }
 impl DenoiseTask {
     pub(crate) fn new(width: u32, height: u32, source: Vec<[f32; 4]>) -> Result<Self> {
+        Self::new_with_settings(width, height, source, DenoiseSettings::default())
+    }
+    pub(crate) fn new_with_settings(width: u32, height: u32, source: Vec<[f32; 4]>, settings: DenoiseSettings) -> Result<Self> {
+        settings.validate()?;
         let count = usize::try_from(u64::from(width) * u64::from(height)).map_err(|_| invalid("CPU denoising dimensions overflow"))?;
         if width == 0 || height == 0 || source.len() != count || source.capacity() != count {
             return Err(invalid("CPU denoising requires one admitted complete linear pass"));
@@ -105,7 +110,7 @@ impl DenoiseTask {
         if destination.capacity() != count {
             return Err(invalid("CPU denoising colour capacity exceeds admission"));
         }
-        Ok(Self { width: width as usize, height: height as usize, source, destination, pixel: 0, pass: 0 })
+        Ok(Self { width: width as usize, height: height as usize, source, destination, pixel: 0, pass: 0, settings })
     }
     pub(crate) fn next_pixels(&self) -> usize {
         (self.source.len() - self.pixel).min(MAX_STEP_PIXELS)
@@ -114,13 +119,13 @@ impl DenoiseTask {
     /// The caller debits next_pixels before calling; no work, limit or cancellation is reset here.
     pub(crate) fn step(&mut self, guides: &[Guide], cancel: &CancelToken) -> Result<bool> {
         cancel.check()?;
-        if self.pass >= 3 || guides.len() != self.source.len() {
+        if self.pass >= self.settings.passes as usize || guides.len() != self.source.len() {
             return Err(invalid("CPU denoising guide count or pass is invalid"));
         }
         let end = self.pixel + self.next_pixels();
         for pixel in self.pixel..end {
             cancel.check()?;
-            let value = filter_pixel(self.width, self.height, &self.source, guides, pixel, 1 << self.pass)?;
+            let value = filter_pixel(self.width, self.height, &self.source, guides, pixel, 1 << self.pass, self.settings)?;
             if let Some(destination) = self.destination.get_mut(pixel) {
                 *destination = value;
             } else if self.destination.len() == pixel && self.destination.len() < self.destination.capacity() {
@@ -136,10 +141,10 @@ impl DenoiseTask {
             self.pass += 1;
         }
         cancel.check()?;
-        Ok(self.pass == 3)
+        Ok(self.pass == self.settings.passes as usize)
     }
     pub(crate) fn finish(self) -> Result<Vec<[f32; 4]>> {
-        if self.pass != 3 {
+        if self.pass != self.settings.passes as usize {
             return Err(invalid("CPU denoising is incomplete"));
         }
         Ok(self.source)
@@ -180,12 +185,20 @@ fn surface_weight(a: SurfaceGuide, b: SurfaceGuide, step: usize) -> f64 {
     let depth = (f64::from(a.depth) - f64::from(b.depth)).abs() / (8.0 * footprint).max(0.000001);
     (-dot(albedo, albedo) / 0.04 - plane / (0.05 * footprint).max(0.000001) - depth).exp() * dot(normal, neighbour_normal).max(0.0).powi(32)
 }
-fn filter_pixel(width: usize, height: usize, source: &[[f32; 4]], guides: &[Guide], pixel: usize, step: usize) -> Result<[f32; 4]> {
+fn filter_pixel(
+    width: usize,
+    height: usize,
+    source: &[[f32; 4]],
+    guides: &[Guide],
+    pixel: usize,
+    step: usize,
+    settings: DenoiseSettings,
+) -> Result<[f32; 4]> {
     let center = checked_color(*source.get(pixel).ok_or_else(|| invalid("CPU denoising source pixel missing"))?)?;
     let a = *guides.get(pixel).ok_or_else(|| invalid("CPU denoising guide missing"))?;
     a.validate()?;
     let optical = a.optical();
-    if a.body == 0 || center[3] < 0.999 || (optical && step > 2) {
+    if a.body == 0 || center[3] < 0.999 || settings.strength == 0.0 || (optical && step > 2) {
         return Ok(center);
     }
     let mut mean = [0.0; 3];
@@ -236,13 +249,16 @@ fn filter_pixel(width: usize, height: usize, source: &[[f32; 4]], guides: &[Guid
         return Err(invalid("CPU denoising centre did not contribute"));
     }
     // Clamp only isolated outliers with enough compatible immediate neighbours.
-    if !optical && step == 1 && support_count >= 5 && center_peak > 16.0 * (0.25 + support_peak) {
+    if settings.firefly_suppression && !optical && step == 1 && support_count >= 5 && center_peak > 16.0 * (0.25 + support_peak) {
         let cap = 2.0 * support_peak + 0.25;
         let peak = maximum(mean);
         if peak > cap {
             let scale = cap / peak;
             mean = mean.map(|channel| channel * scale);
         }
+    }
+    if settings.strength != 1.0 {
+        mean = std::array::from_fn(|channel| center_rgb[channel] + (mean[channel] - center_rgb[channel]) * settings.strength);
     }
     checked_color([mean[0] as f32, mean[1] as f32, mean[2] as f32, center[3]])
 }
@@ -265,7 +281,7 @@ mod tests {
         guide.reflected = SurfaceGuide { body: 2, ..guide.surface() };
         let mut colors = [[0.5, 0.5, 0.5, 1.0]; 25];
         colors[12] = [0.7, 0.7, 0.7, 1.0];
-        let smooth = filter_pixel(5, 5, &colors, &[guide; 25], 12, 1).unwrap();
+        let smooth = filter_pixel(5, 5, &colors, &[guide; 25], 12, 1, DenoiseSettings::default()).unwrap();
         assert!(smooth[0] < 0.65);
         for edge in 0..4 {
             let mut neighbor = guide;
@@ -277,7 +293,7 @@ mod tests {
             }
             let mut guides = [neighbor; 25];
             guides[12] = guide;
-            let filtered = filter_pixel(5, 5, &colors, &guides, 12, 1).unwrap();
+            let filtered = filter_pixel(5, 5, &colors, &guides, 12, 1, DenoiseSettings::default()).unwrap();
             assert!(filtered[0] > 0.699, "reflected edge {edge}: {filtered:?}");
             assert_eq!(filtered[3], 1.0);
         }
@@ -306,17 +322,106 @@ mod tests {
         let mut guides = [guide; 25];
         let mut colors = [[0.5, 0.5, 0.5, 1.0]; 25];
         colors[12] = [0.7, 0.7, 0.7, 1.0];
-        assert!(filter_pixel(5, 5, &colors, &guides, 12, 1).unwrap()[0] < 0.65);
-        assert_eq!(filter_pixel(5, 5, &colors, &guides, 12, 4).unwrap(), colors[12]);
+        assert!(filter_pixel(5, 5, &colors, &guides, 12, 1, DenoiseSettings::default()).unwrap()[0] < 0.65);
+        assert_eq!(filter_pixel(5, 5, &colors, &guides, 12, 4, DenoiseSettings::default()).unwrap(), colors[12]);
 
         colors[12] = [512.0, 128.0, 32.0, 1.0];
-        let glint = filter_pixel(5, 5, &colors, &guides, 12, 1).unwrap();
+        let glint = filter_pixel(5, 5, &colors, &guides, 12, 1, DenoiseSettings::default()).unwrap();
         assert!(glint[0] > 511.0);
         assert_eq!(glint[3], colors[12][3]);
 
         colors[12] = [0.5, 0.5, 0.5, 1.0];
         colors[13] = [1.0; 4];
         guides[13].body = boundary;
-        assert_eq!(filter_pixel(5, 5, &colors, &guides, 12, 1).unwrap(), colors[12]);
+        assert_eq!(filter_pixel(5, 5, &colors, &guides, 12, 1, DenoiseSettings::default()).unwrap(), colors[12]);
+    }
+
+    #[test]
+    fn selected_passes_and_strength_preserve_alpha_and_default_behavior() {
+        let guide = Guide {
+            body: 1,
+            albedo: [0.5; 3],
+            normal: [0.0, 0.0, 1.0],
+            depth: 1.0,
+            position: [0.0; 3],
+            footprint: 1.0,
+            reflected: SurfaceGuide::default(),
+        };
+        let guides = [guide; 25];
+        let mut colors = vec![[0.5, 0.25, 0.125, 1.0]; 25];
+        colors[12] = [0.7, 0.4, 0.2, 1.0];
+        colors[0] = [0.2, 0.1, 0.05, 0.5];
+        let cancel = CancelToken::default();
+        let run = |settings: DenoiseSettings| {
+            let mut task = DenoiseTask::new_with_settings(5, 5, colors.clone(), settings).unwrap();
+            let mut visits = 0;
+            for _ in 0..3 {
+                visits += task.next_pixels();
+                if task.step(&guides, &cancel).unwrap() {
+                    break;
+                }
+            }
+            assert_eq!(visits, 25 * settings.passes as usize);
+            let result = task.finish().unwrap();
+            for (filtered, original) in result.iter().zip(&colors) {
+                assert_eq!(filtered[3], original[3]);
+            }
+            assert_eq!(result[0], colors[0]);
+            result
+        };
+        let one = run(DenoiseSettings { passes: 1, ..Default::default() });
+        let half = run(DenoiseSettings { passes: 1, strength: 0.5, ..Default::default() });
+        for channel in 0..3 {
+            let expected = (f64::from(colors[12][channel]) + f64::from(one[12][channel])) * 0.5;
+            assert!((f64::from(half[12][channel]) - expected).abs() < 1e-7);
+        }
+        let two = run(DenoiseSettings { passes: 2, ..Default::default() });
+        let three = run(DenoiseSettings::default());
+        assert!(one[12][0] > two[12][0]);
+        // On this 5x5 fixture, the centre has no neighbours at spacing 4.
+        assert_eq!(two[12], three[12]);
+        for passes in 1..=3 {
+            assert_eq!(run(DenoiseSettings { passes, strength: 0.0, ..Default::default() }), colors);
+        }
+        let mut legacy = DenoiseTask::new(5, 5, colors.clone()).unwrap();
+        for _ in 0..3 {
+            legacy.step(&guides, &cancel).unwrap();
+        }
+        assert_eq!(legacy.finish().unwrap(), three);
+        for settings in [
+            DenoiseSettings { passes: 0, ..Default::default() },
+            DenoiseSettings { passes: 4, ..Default::default() },
+            DenoiseSettings { strength: f64::NAN, ..Default::default() },
+        ] {
+            assert!(DenoiseTask::new_with_settings(5, 5, colors.clone(), settings).is_err());
+        }
+    }
+
+    #[test]
+    fn firefly_control_only_clamps_opaque_isolated_samples() {
+        let guide = Guide {
+            body: 1,
+            albedo: [0.5; 3],
+            normal: [0.0, 0.0, 1.0],
+            depth: 1.0,
+            position: [0.0; 3],
+            footprint: 1.0,
+            reflected: SurfaceGuide::default(),
+        };
+        let mut colors = [[0.5, 0.125, 0.0625, 1.0]; 25];
+        colors[12] = [4096.0, 1024.0, 512.0, 1.0];
+        let on = DenoiseSettings::default();
+        let off = DenoiseSettings { firefly_suppression: false, ..on };
+        let capped = filter_pixel(5, 5, &colors, &[guide; 25], 12, 1, on).unwrap();
+        let uncapped = filter_pixel(5, 5, &colors, &[guide; 25], 12, 1, off).unwrap();
+        assert!(capped[0] <= 1.25);
+        assert!(uncapped[0] > 4095.0);
+        assert_eq!((capped[3], uncapped[3]), (1.0, 1.0));
+        let optical = Guide { body: Guide::optical_body(1, 0, 2).unwrap(), ..guide };
+        let a = filter_pixel(5, 5, &colors, &[optical; 25], 12, 1, on).unwrap();
+        let b = filter_pixel(5, 5, &colors, &[optical; 25], 12, 1, off).unwrap();
+        assert_eq!(a, b);
+        assert!(a[0] > 4095.0);
+        assert_eq!(filter_pixel(5, 5, &colors, &[optical; 25], 12, 4, on).unwrap(), colors[12]);
     }
 }

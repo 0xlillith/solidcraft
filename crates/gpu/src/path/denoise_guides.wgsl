@@ -10,6 +10,11 @@ struct GuideInterface {
     reflected: vec3<f32>, transmitted: vec3<f32>, fresnel: vec3<f32>,
 };
 const GUIDE_MISS: u32 = 0xffffffffu;
+// Zero body tags bypass filtering. Store the exact early-return reason in the
+// otherwise-unused albedo lane; positive/negative tags retain their old layout.
+fn guide_bypass(base:u32,reason:u32) {
+    accumulation[base]=vec4<f32>(f32(reason),0.0,0.0,0.0);
+}
 
 fn guide_outward(t:Triangle)->vec3<f32> {
     return unit(cross(t.p1.xyz-t.p0.xyz,t.p2.xyz-t.p0.xyz));
@@ -104,7 +109,9 @@ fn denoise_guides(@builtin(global_invocation_id) gid: vec3<u32>) {
     let uv=vec2<f32>(xy.x/f32(u.image.x)*2.0-1.0,1.0-xy.y/f32(u.image.y)*2.0);
     let camera=primary_ray(uv,vec2<f32>(0.0));
     let primary=trace(camera.origin,camera.direction,false);
-    if primary.triangle==GUIDE_MISS || (u.environment.w>0.0 && emitter_hit_bounded(camera.origin,camera.direction,u.lighting.x).distance<primary.distance) {return;}
+    if u.environment.w>0.0 && emitter_hit_bounded(camera.origin,camera.direction,u.lighting.x).distance<primary.distance {guide_bypass(base,4u);return;}
+    if primary.triangle==GUIDE_MISS {guide_bypass(base,3u);return;}
+    if u.volume_min.w>0.0 {guide_bypass(base,8u);return;}
     let t=triangle(primary.triangle);
     let position=surface_point(t,primary.bary);
     let outward=guide_outward(t);
@@ -120,11 +127,14 @@ fn denoise_guides(@builtin(global_invocation_id) gid: vec3<u32>) {
     if t.base.w<=0.0 {
         let look=guide_look(t,primary,camera.direction,position,primary_travel,0u);
         if !guide_sharp(t,look) {guide_write(base,t.optics.w,look,position,primary_footprint);return;}
-        if look.metallic<0.99 || look.roughness>0.05 || t.coat.x>0.0 {return;}
+        if look.metallic<0.99 || look.roughness>0.05 || t.coat.x>0.0 {guide_bypass(base,5u);return;}
         reflected=reflect(camera.direction,look.normal);
         has_reflection=true;
     } else {
-        if !guide_smooth_glass(t) || (closed && !entering) {return;}
+        if any(t.glass!=vec4<f32>(0.0)) {guide_bypass(base,5u);return;}
+        if t.interior.x!=0.0 {guide_bypass(base,8u);return;}
+        if t.interior.w!=0.0 {guide_bypass(base,6u);return;}
+        if closed && !entering {guide_bypass(base,6u);return;}
         let bend=guide_interface(t,primary.bary,camera.direction,geometric,1.0,t.parameters.z);
         reflected=bend.reflected;
         let f=bend.fresnel;
@@ -135,18 +145,20 @@ fn denoise_guides(@builtin(global_invocation_id) gid: vec3<u32>) {
             transmitted=camera.direction;
             // Use the same sheet weights without calling the transport helper
             // that can write a failure counter on a tangent absorbing sheet.
-            if t.parameters.w>0.0 && !(f.z>0.0) {return;}
+            if t.parameters.w>0.0 && !(f.z>0.0) {guide_bypass(base,10u);return;}
             var attenuation=vec3<f32>(1.0);
             if t.parameters.w>0.0 {attenuation=exp(-t.optics.xyz*(t.parameters.w/f.z));}
             has_transmission=any(sheet_polarization(f.x,attenuation).transmission+sheet_polarization(f.y,attenuation).transmission>vec3<f32>(0.0));
         }
     }
-    if t.optics.w<1.0 || t.optics.w>511.0 || (u.eye.w>0.5 && u.right.w>0.0) || u.volume_min.w>0.0 {return;}
-    if u.sampling.y<2u || (closed && has_transmission && u.sampling.y<3u) || (!has_reflection && !has_transmission) {return;}
-    if (has_reflection && dot(reflected,geometric)<=0.000001) || (has_transmission && dot(transmitted,geometric)>=-0.000001) {return;}
+    if t.optics.w<1.0 || t.optics.w>511.0 {guide_bypass(base,15u);return;}
+    if u.eye.w>0.5 && u.right.w>0.0 {guide_bypass(base,7u);return;}
+    if u.sampling.y<2u || (closed && has_transmission && u.sampling.y<3u) {guide_bypass(base,9u);return;}
+    if !has_reflection && !has_transmission {guide_bypass(base,10u);return;}
+    if (has_reflection && dot(reflected,geometric)<=0.000001) || (has_transmission && dot(transmitted,geometric)>=-0.000001) {guide_bypass(base,10u);return;}
     // A certified root closed entry proves vacuum along this primary segment.
     // A mirror or sheet can be hit first even when a nested camera starts inside glass.
-    if !closed && !guide_vacuum_origin(camera) {return;}
+    if !closed && !guide_vacuum_origin(camera) {guide_bypass(base,6u);return;}
 
     var reflected_body=0u;
     var transmitted_body=0u;
@@ -161,23 +173,26 @@ fn denoise_guides(@builtin(global_invocation_id) gid: vec3<u32>) {
     var bounce=1u;
     for (var event=0u;event<3u;event+=1u) {
         let hit=trace_precise(ray.point.hi,ray.point.lo,ray.direction,false,ray.excluded,ray.minimum,stage==1u);
-        if hit.triangle==GUIDE_MISS || (u.environment.w>0.0 && emitter_hit_precise(ray.point.hi,ray.point.lo,ray.direction,ray.minimum).distance<hit.distance) {return;}
+        if u.environment.w>0.0 && emitter_hit_precise(ray.point.hi,ray.point.lo,ray.direction,ray.minimum).distance<hit.distance {guide_bypass(base,4u);return;}
+        if hit.triangle==GUIDE_MISS {guide_bypass(base,3u);return;}
         let next=triangle(hit.triangle);
         travel+=hit.distance;
         if stage==1u {
             let normal=-guide_outward(next);
-            if next.optics.w!=t.optics.w || !guide_smooth_glass(next) || next.parameters.w>=0.0 || dot(normal,ray.direction)>=-0.000001 {return;}
+            if next.optics.w!=t.optics.w || !guide_smooth_glass(next) || next.parameters.w>=0.0 || dot(normal,ray.direction)>=-0.000001 {guide_bypass(base,11u);return;}
             let exit=guide_interface(next,hit.bary,ray.direction,normal,t.parameters.z,1.0);
-            if exit.fresnel.z<0.0 || dot(exit.transmitted,normal)>=-0.000001 {return;}
+            if exit.fresnel.z<0.0 {guide_bypass(base,12u);return;}
+            if dot(exit.transmitted,normal)>=-0.000001 {guide_bypass(base,10u);return;}
             ray=guide_launch(next,hit,normal,exit.transmitted);
             stage=2u;
             bounce=2u;
             continue;
         }
-        if next.base.w>0.0 || next.optics.w<1.0 || next.optics.w>511.0 {return;}
+        if next.base.w>0.0 {guide_bypass(base,13u);return;}
+        if next.optics.w<1.0 || next.optics.w>511.0 {guide_bypass(base,15u);return;}
         let endpoint_position=surface_point(next,hit.bary);
         let endpoint_look=guide_look(next,hit,ray.direction,endpoint_position,travel,bounce);
-        if guide_sharp(next,endpoint_look) {return;}
+        if guide_sharp(next,endpoint_look) {guide_bypass(base,14u);return;}
         if stage==0u {
             reflected_body=u32(next.optics.w);
             if has_transmission {

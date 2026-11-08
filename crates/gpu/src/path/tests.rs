@@ -5823,8 +5823,8 @@ fn production_envelope_is_device_bounded_and_never_silently_resized() {
     supported.max_storage_buffer_binding_size = 2 * 1024 * 1024 * 1024;
     supported.max_buffer_size = 2 * 1024 * 1024 * 1024;
     let limits = device_limits(supported.clone()).unwrap();
-    assert_eq!(limits.max_storage_buffer_binding_size, 1024 * 1024 * 1024);
-    assert!(limits.max_buffer_size <= supported.max_buffer_size);
+    assert_eq!(limits.max_storage_buffer_binding_size, supported.max_storage_buffer_binding_size);
+    assert_eq!(limits.max_buffer_size, supported.max_buffer_size);
 }
 
 #[test]
@@ -6320,10 +6320,11 @@ fn fixed_gpu_previews_match_complete_prefixes_with_finishing_and_final_exr() {
         ..Default::default()
     };
     let admitted = executor.admit(&scene, &request, options).unwrap();
-    let slot_bytes = u64::from(request.width) * u64::from(request.height) * 8 + 65_536 + 1024;
-    assert_eq!(admitted.encoded_limit + 1024, slot_bytes, "GPU encoder and shared preview slots use the same bound");
+    // Host frame metadata now includes separate colour, raw-master and guide-mask identities.
+    let slot_bytes = u64::from(request.width) * u64::from(request.height) * 8 + 65_536 + 2048;
+    assert_eq!(admitted.encoded_limit + 2048, slot_bytes, "GPU encoder and shared preview slots use the same bound");
     let host = ImageHost::with_executor(Arc::new(Executor { context: executor.context.clone() })).unwrap();
-    assert_eq!(host.admit(&scene, &request, options).unwrap().estimated_total_bytes, admitted.estimated_total_bytes + 2 * slot_bytes + 1024);
+    assert_eq!(host.admit(&scene, &request, options).unwrap().estimated_total_bytes, admitted.estimated_total_bytes + 2 * slot_bytes + 2048);
     let mut task = Task::new(executor.context.clone(), scene.clone(), request.clone(), options, CancelToken::default()).unwrap();
     task.preview_enabled = true;
     let mut previews = Vec::new();
@@ -7598,4 +7599,73 @@ fn photon_source_power_table_matches_shader_counts_and_packed_zero_environment()
     let weighted = CausticOptions { power_weighted_sources: true, ..base };
     assert_eq!(photons::buffer_bytes(weighted).unwrap() - photons::buffer_bytes(base).unwrap(), (4 + 1 + 21) * 4);
     assert_eq!(photons::admission_bytes(Some(weighted)).unwrap() - photons::admission_bytes(Some(base)).unwrap(), 2 * (4 + 1 + 21) * 4);
+}
+
+#[test]
+fn device_limits_use_adapter_capacity_with_a_finite_host_ceiling() {
+    for (storage, buffer) in [(128 << 20, 256 << 20), (4_294_967_295, 4_294_967_292), (32 << 30, 16 << 30)] {
+        let mut supported = wgpu::Limits::downlevel_defaults();
+        supported.max_storage_buffers_per_shader_stage = 8;
+        supported.max_storage_buffer_binding_size = storage;
+        supported.max_buffer_size = buffer;
+        let requested = device_limits(supported).unwrap();
+        assert_eq!(requested.max_buffer_size, buffer.min(GPU_PATH_LIMITS.max_scratch_bytes));
+        assert_eq!(requested.max_storage_buffer_binding_size, storage.min(buffer).min(GPU_PATH_LIMITS.max_scratch_bytes));
+    }
+}
+
+#[test]
+fn eight_k_x2_admission_includes_raw_master_and_refuses_insufficient_device_buffers_without_allocating() {
+    let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    let mut image = request(1);
+    image.width = 7680;
+    image.height = 4320;
+    let options = JobOptions { samples: 128, supersampling: 2, linear_exr: true, ..Default::default() };
+    let admitted = admission(&scene, &image, options).unwrap();
+    assert_eq!(admitted.estimated_total_bytes, 9_556_272_432);
+    let previews = 2 * (admitted.encoded_limit + 2048) + 2048;
+    assert_eq!(admitted.estimated_total_bytes + previews, 10_087_251_248);
+    assert!(admitted.estimated_total_bytes + previews < GPU_PATH_LIMITS.max_scratch_bytes);
+    let trace = trace_request(&image, options).unwrap();
+    let mut hardware = wgpu::Limits::downlevel_defaults();
+    hardware.max_storage_buffers_per_shader_stage = 8;
+    hardware.max_storage_buffer_binding_size = 4_294_967_295;
+    hardware.max_buffer_size = 4_294_967_292;
+    let limits = device_limits(hardware.clone()).unwrap();
+    admit_device_resources(&scene, &trace, options, &admitted, &limits).unwrap();
+    hardware.max_storage_buffer_binding_size = 1 << 30;
+    let insufficient = admit_device_resources(&scene, &trace, options, &admitted, &device_limits(hardware).unwrap()).unwrap_err();
+    assert_eq!(insufficient.code, ErrorCode::LimitExceeded);
+    assert!(insufficient.message.contains("accumulation") && insufficient.message.contains("2123366400"));
+    let too_large = admission(&scene, &image, JobOptions { denoise: true, ..options }).unwrap_err();
+    assert_eq!(too_large.code, ErrorCode::LimitExceeded);
+    assert!(too_large.message.contains("bounded GPU host limit"));
+    for (width, height, supersampling) in [(7680, 4320, 1), (3840, 2160, 2)] {
+        image.width = width;
+        image.height = height;
+        let options = JobOptions { denoise: true, supersampling, ..options };
+        let admitted = admission(&scene, &image, options).unwrap();
+        let trace = trace_request(&image, options).unwrap();
+        admit_device_resources(&scene, &trace, options, &admitted, &limits).unwrap();
+    }
+}
+
+#[test]
+fn real_adapter_eight_k_x2_preflight_and_host_preview_accounting_allocate_no_image_buffers() {
+    let Some(executor) = executor() else { return };
+    let limits = executor.context.device.limits();
+    let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    let mut image = request(1);
+    image.width = 7680;
+    image.height = 4320;
+    let options = JobOptions { samples: 128, supersampling: 2, linear_exr: true, ..Default::default() };
+    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
+    let result = host.admit(&scene, &image, options);
+    let accumulation = 2_123_366_400_u64;
+    if limits.max_storage_buffer_binding_size >= accumulation && limits.max_buffer_size >= accumulation + FAILURE_BYTES {
+        assert_eq!(result.unwrap().estimated_total_bytes, 10_087_251_248);
+    } else {
+        assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded);
+    }
+    assert_eq!(host.admitted_bytes(), 0, "preflight must never reserve image buffers or enqueue transport");
 }

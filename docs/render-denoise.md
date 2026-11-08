@@ -2,8 +2,11 @@
 
 CPU ray-traced requests accept `raytrace.denoise: true`; saved CPU jobs store
 `job.options.denoise`. GPU path requests keep their existing `denoise` flag and
-saved GPU field. Omission and explicit `false` preserve the corresponding raw
-image path and allocate no denoising buffers. CPU filtering uses only the native
+saved GPU field. Shared `denoise_settings` select 1..3 passes, finite 0..1
+per-pass strength and optional isolated-firefly suppression. Omission preserves
+the original three-pass/full-strength policy. Explicit `false` preserves the raw
+image path; optional `denoise_diagnostics` can still capture guides independently.
+See [quality controls and diagnostics](render-quality-controls.md). CPU filtering uses only the native
 Rust renderer: no GPU device, WGSL runtime or software-GPU fallback is involved.
 Raster cannot consume raytrace options. Offline editing does not imply that an
 image host is installed.
@@ -17,7 +20,7 @@ changes the raw film, sample keys or random stream. Radiance and transport
 failures are checked before filtering. Final-only raw FLOAT32 EXR comes from the
 unfiltered pass, before denoising; no raw companion is retained per preview.
 
-The original implementation uses three edge-aware a-trous passes with pixel
+The filter selects the first one, two or three edge-aware a-trous passes with pixel
 steps 1, 2 and 4 and the separable five-tap kernel [1,4,6,4,1]. It is inspired by
 the published method of [Dammertz, Sewtz, Hanika and Lensch, HPG 2010](https://holger.dammertz.org/publications/dammertz10hpg_bibtex.html).
 No third-party filtering source or weights are copied. Deterministic pixel-centre
@@ -66,13 +69,14 @@ CPU admission prepays 96 bytes per pixel for guides plus two 16-byte colour
 buffers. If shared presentation or EXR already admits one linear buffer, the
 additional pixel storage is 112 bytes rather than 128. Bounded guide cursor and
 output-task storage is also admitted; there is no retained image per pass.
-The existing CPU resource profile and shared host pool still apply. The shared
-float4 presentation envelope limits filtering to 8192 pixels per side and
-16,777,216 pixels total, even when EXR retention is off. No size is reduced and no
-profile is raised automatically. Each filter continuation processes at most 256
+The existing CPU resource profile and shared host pool still apply. Final output
+is bounded at 8192 pixels per side and 33,554,432 pixels; X2 can use an internal
+guide/filter grid up to 16384 per side and 134,217,728 pixels. Admission includes
+the enlarged grid and reconstruction storage, even when EXR retention is off.
+No size is reduced and no profile is raised automatically. Each filter continuation processes at most 256
 pixels with a fixed 25-tap gather per pixel and cancellation checks between
 pixels. Work units count these bounded pixel visits, as for existing finishing
-kernels: three visits per image pixel per complete published pass. Guide rays
+kernels: one visit per internal image pixel for each selected filter pass. Guide rays
 retain the existing incremental BVH node/triangle charges, using the same
 cumulative job budget without resetting it between output and transport.
 
@@ -84,8 +88,10 @@ checked between bounded dispatch tiles. The completed guide buffer is reused
 across checkpoints within the same job. CPU and GPU filters share the numerical
 policy, not bit-identical transport or a common device pipeline.
 
-Preflight names the enabled method, passes, guide/bypass policy, work convention
-and limitations. Saved settings preserve the explicit flag. Retained-master
+Preflight names the enabled method, selected passes/settings, guide/bypass policy,
+work convention and limitations. Saved settings preserve the explicit controls.
+Diagnostics add bounded category counts and a separately retained PNG mask; they
+never change guide eligibility or the beauty/linear outputs. Retained-master
 regrading has no geometry guides and does not reapply denoising; its metadata
 reports `denoise_applied: false`, and the original raw EXR remains unchanged.
 Submit otherwise identical unfiltered and filtered jobs to retain both PNGs.
@@ -95,9 +101,9 @@ oracle, HDR/constant/coverage identity, noise reduction, body/albedo/normal/dept
 edges, production centre-ray guides and bypasses, translated geometry, lens-guide
 identity, false-path byte/work/allocation identity, every filtered prefix,
 quantum independence, raw film/EXR preservation, cancellation and full scratch
-admission. The integrated CPU renderer suite passes 827 tests (one ignored),
-and the GPU suite passes 260 (three ignored). The combined document, engine
-and UI runs retain previously observed failures outside these rendering tests;
-full-project acceptance is not established. Native 4K comparisons preserve raw
+admission. Earlier OPUS qualification recorded 827 CPU tests (one ignored) and 260 GPU tests
+(three ignored), with unrelated failures in the combined document, engine and UI
+runs. Those counts describe that earlier source identity; the PR validation
+receipt records the current quality-control build. Native 4K comparisons preserve raw
 transport within floating-point precision, but their low sample counts do not
 establish converged image quality. See [OPUS qualification](render-opus-quality.md).

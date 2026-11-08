@@ -54,6 +54,7 @@ fn task(samples: u8, selected: bool, face_override: bool, shadows: bool) -> Imag
     let mut camera = crate::Camera { distance: 50.0, ..Default::default() };
     camera.set_view(crate::StandardView::Top);
     let options = RaytraceOptions {
+        threads: 1,
         lights: Some(Vec::new()),
         shadows,
         reflections: Some(ReflectionOptions {
@@ -218,6 +219,7 @@ fn spatial_reuse_fixture(s: u8, r: u8, selected: bool, face_override: bool, shad
     let mut camera = crate::Camera { distance: 50.0, ..Default::default() };
     camera.set_view(crate::StandardView::Top);
     let options = RaytraceOptions {
+        threads: 1,
         primary_samples: s,
         lights: Some(Vec::new()),
         shadows,

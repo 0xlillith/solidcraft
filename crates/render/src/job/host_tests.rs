@@ -667,21 +667,30 @@ fn a_cancel_after_the_last_digest_chunk_still_wins_the_publication_lock() {
 fn png_and_exr_reuse_one_sha_state_without_mixing_chunk_boundaries() {
     let png: Vec<u8> = (0..PNG_HASH_CHUNK_BYTES + 7).map(|i| (i % 251) as u8).collect();
     let exr: Vec<u8> = (0..PNG_HASH_CHUNK_BYTES * 2 + 19).map(|i| (i % 239) as u8).collect();
-    let mut pending = PendingPng::new(png.clone());
-    pending.exr = Some(exr.clone());
-    let cancel = CancelToken::default();
-    assert!(!pending.step(1, &cancel).unwrap());
-    assert!(pending.png_digest.is_none());
-    assert!(!pending.step(1, &cancel).unwrap());
-    assert_eq!(pending.png_digest.as_ref().unwrap(), &Sha256::digest(&png));
-    assert_eq!(pending.exr_hashed, 0);
-    while !pending.step(1, &cancel).unwrap() {}
-    assert_eq!(pending.digest.finalize(), Sha256::digest(&exr));
+    let mask: Vec<u8> = (0..PNG_HASH_CHUNK_BYTES * 3 + 31).map(|i| (i % 233) as u8).collect();
+    for mask in [None, Some(mask)] {
+        let mut pending = PendingPng::new(png.clone());
+        pending.exr = Some(exr.clone());
+        pending.denoise_mask = mask.clone();
+        let cancel = CancelToken::default();
+        assert!(!pending.step(1, &cancel).unwrap());
+        assert!(pending.png_digest.is_none());
+        assert!(!pending.step(1, &cancel).unwrap());
+        assert_eq!(pending.png_digest.as_ref().unwrap(), &Sha256::digest(&png));
+        assert_eq!(pending.exr_hashed, 0);
+        while !pending.step(1, &cancel).unwrap() {}
+        assert_eq!(pending.png_digest.as_ref().unwrap(), &Sha256::digest(&png));
+        assert_eq!(pending.exr_digest.as_ref().unwrap(), &Sha256::digest(&exr));
+        assert_eq!(pending.denoise_mask_digest, mask.as_ref().map(Sha256::digest));
+        assert_eq!(pending.hashed, png.len());
+        assert_eq!(pending.exr_hashed, exr.len());
+        assert_eq!(pending.denoise_mask_hashed, mask.as_ref().map_or(0, Vec::len));
+    }
     let metadata = std::mem::size_of::<Running>()
         + std::mem::size_of::<RenderFrame>()
         + std::mem::size_of::<RenderPreview>()
         + PREPARED_PROOF_HEADER_BYTES
-        + 64
+        + 3 * 64
         + 2 * crate::MAX_RENDER_ID_BYTES
         + 32;
     assert!(metadata <= FRAME_METADATA_BYTES as usize);
@@ -697,7 +706,7 @@ fn png_and_exr_reuse_one_sha_state_without_mixing_chunk_boundaries() {
 #[test]
 fn png_digest_metadata_fits_the_existing_allowance_without_changing_admission() {
     // Fixed digest/offset state and the completed frame (including its bounded
-    // hex string and backend/executor IDs) fit the existing 1024-byte allowance.
+    // hex string and backend/executor IDs) fit the shared metadata allowance.
     assert!(std::mem::size_of::<PendingPng>() <= 512);
     for linear_master in [false, true] {
         let metadata = std::mem::size_of::<Running>()

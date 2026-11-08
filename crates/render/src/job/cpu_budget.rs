@@ -74,8 +74,8 @@ impl CpuBudget {
             },
             Self::Workstation => CpuBudgetLimits {
                 max_dimension: 16_384,
-                max_pixels: 67_108_864,
-                max_progressive_pixels: 67_108_864,
+                max_pixels: 134_217_728,
+                max_progressive_pixels: 134_217_728,
                 max_samples_per_pixel: MAX_CPU_SAMPLES_PER_PIXEL,
                 max_camera_samples: 1_099_511_627_776,
                 max_triangles: MAX_CPU_TRIANGLES as u64,

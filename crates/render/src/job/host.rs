@@ -306,6 +306,15 @@ struct RetainedPresentation {
     _reservation: Reservation,
 }
 
+/// Identity of the categorical guide image, independent of the colour PNG.
+#[derive(Clone, Debug, Serialize)]
+pub struct DenoiseMaskInfo {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
 pub struct RenderFrame {
     // Derivatives point directly at the original, never form a retention chain.
     source_master: Option<Arc<RenderFrame>>,
@@ -313,6 +322,7 @@ pub struct RenderFrame {
     pub info: FrameInfo,
     png: Vec<u8>,
     exr: Option<(Vec<u8>, LinearMasterInfo)>,
+    denoise_mask: Option<(Vec<u8>, DenoiseMaskInfo)>,
     _reservation: Reservation,
 }
 impl RenderFrame {
@@ -333,6 +343,15 @@ impl RenderFrame {
     }
     pub fn linear_master_info(&self) -> Option<&LinearMasterInfo> {
         self.exr.as_ref().map(|(_, info)| info).or_else(|| self.source_master.as_ref().and_then(|source| source.linear_master_info()))
+    }
+    pub fn denoise_mask_png(&self) -> Option<&[u8]> {
+        self.denoise_mask
+            .as_ref()
+            .map(|(bytes, _)| bytes.as_slice())
+            .or_else(|| self.source_master.as_ref().and_then(|source| source.denoise_mask_png()))
+    }
+    pub fn denoise_mask_info(&self) -> Option<&DenoiseMaskInfo> {
+        self.denoise_mask.as_ref().map(|(_, info)| info).or_else(|| self.source_master.as_ref().and_then(|source| source.denoise_mask_info()))
     }
     pub fn png(&self) -> &[u8] {
         &self.png
@@ -454,6 +473,10 @@ pub enum JobEnvironmentInfo {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct JobStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise_diagnostics: Option<super::DenoiseDiagnostics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub denoise_mask: Option<DenoiseMaskInfo>,
     /// Complete passes omitted only when both prepaid snapshots are externally retained.
     /// Final rendering continues; this is not a dropped sample or a stalled job.
     pub preview_retention_skips: u32,
@@ -484,6 +507,7 @@ pub struct JobStatus {
 }
 
 struct Data {
+    denoise_diagnostics: Option<super::DenoiseDiagnostics>,
     preview_retention_skips: u32,
     completed_duration: Option<std::time::Duration>,
     punctual_diagnostics: Option<super::PunctualDiagnostics>,
@@ -550,6 +574,8 @@ impl JobHandle {
     pub fn status(&self) -> Result<JobStatus> {
         let data = self.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         Ok(JobStatus {
+            denoise_diagnostics: data.denoise_diagnostics,
+            denoise_mask: data.frame.as_ref().and_then(|frame| frame.denoise_mask_info().cloned()),
             preview_retention_skips: data.preview_retention_skips,
             preview_unavailable_reason: self.0.preview_unavailable_reason,
             punctual_diagnostics: data.punctual_diagnostics,
@@ -877,7 +903,8 @@ const _: [(); 1] = [(); (std::mem::size_of::<Work>() <= 4096) as usize];
 // this fixed state until publication; it is not another image task or pool.
 const PNG_HASH_CHUNK_BYTES: usize = 16_384;
 const PNG_HASH_CHUNKS_PER_ADVANCE: usize = 4;
-pub(crate) const FRAME_METADATA_BYTES: u64 = 1024;
+// Includes separate colour, linear-master and categorical-mask identities.
+pub(crate) const FRAME_METADATA_BYTES: u64 = 2048;
 #[cfg(feature = "raytrace-cpu")]
 const PREPARED_PROOF_HEADER_BYTES: usize = std::mem::size_of::<Vec<crate::raytrace::image::CertifiedOptics>>();
 #[cfg(not(feature = "raytrace-cpu"))]
@@ -897,6 +924,10 @@ struct PendingPng {
     preview_samples: Option<u32>,
     exr: Option<Vec<u8>>,
     exr_hashed: usize,
+    exr_digest: Option<sha2::digest::Output<Sha256>>,
+    denoise_mask: Option<Vec<u8>>,
+    denoise_mask_hashed: usize,
+    denoise_mask_digest: Option<sha2::digest::Output<Sha256>>,
 }
 // Keep the new fixed completion state within the existing metadata allowance
 // even if the hashing dependency's representation changes on another target.
@@ -912,7 +943,19 @@ const _: [(); 1] = [(); (std::mem::size_of::<Running>()
 
 impl PendingPng {
     fn new(png: Vec<u8>) -> Self {
-        Self { png, digest: Sha256::new(), png_digest: None, hashed: 0, preview_samples: None, exr: None, exr_hashed: 0 }
+        Self {
+            png,
+            digest: Sha256::new(),
+            png_digest: None,
+            hashed: 0,
+            preview_samples: None,
+            exr: None,
+            exr_hashed: 0,
+            exr_digest: None,
+            denoise_mask: None,
+            denoise_mask_hashed: 0,
+            denoise_mask_digest: None,
+        }
     }
 
     fn preview(png: Vec<u8>, samples: u32) -> Self {
@@ -922,11 +965,13 @@ impl PendingPng {
     fn step(&mut self, units: usize, cancel: &CancelToken) -> Result<bool> {
         cancel.check()?;
         for _ in 0..units.min(PNG_HASH_CHUNKS_PER_ADVANCE) {
-            self.finish_png_digest();
+            self.finish_digests();
             let (bytes, hashed) = if self.hashed < self.png.len() {
                 (&self.png, &mut self.hashed)
             } else if let Some(exr) = self.exr.as_ref().filter(|exr| self.exr_hashed < exr.len()) {
                 (exr, &mut self.exr_hashed)
+            } else if let Some(mask) = self.denoise_mask.as_ref().filter(|mask| self.denoise_mask_hashed < mask.len()) {
+                (mask, &mut self.denoise_mask_hashed)
             } else {
                 break;
             };
@@ -935,23 +980,64 @@ impl PendingPng {
             *hashed = end;
             cancel.check()?;
         }
-        self.finish_png_digest();
-        Ok(self.hashed == self.png.len() && self.exr.as_ref().is_none_or(|exr| self.exr_hashed == exr.len()))
+        self.finish_digests();
+        Ok(self.hashed == self.png.len()
+            && self.exr.as_ref().is_none_or(|exr| self.exr_hashed == exr.len())
+            && self.denoise_mask.as_ref().is_none_or(|mask| self.denoise_mask_hashed == mask.len()))
     }
-    fn finish_png_digest(&mut self) {
+    fn finish_digests(&mut self) {
         if self.hashed == self.png.len() && self.png_digest.is_none() {
-            // PNG and EXR are scanned sequentially. Keep only its fixed digest
-            // while resetting the same SHA state for the optional raw companion.
             self.png_digest = Some(self.digest.finalize_reset());
+        }
+        if self.png_digest.is_some() && self.exr.as_ref().is_some_and(|exr| self.exr_hashed == exr.len()) && self.exr_digest.is_none() {
+            self.exr_digest = Some(self.digest.finalize_reset());
+        }
+        if self.png_digest.is_some()
+            && (self.exr.is_none() || self.exr_digest.is_some())
+            && self.denoise_mask.as_ref().is_some_and(|mask| self.denoise_mask_hashed == mask.len())
+            && self.denoise_mask_digest.is_none()
+        {
+            self.denoise_mask_digest = Some(self.digest.finalize_reset());
         }
     }
     fn progress(&self) -> Progress {
         Progress {
             phase: Phase::Encoding,
-            done: self.hashed as u64 + self.exr_hashed as u64,
-            total: self.png.len() as u64 + self.exr.as_ref().map_or(0, |bytes| bytes.len() as u64),
+            done: self.hashed as u64 + self.exr_hashed as u64 + self.denoise_mask_hashed as u64,
+            total: self.png.len() as u64
+                + self.exr.as_ref().map_or(0, |bytes| bytes.len() as u64)
+                + self.denoise_mask.as_ref().map_or(0, |bytes| bytes.len() as u64),
         }
     }
+}
+
+fn validate_denoise_mask(bytes: &Vec<u8>, request: &ImageRequest, scale: u32, report: Option<super::DenoiseDiagnostics>) -> Result<()> {
+    // Native CPU Workstation requests retain their earlier dimension envelope;
+    // the producer has already admitted it. X2 uses the shared 8K output cap.
+    let (trace_width, trace_height) =
+        if scale == 1 { (request.width, request.height) } else { super::supersampled_dimensions(request.width, request.height, scale)? };
+    let report = report.ok_or_else(|| JobError::new(ErrorCode::Internal, "guide mask has no classification report"))?;
+    let total = report
+        .counts
+        .iter()
+        .try_fold(0_u64, |sum, count| sum.checked_add(*count))
+        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "guide classification count overflow"))?;
+    if (report.width, report.height) != (trace_width, trace_height) || total != u64::from(trace_width) * u64::from(trace_height) {
+        return Err(JobError::new(ErrorCode::Internal, "guide classification counts differ from the admitted trace grid"));
+    }
+    let limit = u64::from(request.width)
+        .checked_mul(u64::from(request.height))
+        .and_then(|pixels| pixels.checked_mul(8))
+        .and_then(|bytes| bytes.checked_add(65_536))
+        .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "guide PNG bound overflow"))?;
+    if bytes.capacity() as u64 > limit
+        || bytes.get(..16) != Some(&[137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82])
+        || bytes.get(16..20) != Some(request.width.to_be_bytes().as_slice())
+        || bytes.get(20..24) != Some(request.height.to_be_bytes().as_slice())
+    {
+        return Err(JobError::new(ErrorCode::LimitExceeded, "guide mask exceeds its bound or has invalid PNG dimensions"));
+    }
+    Ok(())
 }
 
 struct Running {
@@ -1029,6 +1115,23 @@ enum WorkPoll {
 }
 
 impl WorkTask {
+    fn denoise_diagnostics(&self) -> Option<super::DenoiseDiagnostics> {
+        match self {
+            Self::Registered(task) => task.denoise_diagnostics(),
+            #[cfg(feature = "raytrace-cpu")]
+            Self::Raytrace(slot) => slot.0.first().and_then(|task| task.denoise_diagnostics()),
+            _ => None,
+        }
+    }
+    fn take_denoise_mask(&mut self) -> Option<Vec<u8>> {
+        match self {
+            Self::Registered(task) => task.take_denoise_mask(),
+            #[cfg(feature = "raytrace-cpu")]
+            Self::Raytrace(slot) => slot.0.first_mut().and_then(|task| task.take_denoise_mask()),
+            _ => None,
+        }
+    }
+
     fn punctual_diagnostics(&self) -> Option<super::PunctualDiagnostics> {
         match self {
             #[cfg(feature = "raytrace-cpu")]
@@ -1225,6 +1328,9 @@ impl Running {
         let result = self.task.as_mut().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing render task"))?.step(units)?;
         let mut data = self.handle.0.data.lock().map_err(|_| JobError::new(ErrorCode::Internal, "render status lock poisoned"))?;
         data.punctual_diagnostics = self.task.as_ref().and_then(WorkTask::punctual_diagnostics);
+        if let Some(diagnostics) = self.task.as_ref().and_then(WorkTask::denoise_diagnostics) {
+            data.denoise_diagnostics = Some(diagnostics);
+        }
         // The final publication check is under the same lock as cancellation.
         if self.handle.0.cancel.is_cancelled() {
             data.progress.phase = Phase::Cancelled;
@@ -1261,9 +1367,25 @@ impl Running {
                         return Err(JobError::new(ErrorCode::LimitExceeded, "linear master exceeds its bound or has an invalid signature"));
                     }
                 }
+                let denoise_mask = self.task.as_mut().and_then(WorkTask::take_denoise_mask);
+                let options = self.handle.0.options()?;
+                let (collect_guides, supersampling) = self
+                    .handle
+                    .0
+                    .request
+                    .raytrace
+                    .as_ref()
+                    .map_or((options.denoise_diagnostics, options.supersampling), |cpu| (cpu.denoise_diagnostics, cpu.supersampling));
+                if denoise_mask.is_some() != collect_guides {
+                    return Err(JobError::new(ErrorCode::Internal, "guide mask availability differs from the admitted request"));
+                }
+                if let Some(mask) = &denoise_mask {
+                    validate_denoise_mask(mask, &self.handle.0.request, supersampling, data.denoise_diagnostics)?;
+                }
                 self.task = None;
                 let mut pending = PendingPng::new(png);
                 pending.exr = exr;
+                pending.denoise_mask = denoise_mask;
                 data.progress = pending.progress();
                 self.pending_png = Some(pending);
                 Ok(true)
@@ -1289,7 +1411,7 @@ impl Running {
             data.progress = progress;
             return Ok(true);
         }
-        let PendingPng { png, digest, png_digest, preview_samples, exr, .. } =
+        let PendingPng { png, png_digest, preview_samples, exr, exr_digest, denoise_mask, denoise_mask_digest, .. } =
             self.pending_png.take().ok_or_else(|| JobError::new(ErrorCode::Internal, "missing completed PNG digest"))?;
         let info = FrameInfo {
             job: self.handle.0.id,
@@ -1312,7 +1434,7 @@ impl Running {
         // the checkpoint's own metadata allowance as well as its PNG capacity.
         let checkpoint_metadata = if preview_samples.is_some() { std::mem::size_of::<CheckpointCredits>() + 32 } else { 0 };
         let fixed_metadata = std::mem::size_of::<Running>() + frame_layout + checkpoint_metadata + 2 * crate::MAX_RENDER_ID_BYTES + 32;
-        let linear_digest_bytes = if exr.is_some() { 64 } else { 0 };
+        let linear_digest_bytes = (if exr.is_some() { 64 } else { 0 }) + (if denoise_mask.is_some() { 64 } else { 0 });
         if fixed_metadata
             .checked_add(info.png_sha256.capacity())
             .and_then(|n| n.checked_add(linear_digest_bytes))
@@ -1399,16 +1521,33 @@ impl Running {
             self.handle.0.notify();
             return Ok(true);
         }
-        let exr = exr.map(|bytes| {
-            let info = LinearMasterInfo {
-                bytes: bytes.len() as u64,
-                sha256: format!("{:x}", digest.finalize()),
-                encoding: LinearColourEncoding::SceneLinearSrgbD65,
-                alpha: LinearAlphaConvention::CoveragePremultiplied,
-            };
-            (bytes, info)
-        });
-        let retained = png.capacity() as u64 + exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64) + FRAME_METADATA_BYTES;
+        let exr = exr
+            .map(|bytes| -> Result<_> {
+                let info = LinearMasterInfo {
+                    bytes: bytes.len() as u64,
+                    sha256: format!("{:x}", exr_digest.ok_or_else(|| JobError::new(ErrorCode::Internal, "missing linear master digest"))?),
+                    encoding: LinearColourEncoding::SceneLinearSrgbD65,
+                    alpha: LinearAlphaConvention::CoveragePremultiplied,
+                };
+                Ok((bytes, info))
+            })
+            .transpose()?;
+        let denoise_mask = denoise_mask
+            .map(|bytes| -> Result<_> {
+                let mask_info = DenoiseMaskInfo {
+                    width: info.width,
+                    height: info.height,
+                    bytes: bytes.len() as u64,
+                    sha256: format!("{:x}", denoise_mask_digest.ok_or_else(|| JobError::new(ErrorCode::Internal, "missing guide mask digest"))?),
+                };
+                Ok((bytes, mask_info))
+            })
+            .transpose()?;
+        let retained = (png.capacity() as u64)
+            .checked_add(exr.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(denoise_mask.as_ref().map_or(0, |(bytes, _)| bytes.capacity() as u64)))
+            .and_then(|bytes| bytes.checked_add(FRAME_METADATA_BYTES))
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "retained image byte overflow"))?;
         if let Some(credits) = &self.checkpoints {
             credits.close();
         }
@@ -1418,6 +1557,7 @@ impl Running {
             info,
             png,
             exr,
+            denoise_mask,
             source_master: self.source_master.take(),
             presentation: self.handle.0.presentation.clone(),
             _reservation: reservation,
@@ -1720,6 +1860,15 @@ impl ImageHost {
             }
             if options.transmission_samples != 1 && !executor.supports_transmission_sampling() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "registered executor does not implement transmission strata"));
+            }
+            if options.supersampling != 1 && !executor.supports_supersampling() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor does not support supersampling"));
+            }
+            if !options.denoise_settings.is_default() && !executor.supports_denoise_controls() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor does not support denoising settings"));
+            }
+            if options.denoise_diagnostics && !executor.supports_denoise_diagnostics() {
+                return Err(JobError::new(ErrorCode::InvalidRequest, "this executor does not support denoising guide diagnostics"));
             }
             if options.linear_exr && !executor.supports_linear_exr() {
                 return Err(JobError::new(ErrorCode::InvalidRequest, "this executor cannot retain a raw linear EXR"));
@@ -2209,6 +2358,7 @@ impl ImageHost {
             resolved,
             cancel,
             data: Mutex::new(Data {
+                denoise_diagnostics: None,
                 preview_retention_skips: 0,
                 completed_duration: None,
                 punctual_diagnostics: None,
@@ -2247,6 +2397,7 @@ impl ImageHost {
             return Err(JobError::new(ErrorCode::WrongOwner, "regrade requires a new identity in the source document session"));
         }
         let frame = source.frame()?.ok_or_else(|| JobError::new(ErrorCode::NotCompleted, "regrade requires a completed frame"))?;
+        let denoise_diagnostics = source.status()?.denoise_diagnostics;
         let master = frame.master_source()?;
         let bytes = super::regrade::required_bytes(&master, presentation)?;
         let raw = master.linear_master_info().ok_or_else(|| JobError::new(ErrorCode::InvalidRequest, "raw master metadata is missing"))?;
@@ -2340,6 +2491,7 @@ impl ImageHost {
             resolved,
             cancel: CancelToken::default(),
             data: Mutex::new(Data {
+                denoise_diagnostics,
                 preview_retention_skips: 0,
                 completed_duration: None,
                 punctual_diagnostics: None,
@@ -3119,4 +3271,25 @@ mod surface_request_metadata_tests {
     fn id(owner: u64, serial: u64) -> JobId {
         JobId { session: owner, serial, generation: serial }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn completed_colour_linear_and_guide_images_have_independent_incremental_digests() {
+    let mut pending = PendingPng::new(b"display".to_vec());
+    pending.exr = Some(b"linear".to_vec());
+    pending.denoise_mask = Some(b"mask".to_vec());
+    let cancel = CancelToken::default();
+    assert!(!pending.step(1, &cancel).unwrap());
+    assert_eq!(pending.progress().done, 7);
+    assert!(!pending.step(1, &cancel).unwrap());
+    assert_eq!(pending.progress().done, 13);
+    assert!(pending.step(1, &cancel).unwrap());
+    assert_eq!(pending.progress().done, pending.progress().total);
+    assert_eq!(format!("{:x}", pending.png_digest.unwrap()), "dfbb889cf19bda82ed8deadf82de232979aa4ecc83238625c6453dc4c597b43a");
+    assert_eq!(format!("{:x}", pending.exr_digest.unwrap()), "7f2fe580edb35154041fa3d4b41dd6d3adaef0c85d2ff6309f1d4b520eeecda3");
+    assert_eq!(format!("{:x}", pending.denoise_mask_digest.unwrap()), "48bf9b4f142ab45cac6f33cf99415bca6ca8e07608a031237aa76560fec2204b");
+    let cancelled = CancelToken::default();
+    cancelled.cancel();
+    assert!(pending.step(1, &cancelled).is_err());
 }
