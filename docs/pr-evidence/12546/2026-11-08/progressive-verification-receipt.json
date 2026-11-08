@@ -1,0 +1,281 @@
+{
+  "outcome": "passed",
+  "scope": "Actual native Vulkan GPU progressive UI images; maximum controls selected only after the 640x360/16-spp job completed; no maximum job submitted.",
+  "binary_sha256": "81258dc2bb39bb322662bd3b333b39c947b052f3378a3c0798617885fe5121e8",
+  "build_source_tree": "ae209221211b5f1e47e6c8a2a2639d7dd265ae84",
+  "adapter": "Vulkan · AMD Radeon 780M Graphics (RADV PHOENIX)",
+  "renderer": "gpu",
+  "job": {
+    "generation": 1,
+    "serial": 1,
+    "session": 2
+  },
+  "dimensions": [
+    640,
+    360
+  ],
+  "samples": 16,
+  "denoise": true,
+  "denoise_diagnostics": true,
+  "render_start_interaction": {
+    "handle": "render:stage:render.start"
+  },
+  "displayed_preview_sequences": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "all_preview_screenshots_bracket_same_sequence": true,
+  "preview_png_frames": [
+    {
+      "sequence": 1,
+      "spp": 1,
+      "png_sha256": "123ea51e7d7b8b373a758246b74ae6b2d979ca0892589714cc660843ca5eac8f",
+      "png_bytes": 8420,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 2,
+      "spp": 2,
+      "png_sha256": "9870a856e74cd162af78442bf8a8abe6b260f043152845676de22e8d177e5ef8",
+      "png_bytes": 8694,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 3,
+      "spp": 3,
+      "png_sha256": "72ff3cb205435831254f40e03c482a4800985d02af6c4cafcb3727b1f2716091",
+      "png_bytes": 9010,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 4,
+      "spp": 4,
+      "png_sha256": "748c59e4f1787ad45fc1ee9b0ca5a995ce78be99fab41429f3d919f8cde5cd98",
+      "png_bytes": 9202,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 5,
+      "spp": 5,
+      "png_sha256": "6bc1c203eca20ca8af509f70e14b5c8ed53e765d173e6970121b6404610c280d",
+      "png_bytes": 9764,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 6,
+      "spp": 6,
+      "png_sha256": "a0c8739ef6aba958e4f253c22885fb61455cd0aabce1f402c250bc17d5a71f7c",
+      "png_bytes": 9847,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 7,
+      "spp": 7,
+      "png_sha256": "46e8902f0770b576e65bd1d2f7fa78ee1c6dc325ab4d303f5f44729556a34721",
+      "png_bytes": 10073,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 8,
+      "spp": 8,
+      "png_sha256": "284e61034d2ff2fbcd162a2a5a5d1782d37cd1fc14392b094c42a7ab6be976df",
+      "png_bytes": 10215,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 9,
+      "spp": 9,
+      "png_sha256": "940c62be60b2ed5a316993f41a4057bc037bd34735280cc2f98cd48637ba7b12",
+      "png_bytes": 10137,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 10,
+      "spp": 10,
+      "png_sha256": "8b7af3852c5d66021d4edaaf7cf350363333a0e96ba00de5ae7c1843ed6070d5",
+      "png_bytes": 10339,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 11,
+      "spp": 11,
+      "png_sha256": "ce350a46c3769b346c075d120e85011033837da90d80081317fb8561f7ce81cf",
+      "png_bytes": 10364,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 12,
+      "spp": 12,
+      "png_sha256": "9ca010ac2d7566e418787957899028bec0850817b3488d0c626ca05c6e7666a2",
+      "png_bytes": 10572,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 13,
+      "spp": 13,
+      "png_sha256": "0af2a045f5e422e6dae3730470666f992587b2d60971fbb9c28197575a26870e",
+      "png_bytes": 10692,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 14,
+      "spp": 14,
+      "png_sha256": "a0b14db450f5d5726e005a04191af833d4d5a72abc8f06ee2556e537f5eada47",
+      "png_bytes": 10794,
+      "executor": "gpu-path"
+    },
+    {
+      "sequence": 15,
+      "spp": 15,
+      "png_sha256": "ab0c37bad65c83ee9de8813321b9fcef15d037c97799970a52a58928cc6a63aa",
+      "png_bytes": 10787,
+      "executor": "gpu-path"
+    }
+  ],
+  "distinct_preview_png_sha256_count": 15,
+  "final_displayed_receipt": {
+    "adaptive": null,
+    "egui_frame_nr": 5671,
+    "egui_pass_nr": 5672,
+    "frame_sequence": null,
+    "height": 360,
+    "job": {
+      "generation": 1,
+      "serial": 1,
+      "session": 2
+    },
+    "kind": "final",
+    "samples_per_pixel": null,
+    "scene_generation": 4,
+    "width": 640
+  },
+  "final_frame": {
+    "alpha": "straight",
+    "backend": "builtin",
+    "encoding": "srgb",
+    "executor": "gpu-path",
+    "height": 360,
+    "job": {
+      "generation": 1,
+      "serial": 1,
+      "session": 2
+    },
+    "png_bytes": 10791,
+    "png_sha256": "cca1ebc8efc7a45fd8c974df14844dac9bb03ca2f6bba155ba9295dbe2c86f0b",
+    "scene_generation": 4,
+    "width": 640
+  },
+  "final_progress": {
+    "done": 1,
+    "phase": "completed",
+    "total": 1
+  },
+  "preview_retention_skips": 0,
+  "maximum_saved_setup": {
+    "backend": "builtin",
+    "background": [
+      236,
+      240,
+      245
+    ],
+    "camera": {
+      "distance": 79.28264768183449,
+      "fov": 0,
+      "pitch": 0.6154797086703874,
+      "roll": 0,
+      "target": [
+        18.451882845188283,
+        16.548117154811717,
+        15.596234309623432
+      ],
+      "up": "z",
+      "yaw": -0.7853981633974483
+    },
+    "environment_intensity": 1,
+    "environment_rotation": 0,
+    "exposure_ev": 0,
+    "format": "png",
+    "height": 4320,
+    "job": {
+      "method": "gpu_path",
+      "options": {
+        "denoise": true,
+        "denoise_diagnostics": true,
+        "denoise_settings": {
+          "firefly_suppression": true,
+          "passes": 3,
+          "strength": 1
+        },
+        "linear_exr": false,
+        "max_depth": 64,
+        "nested_media": false,
+        "samples": 16384,
+        "seed": 81,
+        "supersampling": 2,
+        "tone_map": "reinhard",
+        "transmission_samples": 1
+      },
+      "transparent_background": false
+    },
+    "mode": "preview",
+    "width": 7680
+  },
+  "maximum_live_paused": true,
+  "maximum_queue": {
+    "error": null,
+    "job": null,
+    "running": 0,
+    "shot": null,
+    "waiting": 0
+  },
+  "maximum_job_still_same_completed_job": true,
+  "render_start_engine_command_count": 0,
+  "owned_processes_stopped": true,
+  "publication_hygiene": {
+    "secret_scan": "passed",
+    "redactions": [],
+    "expired_token_files_removed": 1,
+    "transcript_authentication_fields": 0,
+    "publication_scope": "Only reviewed top-level artifact files; exclude all application-state directories"
+  },
+  "screenshots": [
+    {
+      "filename": "progressive-preview-001.png",
+      "sha256": "07b8e4f0da7bdb97c0610051b9faad615e5f239b7272cc359df678e50553aca5",
+      "bytes": 767811
+    },
+    {
+      "filename": "progressive-preview-005.png",
+      "sha256": "6772caa0c90568661497e2ceb0020424bffa6b0a28bf59102b79b007d3ae519f",
+      "bytes": 771925
+    },
+    {
+      "filename": "progressive-final.png",
+      "sha256": "ddc5fd6dadd89d6fcf28fb1fb8dbc352ac6e77baa0ff41a138a2cd3acf593784",
+      "bytes": 895025
+    },
+    {
+      "filename": "gpu-8k-x2-output-vulkan.png",
+      "sha256": "0553306c1a6930b9fdbcacacbbc04a6edf23325b85907091dc8531c16fdc864d",
+      "bytes": 876928
+    },
+    {
+      "filename": "gpu-16384-spp-depth64-full-denoising-vulkan.png",
+      "sha256": "19c176c5609c7ff2937c77c5e83350b8f2e95f63376b6b9d1e9e2962b3631c3c",
+      "bytes": 900037
+    }
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "label": "quality16k-v2-focused",
+  "status": "passed",
+  "exit_code": 0,
+  "source_tree": "ae209221211b5f1e47e6c8a2a2639d7dd265ae84",
+  "source_unchanged": true,
+  "counts": {
+    "passed": 62
+  },
+  "failures": [],
+  "selectors": {
+    "native_memory_admission": {
+      "passed": 8
+    },
+    "native_auto_": {
+      "passed": 2
+    },
+    "native_worker_admission_": {
+      "passed": 1
+    },
+    "native_camera_workers_": {
+      "passed": 1
+    },
+    "native_photon_workers_": {
+      "passed": 1
+    },
+    "native_worker_batches_": {
+      "passed": 1
+    },
+    "workstation_admits_combined_maximum_": {
+      "passed": 1
+    },
+    "job::cpu_budget": {
+      "passed": 3
+    },
+    "failed_union_metadata_reservation_": {
+      "passed": 1
+    },
+    "firefly_control_preserves_legacy_opaque_filter_and_optical_glints": {
+      "passed": 1
+    },
+    "optical_endpoint_misses_and_emitters_do_not_classify_the_primary_as_background": {
+      "passed": 1
+    },
+    "cpu_path_emissive_enclosure_keeps_authored_depth_without_roulette": {
+      "passed": 1
+    },
+    "opaque_path_oblique_and_grazing_coated_response_and_null_mass_match_independent_hemisphere_quadrature": {
+      "passed": 1
+    },
+    "crease_normals_": {
+      "passed": 3
+    },
+    "smoothing_groups_ignore_repeated_index_faces": {
+      "passed": 1
+    },
+    "authored_corner_normals_and_smoothing_groups_survive_import": {
+      "passed": 1
+    },
+    "mesh_import_zero_crease_": {
+      "passed": 1
+    },
+    "mesh_import_explicit_crease_": {
+      "passed": 1
+    },
+    "output_viewer_requests_are_validated_headless_echoes": {
+      "passed": 1
+    },
+    "quality_buttons_apply_canonical_catalog_budgets_within_ui_limit": {
+      "passed": 1
+    },
+    "quality_highlight_derives_every_projected_field_and_returns_to_custom": {
+      "passed": 1
+    },
+    "quality_review_is_callable_by_command_and_saves_only_after_acknowledgement": {
+      "passed": 1
+    },
+    "render_quality_widgets_preserve_legacy_samples_and_bound_new_pointer_selections": {
+      "passed": 1
+    },
+    "cpu_progressive_sample_editor_uses_the_selected_profile_without_rewriting_existing_intent": {
+      "passed": 1
+    },
+    "render_quality_cpu_worker_controls_and_8k_supersampling_are_saved_ui_choices": {
+      "passed": 1
+    },
+    "native_cpu_legacy_dimensions_remain_checkable_renderable_and_saveable_with_bounded_new_choices": {
+      "passed": 1
+    },
+    "output_dimensions_preserve_legacy_size_until_an_explicit_bounded_edit": {
+      "passed": 1
+    },
+    "a_size_the_cpu_profile_refuses_names_the_profile_that_renders_it": {
+      "passed": 1
+    },
+    "output_viewer_size_chips_obey_limits_and_largest_upscales_at_the_current_aspect": {
+      "passed": 1
+    },
+    "eight_k_x2_maximum_controls_use_bounded_pages_without_allocating_images": {
+      "passed": 1
+    },
+    "image_page_capacity_prepays_optical_and_adaptive_planes_and_rejects_only_infeasible_rows": {
+      "passed": 1
+    },
+    "real_adapter_eight_k_x2_maximum_control_preflight_and_preview_accounting_allocate_no_images": {
+      "passed": 1
+    },
+    "gpu_paged_": {
+      "passed": 3
+    },
+    "path::denoise::tests": {
+      "passed": 15
+    },
+    "shader_validates_without_a_device": {
+      "passed": 1
+    },
+    "gpu_wood_minification_converges_to_mean_and_preserves_scalar_face_override": {
+      "passed": 1
+    },
+    "adaptive_pilot_editor_bounds_new_values_and_preserves_unedited_intent": {
+      "passed": 1
+    }
+  }
+}

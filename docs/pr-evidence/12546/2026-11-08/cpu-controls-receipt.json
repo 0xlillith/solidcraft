@@ -1,0 +1,38 @@
+{
+  "source_tree": "ae209221211b5f1e47e6c8a2a2639d7dd265ae84",
+  "binary_sha256": "81258dc2bb39bb322662bd3b333b39c947b052f3378a3c0798617885fe5121e8",
+  "adapter": "Gl · llvmpipe (LLVM 23.1.4, 256 bits)",
+  "observed_controls": {
+    "cpu": {
+      "output": [
+        7680,
+        4320
+      ],
+      "samples_per_pixel": 16384,
+      "supersampling": 2,
+      "budget": "workstation",
+      "threads": 64,
+      "path_depth": 64
+    },
+    "denoise": {
+      "enabled": true,
+      "passes": 3,
+      "strength": 1,
+      "firefly_suppression": true,
+      "diagnostics": true
+    }
+  },
+  "screenshots": [
+    {
+      "name": "01-cpu-8k-x2-output.png",
+      "sha256": "26659d76c23b3d80e459d505d5b35fe59778760b2d28f3b12f8590f080d98c64",
+      "bytes": 393370
+    },
+    {
+      "name": "02-cpu-16384-spp-workstation-64-workers-full-denoising.png",
+      "sha256": "f438746040f5f5fc0a342e7252b2027a6db34785bdb9de35eb493269fafa7011",
+      "bytes": 553500
+    }
+  ],
+  "scope": "CPU control selection, persistence and layout only; no CPU render was started in this capture session."
+}
