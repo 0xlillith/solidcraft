@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CancelToken, ErrorCode, JobError, Result};
 
+pub const MAX_UI_SAMPLES: u32 = 16_384;
 pub const MAX_CPU_THREADS: u16 = 64;
 pub const MAX_OUTPUT_DIMENSION: u32 = 8192;
 pub const MAX_OUTPUT_PIXELS: u64 = 33_554_432;
@@ -20,7 +21,7 @@ pub struct DenoiseSettings {
 
 impl Default for DenoiseSettings {
     fn default() -> Self {
-        Self { passes: 3, strength: 1.0, firefly_suppression: true }
+        Self { passes: 3, strength: 1.0, firefly_suppression: false }
     }
 }
 

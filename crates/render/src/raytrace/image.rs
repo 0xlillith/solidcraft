@@ -47,7 +47,9 @@ fn limits(budget: job::CpuBudget) -> BuildLimits {
     let limits = budget.limits();
     BuildLimits {
         max_triangles: limits.max_triangles as usize,
-        max_memory_bytes: limits.max_job_bytes,
+        // BVH preparation has its own bounded geometry envelope; the larger
+        // whole-image budget also pays for films, guides, previews and workers.
+        max_memory_bytes: limits.max_job_bytes.min(super::bvh::MAX_MEMORY_BYTES),
         max_work: limits.max_work_units,
         ..Default::default()
     }
@@ -174,8 +176,38 @@ pub fn admit(scene: &ProductScene, request: &ImageRequest, options: &RaytraceOpt
     Ok(admission)
 }
 
+fn selected_workers(options: &RaytraceOptions) -> u16 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        parallel::worker_count(options)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = options;
+        1
+    }
+}
+
 pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options: &RaytraceOptions) -> job::Result<Admission> {
+    admit_layout_with_workers(scene, request, options, selected_workers(options))
+}
+
+fn admit_layout_with_workers(scene: &ProductScene, request: &ImageRequest, options: &RaytraceOptions, workers: u16) -> job::Result<Admission> {
     options.validate()?;
+    if !(1..=job::MAX_CPU_THREADS).contains(&workers) {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "CPU worker admission requires 1..64 workers"));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if options.threads != 0 && options.threads != workers {
+        return Err(JobError::new(ErrorCode::InvalidRequest, "CPU worker admission differs from the explicit selection"));
+    }
+    #[cfg(target_arch = "wasm32")]
+    if workers != 1 || options.threads > 1 {
+        return Err(JobError::new(
+            ErrorCode::HostUnavailable,
+            "browser CPU execution requires Auto or Single; custom native workers are unavailable",
+        ));
+    }
     let (width, height) = if options.supersampling == 2 {
         job::supersampled_dimensions(request.width, request.height, options.supersampling)?
     } else {
@@ -373,8 +405,9 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
     })?;
     // Trace-grid film/guides/filtering are distinct from final-size finishing,
     // codec output and categorical diagnostics. Account overlapping owned planes.
-    let pixels = u64::from(width) * u64::from(height);
-    let output_pixels = u64::from(request.width) * u64::from(request.height);
+    let pixels = u64::from(width).checked_mul(u64::from(height)).ok_or_else(|| error(TraceError::MemoryLimit))?;
+    let output_pixels = u64::from(request.width).checked_mul(u64::from(request.height)).ok_or_else(|| error(TraceError::MemoryLimit))?;
+    let plane_bytes = |count: u64, stride: u64| count.checked_mul(stride).ok_or_else(|| error(TraceError::MemoryLimit));
     let output_already_paid = options.output.as_deref().is_some_and(|output| !output.identity_display() || output.linear_exr);
     let mut denoise_bytes = if options.denoise || options.denoise_diagnostics {
         if options.denoise_diagnostics {
@@ -386,17 +419,20 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
         0
     };
     if linear_required {
-        let converted = if output_already_paid { pixels - output_pixels } else { pixels };
+        let converted = if output_already_paid { pixels.checked_sub(output_pixels).ok_or_else(|| error(TraceError::MemoryLimit))? } else { pixels };
+        let converted_bytes = plane_bytes(converted, 16)?;
+        let filter_bytes = if options.denoise { plane_bytes(pixels, 16)? } else { 0 };
+        let resolve_bytes = if options.supersampling == 2 { plane_bytes(output_pixels, 17)? } else { 0 };
         denoise_bytes = denoise_bytes
-            .checked_add(converted * 16)
-            .and_then(|n| n.checked_add(if options.denoise { pixels * 16 } else { 0 }))
-            .and_then(|n| n.checked_add(if options.supersampling == 2 { output_pixels * 17 } else { 0 }))
+            .checked_add(converted_bytes)
+            .and_then(|n| n.checked_add(filter_bytes))
+            .and_then(|n| n.checked_add(resolve_bytes))
             .and_then(|n| n.checked_add(if output_already_paid { 0 } else { std::mem::size_of::<job::output::OutputTask>() as u64 }))
             .ok_or_else(|| error(TraceError::MemoryLimit))?;
     }
     if options.denoise_diagnostics {
         denoise_bytes = denoise_bytes
-            .checked_add(output_pixels * 4)
+            .checked_add(plane_bytes(output_pixels, 4)?)
             .and_then(|n| n.checked_add(a.encoded_limit))
             .ok_or_else(|| error(TraceError::MemoryLimit))?;
     }
@@ -407,7 +443,7 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
     };
     let caustics_bytes = options.caustics.map_or(Ok(0), caustics::Task::required_bytes)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let parallel_bytes = parallel::Pool::required_bytes(options, request.textures.is_some())?;
+    let parallel_bytes = parallel::Pool::required_bytes(options, request.textures.is_some(), workers)?;
     #[cfg(target_arch = "wasm32")]
     let parallel_bytes = 0;
     let extra = BvhBuilder::required_bytes(n, n, limits(options.budget))
@@ -446,6 +482,7 @@ pub(crate) fn admit_layout(scene: &ProductScene, request: &ImageRequest, options
     if a.estimated_total_bytes > options.budget.limits().max_job_bytes {
         return Err(error(TraceError::MemoryLimit));
     }
+    a.cpu_workers = Some(workers);
     Ok(a)
 }
 
@@ -755,8 +792,21 @@ impl ImageTask {
         input: Option<crate::lighting::environment_input::EnvironmentInput>,
         proof: Option<CertifiedOptics>,
     ) -> job::Result<Self> {
+        let workers = selected_workers(&options);
+        Self::new_prepared_with_workers(scene, request, cancel, options, input, proof, workers)
+    }
+
+    pub(crate) fn new_prepared_with_workers(
+        scene: ProductScene,
+        request: ImageRequest,
+        cancel: CancelToken,
+        options: RaytraceOptions,
+        input: Option<crate::lighting::environment_input::EnvironmentInput>,
+        proof: Option<CertifiedOptics>,
+        workers: u16,
+    ) -> job::Result<Self> {
         cancel.check()?;
-        let mut admission = admit_layout(&scene, &request, &options)?;
+        let mut admission = admit_layout_with_workers(&scene, &request, &options, workers)?;
         let (output_width, output_height) = (request.width, request.height);
         let mut request = request;
         if options.supersampling == 2 {
@@ -1443,7 +1493,7 @@ impl ImageTask {
                 })
             {
                 #[cfg(not(target_arch = "wasm32"))]
-                let parallel_photons = parallel::worker_count(&self.options) > 1
+                let parallel_photons = parallel::admitted_workers(&self.admission)? > 1
                     && self.caustics.first().is_some_and(|map| map.parallel_ready() && map.parallel_sources(self))
                     && !self.scene.meshes.is_empty();
                 #[cfg(target_arch = "wasm32")]
@@ -1499,7 +1549,7 @@ impl ImageTask {
                     self.pixel += 1;
                 } else {
                     #[cfg(not(target_arch = "wasm32"))]
-                    let parallel_camera = parallel::worker_count(&self.options) > 1;
+                    let parallel_camera = parallel::admitted_workers(&self.admission)? > 1;
                     #[cfg(target_arch = "wasm32")]
                     let parallel_camera = false;
                     if parallel_camera {

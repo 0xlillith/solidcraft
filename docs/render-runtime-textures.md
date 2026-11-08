@@ -121,11 +121,14 @@ GPU mip chains require 129,324,176 bytes before lookup records. The full texture
 buffer fits a 128 MiB storage binding. Admission separately checks geometry,
 film, device limits and the complete job budget.
 
-The GPU executor selects a bounded opaque pipeline when the captured scene has
-no physical transmission or active volume. Glass and active volume rendering
-retain the general pipeline. Both honor each map's captured filtering and face-precedence policy.
-Disjoint media use one private stack entry; certified nested media retain their
-sixteen-entry capacity. Captured scene options select at most six cached programs.
+The GPU executor selects a bounded opaque pipeline for map-free scenes with
+no physical transmission or active volume. Mapped scenes, Glass and active volume
+rendering use the general pipeline. This avoids the RADV specialization's
+mapped-surface normal corruption; captured filtering and face precedence remain
+authoritative.
+The map-free opaque specialization has one private media-stack entry; the
+general pipeline retains sixteen. The authored nested-media policy still controls
+admission and boundary transitions. Captured scene options select at most six cached programs.
 
 The independent progressive device requests six storage buffers per shader
 stage. An adapter limited to fewer cannot install this executor; raster and

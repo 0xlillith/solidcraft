@@ -1,5 +1,6 @@
 //! Shared numerical editors for bounded camera sampling and GPU transport extensions.
 use crate::{SolveApp, ui_kit};
+use solidcraft_engine::render::job::adaptive::MAX_PILOT_SAMPLES;
 
 /// Pilot allocation and conditional transmission sampling share portable intent.
 #[cfg(test)]
@@ -50,9 +51,7 @@ pub(super) fn adaptive_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
                 _ => "render.children.coverage_error",
             };
             let response = ui_kit::row(ui, app.tr(label), |ui| match key {
-                "render.adaptive_pilots" => {
-                    ui_kit::number_field_preserving(ui, &mut options.pilot_samples, 16..=super::quality::MAX_UI_SAMPLES, 1.0, "")
-                }
+                "render.adaptive_pilots" => ui_kit::number_field_preserving(ui, &mut options.pilot_samples, 16..=MAX_PILOT_SAMPLES, 1.0, ""),
                 "render.adaptive_minimum" => {
                     ui_kit::number_field_preserving(ui, &mut options.min_samples, 16..=super::quality::MAX_UI_SAMPLES, 1.0, "")
                 }

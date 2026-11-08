@@ -37,6 +37,8 @@ struct Params {
     directional_lights: array<DirectionalLight,8>,
     punctual_lights: array<PunctualLight,8>,
     studio_weights: vec4<f32>,
+    // Global first pixel and local film-plane length; zero length is the full-image test layout.
+    page: vec4<u32>,
 
 };
 @group(0) @binding(0) var<uniform> u: Params;
@@ -49,6 +51,9 @@ struct EnvironmentData { header: vec4<u32>, texels: array<EnvironmentTexel> };
 // Count low, first pixel/bounce/sample/code, count high, first-writer flag, spare.
 // Two atomic words count jobs with more than 2^32 paths without wrapping to zero.
 @group(0) @binding(6) var<storage, read_write> failures: array<atomic<u32>>;
+fn film_pixels()->u32 {return select(u.image.x*u.image.y,u.page.y,u.page.y!=0u);}
+fn film_index(pixel:u32)->u32 {return pixel-u.page.x;}
+
 // Codes: 1 escaped inside a medium, 2 exit with no medium, 3 exit from another
 // medium, 4 ambiguous origin/certificate, invalid entry or beyond16 nested media.
 fn medium_failure(radiance: vec3<f32>, coverage: f32, pixel: u32, bounce: u32, code: u32) -> vec4<f32> {
@@ -1550,42 +1555,42 @@ fn adaptive_target(mean: vec4<f32>, m2: vec4<f32>) -> u32 {
 // publish one bounded request per tile; a separate native program resolves its
 // visibility before entering this update, including final adaptive normalization.
 fn accumulate_path(pixel:u32,value:vec4<f32>) {
-    let pixels=u.image.x*u.image.y;let pilots=u.adaptive_budget.x;
+    let pixels=film_pixels();let local=film_index(pixel);let pilots=u.adaptive_budget.x;
     let strata=max(1u,u.adaptive_budget.z);let lane=u32(u.adaptive_error.w);
     var budget_count=0u;
-    if pilots>0u && u.image.z>=pilots {budget_count=u32(accumulation[2u*pixels+pixel].x);}
+    if pilots>0u && u.image.z>=pilots {budget_count=u32(accumulation[2u*pixels+local].x);}
     if pilots == 0u {
         let sample = value/f32(strata);
-        if u.image.z == 0u && lane == 0u { accumulation[pixel] = sample; }
-        else { accumulation[pixel] += sample; }
+        if u.image.z == 0u && lane == 0u { accumulation[local] = sample; }
+        else { accumulation[local] += sample; }
         return;
     }
     if u.image.z < pilots {
-        var mean = accumulation[pixels+pixel];
-        var m2 = accumulation[2u*pixels+pixel];
+        var mean = accumulation[pixels+local];
+        var m2 = accumulation[2u*pixels+local];
         if u.image.z == 0u { mean=vec4<f32>(0.0); m2=vec4<f32>(0.0); }
         let delta=value-mean;
         mean += delta/f32(u.image.z+1u);
         m2 += delta*(value-mean);
-        accumulation[pixels+pixel]=mean;
-        accumulation[2u*pixels+pixel]=m2;
+        accumulation[pixels+local]=mean;
+        accumulation[2u*pixels+local]=m2;
         if u.image.z+1u == pilots {
-            accumulation[2u*pixels+pixel]=vec4<f32>(f32(adaptive_target(mean,m2)),0.0,0.0,0.0);
-            accumulation[pixel]=vec4<f32>(0.0);
+            accumulation[2u*pixels+local]=vec4<f32>(f32(adaptive_target(mean,m2)),0.0,0.0,0.0);
+            accumulation[local]=vec4<f32>(0.0);
         }
         return;
     }
     let ordinal=u.image.z-pilots;
-    accumulation[pixel] += value/f32(strata);
+    accumulation[local] += value/f32(strata);
     // Per-pixel production means enter both raw EXR and denoising. Pilots do not.
-    if ordinal+1u == budget_count && lane+1u == strata { accumulation[pixel] /= f32(budget_count); }
+    if ordinal+1u == budget_count && lane+1u == strata { accumulation[local] /= f32(budget_count); }
 }
 @compute @workgroup_size(32)
 fn main(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pixel=u.image.w+gid.x;let pixels=u.image.x*u.image.y;
     if gid.x>=u.sampling.z || pixel>=pixels {return;}
     let pilots=u.adaptive_budget.x;
-    if pilots>0u && u.image.z>=pilots && u.image.z-pilots>=u32(accumulation[2u*pixels+pixel].x) {return;}
+    if pilots>0u && u.image.z>=pilots && u.image.z-pilots>=u32(accumulation[2u*film_pixels()+film_index(pixel)].x) {return;}
     if GLASS_DELTA_LIGHTS {accumulation[glass_tile_address(pixel)+6u]=vec4<f32>(0.0);}
     let value=sample_path(pixel);
     if GLASS_DELTA_LIGHTS {accumulation[glass_tile_address(pixel)+7u]=value;return;}
@@ -1598,7 +1603,7 @@ fn optical_resolve(@builtin(global_invocation_id) gid:vec3<u32>) {
     let pixel=u.image.w+gid.x;let pixels=u.image.x*u.image.y;
     if gid.x>=u.sampling.z || pixel>=pixels {return;}
     let pilots=u.adaptive_budget.x;
-    if pilots>0u && u.image.z>=pilots && u.image.z-pilots>=u32(accumulation[2u*pixels+pixel].x) {return;}
+    if pilots>0u && u.image.z>=pilots && u.image.z-pilots>=u32(accumulation[2u*film_pixels()+film_index(pixel)].x) {return;}
     let address=glass_tile_address(pixel);let header=accumulation[address+6u];
     var packet:array<vec4<u32>,6>;
     if header.x>0.0 {

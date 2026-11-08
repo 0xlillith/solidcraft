@@ -5,7 +5,7 @@ configuration of one selected image method, including an optional embedded HDR.
 Saving does not start a render, apply
 the navigation camera or require an installed CPU/GPU executor. `render.preflight`
 and `render.start` consume the same saved configuration and still check the current
-host, geometry, capabilities and memory limits. Sample selections through 128,
+host, geometry, capabilities and memory limits. Sample selections through 16,384,
 8K output, X2 supersampling, CPU workers, denoising controls and guide capture use
 these same saved jobs; see [render quality controls](render-quality-controls.md).
 

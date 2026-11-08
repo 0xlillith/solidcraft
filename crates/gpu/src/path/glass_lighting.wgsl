@@ -112,7 +112,7 @@ fn glass_offer_light(lights:ptr<function,array<vec4<u32>,6>>,count:ptr<function,
 // Film planes precede this scratch and retain their historical offsets. Integer
 // metadata uses exact numeric f32 encoding rather than subnormal bit patterns.
 fn glass_tile_address(pixel:u32)->u32 {
-    return u.image.x*u.image.y*select(1u,3u,u.adaptive_budget.x>0u)+(pixel-u.image.w)*8u;
+    return film_pixels()*select(1u,3u,u.adaptive_budget.x>0u)+(pixel-u.image.w)*8u;
 }
 fn glass_capture_light(lights:ptr<function,array<vec4<u32>,6>>,count:u32,wavelength:f32,pixel:u32) {
     let address=glass_tile_address(pixel);

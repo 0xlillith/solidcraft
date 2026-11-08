@@ -4,6 +4,9 @@
 use super::{ErrorCode, JobError, Result};
 use serde::{Deserialize, Serialize};
 
+/// Maximum independent pilot samples per pixel supported by adaptive allocation.
+pub const MAX_PILOT_SAMPLES: u32 = 256;
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AdaptiveSampling {
@@ -20,7 +23,7 @@ impl Default for AdaptiveSampling {
 }
 impl AdaptiveSampling {
     pub fn validate(self, maximum: u32) -> Result<()> {
-        if !(16..=256).contains(&self.pilot_samples)
+        if !(16..=MAX_PILOT_SAMPLES).contains(&self.pilot_samples)
             || !(16..=maximum).contains(&self.min_samples)
             || maximum > super::MAX_SAMPLES_PER_PIXEL
             || !self.relative_error.is_finite()

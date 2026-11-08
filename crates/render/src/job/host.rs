@@ -107,14 +107,22 @@ pub enum HostKind {
 struct Budget {
     used: AtomicU64,
     limit: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    memory: Option<Arc<super::host_memory::NativeMemoryPool>>,
 }
 pub(crate) struct Reservation {
     budget: Arc<Budget>,
     bytes: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    memory: Option<super::host_memory::MemoryLease>,
 }
 
 impl Budget {
     fn reserve(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
+        // The native process-wide lease is acquired first and rolls back if this
+        // individual host's finite software pool subsequently refuses the job.
+        #[cfg(not(target_arch = "wasm32"))]
+        let memory = self.memory.as_ref().map(|pool| pool.reserve(bytes)).transpose()?;
         let mut used = self.used.load(Ordering::Acquire);
         loop {
             let next = used.checked_add(bytes).filter(|n| *n <= self.limit).ok_or_else(|| {
@@ -125,7 +133,24 @@ impl Budget {
                 Err(current) => used = current,
             }
         }
-        Ok(Reservation { budget: self.clone(), bytes })
+        Ok(Reservation {
+            budget: self.clone(),
+            bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            memory,
+        })
+    }
+
+    fn memory_admission(&self, required: u64, credit: u64) -> Result<Option<super::HostMemoryAdmission>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.memory.as_ref().map(|pool| pool.check(required, credit)).transpose()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (required, credit);
+            Ok(None)
+        }
     }
 }
 impl Reservation {
@@ -135,8 +160,15 @@ impl Reservation {
         if bytes > self.bytes {
             return Err(JobError::new(ErrorCode::LimitExceeded, "preview exceeds its prepaid reservation"));
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let memory = self.memory.as_mut().map(|lease| lease.split(bytes)).transpose()?;
         self.bytes -= bytes;
-        Ok(Self { budget: self.budget.clone(), bytes })
+        Ok(Self {
+            budget: self.budget.clone(),
+            bytes,
+            #[cfg(not(target_arch = "wasm32"))]
+            memory,
+        })
     }
 
     /// Return a lease to the same prepaid pool without reserving memory again.
@@ -144,7 +176,14 @@ impl Reservation {
         if !Arc::ptr_eq(&self.budget, &other.budget) {
             return Err(JobError::new(ErrorCode::Internal, "checkpoint lease belongs to another pool"));
         }
-        self.bytes = self.bytes.checked_add(other.bytes).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint lease overflow"))?;
+        let bytes = self.bytes.checked_add(other.bytes).ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "checkpoint lease overflow"))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        match (&mut self.memory, &mut other.memory) {
+            (Some(lease), Some(other)) => lease.merge_from(other)?,
+            (None, None) => {}
+            _ => return Err(JobError::new(ErrorCode::Internal, "checkpoint native memory lease mismatch")),
+        }
+        self.bytes = bytes;
         other.bytes = 0;
         Ok(())
     }
@@ -152,6 +191,10 @@ impl Reservation {
     pub(crate) fn shrink(&mut self, bytes: u64) -> Result<()> {
         if bytes > self.bytes {
             return Err(JobError::new(ErrorCode::LimitExceeded, "completed PNG exceeds its reservation"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(memory) = &mut self.memory {
+            memory.shrink(bytes)?;
         }
         self.budget.used.fetch_sub(self.bytes - bytes, Ordering::AcqRel);
         self.bytes = bytes;
@@ -262,7 +305,13 @@ mod light_union_lease_tests {
     }
     #[test]
     fn failed_union_metadata_reservation_releases_work_and_does_not_enqueue() {
-        let host = CpuHost::for_platform().unwrap();
+        let host = ImageHost(Arc::new(Owner {
+            executor: None,
+            shared: ImageHost::shared(MEMORY_LIMIT),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }));
         let request = request().unwrap();
         let work = admit(&scene(), &request).unwrap().estimated_total_bytes;
         let fill = host.0.shared.budget.reserve(host.pool_limit_bytes() - work).unwrap();
@@ -883,6 +932,8 @@ impl PreparedSubmission {
 struct Work {
     #[cfg(feature = "raytrace-cpu")]
     proof: Vec<crate::raytrace::image::CertifiedOptics>,
+    #[cfg(feature = "raytrace-cpu")]
+    cpu_workers: Option<u16>,
     regrade: Option<(Arc<RenderFrame>, super::presentation::Presentation)>,
     request: Option<ImageRequest>,
     executor: Option<Arc<dyn ImageExecutor>>,
@@ -1171,6 +1222,7 @@ impl WorkTask {
         cancel: CancelToken,
         environment: Option<crate::lighting::environment_input::EnvironmentInput>,
         #[cfg(feature = "raytrace-cpu")] proof: Option<crate::raytrace::image::CertifiedOptics>,
+        #[cfg(feature = "raytrace-cpu")] cpu_workers: Option<u16>,
     ) -> Result<Self> {
         let _ = &environment;
         match request.integrator {
@@ -1179,7 +1231,8 @@ impl WorkTask {
                 #[cfg(feature = "raytrace-cpu")]
                 {
                     let options = request.raytrace.clone().unwrap_or_default();
-                    crate::raytrace::image::ImageTask::new_prepared(scene, request, cancel, options, environment, proof)
+                    let workers = cpu_workers.ok_or_else(|| JobError::new(ErrorCode::Internal, "CPU work is missing its admitted worker count"))?;
+                    crate::raytrace::image::ImageTask::new_prepared_with_workers(scene, request, cancel, options, environment, proof, workers)
                         .and_then(TaskSlot::new)
                         .map(Self::Raytrace)
                 }
@@ -1296,6 +1349,8 @@ impl Running {
                     work.environment,
                     #[cfg(feature = "raytrace-cpu")]
                     work.proof.pop(),
+                    #[cfg(feature = "raytrace-cpu")]
+                    work.cpu_workers,
                 )
             }
         }))
@@ -1637,11 +1692,24 @@ pub type CpuHost = ImageHost;
 
 impl ImageHost {
     fn shared(limit: u64) -> Arc<Shared> {
+        Self::shared_with_memory(
+            limit,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    fn shared_with_memory(limit: u64, #[cfg(not(target_arch = "wasm32"))] memory: Option<Arc<super::host_memory::NativeMemoryPool>>) -> Arc<Shared> {
         Arc::new(Shared {
             queue: Mutex::new(VecDeque::new()),
             active: Mutex::new(None),
             stop: AtomicBool::new(false),
-            budget: Arc::new(Budget { used: AtomicU64::new(0), limit }),
+            budget: Arc::new(Budget {
+                used: AtomicU64::new(0),
+                limit,
+                #[cfg(not(target_arch = "wasm32"))]
+                memory,
+            }),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Condvar::new(),
         })
@@ -1679,7 +1747,7 @@ impl ImageHost {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let pool = if usize::BITS >= 64 { super::NATIVE_CPU_POOL_BYTES } else { MEMORY_LIMIT };
-            let shared = Self::shared(pool);
+            let shared = Self::shared_with_memory(pool, Some(super::host_memory::shared_native_memory()));
             let worker_shared = shared.clone();
             let worker = std::thread::Builder::new()
                 .name("solidcraft-render".into())
@@ -1699,7 +1767,7 @@ impl ImageHost {
         if limit == 0 || limit > ceiling {
             return Err(JobError::new(ErrorCode::InvalidRequest, "registered image pool exceeds supported address space"));
         }
-        let shared = Self::shared(limit);
+        let shared = Self::shared_with_memory(limit, Some(super::host_memory::shared_native_memory()));
         let worker_shared = shared.clone();
         let worker = std::thread::Builder::new()
             .name("solidcraft-render".into())
@@ -1806,7 +1874,15 @@ impl ImageHost {
     /// Strict blocking API. Native UI callers prepare beside the window. The
     /// temporary lease exists before any new box proof backing is allocated.
     pub fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
-        let admission = self.admit_layout(scene, request, options)?;
+        let mut admission = self.admit_layout(scene, request, options)?;
+        let option_bytes = options.retained_bytes()?;
+        let required = admission
+            .estimated_total_bytes
+            .checked_add(retained_request_bytes(request)?)
+            .and_then(|bytes| bytes.checked_add(request.retained_resource_metadata_bytes()))
+            .and_then(|bytes| bytes.checked_add(option_bytes))
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "native preflight byte count overflow"))?;
+        admission.host_memory = self.0.shared.budget.memory_admission(required, 0)?;
         #[cfg(feature = "raytrace-cpu")]
         if self.0.executor.is_none() && request.integrator == Integrator::Raytrace {
             let defaults = super::RaytraceOptions::default();
@@ -2292,6 +2368,12 @@ impl ImageHost {
         }
         prepared.cancel.check()?;
         prepared.options = if options.is_structural_default() { None } else { Some(RetainedOptions::new(options)?) };
+        let held = prepared
+            .reservation
+            .bytes
+            .checked_add(prepared.request_reservation.as_ref().map_or(0, |lease| lease.bytes))
+            .ok_or_else(|| JobError::new(ErrorCode::LimitExceeded, "prepared native memory receipt overflow"))?;
+        prepared.admission.host_memory = self.0.shared.budget.memory_admission(held, held)?;
         Ok(prepared)
     }
 
@@ -2375,6 +2457,8 @@ impl ImageHost {
             regrade: None,
             #[cfg(feature = "raytrace-cpu")]
             proof,
+            #[cfg(feature = "raytrace-cpu")]
+            cpu_workers: admission.cpu_workers,
             request: work_request,
             executor: self.0.executor.clone(),
             scene,
@@ -2507,6 +2591,8 @@ impl ImageHost {
         queue.push_back(Work {
             #[cfg(feature = "raytrace-cpu")]
             proof: Vec::new(),
+            #[cfg(feature = "raytrace-cpu")]
+            cpu_workers: None,
             regrade: Some((master, presentation)),
             request: None,
             executor: None,
@@ -2812,7 +2898,12 @@ mod retained_request_tests {
             + 32 * std::mem::size_of::<super::super::SurfaceEmission>() as u64
             + 256;
         assert_eq!(retained_request_bytes(&request).unwrap(), expected);
-        let budget = Arc::new(Budget { used: AtomicU64::new(0), limit: MEMORY_LIMIT });
+        let budget = Arc::new(Budget {
+            used: AtomicU64::new(0),
+            limit: MEMORY_LIMIT,
+            #[cfg(not(target_arch = "wasm32"))]
+            memory: None,
+        });
         let lease = budget.reserve(expected).unwrap();
         assert_eq!(budget.used.load(Ordering::Acquire), expected);
         assert!(admit_request_sum(super::super::image::MAX_JOB_BYTES - expected, expected).is_ok());

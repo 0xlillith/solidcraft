@@ -130,8 +130,8 @@ The retained GPU payload uses six `vec4<u32>` lanes: 96 bytes plus separate coun
 and selection RNG state. It preserves the physical point's high/low parts,
 incident direction, IORs, source triangle/event kind and throughput prefix; HG
 requests also retain their current medium. Certified parent metadata reconstructs
-closed-interface media. The existing sixteen-event camera limit, including every
-consumed virtual-sheet interface, bounds K by 16; an exceeded count fails
+closed-interface media. The 64-event camera limit, including every
+consumed virtual-sheet interface, bounds K by 64; an exceeded count fails
 explicitly.
 
 The camera dispatch writes a 128-byte packet per active path in its bounded

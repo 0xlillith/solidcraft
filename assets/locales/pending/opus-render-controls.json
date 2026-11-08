@@ -2,7 +2,7 @@
   "en": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "Saved value: {samples} spp. New selections are limited to {maximum} spp.",
-    "render.quality_preset_limit": "This preset exceeds the 128 spp selection limit. Choose a sample count up to 128.",
+    "render.quality_preset_limit": "This preset exceeds the 16384 spp selection limit. Choose a sample count up to 16384.",
     "render.supersampling": "Supersampling",
     "render.supersampling_off": "Off",
     "render.supersampling_x2": "2×",
@@ -50,7 +50,7 @@
   "ar": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "القيمة المحفوظة: {samples} عينة لكل بكسل. تقتصر الاختيارات الجديدة على {maximum} عينة لكل بكسل.",
-    "render.quality_preset_limit": "يتجاوز هذا الإعداد المسبق حد الاختيار البالغ 128 عينة لكل بكسل. اختر عدد عينات لا يتجاوز 128.",
+    "render.quality_preset_limit": "يتجاوز هذا الإعداد المسبق حد الاختيار البالغ 16384 عينة لكل بكسل. اختر عدد عينات لا يتجاوز 16384.",
     "render.supersampling": "أخذ عينات فائقة",
     "render.supersampling_off": "إيقاف",
     "render.supersampling_x2": "2×",
@@ -98,7 +98,7 @@
   "he": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "ערך שמור: {samples} דגימות לפיקסל. בחירות חדשות מוגבלות ל־{maximum} דגימות לפיקסל.",
-    "render.quality_preset_limit": "הגדרה קבועה זו חורגת ממגבלת הבחירה של 128 דגימות לפיקסל. יש לבחור עד 128 דגימות.",
+    "render.quality_preset_limit": "הגדרה קבועה זו חורגת ממגבלת הבחירה של 16384 דגימות לפיקסל. יש לבחור עד 16384 דגימות.",
     "render.supersampling": "דגימת יתר",
     "render.supersampling_off": "כבוי",
     "render.supersampling_x2": "2×",
@@ -146,7 +146,7 @@
   "ja": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "保存値: {samples} spp。新しい選択値の上限は {maximum} spp です。",
-    "render.quality_preset_limit": "このプリセットは選択上限の 128 spp を超えています。128 以下のサンプル数を選択してください。",
+    "render.quality_preset_limit": "このプリセットは選択上限の 16384 spp を超えています。16384 以下のサンプル数を選択してください。",
     "render.supersampling": "スーパーサンプリング",
     "render.supersampling_off": "オフ",
     "render.supersampling_x2": "2×",
@@ -194,7 +194,7 @@
   "vi": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "Giá trị đã lưu: {samples} mẫu/pixel. Lựa chọn mới được giới hạn ở {maximum} mẫu/pixel.",
-    "render.quality_preset_limit": "Thiết lập sẵn này vượt quá giới hạn 128 mẫu/pixel. Hãy chọn số mẫu tối đa là 128.",
+    "render.quality_preset_limit": "Thiết lập sẵn này vượt quá giới hạn 16384 mẫu/pixel. Hãy chọn số mẫu tối đa là 16384.",
     "render.supersampling": "Lấy mẫu siêu phân giải",
     "render.supersampling_off": "Tắt",
     "render.supersampling_x2": "2×",
@@ -242,7 +242,7 @@
   "zh": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "已保存的值：{samples} spp。新选择的上限为 {maximum} spp。",
-    "render.quality_preset_limit": "此预设超过 128 spp 的选择上限。请选择不超过 128 的采样数。",
+    "render.quality_preset_limit": "此预设超过 16384 spp 的选择上限。请选择不超过 16384 的采样数。",
     "render.supersampling": "超采样",
     "render.supersampling_off": "关闭",
     "render.supersampling_x2": "2×",
@@ -290,7 +290,7 @@
   "de": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "Gespeicherter Wert: {samples} spp. Neue Werte sind auf {maximum} spp begrenzt.",
-    "render.quality_preset_limit": "Diese Vorgabe überschreitet die Auswahlgrenze von 128 spp. Wählen Sie höchstens 128 Samples.",
+    "render.quality_preset_limit": "Diese Vorgabe überschreitet die Auswahlgrenze von 16384 spp. Wählen Sie höchstens 16384 Samples.",
     "render.supersampling": "Supersampling",
     "render.supersampling_off": "Aus",
     "render.supersampling_x2": "2×",
@@ -338,7 +338,7 @@
   "ko": {
     "render.size_8k_uhd": "8K UHD",
     "render.quality_legacy_samples": "저장된 값: {samples} spp. 새 선택값은 {maximum} spp로 제한됩니다.",
-    "render.quality_preset_limit": "이 프리셋은 선택 한도인 128 spp를 초과합니다. 샘플 수를 128 이하로 선택하세요.",
+    "render.quality_preset_limit": "이 프리셋은 선택 한도인 16384 spp를 초과합니다. 샘플 수를 16384 이하로 선택하세요.",
     "render.supersampling": "슈퍼샘플링",
     "render.supersampling_off": "끄기",
     "render.supersampling_x2": "2×",

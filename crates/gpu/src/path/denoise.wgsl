@@ -1,10 +1,12 @@
 // Original bounded edge-avoiding a-trous filter inspired by Dammertz et al.
 // Inputs/outputs keep accumulated linear premultiplied radiance and raw alpha.
-struct FilterParams { image: vec4<u32>, work: vec4<u32> };
+struct FilterParams { image: vec4<u32>, work: vec4<u32>, window: vec4<u32> };
 @group(0) @binding(0) var<uniform> f: FilterParams;
 @group(0) @binding(1) var<storage,read> guides: array<vec4<f32>>;
 @group(0) @binding(2) var<storage,read> source: array<vec4<f32>>;
 @group(0) @binding(3) var<storage,read_write> filtered: array<vec4<f32>>;
+fn filter_pixels()->u32 {return select(f.image.x*f.image.y,f.window.y,f.window.y!=0u);}
+
 fn kernel(x:i32)->f32 {
     if x==0 { return 6.0; }
     if abs(x)==1 { return 4.0; }
@@ -24,13 +26,14 @@ fn geometry_weight(a:vec4<f32>,n:vec4<f32>,p:vec4<f32>,b:vec4<f32>,m:vec4<f32>,r
 }
 @compute @workgroup_size(64)
 fn atrous(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pixel=f.image.w+gid.x;
-    if gid.x>=f.work.x || pixel>=f.image.x*f.image.y { return; }
-    let c=source[pixel];
-    let a=guides[pixel*6u]; let n=guides[pixel*6u+1u]; let p=guides[pixel*6u+2u];
+    let local=f.image.w+gid.x;
+    let pixel=f.window.x+local;
+    if gid.x>=f.work.x || local>=filter_pixels() || pixel>=f.image.x*f.image.y { return; }
+    let c=source[local];
+    let a=guides[local*6u]; let n=guides[local*6u+1u]; let p=guides[local*6u+2u];
     // Optical correspondence is a negative, finite tag in the same slot.
     let optical=a.w<0.0;
-    if a.w==0.0 || c.w<f32(f.work.y)*0.999 || (optical && f.image.z>2u) { filtered[pixel]=c; return; }
+    if a.w==0.0 || c.w<f32(f.work.y)*0.999 || (optical && f.image.z>2u) { filtered[local]=c; return; }
     let xy=vec2<i32>(i32(pixel%f.image.x),i32(pixel/f.image.x));
     var mean=vec3<f32>(0.0); var total=0.0;
     let samples=f32(f.work.y);
@@ -42,12 +45,14 @@ fn atrous(@builtin(global_invocation_id) gid:vec3<u32>) {
     for(var y=-2;y<=2;y+=1) { for(var x=-2;x<=2;x+=1) {
         let q=xy+vec2<i32>(x,y)*i32(f.image.z);
         if any(q<vec2<i32>(0)) || q.x>=i32(f.image.x) || q.y>=i32(f.image.y) { continue; }
-        let j=u32(q.y)*f.image.x+u32(q.x);
+        let global=u32(q.y)*f.image.x+u32(q.x);
+        if global<f.window.x || global-f.window.x>=filter_pixels() {continue;}
+        let j=global-f.window.x;
         let b=guides[j*6u]; let m=guides[j*6u+1u]; let r=guides[j*6u+2u];
         let v=source[j];
         if b.w!=a.w || abs(v.w-c.w)>samples*0.01 { continue; }
         let guide_weight=geometry_weight(a,n,p,b,m,r,f32(f.image.z))
-            *geometry_weight(guides[pixel*6u+3u],guides[pixel*6u+4u],guides[pixel*6u+5u],
+            *geometry_weight(guides[local*6u+3u],guides[local*6u+4u],guides[local*6u+5u],
                              guides[j*6u+3u],guides[j*6u+4u],guides[j*6u+5u],f32(f.image.z));
         let tap_color=v.xyz/samples;
         let tap_peak=max_component(tap_color);
@@ -60,7 +65,7 @@ fn atrous(@builtin(global_invocation_id) gid:vec3<u32>) {
         let high=max(center_peak,tap_peak);
         let bound=16.0*(0.25+min(center_peak,tap_peak));
         var contrast=1.0;
-        if high>bound {
+        if f.work.w!=0u && high>bound {
             let ratio=bound/high;
             contrast=ratio*ratio;
         }
@@ -79,20 +84,21 @@ fn atrous(@builtin(global_invocation_id) gid:vec3<u32>) {
         if mean_peak>limit { mean*=limit/mean_peak; }
     }
     // The centre always contributes; retain original coverage without filtering.
-    filtered[pixel]=vec4<f32>(mix(c.xyz,mean,bitcast<f32>(f.work.z)),c.w);
+    filtered[local]=vec4<f32>(mix(c.xyz,mean,bitcast<f32>(f.work.z)),c.w);
 }
 
 // Stable DenoiseGuideClass codes. This diagnostic writes only the filter scratch
 // output, never accumulation or guide data. Coverage matches the filter gate.
 @compute @workgroup_size(64)
 fn guide_classes(@builtin(global_invocation_id) gid:vec3<u32>) {
-    let pixel=f.image.w+gid.x;
-    if gid.x>=f.work.x || pixel>=f.image.x*f.image.y {return;}
-    let guide=guides[pixel*6u];
+    let local=f.image.w+gid.x;
+    let pixel=f.window.x+local;
+    if gid.x>=f.work.x || local>=filter_pixels() || pixel>=f.image.x*f.image.y {return;}
+    let guide=guides[local*6u];
     var reason=u32(guide.x);
     if guide.w!=0.0 {
         reason=select(1u,2u,guide.w<0.0);
-        if source[pixel].w<f32(f.work.y)*0.999 {reason=16u;}
+        if source[local].w<f32(f.work.y)*0.999 {reason=16u;}
     }
-    filtered[pixel]=vec4<f32>(f32(reason),0.0,0.0,1.0);
+    filtered[local]=vec4<f32>(f32(reason),0.0,0.0,1.0);
 }

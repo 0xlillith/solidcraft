@@ -199,6 +199,25 @@ mod tests {
     }
 
     #[test]
+    fn smoothing_groups_ignore_repeated_index_faces_without_losing_normals() {
+        let src = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 -0.8660254037844386 0.5\ns 1\nf 1 2 3\nf 1 1 2\nf 2 1 4\n";
+        let (objects, warnings) = read_obj(src.as_bytes(), "fold").unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(objects.len(), 1);
+        let object = &objects[0];
+        assert_eq!(object.triangles.len(), 3);
+        assert_eq!(object.corner_normals.len(), 3);
+        let theta = 15f64.to_radians();
+        let shared = Vec3::new(0., theta.sin(), theta.cos());
+        assert!((object.corner_normals[0][0] - shared).len() < 1e-12);
+        assert_eq!(object.corner_normals[0][0], object.corner_normals[2][1]);
+        assert!(object.corner_normals[1].iter().all(|n| n.is_finite() && (n.len() - 1.).abs() < 1e-12));
+        let body = solidcraft_kernel::mesh_body_with_normals(&object.positions, &object.triangles, &object.corner_normals).unwrap();
+        assert_eq!(body.triangle_mesh().unwrap().1, &[[0, 1, 2], [1, 0, 3]]);
+        assert_eq!(body.triangle_corner_normals().unwrap(), &[object.corner_normals[0], object.corner_normals[2]]);
+    }
+
+    #[test]
     fn objects_quads_and_negative_indices() {
         let src = "# cube\no Cube\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n\
                    f 1 4 3 2\nf 5 6 7 8\nf 1 2 6 5\nf 2/1 3/2 7/3 6/4\nf 3//1 4//1 8//1 7//1\nf -4 -8 -5 -1\n\

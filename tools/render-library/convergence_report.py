@@ -64,7 +64,7 @@ def canvas(master):
         lower, upper = map(tuple, header["dataWindow"])
         width, height = (int(value) + 1 for value in upper)
         if (lower != (0, 0) or tuple(map(tuple, header["displayWindow"])) != (lower, upper)
-                or not (1 <= width <= 8192 and 1 <= height <= 8192 and width * height <= 16_777_216)):
+                or not (1 <= width <= 8192 and 1 <= height <= 8192 and width * height <= 33_554_432)):
             raise ValueError(f"{master.path}: expected a bounded zero-origin full canvas")
         if (header.get("compression") != OpenEXR.NO_COMPRESSION
                 or header.get("lineOrder") != OpenEXR.INCREASING_Y

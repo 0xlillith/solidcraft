@@ -4408,7 +4408,7 @@ fn cpu_progressive_sample_editor_uses_the_selected_profile_without_rewriting_exi
         assert!(Arc::ptr_eq(&before, &h.app.session.doc));
         assert_eq!(h.app.session.undo.len(), undo);
 
-        // A real edit respects both the selected profile and the 128-spp UI ceiling.
+        // A real edit respects both the selected profile and the 16,384-spp UI ceiling.
         // Painting and unrelated edits continue to preserve existing authored sample intent.
         for _ in 0..8 {
             let field = crate::scenario::rect_of("render:cpu-spp-field").unwrap();
@@ -16062,9 +16062,60 @@ fn render_quality_settings_roundtrip_offline_runtime_and_one_step_undo() {
 }
 
 #[test]
+fn adaptive_pilot_editor_bounds_new_values_and_preserves_unedited_intent() {
+    use solidcraft_engine::render::job::adaptive::{AdaptiveSampling, MAX_PILOT_SAMPLES};
+
+    for method in [ImageMethod::CpuRaytrace, ImageMethod::GpuRaytrace] {
+        let mut h = render_quality_controls_fixture(method, quality::MAX_UI_SAMPLES);
+        h.app.render_workspace.view.studio.adaptive = Some(AdaptiveSampling { pilot_samples: 16, min_samples: 16, ..Default::default() });
+        setups::save_numerical(&mut h.app).unwrap();
+        render_quality_reveal_sampling(&mut h, method);
+        if crate::scenario::rect_of("render.adaptive_pilots").is_none() {
+            h.step(&json!({"click":{"handle":format!("dialog:section:{}", h.app.tr("render.children.adaptive"))}})).unwrap();
+            h.frames(3);
+        }
+
+        // Starting below the boundary distinguishes a bounded edit from rejecting
+        // an invalid request and silently rolling back to the previous value.
+        render_quality_edit_number(&mut h, "render.adaptive_pilots", &(MAX_PILOT_SAMPLES + 1).to_string());
+        let mut expected = AdaptiveSampling { pilot_samples: MAX_PILOT_SAMPLES, min_samples: 16, ..Default::default() };
+        assert_eq!(h.app.render_workspace.view.studio.adaptive, Some(expected));
+        assert_eq!(image_request(&h.app).unwrap()["settings"]["job"]["options"]["adaptive"], json!(expected));
+        assert!(h.app.render_workspace.view.job.is_none());
+
+        // The independent production minimum still reaches the full UI budget.
+        render_quality_edit_number(&mut h, "render.adaptive_minimum", &quality::MAX_UI_SAMPLES.to_string());
+        expected.min_samples = quality::MAX_UI_SAMPLES;
+        assert_eq!(h.app.render_workspace.view.studio.adaptive, Some(expected));
+        let request = image_request(&h.app).unwrap();
+        assert_eq!(request["settings"]["job"]["options"]["adaptive"], json!(expected));
+        expected.validate(quality::MAX_UI_SAMPLES).unwrap();
+
+        // Existing incompatible intent is visible and refused, never rewritten
+        // merely by painting the now-bounded pilot editor or trying to save it.
+        let invalid = AdaptiveSampling { pilot_samples: MAX_PILOT_SAMPLES + 1, ..expected };
+        h.app.render_workspace.view.studio.adaptive = Some(invalid);
+        let document = h.app.session.doc.clone();
+        let history = (h.app.session.undo.len(), h.app.session.redo.len());
+        h.frames(3);
+        assert_eq!(h.app.render_workspace.view.studio.adaptive, Some(invalid));
+        assert!(image_request(&h.app).is_err());
+        assert!(setups::save_numerical(&mut h.app).is_err());
+        assert!(Arc::ptr_eq(&document, &h.app.session.doc));
+        assert_eq!(history, (h.app.session.undo.len(), h.app.session.redo.len()));
+        assert!(h.app.render_workspace.view.job.is_none());
+
+        render_quality_edit_number(&mut h, "render.adaptive_pilots", &MAX_PILOT_SAMPLES.to_string());
+        assert_eq!(h.app.render_workspace.view.studio.adaptive, Some(expected));
+        assert_eq!(image_request(&h.app).unwrap()["settings"]["job"]["options"]["adaptive"], json!(expected));
+        assert!(h.app.render_workspace.view.job.is_none());
+    }
+}
+
+#[test]
 fn render_quality_widgets_preserve_legacy_samples_and_bound_new_pointer_selections() {
     for method in [ImageMethod::CpuRaytrace, ImageMethod::GpuRaytrace] {
-        let mut h = render_quality_controls_fixture(method, 512);
+        let mut h = render_quality_controls_fixture(method, 32768);
         if method == ImageMethod::CpuRaytrace {
             h.app.render_workspace.view.studio.adaptive = Some(Default::default());
             setups::save(&mut h.app).unwrap();
@@ -16077,19 +16128,40 @@ fn render_quality_widgets_preserve_legacy_samples_and_bound_new_pointer_selectio
         assert!(Arc::ptr_eq(&document, &h.app.session.doc), "painting a legacy sample budget must not rewrite it");
         assert_eq!(h.app.session.undo.len(), undo);
         let options = image_request(&h.app).unwrap()["settings"]["job"]["options"].clone();
-        let key = if method == ImageMethod::CpuRaytrace { "render:cpu-samples-preset:128" } else { "render:gpu-samples-preset:128" };
+        let prefix = if method == ImageMethod::CpuRaytrace { "render:cpu-samples-preset" } else { "render:gpu-samples-preset" };
+        let panel = crate::scenario::rect_of("render:inspector").unwrap();
+        let mut rows = Vec::new();
+        for samples in (0..15).map(|power| 1_u32 << power) {
+            let choice = crate::scenario::rect_of(&format!("{prefix}:{samples}")).unwrap();
+            assert!(
+                choice.left() >= panel.left() && choice.right() <= panel.right(),
+                "{prefix}:{samples}: wrapped sample choice {choice:?} must stay within inspector {panel:?}"
+            );
+            if !rows.contains(&choice.center().y) {
+                rows.push(choice.center().y);
+            }
+        }
+        assert!(rows.len() > 1, "fifteen sample choices must wrap inside the compact inspector");
         assert_eq!(
             if method == ImageMethod::CpuRaytrace { options["progressive"]["samples_per_pixel"].clone() } else { options["samples"].clone() },
-            512
+            32768
         );
-        h.step(&json!({"click":{"handle":key}})).unwrap();
+        h.step(&json!({"click":{"handle":format!("{prefix}:16384")}})).unwrap();
         h.frames(3);
         let options = serde_json::to_value(&h.app.session.doc.render.setups[&name]).unwrap()["job"]["options"].clone();
         assert_eq!(
             if method == ImageMethod::CpuRaytrace { options["progressive"]["samples_per_pixel"].clone() } else { options["samples"].clone() },
-            128
+            16384
         );
         assert_eq!(h.app.session.undo.len(), undo + 1);
+        let field = if method == ImageMethod::CpuRaytrace { "render:cpu-spp-field" } else { "render:gpu-samples" };
+        render_quality_edit_number(&mut h, field, "16385");
+        let options = image_request(&h.app).unwrap()["settings"]["job"]["options"].clone();
+        assert_eq!(
+            if method == ImageMethod::CpuRaytrace { options["progressive"]["samples_per_pixel"].clone() } else { options["samples"].clone() },
+            16384,
+            "explicit numeric edits respect the UI ceiling"
+        );
         assert!(!h.app.render_workspace.view.studio.denoise);
         h.step(&json!({"click":{"handle":"render:denoise-diagnostics"}})).unwrap();
         h.frames(3);
@@ -16098,10 +16170,11 @@ fn render_quality_widgets_preserve_legacy_samples_and_bound_new_pointer_selectio
         assert!(image_request(&h.app).unwrap()["settings"]["job"]["options"]["denoise_diagnostics"].as_bool().unwrap());
         h.step(&json!({"click":{"handle":"render:denoise-enable"}})).unwrap();
         h.frames(3);
+        let previous_firefly = h.app.render_workspace.view.studio.denoise_settings.firefly_suppression;
         h.step(&json!({"click":{"handle":"render:denoise-firefly"}})).unwrap();
         render_quality_edit_number(&mut h, "render:denoise-passes", "2");
         assert_eq!(h.app.render_workspace.view.studio.denoise_settings.passes, 2);
-        assert!(!h.app.render_workspace.view.studio.denoise_settings.firefly_suppression);
+        assert_eq!(h.app.render_workspace.view.studio.denoise_settings.firefly_suppression, !previous_firefly);
         assert!(h.app.render_workspace.view.studio.denoise);
         let selected = setups::draft(&h.app).unwrap();
         setups::load(&mut h.app);
@@ -16116,6 +16189,12 @@ fn render_quality_cpu_worker_controls_and_8k_supersampling_are_saved_ui_choices(
     let mut cpu = render_quality_controls_fixture(ImageMethod::CpuRaytrace, 8);
     render_quality_reveal_sampling(&mut cpu, ImageMethod::CpuRaytrace);
     for (target, expected) in [("single", 1), ("custom", 2)] {
+        let panel = crate::scenario::rect_of("render:inspector").unwrap();
+        for choice in ["auto", "single", "custom"] {
+            let name = format!("render:cpu-threads:{choice}");
+            let rect = crate::scenario::rect_of(&name).unwrap_or_else(|| panic!("{name} must remain visible before selecting {target}"));
+            assert!(panel.contains_rect(rect), "{name}: worker choice {rect:?} must remain inside inspector {panel:?}");
+        }
         cpu.step(&json!({"click":{"handle":format!("render:cpu-threads:{target}")}})).unwrap();
         cpu.frames(3);
         assert_eq!(cpu.app.render_workspace.view.raytrace.threads, expected);
@@ -16135,7 +16214,7 @@ fn render_quality_cpu_worker_controls_and_8k_supersampling_are_saved_ui_choices(
     assert!(cpu::validate_progressive_image(&cpu.app).is_err(), "8K does not permit a square image beyond the output pixel envelope");
     assert_eq!(cpu.app.render_workspace.view.raytrace.budget, profile, "preflight never promotes the CPU resource profile");
 
-    let mut gpu = render_quality_controls_fixture(ImageMethod::GpuRaytrace, 32);
+    let mut gpu = render_quality_controls_fixture(ImageMethod::GpuRaytrace, 16384);
     inspector::select_editor(&mut gpu.app, inspector::Editor::Output);
     gpu.frames(3);
     let undo = gpu.app.session.undo.len();
@@ -16147,6 +16226,7 @@ fn render_quality_cpu_worker_controls_and_8k_supersampling_are_saved_ui_choices(
     let request = image_request(&gpu.app).unwrap();
     assert_eq!((request["settings"]["width"].as_u64(), request["settings"]["height"].as_u64()), (Some(7680), Some(4320)));
     assert_eq!(request["settings"]["job"]["options"]["supersampling"], 2);
+    assert_eq!(request["settings"]["job"]["options"]["samples"], 16384);
     assert_eq!(gpu.app.session.undo.len(), undo + 2);
     assert!(gpu.app.render_workspace.view.job.is_none());
     setups::load(&mut gpu.app);

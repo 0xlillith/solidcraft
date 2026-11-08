@@ -24,10 +24,9 @@ pub(super) fn validate_progressive_image(app: &SolveApp) -> Result<(), String> {
         return Err(super::inspector::size_limit_reason(app, width, height));
     }
     if view.method == super::ImageMethod::CpuRaytrace {
-        let (trace_width, trace_height) =
-            solidcraft_engine::render::job::supersampled_dimensions(width, height, view.studio.supersampling).map_err(|error| error.to_string())?;
+        let (trace_width, trace_height) = trace_dimensions(view, width, height)?;
         view.raytrace.budget.validate_image(trace_width, trace_height, camera_sampling).map_err(|error| error.to_string())?;
-        if view.studio.denoise {
+        if view.studio.denoise || view.studio.denoise_diagnostics {
             solidcraft_engine::render::job::validate_cpu_denoise_image(trace_width, trace_height).map_err(|error| error.to_string())?;
         }
         if let Some(output) = super::studio::cpu_output(view) {
@@ -37,6 +36,27 @@ pub(super) fn validate_progressive_image(app: &SolveApp) -> Result<(), String> {
     Ok(())
 }
 
+/// Match captured CPU output admission. A saved identity output object still uses
+/// native pixels; only processing that needs the linear output route adds its 8K envelope.
+fn bounded_output(view: &super::ViewState) -> bool {
+    let output = solidcraft_engine::render::job::OutputOptions {
+        tone_map: view.studio.tone_map,
+        finishing: view.studio.finishing,
+        backdrop: view.studio.backdrop_enabled.then_some(view.studio.backdrop),
+        linear_exr: view.studio.linear_exr,
+    };
+    view.studio.supersampling != 1 || view.studio.denoise || view.studio.denoise_diagnostics || output.linear_exr || !output.identity_display()
+}
+
+fn trace_dimensions(view: &super::ViewState, width: u32, height: u32) -> Result<(u32, u32), String> {
+    if bounded_output(view) {
+        solidcraft_engine::render::job::supersampled_dimensions(width, height, view.studio.supersampling).map_err(|error| error.to_string())
+    } else {
+        Ok((width, height))
+    }
+}
+
+/// Validate captured/saved intent without applying the bounds of a new size edit.
 pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderLimits {
     if app.render_workspace.view.method == super::ImageMethod::GpuRaytrace {
         return solidcraft_engine::render::job::GPU_PATH_LIMITS;
@@ -47,11 +67,14 @@ pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderL
     let options = &app.render_workspace.view.raytrace;
     let mut limits = options.budget.image_limits(options.progressive.is_some());
     let scale = u64::from(app.render_workspace.view.studio.supersampling.max(1));
-    // Profiles bound the internal trace grid. The editable dimensions are the final output.
+    // Profiles bound the internal trace grid; native legacy requests retain the
+    // profile envelope until a bounded linear-output feature is explicitly chosen.
     limits.max_dimension /= scale;
     limits.max_pixels /= scale.saturating_mul(scale).max(1);
-    limits.max_dimension = limits.max_dimension.min(u64::from(solidcraft_engine::render::job::MAX_OUTPUT_DIMENSION));
-    limits.max_pixels = limits.max_pixels.min(solidcraft_engine::render::job::MAX_OUTPUT_PIXELS);
+    if bounded_output(&app.render_workspace.view) {
+        limits.max_dimension = limits.max_dimension.min(u64::from(solidcraft_engine::render::job::MAX_OUTPUT_DIMENSION));
+        limits.max_pixels = limits.max_pixels.min(solidcraft_engine::render::job::MAX_OUTPUT_PIXELS);
+    }
     let sampling =
         solidcraft_engine::render::job::cpu_camera_sampling(options.progressive, app.render_workspace.view.studio.adaptive, options.budget)
             .unwrap_or(options.progressive);
@@ -59,6 +82,15 @@ pub(super) fn image_limits(app: &SolveApp) -> solidcraft_engine::render::RenderL
         let work = u64::from(progressive.samples_per_pixel.max(1)).saturating_mul(scale).saturating_mul(scale);
         limits.max_pixels = limits.max_pixels.min(options.budget.limits().max_camera_samples / work.max(1));
     }
+    limits
+}
+
+/// Every explicit UI size selection, including Largest, stays inside the output
+/// controls' envelope without narrowing a valid already-authored native request.
+pub(super) fn size_selection_limits(app: &SolveApp) -> solidcraft_engine::render::RenderLimits {
+    let mut limits = image_limits(app);
+    limits.max_dimension = limits.max_dimension.min(u64::from(solidcraft_engine::render::job::MAX_OUTPUT_DIMENSION));
+    limits.max_pixels = limits.max_pixels.min(solidcraft_engine::render::job::MAX_OUTPUT_PIXELS);
     limits
 }
 
@@ -78,8 +110,7 @@ pub(super) fn profile_for_size(app: &SolveApp, width: u64, height: u64) -> Optio
     }
     let width = u32::try_from(width).ok()?;
     let height = u32::try_from(height).ok()?;
-    let scale = if view.method == super::ImageMethod::CpuRaytrace { view.studio.supersampling } else { 1 };
-    let (width, height) = solidcraft_engine::render::job::supersampled_dimensions(width, height, scale).ok()?;
+    let (width, height) = if view.method == super::ImageMethod::CpuRaytrace { trace_dimensions(view, width, height).ok()? } else { (width, height) };
     CpuBudget::ALL.into_iter().find(|budget| {
         solidcraft_engine::render::job::cpu_camera_sampling(
             app.render_workspace.view.raytrace.progressive,
@@ -244,10 +275,9 @@ pub(super) fn progressive_adoption_reason(app: &SolveApp) -> Option<String> {
         Some(app.tr("render.cpu_progressive_reflection_adopt").into())
     } else {
         let view = &app.render_workspace.view;
-        solidcraft_engine::render::job::supersampled_dimensions(view.draft.width, view.draft.height, view.studio.supersampling)
-            .and_then(|(width, height)| options.budget.validate_image(width, height, Some(Default::default())))
+        trace_dimensions(view, view.draft.width, view.draft.height)
+            .and_then(|(width, height)| options.budget.validate_image(width, height, Some(Default::default())).map_err(|error| error.to_string()))
             .err()
-            .map(|e| e.to_string())
     }
 }
 pub(super) fn adopt_progressive(app: &mut SolveApp) -> Result<(), String> {

@@ -104,6 +104,108 @@ fn emission_survives_face_reflectance_override_without_changing_captured_geometr
     assert_eq!(scene.meshes[0].faces[0].color, [0; 3]);
 }
 #[test]
+fn cpu_path_emissive_enclosure_keeps_authored_depth_without_roulette() {
+    use std::f64::consts::PI;
+    let samples = 32;
+    for seed in [0, 9, 97] {
+        for max_depth in [4, 5, 8] {
+            let mut body = dielectric::tests::box_body(20.0);
+            body.surface = Some(OpaqueSurface::new(Vec3::new(1.0, 1.0, 1.0), 0.0, 1.0, 1.0).unwrap());
+            let options = RaytraceOptions {
+                threads: 1,
+                shadows: true,
+                denoise: false,
+                lights: Some(Vec::new()),
+                path: Some(job::CpuPathOptions { max_depth }),
+                progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: samples, seed }),
+                emissions: Some(vec![job::SurfaceEmission {
+                    body_index: 0,
+                    body: body.name.clone(),
+                    color: [1.0; 3],
+                    strength: 1.0,
+                    sides: job::EmissionSides::Both,
+                }]),
+                ..Default::default()
+            };
+            let mut request = dielectric::tests::request(options.clone());
+            // The actual perspective eye is inside the closed enclosure.
+            request.camera.target = Vec3::new(0.0, 0.0, 10.0);
+            request.camera.distance = 1.0;
+            request.camera.pitch = PI * 0.5;
+            request.camera.fov = 0.5;
+            let mut task = ImageTask::new(dielectric::tests::scene(body), request, CancelToken::default(), options).unwrap();
+            for _ in 0..10_000 {
+                if task.bvh.is_some() {
+                    break;
+                }
+                assert!(matches!(task.step_with_previews(1).unwrap(), ImagePoll::Pending(_)));
+            }
+            let mut expected = 0.0;
+            let mut fifth_events = 0;
+            {
+                let bvh = task.bvh.as_ref().expect("enclosure BVH must be ready before lighting");
+                let prepared = PreparedScene { bvh, primitives: &task.looks, source: &task.scene };
+                let mut work = WorkBudget::new(1_000_000).unwrap();
+                for ordinal in 0..samples {
+                    let [dx, dy] = progressive::variates(seed, 0, ordinal, 0);
+                    let mut ray = primary_ray(&task.request, dx, dy, task.clip).unwrap();
+                    let mut throughput = 1.0;
+                    for depth in 0..max_depth {
+                        let hit = bvh.closest_hit(&ray, &mut work, &task.cancel).unwrap().expect("accepted rays stay in the closed enclosure");
+                        let hit = prepared.resolve_hit(ray, hit).unwrap();
+                        expected += throughput;
+                        fifth_events += usize::from(depth == 4);
+                        if depth + 1 == max_depth {
+                            break;
+                        }
+                        let domain = 0x5041_5448_0000 + u64::from(depth) * 0x10000;
+                        let [component, x] = progressive::variates(seed, 0, ordinal, domain + 0x3000);
+                        let [y, _] = progressive::variates(seed, 0, ordinal, domain + 0x3001);
+                        let Some(proposal) = super::super::indirect::sample(
+                            hit.surface,
+                            hit.shading_normal,
+                            hit.oriented_geometric_normal(),
+                            -ray.direction(),
+                            [component, x, y],
+                        )
+                        .unwrap() else {
+                            break;
+                        };
+                        // Use the proposal only for direction and null mass. For
+                        // index-matched white Lambert, f=1/pi; roughness-one VNDF
+                        // reflection has density 1/(2*pi*(1+n.v)). Compute the
+                        // emission integral independently of transport weights.
+                        let cosine = hit.shading_normal.dot(proposal.direction);
+                        let view_cosine = hit.shading_normal.dot(-ray.direction());
+                        let pdf = 0.5 * cosine / PI + 0.5 / (2.0 * PI * (1.0 + view_cosine));
+                        throughput *= cosine / (PI * pdf);
+                        ray = hit.spawn(proposal.direction).unwrap();
+                    }
+                }
+            }
+            expected /= f64::from(samples);
+            if max_depth >= 5 {
+                assert!(fifth_events > 0, "the oracle must exercise continuations beyond the former roulette threshold");
+            }
+            for _ in 0..100_000 {
+                if task.progressive.as_ref().is_some_and(|p| p.film.samples() == samples) {
+                    break;
+                }
+                assert!(!matches!(task.step_with_previews(1).unwrap(), ImagePoll::Complete(_)));
+            }
+            let (mean, covered, count) = task.progressive.as_ref().unwrap().film.pixel(0).unwrap();
+            assert_eq!((covered, count), (samples, samples));
+            for actual in mean {
+                assert!(
+                    (actual - expected).abs() < 1e-11 * expected.max(1.0),
+                    "seed={seed}, depth={max_depth}: raw emission {actual}, independent finite-depth integral {expected}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn emission_scan_observes_cancel_and_exhausts_shared_work_without_png() {
     let (scene, mut request, options) = emission_fixture(false);
     request.raytrace = Some(options.clone());
@@ -1635,7 +1737,7 @@ fn xyz(a: [f64; 4]) -> [f64; 3] {
 
 // Independent f64 gather oracle: all inputs are averaged linear values, so the
 // GPU's accumulated-sample scaling is absent from this numerical implementation.
-fn cpu_denoise_reference(width: usize, input: &[[f64; 4]], guides: &[DenoiseOracleGuide], step: usize) -> Vec<[f64; 4]> {
+fn cpu_denoise_reference(width: usize, input: &[[f64; 4]], guides: &[DenoiseOracleGuide], step: usize, firefly_suppression: bool) -> Vec<[f64; 4]> {
     let height = input.len() / width;
     let kernel = [1.0, 4.0, 6.0, 4.0, 1.0];
     let maximum = |v: [f64; 3]| v.into_iter().fold(0.0, f64::max);
@@ -1672,13 +1774,19 @@ fn cpu_denoise_reference(width: usize, input: &[[f64; 4]], guides: &[DenoiseOrac
                     let color = diff(center, value);
                     let peak = maximum(xyz(value));
                     let guide = (-dot(albedo, albedo) / 0.04 - plane / scale - depth).exp() * dot(xyz(n), xyz(m)).max(0.0).powi(32);
-                    if step == 1 && i != j && (i % width).abs_diff(j % width) <= 1 && (i / width).abs_diff(j / width) <= 1 && guide >= 0.5 {
+                    if firefly_suppression
+                        && step == 1
+                        && i != j
+                        && (i % width).abs_diff(j % width) <= 1
+                        && (i / width).abs_diff(j / width) <= 1
+                        && guide >= 0.5
+                    {
                         support.push(peak);
                     }
                     let brighter = center_peak.max(peak);
                     let color_scale = 0.25 + 0.5 * brighter;
                     let bound = 16.0 * (0.25 + center_peak.min(peak));
-                    let ratio = bound / brighter.max(bound);
+                    let ratio = if firefly_suppression { bound / brighter.max(bound) } else { 1.0 };
                     let weight = wx * wy * guide * ratio * ratio * (-maximum(color.map(f64::abs)) / color_scale).exp();
                     for k in 0..3 {
                         result[k] += value[k] * weight;
@@ -1690,7 +1798,7 @@ fn cpu_denoise_reference(width: usize, input: &[[f64; 4]], guides: &[DenoiseOrac
                 *v /= total;
             }
             let support_peak = support.iter().copied().fold(0.0, f64::max);
-            if support.len() >= 5 && center_peak > 16.0 * (0.25 + support_peak) {
+            if firefly_suppression && support.len() >= 5 && center_peak > 16.0 * (0.25 + support_peak) {
                 let cap = 2.0 * support_peak + 0.25;
                 let factor = cap / maximum(xyz(result)).max(cap);
                 for channel in result.iter_mut().take(3) {
@@ -1727,7 +1835,19 @@ fn oracle_guides(guides: &[job::denoise::Guide]) -> Vec<DenoiseOracleGuide> {
         .collect()
 }
 fn complete_denoise(width: u32, pixels: Vec<[f32; 4]>, guides: &[job::denoise::Guide]) -> (Vec<[f32; 4]>, usize) {
-    let mut task = job::denoise::DenoiseTask::new(width, pixels.len() as u32 / width, pixels).unwrap();
+    let task = job::denoise::DenoiseTask::new(width, pixels.len() as u32 / width, pixels).unwrap();
+    complete_denoise_task(task, guides)
+}
+fn complete_denoise_with_settings(
+    width: u32,
+    pixels: Vec<[f32; 4]>,
+    guides: &[job::denoise::Guide],
+    settings: job::DenoiseSettings,
+) -> (Vec<[f32; 4]>, usize) {
+    let task = job::denoise::DenoiseTask::new_with_settings(width, pixels.len() as u32 / width, pixels, settings).unwrap();
+    complete_denoise_task(task, guides)
+}
+fn complete_denoise_task(mut task: job::denoise::DenoiseTask, guides: &[job::denoise::Guide]) -> (Vec<[f32; 4]>, usize) {
     let mut visits = 0;
     for _ in 0..1000 {
         let count = task.next_pixels();
@@ -1741,6 +1861,7 @@ fn complete_denoise(width: u32, pixels: Vec<[f32; 4]>, guides: &[job::denoise::G
 }
 #[test]
 fn cpu_atrous_matches_independent_f64_gather_preserves_hdr_coverage_and_edges() {
+    assert!(!job::DenoiseSettings::default().firefly_suppression);
     let width = 17u32;
     let count = (width * width) as usize;
     let guides: Vec<_> = (0..count).map(|i| denoise_test_guide(i % 17, i / 17)).collect();
@@ -1756,7 +1877,7 @@ fn cpu_atrous_matches_independent_f64_gather_preserves_hdr_coverage_and_edges() 
     let (actual, visits) = complete_denoise(width, pixels, &guides);
     let mut expected: Vec<_> = original.iter().map(|p| p.map(f64::from)).collect();
     for step in [1, 2, 4] {
-        expected = cpu_denoise_reference(17, &expected, &oracle_guides(&guides), step);
+        expected = cpu_denoise_reference(17, &expected, &oracle_guides(&guides), step, false);
     }
     assert_eq!(visits, 3 * count, "bounded pixel visits, not an invented scalar-FLOP budget");
     for (a, b) in actual.iter().zip(expected) {
@@ -1800,20 +1921,21 @@ fn cpu_atrous_matches_independent_f64_gather_preserves_hdr_coverage_and_edges() 
 
 #[test]
 fn cpu_atrous_removes_an_isolated_hdr_spike_without_spreading_its_peak() {
+    let settings = job::DenoiseSettings { firefly_suppression: true, ..Default::default() };
     let width = 9;
     let count = width * width;
     let center = count / 2;
     let guides: Vec<_> = (0..count).map(|i| denoise_test_guide(i % width, i / width)).collect();
     let mut pixels = vec![[0.5, 0.125, 0.0625, 1.0]; count];
     pixels[center] = [4096.0, 1024.0, 512.0, 1.0];
-    let (actual, visits) = complete_denoise(width as u32, pixels.clone(), &guides);
+    let (actual, visits) = complete_denoise_with_settings(width as u32, pixels.clone(), &guides, settings);
     assert_eq!(visits, 3 * count);
     assert!(actual.iter().all(|p| p[0] <= 1.25));
     assert!(actual.iter().all(|p| p[1] == 0.25 * p[0] && p[2] == 0.125 * p[0] && p[3] == 1.0));
     let guides = oracle_guides(&guides);
     let mut expected: Vec<_> = pixels.into_iter().map(|p| p.map(f64::from)).collect();
     for step in [1, 2, 4] {
-        expected = cpu_denoise_reference(width, &expected, &guides, step);
+        expected = cpu_denoise_reference(width, &expected, &guides, step, settings.firefly_suppression);
     }
     for (actual, expected) in actual.iter().zip(expected) {
         assert!(actual.iter().zip(expected).all(|(a, b)| (f64::from(*a) - b).abs() < 2e-6));
@@ -1822,6 +1944,7 @@ fn cpu_atrous_removes_an_isolated_hdr_spike_without_spreading_its_peak() {
 
 #[test]
 fn cpu_atrous_preserves_narrow_hdr_highlights_and_requires_compatible_spike_support() {
+    let settings = job::DenoiseSettings { firefly_suppression: true, ..Default::default() };
     let width = 9;
     let count = width * width;
     let center = count / 2;
@@ -1829,7 +1952,7 @@ fn cpu_atrous_preserves_narrow_hdr_highlights_and_requires_compatible_spike_supp
     let bright = [4096.0, 1024.0, 512.0, 1.0];
     let guides: Vec<_> = (0..count).map(|i| denoise_test_guide(i % width, i / width)).collect();
     let stripe = (0..count).map(|i| if i % width == width / 2 { bright } else { dark }).collect();
-    let filtered = complete_denoise(width as u32, stripe, &guides).0;
+    let filtered = complete_denoise_with_settings(width as u32, stripe, &guides, settings).0;
     assert!(filtered[center][0] > 0.99 * bright[0]);
     assert!(filtered[center + 1][0] < 1.0);
 
@@ -1846,10 +1969,10 @@ fn cpu_atrous_preserves_narrow_hdr_highlights_and_requires_compatible_spike_supp
     for i in [center - width, center - 1, center + 1, center + width] {
         surface_edge[i].albedo = guides[i].albedo;
     }
-    let filtered = complete_denoise(width as u32, pixels.clone(), &surface_edge).0;
+    let filtered = complete_denoise_with_settings(width as u32, pixels.clone(), &surface_edge, settings).0;
     assert!(filtered[center][0] > 0.99 * bright[0]);
     surface_edge[center + width + 1].albedo = guides[center + width + 1].albedo;
-    let filtered = complete_denoise(width as u32, pixels, &surface_edge).0;
+    let filtered = complete_denoise_with_settings(width as u32, pixels, &surface_edge, settings).0;
     assert!(filtered[center][0] <= 1.25);
 }
 
@@ -1908,6 +2031,7 @@ fn cpu_denoising_filters_actual_complete_prefixes_without_changing_raw_film_or_e
     assert_eq!(first.2, raw.2, "EXR is encoded before filtering from identical absolute Monte Carlo samples");
     assert_ne!(first.1, raw.1, "the actual CPU soft-light picture must pass through the filter");
     let mut task = denoised_plane(2, true, None);
+    assert!(!task.options.denoise_settings.firefly_suppression);
     for _ in 0..300000 {
         if task.linear.len() == 169 && task.output.is_empty() {
             break;
@@ -1921,7 +2045,7 @@ fn cpu_denoising_filters_actual_complete_prefixes_without_changing_raw_film_or_e
     let film: Vec<_> = (0..169).map(|i| task.progressive.as_ref().unwrap().film.pixel(i).unwrap()).collect();
     let mut expected: Vec<_> = task.linear.iter().map(|p| p.map(f64::from)).collect();
     for step in [1, 2, 4] {
-        expected = cpu_denoise_reference(13, &expected, &oracle_guides(&guides), step)
+        expected = cpu_denoise_reference(13, &expected, &oracle_guides(&guides), step, task.options.denoise_settings.firefly_suppression)
             .into_iter()
             .map(|pixel| pixel.map(|value| f64::from(value as f32)))
             .collect()

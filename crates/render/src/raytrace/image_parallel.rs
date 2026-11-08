@@ -12,11 +12,19 @@ const TILE_PIXELS: usize = 64;
 const WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
 const POOL_OVERHEAD_BYTES: u64 = 64 * 1024;
 
-pub(super) fn worker_count(options: &RaytraceOptions) -> usize {
+pub(super) fn worker_count(options: &RaytraceOptions) -> u16 {
     match options.threads {
-        0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(usize::from(job::MAX_CPU_THREADS)),
-        count => usize::from(count).clamp(1, usize::from(job::MAX_CPU_THREADS)),
+        0 => std::thread::available_parallelism().map_or(1, |n| n.get()).min(usize::from(job::MAX_CPU_THREADS)) as u16,
+        count => count,
     }
+}
+
+pub(super) fn admitted_workers(admission: &Admission) -> job::Result<usize> {
+    admission
+        .cpu_workers
+        .filter(|count| (1..=job::MAX_CPU_THREADS).contains(count))
+        .map(usize::from)
+        .ok_or_else(|| invalid("CPU worker admission is missing or invalid"))
 }
 
 #[derive(Clone, Copy)]
@@ -226,10 +234,10 @@ pub(super) struct Pool {
 }
 
 impl Pool {
-    pub(super) fn required_bytes(options: &RaytraceOptions, textured: bool) -> job::Result<u64> {
-        // Admission precedes execution; reserve the automatic mode's full cap
-        // so a changing CPU affinity/cgroup cannot create uncharged workers.
-        let count = if options.threads == 0 { usize::from(job::MAX_CPU_THREADS) } else { worker_count(options) };
+    pub(super) fn required_bytes(options: &RaytraceOptions, textured: bool, count: u16) -> job::Result<u64> {
+        if !(1..=job::MAX_CPU_THREADS).contains(&count) {
+            return Err(invalid("CPU worker count exceeds its admission range"));
+        }
         if count <= 1 {
             return Ok(0);
         }
@@ -254,7 +262,7 @@ impl Pool {
     }
     fn new(task: &ImageTask) -> job::Result<Self> {
         task.cancel.check()?;
-        let count = worker_count(&task.options);
+        let count = admitted_workers(&task.admission)?;
         if count <= 1 || task.bvh.is_none() {
             return Err(invalid("CPU pool requires prepared parallel transport"));
         }
@@ -271,6 +279,11 @@ impl Pool {
         task.cancel.check()?;
         Ok(Self { pool, workers, ledger: Arc::new(AtomicU64::new(0)) })
     }
+    #[cfg(test)]
+    pub(super) fn test_worker_counts(&self) -> (usize, usize) {
+        (self.workers.len(), self.pool.current_num_threads())
+    }
+
     fn prepare(&mut self, task: &ImageTask) -> job::Result<u64> {
         task.cancel.check()?;
         let remaining = task.work.remaining();

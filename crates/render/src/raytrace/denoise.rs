@@ -457,17 +457,19 @@ impl Guides {
             return Ok(());
         }
         if self.analytic_emitter {
-            return self.append(Guide::default(), GuideClass::Emitter, work, cancel);
+            let class = if self.optical.is_some() { GuideClass::Unavailable } else { GuideClass::Emitter };
+            return self.append(Guide::default(), class, work, cancel);
         }
         let Some(hit) = self.hit else {
-            return self.append(Guide::default(), GuideClass::Background, work, cancel);
+            let class = if self.optical.is_some() { GuideClass::Unavailable } else { GuideClass::Background };
+            return self.append(Guide::default(), class, work, cancel);
         };
         work.tick(cancel).map_err(error)?;
         let mut shared = scene.resolve_hit(ray, hit).map_err(error)?;
         if !self.classified {
             self.classified = true;
             if is_emitter(options, shared) {
-                self.bypass(GuideClass::Emitter);
+                self.bypass(if self.optical.is_some() { GuideClass::Unavailable } else { GuideClass::Emitter });
                 return Ok(());
             }
             if let Some(mut walk) = self.optical
@@ -678,6 +680,76 @@ mod tests {
         assert_eq!(glass_branches(&options, 0, &input, boundary, ray, hit()).err(), Some(GuideClass::UnsupportedMaterial));
         input.model = None;
         assert!(glass_branches(&options, 0, &input, boundary, ray, hit()).is_ok());
+    }
+
+    #[test]
+    fn optical_endpoint_misses_and_emitters_do_not_classify_the_primary_as_background() {
+        let cancel = CancelToken::default();
+        let bvh = super::super::bvh::BvhBuilder::new(Vec::new(), Default::default(), &cancel).unwrap().finish().unwrap();
+        let source = crate::ProductScene { meshes: Vec::new(), bounds: solidcraft_geom::Aabb3::EMPTY };
+        let request = ImageRequest {
+            studio_weights: None,
+            integrator: Default::default(),
+            raytrace: None,
+            camera: crate::Camera::default(),
+            width: 1,
+            height: 1,
+            background: [0; 3],
+            transparent_background: false,
+            environment: None,
+            textures: None,
+        };
+        let ray = Ray::new(Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.0, 0.0, -1.0), 0.0, 10.0).unwrap();
+        for optical in [false, true] {
+            for emitter in [false, true] {
+                let mut options = RaytraceOptions { path: Some(crate::job::CpuPathOptions { max_depth: 3 }), ..Default::default() };
+                if emitter {
+                    options.area_lights = Some(vec![crate::job::RectangleLightOptions {
+                        center_mm: [0.0; 3],
+                        edge_u_mm: [2.0, 0.0, 0.0],
+                        edge_v_mm: [0.0, 2.0, 0.0],
+                        color: [1.0; 3],
+                        intensity: 1.0,
+                    }]);
+                }
+                let mut guides = Guides::new_with_diagnostics(1, 1, true).unwrap();
+                if optical {
+                    guides.begin_optical(1, 1.0, Some(Launch::ordinary(ray)), None);
+                } else {
+                    guides.launch(Launch::ordinary(ray));
+                }
+                let mut work = WorkBudget::new(100).unwrap();
+                for _ in 0..16 {
+                    if guides.ready() {
+                        break;
+                    }
+                    guides
+                        .step(
+                            PreparedScene { bvh: &bvh, primitives: &[], source: &source },
+                            &request,
+                            &options,
+                            None,
+                            (0.0, 10.0),
+                            &[],
+                            None,
+                            None,
+                            &mut work,
+                            &cancel,
+                        )
+                        .unwrap();
+                }
+                assert!(guides.ready(), "optical={optical} emitter={emitter}");
+                let expected = if optical {
+                    GuideClass::Unavailable
+                } else if emitter {
+                    GuideClass::Emitter
+                } else {
+                    GuideClass::Background
+                };
+                assert_eq!(guides.classes().unwrap(), &[expected], "optical={optical} emitter={emitter}");
+                assert_eq!(guides.pixels().unwrap()[0].body, 0);
+            }
+        }
     }
 
     #[test]

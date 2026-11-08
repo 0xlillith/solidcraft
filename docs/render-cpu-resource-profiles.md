@@ -14,22 +14,29 @@ A CPU image must not inherit a small interactive-preview ceiling when the owner 
 | Fixed-sampling internal pixels | 4,194,304 | 16,777,216 | 134,217,728 |
 | Progressive internal pixels | 1,048,576 | 16,777,216 | 134,217,728 |
 | Progressive samples/pixel | 64 | 1,024 | 65,536 |
-| Total camera samples | 16,777,216 | 4,294,967,296 | 1,099,511,627,776 |
+| Total camera samples | 16,777,216 | 4,294,967,296 | 8,796,093,022,208 |
 | Captured triangles | 262,144 | 2,000,000 | 8,000,000 |
 | Visible bodies | 16,384 | 65,536 | 262,144 |
 | Retained source geometry | 128 MiB | 1 GiB | 4 GiB |
-| Complete job admission | 384 MiB | 3 GiB | 12 GiB |
-| Cumulative work units | 1,000,000,000 | 1,000,000,000,000 | 256,000,000,000,000 |
+| Image/preparation admission envelope | 384 MiB | 3 GiB | 128 GiB |
+| Cumulative work units | 1,000,000,000 | 1,000,000,000,000 | 1,152,921,504,606,846,976 |
 
 With [X2 supersampling](render-quality-controls.md), these dimensions and pixel
 counts apply to the internal grid, while the selected output size remains
 unchanged. The new output UI stops at 8K UHD and offers sample selections through
-128; legacy native-size/API intent is preserved. Denoising, diagnostics and
+16,384; legacy native-size/API intent is preserved. Denoising, diagnostics and
 shared output presentation have their own final 8192-side/33,554,432-pixel cap.
 
-Every column is an intersection of limits: a scene that fits the triangle count may still exceed its complete byte estimate. Similarly, a sample count within the per-pixel limit may exceed the total camera-sample or cumulative traversal-work limit. No claim is made that all maxima can be reached simultaneously or within a particular time.
+Every column is an intersection of limits: a scene that fits the triangle count may still exceed its image/preparation byte estimate. Similarly, a sample count within the per-pixel limit may exceed the total camera-sample or cumulative traversal-work limit. No claim is made that all maxima can be reached simultaneously or within a particular time.
 
-Workstation permits up to 65,536 total pilot/production passes. Exact CPU coverage and adaptive counts use 32-bit integers, with their larger count plane included in admission. The Workstation camera-sample and work envelopes scale by the same factor of 16 as its sample ceiling. Memory and cumulative work can refuse a scene before these numerical ceilings.
+Workstation permits up to 65,536 total pilot/production passes. Exact CPU coverage
+and adaptive counts use 32-bit integers, with their larger count plane included
+in admission. Its camera-sample ceiling is the product of the maximum internal
+pixel count and the existing 65,536-pass ceiling: 2^43. Its work ceiling is 2^60.
+The 128 GiB image/preparation admission envelope accommodates the combined UI quality controls,
+including 16,384 production spp plus valid adaptive pilots, 8K final output,
+X2, denoising, diagnostics, raw output and 64 workers. Actual available RAM,
+scene-dependent storage and cumulative work remain separate admission limits.
 
 Examples of cardinality admission, before geometry and memory are considered: Studio permits 3840 × 2160 at 128 samples/pixel; Workstation permits 7680 × 4320 at 128 samples/pixel. Compact rejects both instead of silently resizing them.
 
@@ -61,7 +68,32 @@ Large intent can be saved and reopened without a render host. Executing Studio o
 
 The source-capture gate, dimensions, camera-sample bound, BVH construction, film, encoded checkpoints, environment input, retained request and host reservation consume the same selected policy. Ray tracing no longer adds raster projected-triangle lists to its estimate: its own BVH, captured looks and film are charged instead, alongside a conservative pixel/codec allowance.
 
-The native CPU host has a finite 16 GiB logical reservation pool on 64-bit platforms, including retained results and previews. It does not allocate that amount at startup, promise that physical RAM is available, or account for the rest of the CAD application or other processes. Per-job profiles remain smaller. The cooperative host and each registered GPU executor retain independent pool limits; selecting a CPU profile never changes a GPU reservation.
+The native CPU host has a finite 256 GiB software reservation pool on 64-bit
+platforms; it does not allocate that amount at startup. Workstation's 128 GiB
+image/preparation admission envelope remains smaller. Retained request and
+resource metadata are additionally charged to that pool and the shared RAM
+ledger; working images and retained results/previews also hold reservations
+there. BVH preparation independently retains its existing 12 GiB ceiling, which
+covers the admitted geometry cardinality; films, guides and output planes use
+the remaining image/preparation envelope.
+
+Native CPU and registered GPU hosts additionally share one process-wide RAM
+ledger. Before the first lease, it snapshots available system RAM and the
+process's remaining Linux cgroup capacity. The smaller supported capacity bounds
+reservations. This snapshot stays fixed until all render leases are released:
+refreshing OS availability while also subtracting the existing reservations
+would charge resident render buffers twice. The next idle admission takes a new
+snapshot. If the native query is unavailable, a labeled fallback admits at most
+512 MiB. A genuine zero-available result remains zero.
+
+Native admission includes a `host_memory` receipt with required bytes, bytes
+admitted to other render leases, available bytes, capacity and source. Capacity
+refusals report those byte counts before an image is allocated. All reservation
+splits, transfers, shrinking, cancellation and release update the same ledger.
+The snapshot is not a promise against unrelated processes allocating memory
+afterward; fallible allocations remain required. The cooperative host and GPU
+executors keep their own finite software limits, and selecting a CPU profile
+does not change a GPU limit.
 
 Fallible allocation, actual vector-capacity checks, checked arithmetic, bounded work quanta, cancellation checks and final-only publication remain required. A failed or cancelled job must release its working reservations and preserve the previous completed result. Every retained progressive checkpoint is still conservatively charged; this increment does not implement tiled/out-of-core rendering or unbounded preview retention.
 
@@ -73,7 +105,17 @@ Resource-profile selection alone does not enable CPU diffuse global illumination
 
 ## Regression coverage
 
-Tests cover explicit 4K/8K admission without allocating a large film, BVH cardinality estimates for larger profiles, old/unknown profile handling, offline saved round trips, preservation of incompatible UI drafts, host-pool isolation, arithmetic overflow and linear film accumulation above 64 samples. Renderer admission and above-64-sample film regressions have executed. Offline document/UI, host and platform qualifications remain separate; admission tests without a large film do not establish large-scene performance.
+Tests cover explicit 4K/8K admission without allocating a large film, BVH
+cardinality estimates for larger profiles, old/unknown profile handling,
+offline saved round trips, preservation of incompatible UI drafts, finite
+per-host limits, arithmetic overflow and linear film accumulation above
+64 samples. Previously published renderer admission and above-64-sample film
+regressions have executed. Additional regression cases exercise the combined
+maximum UI settings, shared CPU/GPU native-capacity accounting, frozen worker
+counts, cancellation and snapshot resets. Their current-source outcomes belong
+to the corresponding validation receipts. Offline document/UI, host and platform
+qualifications remain separate; admission tests without a large film do not
+establish large-scene performance.
 
 ## Display is separate from output
 

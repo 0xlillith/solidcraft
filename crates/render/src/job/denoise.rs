@@ -226,7 +226,14 @@ fn filter_pixel(
             let value_rgb = rgb(value);
             let value_peak = maximum(value_rgb);
             let guide_weight = surface_weight(a.surface(), b.surface(), step) * surface_weight(a.reflected, b.reflected, step);
-            if !optical && step == 1 && index != pixel && kx.abs_diff(2) <= 1 && ky.abs_diff(2) <= 1 && guide_weight >= 0.5 {
+            if settings.firefly_suppression
+                && !optical
+                && step == 1
+                && index != pixel
+                && kx.abs_diff(2) <= 1
+                && ky.abs_diff(2) <= 1
+                && guide_weight >= 0.5
+            {
                 support_count += 1;
                 support_peak = support_peak.max(value_peak);
             }
@@ -235,7 +242,7 @@ fn filter_pixel(
             let color_scale = 0.25 + 0.5 * brighter;
             let peak_bound = 16.0 * (0.25 + center_peak.min(value_peak));
             // Keep a high contrast tap from spreading a single bright sample.
-            let peak_weight = if brighter > peak_bound { (peak_bound / brighter).powi(2) } else { 1.0 };
+            let peak_weight = if settings.firefly_suppression && brighter > peak_bound { (peak_bound / brighter).powi(2) } else { 1.0 };
             let weight = wx * wy * guide_weight * (-contrast_strength * contrast / color_scale).exp() * peak_weight;
             if weight > 0.0 {
                 total += weight;
@@ -326,7 +333,7 @@ mod tests {
         assert_eq!(filter_pixel(5, 5, &colors, &guides, 12, 4, DenoiseSettings::default()).unwrap(), colors[12]);
 
         colors[12] = [512.0, 128.0, 32.0, 1.0];
-        let glint = filter_pixel(5, 5, &colors, &guides, 12, 1, DenoiseSettings::default()).unwrap();
+        let glint = filter_pixel(5, 5, &colors, &guides, 12, 1, DenoiseSettings { firefly_suppression: true, ..Default::default() }).unwrap();
         assert!(glint[0] > 511.0);
         assert_eq!(glint[3], colors[12][3]);
 
@@ -398,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn firefly_control_only_clamps_opaque_isolated_samples() {
+    fn firefly_control_preserves_legacy_opaque_filter_and_optical_glints() {
         let guide = Guide {
             body: 1,
             albedo: [0.5; 3],
@@ -410,18 +417,28 @@ mod tests {
         };
         let mut colors = [[0.5, 0.125, 0.0625, 1.0]; 25];
         colors[12] = [4096.0, 1024.0, 512.0, 1.0];
-        let on = DenoiseSettings::default();
-        let off = DenoiseSettings { firefly_suppression: false, ..on };
+        let off = DenoiseSettings::default();
+        assert!(!off.firefly_suppression);
+        assert_eq!(serde_json::from_str::<DenoiseSettings>("{}").unwrap(), off);
+        let on = DenoiseSettings { firefly_suppression: true, ..off };
         let capped = filter_pixel(5, 5, &colors, &[guide; 25], 12, 1, on).unwrap();
         let uncapped = filter_pixel(5, 5, &colors, &[guide; 25], 12, 1, off).unwrap();
         assert!(capped[0] <= 1.25);
-        assert!(uncapped[0] > 4095.0);
+        // Independent legacy opaque oracle: the constant 5x5 guide has total
+        // kernel weight 256, of which the centre owns 36. All other taps share
+        // the original contrast weight, with neither peak attenuation nor a cap.
+        let tap_weight = (-(4096.0_f64 - 0.5) / (0.25 + 0.5 * 4096.0)).exp();
+        for channel in 0..3 {
+            let expected = (36.0 * f64::from(colors[12][channel]) + 220.0 * tap_weight * f64::from(colors[0][channel])) / (36.0 + 220.0 * tap_weight);
+            assert!((f64::from(uncapped[channel]) - expected).abs() < 0.0002, "{uncapped:?} vs {expected}");
+        }
         assert_eq!((capped[3], uncapped[3]), (1.0, 1.0));
         let optical = Guide { body: Guide::optical_body(1, 0, 2).unwrap(), ..guide };
         let a = filter_pixel(5, 5, &colors, &[optical; 25], 12, 1, on).unwrap();
         let b = filter_pixel(5, 5, &colors, &[optical; 25], 12, 1, off).unwrap();
-        assert_eq!(a, b);
         assert!(a[0] > 4095.0);
+        assert!(b[0] > 4096.0 * 0.99, "the disabled opaque cap must not flatten an optical glint: {b:?}");
+        assert_eq!((a[3], b[3]), (1.0, 1.0));
         assert_eq!(filter_pixel(5, 5, &colors, &[optical; 25], 12, 4, on).unwrap(), colors[12]);
     }
 }

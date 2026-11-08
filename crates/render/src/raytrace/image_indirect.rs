@@ -1009,18 +1009,6 @@ fn advance(task: &mut TransportContext<'_>, state: &mut State) -> job::Result<()
                 state.throughput = multiply(state.throughput, sample.weight);
                 super::super::lighting::validate_radiance(state.throughput).map_err(error)?;
                 if state.throughput != Vec3::ZERO {
-                    // Match the GPU opaque continuation policy. Keep this draw
-                    // independent of the BSDF and preserve the expected weight.
-                    if state.depth >= 3 {
-                        let survive = state.throughput.x.max(state.throughput.y).max(state.throughput.z).clamp(0.05, 0.95);
-                        let [draw, _] = variates(task, state, 0x3002)?;
-                        if draw >= survive {
-                            state.stage = Stage::Commit;
-                            return Ok(());
-                        }
-                        state.throughput = state.throughput / survive;
-                        super::super::lighting::validate_radiance(state.throughput).map_err(error)?;
-                    }
                     state.sampled_continuous = true;
                     state.smooth_caustic_chain = task.options.caustics.filter(|caustics| caustics.area_lights || caustics.environment).map(|_| 0);
                     state.previous_pdf = sample.pdf;

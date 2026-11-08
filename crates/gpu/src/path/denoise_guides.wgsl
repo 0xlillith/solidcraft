@@ -98,7 +98,7 @@ fn guide_launch(t:Triangle,hit:Hit,geometric:vec3<f32>,direction:vec3<f32>)->Gui
 fn denoise_guides(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pixel=u.image.w+gid.x;
     if gid.x>=u.sampling.z || pixel>=u.image.x*u.image.y { return; }
-    let base=pixel*6u;
+    let base=film_index(pixel)*6u;
     accumulation[base]=vec4<f32>(0.0);
     accumulation[base+1u]=vec4<f32>(0.0);
     accumulation[base+2u]=vec4<f32>(0.0);
@@ -173,8 +173,10 @@ fn denoise_guides(@builtin(global_invocation_id) gid: vec3<u32>) {
     var bounce=1u;
     for (var event=0u;event<3u;event+=1u) {
         let hit=trace_precise(ray.point.hi,ray.point.lo,ray.direction,false,ray.excluded,ray.minimum,stage==1u);
-        if u.environment.w>0.0 && emitter_hit_precise(ray.point.hi,ray.point.lo,ray.direction,ray.minimum).distance<hit.distance {guide_bypass(base,4u);return;}
-        if hit.triangle==GUIDE_MISS {guide_bypass(base,3u);return;}
+        // A secondary optical branch has no surface correspondence. The primary
+        // pixel is still on glass/mirror, rather than direct background/emission.
+        if u.environment.w>0.0 && emitter_hit_precise(ray.point.hi,ray.point.lo,ray.direction,ray.minimum).distance<hit.distance {guide_bypass(base,0u);return;}
+        if hit.triangle==GUIDE_MISS {guide_bypass(base,0u);return;}
         let next=triangle(hit.triangle);
         travel+=hit.distance;
         if stage==1u {

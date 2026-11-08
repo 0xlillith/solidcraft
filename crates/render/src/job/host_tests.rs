@@ -773,6 +773,8 @@ impl ImageExecutor for DropProbe {
             face_appearances: 0,
             projected_pixel_tests: None,
             caustic_work: None,
+            cpu_workers: None,
+            host_memory: None,
             geometry_bytes: 0,
             pixel_scratch_bytes: self.estimated,
             preparation_bytes: 0,
@@ -1047,6 +1049,8 @@ fn registered_large_pool_is_explicit_finite_and_accounted() {
                 face_appearances: 0,
                 projected_pixel_tests: None,
                 caustic_work: None,
+                cpu_workers: None,
+                host_memory: None,
                 geometry_bytes: 0,
                 pixel_scratch_bytes: 0,
                 preparation_bytes: 0,
@@ -1061,8 +1065,16 @@ fn registered_large_pool_is_explicit_finite_and_accounted() {
     for limit in [0, super::super::NATIVE_CPU_POOL_BYTES + 1] {
         assert!(ImageHost::with_executor(Arc::new(Envelope(limit))).is_err());
     }
-    let host = ImageHost::with_executor(Arc::new(Envelope(1024 * 1024 * 1024))).unwrap();
-    assert_eq!(host.pool_limit_bytes(), 1024 * 1024 * 1024);
+    let limit = 1024 * 1024 * 1024;
+    let memory = super::super::host_memory::NativeMemoryPool::testing(limit);
+    let host = ImageHost(Arc::new(Owner {
+        executor: Some(Arc::new(Envelope(limit))),
+        shared: ImageHost::shared_with_memory(limit, Some(memory)),
+        kind: HostKind::NativeWorker,
+        running: Mutex::new(None),
+        _worker: None,
+    }));
+    assert_eq!(host.pool_limit_bytes(), limit);
     assert!(host.admit(&empty(), &request(), JobOptions::default()).is_ok());
     assert_eq!(host.admitted_bytes(), 0, "preflight does not allocate or reserve");
     let lease = host.0.shared.budget.reserve(600 * 1024 * 1024).unwrap();
@@ -2694,5 +2706,268 @@ fn prepared_image_mode_pins_the_final_profile_limits_and_scratch_before_job_crea
         assert_eq!(host.admitted_bytes(), held);
         drop(prepared);
         assert_eq!(host.admitted_bytes(), 0);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native_memory_admission {
+    use super::*;
+    use crate::job::host_memory::{MemorySnapshot, NativeMemoryPool};
+    use crate::job::{HostMemorySource, NATIVE_CPU_POOL_BYTES};
+
+    fn host(memory: &Arc<NativeMemoryPool>, limit: u64, registered: bool) -> ImageHost {
+        ImageHost(Arc::new(Owner {
+            executor: registered.then(|| Arc::new(CpuExecutor) as Arc<dyn ImageExecutor>),
+            shared: ImageHost::shared_with_memory(limit, Some(memory.clone())),
+            kind: HostKind::NativeWorker,
+            running: Mutex::new(None),
+            _worker: None,
+        }))
+    }
+
+    #[test]
+    fn platform_cpu_and_registered_constructors_use_the_same_native_memory_pool() {
+        let cpu = ImageHost::for_platform().unwrap();
+        let registered = ImageHost::with_executor(Arc::new(CpuExecutor)).unwrap();
+        assert!(Arc::ptr_eq(cpu.0.shared.budget.memory.as_ref().unwrap(), registered.0.shared.budget.memory.as_ref().unwrap()));
+        assert!(cpu.0.shared.budget.memory_admission(0, 0).unwrap().is_some());
+        assert_eq!(cpu.admitted_bytes(), 0);
+        assert_eq!(registered.admitted_bytes(), 0);
+    }
+
+    #[test]
+    fn cpu_and_registered_hosts_share_capacity_and_all_lease_transfers() {
+        let memory = NativeMemoryPool::testing(100);
+        let cpu = host(&memory, 80, false);
+        let registered = host(&memory, 80, true);
+        let mut cpu_lease = cpu.0.shared.budget.reserve(60).unwrap();
+        let error = registered.0.shared.budget.reserve(41).err().unwrap();
+        assert_eq!(error.code, ErrorCode::LimitExceeded);
+        assert!(error.message.contains("41 additional bytes"), "{}", error.message);
+        assert!(error.message.contains("60 bytes already admitted"), "{}", error.message);
+        assert!(error.message.contains("40 bytes available"), "{}", error.message);
+        assert_eq!(registered.admitted_bytes(), 0);
+
+        // The process ledger can accommodate 30, but this host cannot. Its
+        // temporary physical lease must roll back on the software-pool refusal.
+        assert!(cpu.0.shared.budget.reserve(30).is_err());
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 60);
+        let mut gpu_lease = registered.0.shared.budget.reserve(40).unwrap();
+        assert_eq!(memory.check(0, 0).unwrap().available_bytes, 0);
+        assert!(cpu_lease.merge_from(&mut gpu_lease).is_err());
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 100);
+
+        let mut checkpoint = cpu_lease.split(20).unwrap();
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 100);
+        cpu_lease.shrink(30).unwrap();
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 90);
+        cpu_lease.merge_from(&mut checkpoint).unwrap();
+        drop(checkpoint);
+        assert_eq!(cpu_lease.bytes, 50);
+        assert!(cpu_lease.shrink(51).is_err());
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 90);
+        drop(gpu_lease);
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 50);
+        drop(cpu_lease);
+        assert_eq!(cpu.admitted_bytes(), 0);
+        assert_eq!(registered.admitted_bytes(), 0);
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 0);
+    }
+
+    #[test]
+    fn native_snapshot_refreshes_only_after_all_reservations_are_released() {
+        let memory = NativeMemoryPool::testing(100);
+        let lease = memory.reserve(60).unwrap();
+        memory.set_test_capacity(20);
+        let snapshot = memory.check(40, 0).unwrap();
+        assert_eq!((snapshot.capacity_bytes, snapshot.admitted_bytes, snapshot.available_bytes), (100, 60, 40));
+        let own = memory.check(60, 60).unwrap();
+        assert_eq!((own.admitted_bytes, own.available_bytes), (0, 100));
+        assert!(memory.check(0, 61).is_err());
+        drop(lease);
+        let snapshot = memory.check(20, 0).unwrap();
+        assert_eq!((snapshot.capacity_bytes, snapshot.admitted_bytes, snapshot.available_bytes), (20, 0, 20));
+        assert!(memory.reserve(21).is_err());
+        memory.set_test_capacity(100);
+        assert_eq!(memory.check(100, 0).unwrap().capacity_bytes, 100);
+    }
+
+    #[test]
+    fn native_probe_distinguishes_zero_capacity_cgroup_bounds_and_unavailable_ram() {
+        let fallback = MemorySnapshot::from_probe(0, 0, None);
+        assert_eq!(fallback.capacity_bytes, 512 * 1024 * 1024);
+        assert_eq!(fallback.source, HostMemorySource::ConservativeFallback);
+        assert_eq!(MemorySnapshot::from_probe(0, 0, Some(0)).capacity_bytes, 0);
+        let exhausted = MemorySnapshot::from_probe(100, 0, None);
+        assert_eq!(exhausted.capacity_bytes, 0);
+        assert_eq!(exhausted.source, HostMemorySource::SystemAvailable);
+        let cgroup = MemorySnapshot::from_probe(100, 80, Some(30));
+        assert_eq!(cgroup.capacity_bytes, 30);
+        assert_eq!(cgroup.source, HostMemorySource::SystemAndCgroup);
+        assert_eq!(MemorySnapshot::from_probe(100, 80, Some(0)).capacity_bytes, 0);
+        assert_eq!(MemorySnapshot::from_probe(100, u64::MAX, None).capacity_bytes, 100);
+        assert_eq!(MemorySnapshot::from_probe(u64::MAX, u64::MAX, None).capacity_bytes, NATIVE_CPU_POOL_BYTES);
+    }
+
+    #[test]
+    fn native_preflight_reports_capacity_without_reserving_or_creating_an_image() {
+        let memory = NativeMemoryPool::testing(MEMORY_LIMIT);
+        for registered in [false, true] {
+            let host = host(&memory, MEMORY_LIMIT, registered);
+            let report = host.admit(&empty(), &request(), JobOptions::default()).unwrap();
+            let physical = report.host_memory.unwrap();
+            assert_eq!(physical.required_bytes, report.estimated_total_bytes + fixed_request_metadata_bytes());
+            assert_eq!(physical.capacity_bytes, MEMORY_LIMIT);
+            assert_eq!(physical.admitted_bytes, 0);
+            assert_eq!(host.admitted_bytes(), 0);
+            assert!(host.0.shared.queue.lock().unwrap().is_empty());
+            assert!(report.cpu_workers.is_none(), "raster/registered admission omits CPU worker execution");
+        }
+    }
+
+    #[cfg(all(feature = "raytrace-cpu", target_pointer_width = "64"))]
+    #[test]
+    fn maximum_cpu_preflight_uses_real_capacity_gate_without_allocating_film() {
+        use crate::job::{CpuBudget, CpuPathOptions, CpuProgressiveOptions, DenoiseSettings, OutputOptions, RaytraceOptions};
+        let request = ImageRequest {
+            integrator: Integrator::Raytrace,
+            raytrace: Some(RaytraceOptions {
+                threads: crate::job::MAX_CPU_THREADS,
+                budget: CpuBudget::Workstation,
+                progressive: Some(CpuProgressiveOptions { samples_per_pixel: crate::job::MAX_UI_SAMPLES, seed: 7 }),
+                path: Some(CpuPathOptions { max_depth: crate::job::MAX_PATH_DEPTH }),
+                texture_filtering: true,
+                metal_energy_compensation: true,
+                adaptive: Some(Box::new(crate::job::adaptive::AdaptiveSampling {
+                    pilot_samples: crate::job::adaptive::MAX_PILOT_SAMPLES,
+                    min_samples: crate::job::MAX_UI_SAMPLES,
+                    ..Default::default()
+                })),
+                caustics: Some(crate::job::CausticOptions {
+                    photons: crate::job::MAX_CAUSTIC_PHOTONS,
+                    max_depth: crate::job::MAX_PATH_DEPTH,
+                    refresh_per_pass: true,
+                    ..Default::default()
+                }),
+                supersampling: 2,
+                denoise: true,
+                denoise_settings: DenoiseSettings { passes: 3, strength: 1.0, firefly_suppression: true },
+                denoise_diagnostics: true,
+                output: Some(Box::new(OutputOptions {
+                    linear_exr: true,
+                    finishing: crate::job::finishing::Finishing {
+                        bloom: Some(crate::job::bloom::Bloom { strength: 2.0, threshold: 1e6, radius: 64 }),
+                        photographic: crate::job::photographic::Photographic {
+                            flare: crate::job::photographic::Flare { strength: 2.0, threshold: 1e6, ghosts: 4, halo: 2.0, streak: 2.0 },
+                            chromatic_pixels: 12.0,
+                            radial_distortion: 0.3,
+                            soft_focus: 1.0,
+                            sharpening: 1.0,
+                            grain: 0.15,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }),
+            width: 7680,
+            height: 4320,
+            ..request()
+        };
+        let layout = crate::job::admit(&empty(), &request).unwrap();
+        let required = layout.estimated_total_bytes + retained_request_bytes(&request).unwrap() + request.retained_resource_metadata_bytes();
+        assert!(required < CpuBudget::Workstation.limits().max_job_bytes);
+        let memory = NativeMemoryPool::testing(required + 1024);
+        let cpu = host(&memory, NATIVE_CPU_POOL_BYTES, false);
+        let registered = host(&memory, NATIVE_CPU_POOL_BYTES, true);
+        let report = cpu.admit(&empty(), &request, JobOptions::default()).unwrap();
+        let physical = report.host_memory.unwrap();
+        assert_eq!((physical.required_bytes, physical.admitted_bytes, physical.available_bytes), (required, 0, required + 1024));
+        assert_eq!(report.cpu_workers, Some(64));
+        assert_eq!(report.caustic_work.unwrap().maps, crate::job::MAX_UI_SAMPLES + crate::job::adaptive::MAX_PILOT_SAMPLES);
+        assert_eq!(cpu.admitted_bytes(), 0);
+        assert!(cpu.0.shared.queue.lock().unwrap().is_empty());
+        println!("{}", serde_json::json!({ "maximum_cpu_preflight": report }));
+
+        let competing = registered.0.shared.budget.reserve(1025).unwrap();
+        let failure = cpu.admit(&empty(), &request, JobOptions::default()).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::LimitExceeded);
+        assert!(failure.message.contains(&format!("{required} additional bytes")));
+        assert!(failure.message.contains("1025 bytes already admitted"));
+        assert!(failure.message.contains(&format!("{} bytes available", required - 1)));
+        assert_eq!(cpu.admitted_bytes(), 0);
+        drop(competing);
+        assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 0);
+    }
+
+    #[cfg(feature = "raytrace-cpu")]
+    #[test]
+    fn prepared_cpu_workers_and_memory_receipt_survive_queueing_and_cancellation() {
+        use crate::job::{CpuProgressiveOptions, RaytraceOptions};
+        let memory = NativeMemoryPool::testing(MEMORY_LIMIT);
+        let host = host(&memory, MEMORY_LIMIT, false);
+        for (serial, threads) in [(1, 0), (2, 1), (3, 2)] {
+            let request = ImageRequest {
+                integrator: Integrator::Raytrace,
+                raytrace: Some(RaytraceOptions {
+                    threads,
+                    progressive: Some(CpuProgressiveOptions { samples_per_pixel: 3, seed: 7 }),
+                    lights: Some(Vec::new()),
+                    ..Default::default()
+                }),
+                width: 4,
+                height: 4,
+                ..request()
+            };
+            let prepared = host.prepare_submission(empty(), request, JobOptions::default(), None, CancelToken::default()).unwrap();
+            let workers = prepared.admission.cpu_workers.unwrap();
+            assert!((1..=crate::job::MAX_CPU_THREADS).contains(&workers));
+            if threads != 0 {
+                assert_eq!(workers, threads);
+            }
+            assert_eq!(prepared.request().raytrace.as_ref().unwrap().threads, threads);
+            let physical = prepared.admission.host_memory.unwrap();
+            assert_eq!(physical.required_bytes, host.admitted_bytes());
+            assert_eq!(physical.admitted_bytes, 0, "the receipt credits its own already-held lease");
+            assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, host.admitted_bytes());
+            let handle = host.submit_prepared(id(7910, serial), 1, prepared).unwrap();
+            let work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+            assert_eq!(work.cpu_workers, Some(workers));
+            handle.cancel().unwrap();
+            assert!(Running::begin(work).is_none());
+            assert_eq!(handle.status().unwrap().progress.phase, Phase::Cancelled);
+            drop(handle);
+            assert_eq!(host.admitted_bytes(), 0);
+            assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 0);
+        }
+    }
+
+    #[cfg(feature = "raytrace-cpu")]
+    #[test]
+    fn queued_cpu_work_refuses_missing_or_reduced_custom_worker_admission() {
+        use crate::job::RaytraceOptions;
+        for cpu_workers in [None, Some(1), Some(0), Some(65)] {
+            let memory = NativeMemoryPool::testing(MEMORY_LIMIT);
+            let host = host(&memory, MEMORY_LIMIT, false);
+            let request = ImageRequest {
+                integrator: Integrator::Raytrace,
+                raytrace: Some(RaytraceOptions { threads: 2, ..Default::default() }),
+                width: 1,
+                height: 1,
+                ..request()
+            };
+            let handle = host.submit(id(7911, 1), 1, empty(), request).unwrap();
+            let mut work = host.0.shared.queue.lock().unwrap().pop_front().unwrap();
+            assert_eq!(work.cpu_workers, Some(2));
+            work.cpu_workers = cpu_workers;
+            assert!(Running::begin(work).is_none());
+            let failure = handle.status().unwrap().error.unwrap();
+            assert_eq!(failure.code, if cpu_workers.is_none() { ErrorCode::Internal } else { ErrorCode::InvalidRequest });
+            drop(handle);
+            assert_eq!(host.admitted_bytes(), 0);
+            assert_eq!(memory.check(0, 0).unwrap().admitted_bytes, 0);
+        }
     }
 }

@@ -3,16 +3,18 @@ use crate::{SolveApp, ui_kit};
 use solidcraft_engine::render::job::{DenoiseGuideClass, MAX_CPU_THREADS};
 
 /// New selections are bounded without rewriting larger legacy jobs on paint or load.
-pub(super) const MAX_UI_SAMPLES: u32 = 128;
+pub(super) const MAX_UI_SAMPLES: u32 = solidcraft_engine::render::job::MAX_UI_SAMPLES;
 
 pub(super) fn sample_presets(ui: &mut egui::Ui, samples: &mut u32, range: std::ops::RangeInclusive<u32>, prefix: &str) -> bool {
     let mut changed = false;
     ui_kit::catalog_scope(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            for count in [1, 2, 4, 8, 16, 32, 64, 128] {
+            for count in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384] {
                 let target = format!("{prefix}:{count}");
-                let response =
-                    ui.add_enabled_ui(range.contains(&count), |ui| ui_kit::choice_chip(ui, &target, &count.to_string(), *samples == count)).inner;
+                // A child scope advances the row without wrapping. Allocate
+                // the chip itself in the wrapping parent instead.
+                let response = ui
+                    .add_enabled(range.contains(&count), |ui: &mut egui::Ui| ui_kit::choice_chip(ui, &target, &count.to_string(), *samples == count));
                 crate::scenario::publish_target(&target, response.rect);
                 if response.clicked() {
                     *samples = count;

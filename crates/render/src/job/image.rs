@@ -34,6 +34,13 @@ pub struct Admission {
     /// Present when the job explicitly refreshes its photon map every pass.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caustic_work: Option<super::caustics::CausticWork>,
+    /// CPU worker count selected during admission and retained through execution.
+    /// Auto records the available parallelism at admission; other producers omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_workers: Option<u16>,
+    /// Native host RAM snapshot and shared reservations; absent without a native host.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_memory: Option<super::HostMemoryAdmission>,
     pub geometry_bytes: u64,
     pub pixel_scratch_bytes: u64,
     pub preparation_bytes: u64,
@@ -295,6 +302,8 @@ fn admit_source_with_dimensions(
             face_appearances: faces,
             projected_pixel_tests: None,
             caustic_work: None,
+            cpu_workers: None,
+            host_memory: None,
             geometry_bytes: geometry,
             pixel_scratch_bytes: 0,
             preparation_bytes: 0,

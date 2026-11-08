@@ -80,7 +80,7 @@ fn reference_settings(width: usize, input: &[[f64; 4]], guides: &[Guide], step: 
                     let color = maximum(diff(center, value).map(f64::abs));
                     let high = center_peak.max(tap_peak);
                     let bound = 16.0 * (0.25 + center_peak.min(tap_peak));
-                    let contrast = if high <= bound { 1.0 } else { (bound / high).powi(2) };
+                    let contrast = if !fireflies || high <= bound { 1.0 } else { (bound / high).powi(2) };
                     let color_weight = if optical { 4.0 } else { 1.0 };
                     let weight = wx * wy * guide_weight * (-color_weight * color / (0.25 + 0.5 * high)).exp() * contrast;
                     for k in 0..3 {
@@ -316,7 +316,11 @@ fn gpu_atrous_matches_f64_with_firefly_line_and_material_boundary() {
     };
     let raw = make("denoise fixture raw", &bytes);
     let dummy = make("denoise unused geometry", &[0; 64]);
-    let mut task = Task::new(context.clone(), plane(), request(13), JobOptions::default(), CancelToken::default()).unwrap();
+    let options = JobOptions {
+        denoise_settings: solidcraft_render::job::DenoiseSettings { firefly_suppression: true, ..Default::default() },
+        ..Default::default()
+    };
+    let mut task = Task::new(context.clone(), plane(), request(13), options, CancelToken::default()).unwrap();
     task.sample = samples;
     let filter = Resources::new(&context, &task.uniform, [&dummy, &dummy, &dummy, &dummy, &dummy], &raw, bytes.len() as u64, false).unwrap();
     let guide_bytes: Vec<u8> = guides.iter().flatten().flatten().flat_map(|x| (*x as f32).to_le_bytes()).collect();
@@ -444,6 +448,11 @@ fn gpu_denoise_optical_guides_track_branches_and_certified_snell_endpoints() {
     };
     let mut mirror = base.clone();
     mirror.surface = Some(OpaqueSurface::new(Vec3::new(1.0, 1.0, 1.0), 1.0, 0.045, 1.5).unwrap());
+    assert_eq!(probe(vec![mirror.clone()], options), bypass(DenoiseGuideClass::Unavailable));
+    assert_eq!(probe(Vec::new(), options), bypass(DenoiseGuideClass::Background));
+    let direct_emitter = AreaLight { center: [0.0, 0.0, 2.0], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0], radiance: [1.0; 3] };
+    let direct_lighting = StudioLighting { area_lights: AreaLights::new(&[direct_emitter]).unwrap(), ..Default::default() };
+    assert_eq!(probe(Vec::new(), JobOptions { lighting: Some(direct_lighting), ..options }), bypass(DenoiseGuideClass::Emitter));
     let guide = probe(vec![mirror.clone(), reflected.clone()], options);
     assert_eq!(guide[0], [0.2, 0.4, 0.6, f32::from_bits(tag(2, 0))]);
     assert_eq!(&guide[1][..3], &[0.0, 0.0, -1.0]);
@@ -465,12 +474,12 @@ fn gpu_denoise_optical_guides_track_branches_and_certified_snell_endpoints() {
     assert!((guide[2][1] - (3.0 * incident.tan()) as f32).abs() < 2e-5);
     assert_eq!(
         probe(vec![thin.clone(), transmitted.clone()], options),
-        bypass(DenoiseGuideClass::Background),
+        bypass(DenoiseGuideClass::Unavailable),
         "both weighted branches need an opaque endpoint"
     );
     let emitter = AreaLight { center: [0.0, 2.0, 5.0], u: [2.0, 0.0, 0.0], v: [0.0, 2.0, 0.0], radiance: [1.0; 3] };
     let blocked = StudioLighting { area_lights: AreaLights::new(&[emitter]).unwrap(), ..Default::default() };
-    assert_eq!(probe(thin_scene, JobOptions { lighting: Some(blocked), ..options }), bypass(DenoiseGuideClass::Emitter));
+    assert_eq!(probe(thin_scene, JobOptions { lighting: Some(blocked), ..options }), bypass(DenoiseGuideClass::Unavailable));
     let film = GlassModel { roughness: 0.0, dispersion: None, thin_film: Some(ThinFilm { ior: 1.35, thickness_nm: 200.0 }) };
     let mut modeled = thin.clone();
     modeled.transmission = Some(modeled.transmission.unwrap().with_model(film).unwrap());
@@ -704,4 +713,266 @@ fn gpu_denoise_diagnostics_preserve_beauty_and_export_a_categorical_final_size_m
     assert_eq!(beauty.len(), 2);
     assert_eq!(beauty[0], beauty[1]);
     assert_eq!(masters[0], masters[1]);
+}
+
+#[test]
+fn gpu_filter_windows_keep_three_pass_halos_firefly_support_and_actual_frame_edges_exact() {
+    let Some(context) = context() else { return };
+    let (mut input, mut guides) = fixture(40);
+    for row in [8, 16, 24, 32] {
+        input[row * 40 + 9] = [512.0, 128.0, 32.0, 1.0];
+    }
+    for y in 0..40 {
+        input[y * 40 + 27] = [256.0, 64.0, 16.0, 1.0];
+        for x in 20..40 {
+            guides[y * 40 + x][0][3] = 2.0;
+        }
+    }
+    input[0] = [0.2, 0.3, 0.4, 0.5];
+    guides[39][0][3] = 0.0;
+    let bytes: Vec<u8> = input.iter().flatten().flat_map(|value| (*value as f32).to_le_bytes()).collect();
+    let guide_bytes: Vec<u8> = guides.iter().flatten().flatten().flat_map(|value| (*value as f32).to_le_bytes()).collect();
+    let make = |label, bytes: &[u8]| {
+        context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        })
+    };
+    let raw = make("full filter halo oracle", &bytes);
+    let dummy = make("unused filter geometry", &[0; 64]);
+    let options = JobOptions {
+        denoise: true,
+        denoise_settings: solidcraft_render::job::DenoiseSettings { passes: 3, strength: 1.0, firefly_suppression: true },
+        ..Default::default()
+    };
+    let mut task = Task::new(context.clone(), plane(), request(40), JobOptions { denoise: false, ..options }, CancelToken::default()).unwrap();
+    task.sample = 1;
+    let full = Resources::new(&context, &task.uniform, [&dummy; 5], &raw, bytes.len() as u64, false).unwrap();
+    context.queue.write_buffer(&full._guides, 0, &guide_bytes);
+    full.run_filter(&task, false).unwrap();
+    let expected = task.read_linear_buffer(full.output(3)).unwrap();
+    let layout = super::super::image_pages::Layout::new(40, 40, options, 0, &context.device.limits()).unwrap().with_rows(8, 1).unwrap();
+    let size = u64::from(layout.max_window_pixels()) * 16;
+    let gathered = make("gathered filter halo fixture", &vec![0; size as usize]);
+    let paged = Resources::new(&context, &task.uniform, [&dummy; 5], &gathered, size, false).unwrap();
+    let mut actual = Vec::new();
+    for window in layout.windows() {
+        context.queue.write_buffer(&gathered, 0, &bytes[window.start as usize * 16..(window.start + window.pixels) as usize * 16]);
+        context.queue.write_buffer(&paged._guides, 0, &guide_bytes[window.start as usize * 96..(window.start + window.pixels) as usize * 96]);
+        paged.run_filter_window(&task, false, window).unwrap();
+        let count = u64::from(window.core_pixels) * 16;
+        task.readback_data(
+            count,
+            |encoder| {
+                encoder.copy_buffer_to_buffer(paged.output(3), u64::from(window.core_start - window.start) * 16, &task.readback, 0, count);
+                Ok(())
+            },
+            |data| {
+                actual.extend(
+                    data.as_chunks::<16>()
+                        .0
+                        .iter()
+                        .map(|pixel| std::array::from_fn::<_, 4, _>(|i| f32::from_le_bytes(pixel[i * 4..i * 4 + 4].try_into().unwrap()))),
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(actual, expected, "full dependency halos must preserve every filtered float, including real frame edges");
+    assert!(actual[8 * 40 + 9][0] < 1.0, "firefly support crosses the page boundary");
+    assert!(actual[16 * 40 + 27][0] > 254.0, "supported thin highlights cross the boundary unchanged");
+    assert_eq!(task.read_linear_buffer(&raw).unwrap(), input.iter().map(|pixel| pixel.map(|v| v as f32)).collect::<Vec<_>>());
+}
+
+/// Deliberately isolate storage/normalization from stochastic pilot allocation.
+/// The existing adaptive tests cover the allocation oracle; this fixture gives
+/// every row and page boundary both stopped and unfinished production pixels.
+fn set_checkerboard_test_budgets(task: &Task) {
+    assert_eq!(task.sample, task.options.adaptive.unwrap().pilot_samples);
+    assert_eq!((task.offset, task.lane), (0, 0));
+    let context = &task.context;
+    let submission = super::super::checked_creation(&context.device, || {
+        let source = r#"
+struct Params { page:vec4<u32> };
+@group(0) @binding(0) var<uniform> p:Params;
+@group(0) @binding(1) var<storage,read_write> film:array<vec4<f32>>;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id:vec3<u32>) {
+    let local=id.x;
+    if local>=p.page.y {return;}
+    let pixel=p.page.x+local;
+    let high=((pixel%p.page.z)+(pixel/p.page.z))%2u==1u;
+    film[2u*p.page.y+local]=vec4<f32>(f32(select(16u,32u,high)),0.0,0.0,0.0);
+}
+"#;
+        let module = context.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("independent adaptive budget fixture"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = context.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("independent adaptive budget fixture"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let layout = pipeline.get_bind_group_layout(0);
+        let mut encoder = context.device.create_command_encoder(&Default::default());
+        for page in &task.pages {
+            let bytes: Vec<u8> = [page.start, page.pixels, task.request.width, 0].into_iter().flat_map(u32::to_le_bytes).collect();
+            let uniform = context.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("independent adaptive page fixture"),
+                contents: &bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let entries = [
+                wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: page.accumulation.as_entire_binding() },
+            ];
+            let bind = context.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("independent adaptive page fixture"),
+                layout: &layout,
+                entries: &entries,
+            });
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind, &[]);
+            pass.dispatch_workgroups(page.pixels.div_ceil(64), 1, 1);
+        }
+        Ok(context.queue.submit([encoder.finish()]))
+    })
+    .unwrap();
+    context.wait(submission, TIMEOUT).unwrap();
+}
+
+fn read_test_production_budgets(task: &Task) -> Vec<u32> {
+    let mut budgets = Vec::new();
+    for page in &task.pages {
+        let bytes = u64::from(page.pixels) * 16;
+        task.readback_data(
+            bytes,
+            |encoder| {
+                encoder.copy_buffer_to_buffer(&page.accumulation, bytes * 2, &task.readback, 0, bytes);
+                Ok(())
+            },
+            |data| {
+                budgets.extend(data.as_chunks::<16>().0.iter().map(|pixel| f32::from_le_bytes(pixel[..4].try_into().unwrap()) as u32));
+                Ok(())
+            },
+        )
+        .unwrap();
+    }
+    budgets
+}
+
+#[test]
+fn gpu_paged_film_matches_raw_finished_png_diagnostic_masks_and_complete_adaptive_previews() {
+    use solidcraft_render::job::{DenoiseSettings, adaptive::AdaptiveSampling, bloom::Bloom, finishing::Finishing};
+    let Some(context) = context() else { return };
+    let image = ImageRequest { width: 8, height: 21, ..request(8) };
+    for adaptive in [false, true] {
+        let options = JobOptions {
+            samples: if adaptive { 32 } else { 4 },
+            max_depth: 3,
+            seed: 91,
+            supersampling: 2,
+            denoise: true,
+            denoise_settings: DenoiseSettings { passes: 3, strength: 1.0, firefly_suppression: true },
+            denoise_diagnostics: true,
+            linear_exr: true,
+            adaptive: adaptive.then_some(AdaptiveSampling { pilot_samples: 16, min_samples: 16, ..Default::default() }),
+            finishing: Finishing { bloom: Some(Bloom { strength: 0.3, threshold: 0.1, radius: 2 }), ..Default::default() },
+            ..Default::default()
+        };
+        let render = |rows| {
+            let mut task = Task::new_with_page_rows(context.clone(), plane(), image.clone(), options, CancelToken::default(), rows).unwrap();
+            if rows.is_some() {
+                assert_eq!(task.pages.len(), 6);
+                assert_eq!(task.pages.last().unwrap().pixels, 16 * 2, "the short final page must execute with its own plane stride");
+            }
+            task.preview_enabled = true;
+            let mut previews = Vec::new();
+            let mut budget_injected = false;
+            for _ in 0..50_000 {
+                let poll = task.step(4).unwrap();
+                if let Some(preview) = task.take_preview() {
+                    assert_eq!(task.offset, 0, "previews own completed global passes");
+                    assert_eq!(task.lane, 0);
+                    if adaptive && preview.samples_per_pixel == 16 {
+                        assert!(!budget_injected);
+                        set_checkerboard_test_budgets(&task);
+                        budget_injected = true;
+                    }
+                    previews.push((preview.samples_per_pixel, preview.png));
+                }
+                if let TaskPoll::Complete(png) = poll {
+                    let raw = task.read_linear().unwrap();
+                    let report = task.denoise_diagnostics().unwrap();
+                    assert_eq!(report.counts.iter().sum::<u64>(), 16 * 42);
+                    let budgets = if adaptive {
+                        assert!(budget_injected);
+                        let budgets = read_test_production_budgets(&task);
+                        let expected: Vec<u32> = (0..16 * 42).map(|pixel| if ((pixel % 16) + (pixel / 16)) % 2 == 0 { 16 } else { 32 }).collect();
+                        assert_eq!(budgets, expected, "both budgets cross every storage boundary, including the short last page");
+                        let sampling = task.sampling_report().unwrap();
+                        assert_eq!((sampling.minimum_production_samples, sampling.maximum_production_samples), (16, 32));
+                        assert_eq!(sampling.pixels_at_cap, 16 * 42 / 2);
+                        assert_eq!(sampling.production_samples, 16 * 42 * 24);
+                        assert_eq!(sampling.primary_path_evaluations, 16 * 42 * 40);
+                        budgets
+                    } else {
+                        Vec::new()
+                    };
+                    return (
+                        png,
+                        task.take_linear_exr().unwrap(),
+                        report,
+                        task.take_denoise_mask().unwrap(),
+                        task.sampling_report(),
+                        previews,
+                        raw,
+                        budgets,
+                    );
+                }
+            }
+            panic!("bounded page-equivalence fixture did not complete");
+        };
+        let single = render(None);
+        let paged = render(Some(8));
+        assert_eq!(single.0, paged.0, "final PNG adaptive={adaptive}");
+        assert_eq!(single.1, paged.1, "raw EXR adaptive={adaptive}");
+        assert_eq!(single.2, paged.2, "exact category counts adaptive={adaptive}");
+        assert_eq!(single.3, paged.3, "X2 categorical mask adaptive={adaptive}");
+        assert_eq!(single.4, paged.4, "adaptive per-pixel budgets adaptive={adaptive}");
+        assert_eq!(single.5, paged.5, "completed checkpoint PNGs adaptive={adaptive}");
+        assert_eq!(single.6, paged.6, "raw float film adaptive={adaptive}");
+        assert_eq!(single.7, paged.7, "per-pixel stopped/unfinished production budgets adaptive={adaptive}");
+        assert_eq!(paged.5.iter().map(|preview| preview.0).collect::<Vec<_>>(), (1..options.preview_target().unwrap()).collect::<Vec<_>>());
+        println!(
+            "hardware page equivalence: adaptive={adaptive} pages=6 last_rows=2 halo=14 previews={} raw/png/mask/category/sample-report exact",
+            paged.5.len()
+        );
+    }
+}
+
+#[test]
+fn gpu_paged_partial_pass_cancellation_publishes_no_preview_or_final_artifact() {
+    let Some(context) = context() else { return };
+    let token = CancelToken::default();
+    let image = ImageRequest { width: 8, height: 20, ..request(8) };
+    let options = JobOptions { samples: 2, supersampling: 2, denoise: true, denoise_diagnostics: true, linear_exr: true, ..Default::default() };
+    let mut task = Task::new_with_page_rows(context, plane(), image, options, token.clone(), Some(8)).unwrap();
+    task.preview_enabled = true;
+    assert!(matches!(task.step(1).unwrap(), TaskPoll::Pending(_)));
+    assert!(task.offset > 0);
+    assert_eq!(task.sample, 0);
+    assert!(task.take_preview().is_none());
+    token.cancel();
+    assert_eq!(task.step(1).err().unwrap().code, solidcraft_render::job::ErrorCode::Cancelled);
+    assert!(task.take_preview().is_none());
+    assert!(task.take_linear_exr().is_none());
+    assert!(task.take_denoise_mask().is_none());
 }

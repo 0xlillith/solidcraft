@@ -7641,3 +7641,168 @@ fn cpu_parallel_timing_probe() {
         println!("{}", serde_json::json!({"kind":"cpu_runtime_median","threads":threads,"seconds":seconds[1]}));
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_auto_admission_charges_exactly_its_recorded_worker_count() {
+    let source = worker_quality_fixture(1, 1, false, false);
+    let options = RaytraceOptions { threads: 0, ..source.options.clone() };
+    let request = ImageRequest { raytrace: Some(options.clone()), ..source.request.clone() };
+    let automatic = admit_layout(&source.scene, &request, &options).unwrap();
+    let workers = automatic.cpu_workers.unwrap();
+    assert!((1..=job::MAX_CPU_THREADS).contains(&workers));
+    let explicit = RaytraceOptions { threads: workers, ..options.clone() };
+    let explicit_request = ImageRequest { raytrace: Some(explicit.clone()), ..request.clone() };
+    let selected = admit_layout(&source.scene, &explicit_request, &explicit).unwrap();
+    assert_eq!(serde_json::to_value(automatic).unwrap(), serde_json::to_value(selected).unwrap());
+
+    for workers in [1, 2, 64] {
+        let admitted = admit_layout_with_workers(&source.scene, &request, &options, workers).unwrap();
+        let serial = admit_layout_with_workers(&source.scene, &request, &options, 1).unwrap();
+        let worker_bytes = parallel::Pool::required_bytes(&options, false, workers).unwrap();
+        assert_eq!(admitted.estimated_total_bytes - serial.estimated_total_bytes, worker_bytes);
+        assert_eq!(admitted.preparation_bytes - serial.preparation_bytes, worker_bytes);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_auto_execution_retains_its_admitted_workers_and_serial_radiance() {
+    let serial = complete_presentation(worker_quality_fixture(1, 1, false, false), 1);
+    for workers in [1, 2] {
+        let source = worker_quality_fixture(1, 1, false, false);
+        let options = RaytraceOptions { threads: 0, ..source.options };
+        let request = ImageRequest { raytrace: Some(options.clone()), ..source.request };
+        let mut task = ImageTask::new_prepared_with_workers(source.scene, request, CancelToken::default(), options, None, None, workers).unwrap();
+        assert_eq!(task.admission.cpu_workers, Some(workers));
+        assert_eq!(task.options.threads, 0, "execution does not rewrite authored Auto intent");
+        if workers > 1 {
+            for _ in 0..100_000 {
+                if !task.parallel.is_empty() {
+                    break;
+                }
+                assert!(matches!(task.step_with_previews(1).unwrap(), ImagePoll::Pending(_)));
+            }
+            assert_eq!(task.parallel.first().unwrap().test_worker_counts(), (usize::from(workers), usize::from(workers)));
+        }
+        assert_eq!(serial, complete_presentation(task, 16384));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_worker_admission_rejects_invalid_counts_and_custom_reduction() {
+    let source = worker_quality_fixture(2, 1, false, false);
+    for workers in [0, 1, 3, job::MAX_CPU_THREADS + 1] {
+        let error = admit_layout_with_workers(&source.scene, &source.request, &source.options, workers).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+    }
+    assert_eq!(admit_layout_with_workers(&source.scene, &source.request, &source.options, 2).unwrap().cpu_workers, Some(2));
+}
+
+#[cfg(all(not(target_arch = "wasm32"), target_pointer_width = "64"))]
+#[test]
+fn workstation_admits_combined_maximum_quality_and_optional_pilots_photons_without_allocating_film() {
+    let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    for (width, height) in [(7680, 4320), (8192, 4096)] {
+        for adaptive in [false, true] {
+            for photons in [false, true] {
+                let options = RaytraceOptions {
+                    threads: job::MAX_CPU_THREADS,
+                    budget: job::CpuBudget::Workstation,
+                    progressive: Some(job::CpuProgressiveOptions { samples_per_pixel: job::MAX_UI_SAMPLES, seed: 3 }),
+                    path: Some(job::CpuPathOptions { max_depth: job::MAX_PATH_DEPTH }),
+                    texture_filtering: true,
+                    metal_energy_compensation: true,
+                    adaptive: adaptive.then(|| {
+                        Box::new(job::adaptive::AdaptiveSampling {
+                            pilot_samples: job::adaptive::MAX_PILOT_SAMPLES,
+                            min_samples: job::MAX_UI_SAMPLES,
+                            ..Default::default()
+                        })
+                    }),
+                    caustics: photons.then_some(job::CausticOptions {
+                        photons: job::MAX_CAUSTIC_PHOTONS,
+                        max_depth: job::MAX_PATH_DEPTH,
+                        refresh_per_pass: true,
+                        ..Default::default()
+                    }),
+                    supersampling: 2,
+                    denoise: true,
+                    denoise_settings: job::DenoiseSettings { passes: 3, strength: 1.0, firefly_suppression: true },
+                    denoise_diagnostics: true,
+                    output: Some(Box::new(job::OutputOptions {
+                        linear_exr: true,
+                        finishing: job::finishing::Finishing {
+                            bloom: Some(job::bloom::Bloom { strength: 2.0, threshold: 1e6, radius: 64 }),
+                            photographic: job::photographic::Photographic {
+                                flare: job::photographic::Flare { strength: 2.0, threshold: 1e6, ghosts: 4, halo: 2.0, streak: 2.0 },
+                                chromatic_pixels: 12.0,
+                                radial_distortion: 0.3,
+                                soft_focus: 1.0,
+                                sharpening: 1.0,
+                                grain: 0.15,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                };
+                let request = ImageRequest {
+                    integrator: job::Integrator::Raytrace,
+                    raytrace: Some(options.clone()),
+                    width,
+                    height,
+                    camera: Default::default(),
+                    studio_weights: None,
+                    environment: None,
+                    textures: None,
+                    background: [0; 3],
+                    transparent_background: false,
+                };
+                // Only header/geometry admission: never construct ImageTask or its buffers.
+                let admission = admit_layout(&scene, &request, &options).unwrap();
+                assert_eq!(admission.cpu_workers, Some(64));
+                assert!(admission.estimated_total_bytes <= job::CpuBudget::Workstation.limits().max_job_bytes);
+                assert!(admission.preparation_bytes > u64::from(width) * u64::from(height) * 4 * job::denoise::GUIDE_BYTES);
+                let passes = options.camera_sampling().unwrap().unwrap().samples_per_pixel;
+                assert_eq!(passes, job::MAX_UI_SAMPLES + if adaptive { job::adaptive::MAX_PILOT_SAMPLES } else { 0 });
+                let camera_samples = u64::from(width) * u64::from(height) * 4 * u64::from(passes);
+                assert!(camera_samples <= job::CpuBudget::Workstation.limits().max_camera_samples);
+                if let Some(work) = admission.caustic_work {
+                    assert_eq!(work.maps, passes);
+                    assert_eq!(work.emitted_paths, u64::from(passes) * u64::from(job::MAX_CAUSTIC_PHOTONS));
+                    assert!(work.max_light_path_events <= job::MAX_CPU_WORK);
+                }
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "width": width, "height": height, "supersampling": 2, "samples_per_pixel": job::MAX_UI_SAMPLES,
+                        "adaptive": adaptive, "photons": photons, "camera_samples": camera_samples, "admission": admission,
+                    })
+                );
+                let oversized = ImageRequest { width: job::MAX_OUTPUT_DIMENSION + 1, height: 1, ..request };
+                assert!(admit_layout(&scene, &oversized, &options).is_err(), "internal trace bounds do not expand final export bounds");
+            }
+        }
+    }
+    assert!(job::validate_cpu_denoise_image(job::MAX_TRACE_DIMENSION, 8192).is_ok());
+    assert!(job::validate_cpu_denoise_image(job::MAX_TRACE_DIMENSION + 1, 1).is_err());
+    assert!(job::validate_cpu_denoise_image(job::MAX_TRACE_DIMENSION, job::MAX_TRACE_DIMENSION).is_err());
+    let bvh_limits = limits(job::CpuBudget::Workstation);
+    assert_eq!(bvh_limits.max_memory_bytes, super::super::bvh::MAX_MEMORY_BYTES);
+    let bvh_bytes = BvhBuilder::required_bytes(job::MAX_CPU_TRIANGLES, job::MAX_CPU_TRIANGLES, bvh_limits).unwrap();
+    assert!(bvh_bytes <= bvh_limits.max_memory_bytes, "all admitted geometry still fits the unchanged BVH envelope");
+}
+
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn browser_refuses_custom_native_workers_without_rewriting_saved_intent() {
+    let source = fixture(1, 1, Some(true));
+    let options = RaytraceOptions { threads: 2, ..source.options };
+    let request = ImageRequest { raytrace: Some(options.clone()), ..source.request };
+    assert_eq!(admit_layout(&source.scene, &request, &options).unwrap_err().code, ErrorCode::HostUnavailable);
+    assert_eq!(request.raytrace.as_ref().unwrap().threads, 2);
+}

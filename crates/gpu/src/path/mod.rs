@@ -24,6 +24,7 @@ use wgpu::util::DeviceExt;
 mod adaptive;
 mod denoise;
 mod dispatch;
+mod image_pages;
 mod media_hierarchy;
 mod photons;
 mod scene;
@@ -65,7 +66,7 @@ const SINGLE_MEDIUM_SHADER: &str = path_shader!(1);
 const MAX_TRIANGLES: u64 = MAX_GPU_PATH_TRIANGLES;
 const PATH_WORKGROUP_SIZE: u32 = 32;
 const SCENE_PIPELINE_CACHE_SLOTS: usize = 5;
-const PARAMETER_BYTES: usize = 2080;
+const PARAMETER_BYTES: usize = 2096;
 // Five vec4s per source; exact device+upload growth is additional to v2's budget.
 const PUNCTUAL_PARAMETER_BYTES: u64 = 8 * 80;
 // Eight inline 32-byte hard directions: device uniform plus host upload bytes.
@@ -519,7 +520,15 @@ fn trace_request(request: &ImageRequest, options: JobOptions) -> Result<ImageReq
     Ok(trace)
 }
 
+#[cfg(test)]
 fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
+    let mut limits = wgpu::Limits::downlevel_defaults();
+    limits.max_storage_buffer_binding_size = image_pages::TARGET_BUFFER_BYTES;
+    limits.max_buffer_size = image_pages::TARGET_BUFFER_BYTES;
+    admission_with_device_limits(scene, request, options, &limits)
+}
+
+fn admission_with_device_limits(scene: &ProductScene, request: &ImageRequest, options: JobOptions, limits: &wgpu::Limits) -> Result<Admission> {
     if request.integrator != solidcraft_render::job::Integrator::Raster || request.raytrace.is_some() {
         return Err(JobError::new(ErrorCode::InvalidRequest, "GPU path rendering does not accept CPU raytrace options"));
     }
@@ -609,9 +618,9 @@ fn admission(scene: &ProductScene, request: &ImageRequest, options: JobOptions) 
     // Peak preparation: f64 triangles + nodes + serialized upload. After preparation:
     // serialized + device geometry + accumulation/readback/RGBA/PNG. These phases don't overlap.
     let pixels = u64::from(request.width) * u64::from(request.height);
-    let denoise_bytes = pixels
-        * if options.denoise || options.denoise_diagnostics { denoise::BYTES_PER_PIXEL + if options.adaptive.is_some() { 16 } else { 0 } } else { 0 };
-    let optical_tile_bytes = glass_tile_bytes(scene, request);
+    let image_pages = image_pages::Layout::new(request.width, request.height, options, glass_tile_bytes(scene, request), limits)?;
+    let denoise_bytes = image_pages.filter_scratch_bytes()?;
+    let optical_tile_bytes = image_pages.optical_scratch_bytes()?;
     admission.pixel_scratch_bytes = pixels * 64 + denoise_bytes;
     let vertex_bytes = scene.meshes.iter().map(|m| m.mesh.positions.len() as u64 * 32).sum::<u64>();
     let model_bytes = admission.triangles * scene::model_bytes_per_triangle(scene);
@@ -728,8 +737,8 @@ fn admit_device_resources(
     let environment_bytes =
         request.environment.as_ref().map_or(48, |source| 16 + u64::from(source.info().width) * u64::from(source.info().height) * 32);
     let node_bytes = a.triangles.max(1) * 64;
-    let accumulation_bytes =
-        u64::from(request.width) * u64::from(request.height) * if options.adaptive.is_some() { 48 } else { 16 } + glass_tile_bytes(scene, request);
+    let image_pages = image_pages::Layout::new(request.width, request.height, options, glass_tile_bytes(scene, request), device_limits)?;
+    let accumulation_bytes = image_pages.buffer_bytes(image_pages.max_core_pixels())?;
     if texture_bytes > limit || texture_bytes > device_limits.max_buffer_size {
         return Err(JobError::new(
             ErrorCode::LimitExceeded,
@@ -738,14 +747,14 @@ fn admit_device_resources(
             ),
         ));
     }
-    let pixels = u64::from(request.width) * u64::from(request.height);
-    let guide_bytes = pixels * if options.denoise || options.denoise_diagnostics { denoise::GUIDE_BYTES_PER_PIXEL } else { 0 };
+    let guide_bytes =
+        u64::from(image_pages.max_window_pixels()) * if options.denoise || options.denoise_diagnostics { denoise::GUIDE_BYTES_PER_PIXEL } else { 0 };
     for (name, bytes) in [
         ("BVH", node_bytes),
         ("environment", environment_bytes),
         ("geometry", geometry_bytes),
-        ("accumulation", accumulation_bytes),
-        ("denoising guides", guide_bytes),
+        ("accumulation page", accumulation_bytes),
+        ("denoising guide window", guide_bytes),
     ] {
         if bytes > limit || bytes > device_limits.max_buffer_size {
             return Err(JobError::new(
@@ -757,7 +766,7 @@ fn admit_device_resources(
             ));
         }
     }
-    let readback_bytes = pixels * 16 * if options.adaptive.is_some() { 2 } else { 1 } + FAILURE_BYTES;
+    let readback_bytes = image_pages.readback_bytes()?;
     if readback_bytes > device_limits.max_buffer_size {
         return Err(JobError::new(
             ErrorCode::LimitExceeded,
@@ -828,7 +837,7 @@ impl ImageExecutor for Executor {
     }
     fn admit(&self, scene: &ProductScene, request: &ImageRequest, options: JobOptions) -> Result<Admission> {
         self.context.ensure_available()?;
-        let a = admission(scene, request, options)?;
+        let a = admission_with_device_limits(scene, request, options, &self.context.device.limits())?;
         let trace = trace_request(request, options)?;
         let request = &trace;
         admit_device_resources(scene, request, options, &a, &self.context.device.limits())?;
@@ -939,6 +948,8 @@ struct Task {
     cancel: CancelToken,
     uniform: wgpu::Buffer,
     accumulation: wgpu::Buffer,
+    pages: Vec<image_pages::FilmPage>,
+    page_layout: image_pages::Layout,
     failures: wgpu::Buffer,
     readback: wgpu::Buffer,
     bind: wgpu::BindGroup,
@@ -974,7 +985,18 @@ struct Task {
     metrics: (f64, u64, f64),
 }
 impl Task {
-    fn new(context: Arc<Context>, scene: ProductScene, mut request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
+    fn new(context: Arc<Context>, scene: ProductScene, request: ImageRequest, options: JobOptions, cancel: CancelToken) -> Result<Self> {
+        Self::new_with_page_rows(context, scene, request, options, cancel, None)
+    }
+
+    fn new_with_page_rows(
+        context: Arc<Context>,
+        scene: ProductScene,
+        mut request: ImageRequest,
+        options: JobOptions,
+        cancel: CancelToken,
+        _page_rows: Option<u32>,
+    ) -> Result<Self> {
         cancel.check()?;
         options.validate()?;
         let output_request = ImageRequest { environment: None, textures: None, ..request.clone() };
@@ -1016,6 +1038,9 @@ impl Task {
         cancel.check()?;
         let glass_lighting = needs_glass_lighting(&scene);
         let optical_tile_bytes = glass_tile_bytes(&scene, &request);
+        let page_layout = image_pages::Layout::new(request.width, request.height, options, optical_tile_bytes, &context.device.limits())?;
+        #[cfg(test)]
+        let page_layout = if let Some(rows) = _page_rows { page_layout.with_rows(rows, options.supersampling)? } else { page_layout };
         let optical_pipelines = if glass_lighting {
             Some(glass_pipeline(&context, photons.as_ref().map_or(&context.layout, |resources| &resources.layout), photons.is_some(), &cancel)?)
         } else {
@@ -1035,7 +1060,7 @@ impl Task {
         let uploading = Instant::now();
         drop(scene);
         let device = &context.device;
-        let (uniform, accumulation, failures, readback, bind, denoiser) = checked_creation(device, || {
+        let (uniform, accumulation, pages, failures, readback, bind, denoiser) = checked_creation(device, || {
             let make = |label, bytes: &[u8], usage| {
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes, usage })
             };
@@ -1046,13 +1071,6 @@ impl Task {
             let nodes = make("path BVH", &upload.nodes, wgpu::BufferUsages::STORAGE);
             let texture_buffer = make("path opaque textures", &texture_upload, wgpu::BufferUsages::STORAGE);
             let uniform = make("path parameters", &[0; PARAMETER_BYTES], wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
-            let size = u64::from(request.width) * u64::from(request.height) * 16;
-            let accumulation = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("path accumulation"),
-                size: size * if options.adaptive.is_some() { 3 } else { 1 } + optical_tile_bytes,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            });
             // Inconsistent-medium path count and the first such path's location (see read_linear).
             let failures = make(
                 "path medium failures",
@@ -1061,38 +1079,52 @@ impl Task {
             );
             let readback = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("path readback"),
-                size: size * if options.adaptive.is_some() { 2 } else { 1 } + FAILURE_BYTES,
+                size: page_layout.readback_bytes()?,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let mut entries: Vec<_> = [&uniform, &triangles, &nodes, &accumulation, &environment]
-                .iter()
-                .enumerate()
-                .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: binding as u32, resource: buffer.as_entire_binding() })
-                .collect();
-            entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
-            entries.push(wgpu::BindGroupEntry { binding: 6, resource: failures.as_entire_binding() });
-            if let Some(resources) = &photons {
-                entries.push(wgpu::BindGroupEntry { binding: 7, resource: resources.buffer.as_entire_binding() });
+            let mut pages = scene::reserved(page_layout.page_count() as usize)?;
+            for window in page_layout.windows() {
+                cancel.check()?;
+                let accumulation = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("path accumulation page"),
+                    size: page_layout.buffer_bytes(window.core_pixels)?,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                let mut entries: Vec<_> = [&uniform, &triangles, &nodes, &accumulation, &environment]
+                    .iter()
+                    .enumerate()
+                    .map(|(binding, buffer)| wgpu::BindGroupEntry { binding: binding as u32, resource: buffer.as_entire_binding() })
+                    .collect();
+                entries.push(wgpu::BindGroupEntry { binding: 5, resource: texture_buffer.as_entire_binding() });
+                entries.push(wgpu::BindGroupEntry { binding: 6, resource: failures.as_entire_binding() });
+                if let Some(resources) = &photons {
+                    entries.push(wgpu::BindGroupEntry { binding: 7, resource: resources.buffer.as_entire_binding() });
+                }
+                let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("gpu-path image page"),
+                    layout: photons.as_ref().map_or(&context.layout, |resources| &resources.layout),
+                    entries: &entries,
+                });
+                pages.push(image_pages::FilmPage { start: window.core_start, pixels: window.core_pixels, accumulation, bind });
             }
-            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("gpu-path"),
-                layout: photons.as_ref().map_or(&context.layout, |resources| &resources.layout),
-                entries: &entries,
-            });
+            let first = pages.first().ok_or_else(|| gpu("GPU image has no storage page"))?;
+            let accumulation = first.accumulation.clone();
+            let bind = first.bind.clone();
             let denoiser = if options.denoise || options.denoise_diagnostics {
-                Some(denoise::Resources::new(
+                Some(denoise::Resources::new_for_layout(
                     &context,
                     &uniform,
                     [&triangles, &nodes, &environment, &texture_buffer, &failures],
                     &accumulation,
-                    size,
                     options.adaptive.is_some(),
+                    page_layout,
                 )?)
             } else {
                 None
             };
-            Ok((uniform, accumulation, failures, readback, bind, denoiser))
+            Ok((uniform, accumulation, pages, failures, readback, bind, denoiser))
         })?;
         let submission = context.queue.submit([]);
         context.wait(submission, TIMEOUT)?;
@@ -1129,6 +1161,8 @@ impl Task {
             cancel,
             uniform,
             accumulation,
+            pages,
+            page_layout,
             failures,
             readback,
             bind,
@@ -1268,7 +1302,7 @@ impl Task {
             let [r, g, b] = light.color;
             scene::vector(&mut bytes, Vec3::new(r, g, b), 0.0);
         }
-        bytes.resize(PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 16, 0);
+        bytes.resize(PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 32, 0);
         for light in lighting.punctual_lights.iter() {
             for vector in punctual_parameters(light, camera.target) {
                 for value in vector {
@@ -1276,13 +1310,22 @@ impl Task {
                 }
             }
         }
-        bytes.resize(PARAMETER_BYTES - 16, 0);
+        bytes.resize(PARAMETER_BYTES - 32, 0);
         let weights = self.request.studio_weights.unwrap_or([1.0; 3]);
         for value in [weights[0] as f32, weights[1] as f32, weights[2] as f32, 0.0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        let page = self.current_page()?;
+        for value in [page.start, page.pixels, 0, 0] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
         Ok(bytes)
     }
+    fn current_page(&self) -> Result<&image_pages::FilmPage> {
+        let index = self.offset / self.page_layout.max_core_pixels();
+        self.pages.get(index as usize).ok_or_else(|| gpu("GPU work offset has no admitted image page"))
+    }
+
     fn normalization_samples(&self) -> u32 {
         if self.options.adaptive.is_some() { 1 } else { self.sample }
     }
@@ -1310,7 +1353,13 @@ impl Task {
         }
         let dispatch_started = Instant::now();
         let pixels = self.request.width * self.request.height;
-        let count = self.dispatch_budget.count(pixels - self.offset);
+        let page = self.current_page()?;
+        let remaining = page
+            .start
+            .checked_add(page.pixels)
+            .and_then(|end| end.checked_sub(self.offset))
+            .ok_or_else(|| gpu("GPU image page work range overflow"))?;
+        let count = self.dispatch_budget.count(remaining);
         let context = &self.context;
         let scopes = scopes(&context.device);
         context.queue.write_buffer(&self.uniform, 0, &self.parameters(count)?);
@@ -1318,13 +1367,13 @@ impl Task {
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("path tile"), timestamp_writes: None });
             pass.set_pipeline(&self.render_pipeline);
-            pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_bind_group(0, &page.bind, &[]);
             pass.dispatch_workgroups(count.div_ceil(PATH_WORKGROUP_SIZE), 1, 1);
         }
         if let Some(resolve) = &self.optical_resolve {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("path optical resolve"), timestamp_writes: None });
             pass.set_pipeline(resolve);
-            pass.set_bind_group(0, &self.bind, &[]);
+            pass.set_bind_group(0, &page.bind, &[]);
             pass.dispatch_workgroups(count.div_ceil(PATH_WORKGROUP_SIZE), 1, 1);
         }
         let submission = context.queue.submit([encoder.finish()]);
@@ -1349,7 +1398,8 @@ impl Task {
         let wanted = self.sample.checked_add(1).ok_or_else(|| gpu("sample counter overflow"))?;
         let maximum = (self.request.width * self.request.height)
             .div_ceil(dispatch::MIN_PATHS)
-            .checked_mul(self.options.transmission_samples)
+            .checked_add(self.page_layout.page_count())
+            .and_then(|count| count.checked_mul(self.options.transmission_samples))
             .and_then(|count| count.checked_add(self.photons.as_ref().map_or(0, photons::Resources::maximum_quanta)))
             .ok_or_else(|| gpu("test sample wave count overflow"))?;
         for _ in 0..maximum {
@@ -1361,116 +1411,212 @@ impl Task {
         Err(gpu("bounded full-sample test helper did not advance"))
     }
     fn read_linear(&self) -> Result<Vec<[f32; 4]>> {
-        self.read_linear_buffer(&self.accumulation)
-    }
-    fn read_linear_buffer(&self, source: &wgpu::Buffer) -> Result<Vec<[f32; 4]>> {
-        self.read_pixels(source, false)
-    }
-    fn read_checkpoint(&self) -> Result<Vec<[f32; 4]>> {
-        self.read_pixels(&self.accumulation, self.options.adaptive.is_some())
-    }
-    fn read_pixels(&self, source: &wgpu::Buffer, adaptive_preview: bool) -> Result<Vec<[f32; 4]>> {
-        self.cancel.check()?;
-        let context = &self.context;
-        let scopes = scopes(&context.device);
-        let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path readback") });
-        let pixel_bytes = u64::from(self.request.width) * u64::from(self.request.height) * 16;
-        let pilot = adaptive_preview && self.options.adaptive.is_some_and(|options| self.sample <= options.pilot_samples);
-        encoder.copy_buffer_to_buffer(source, if pilot { pixel_bytes } else { 0 }, &self.readback, 0, pixel_bytes);
-        if adaptive_preview && !pilot {
-            encoder.copy_buffer_to_buffer(&self.accumulation, pixel_bytes * 2, &self.readback, pixel_bytes, pixel_bytes);
+        if self.pages.len() == 1 {
+            self.read_linear_buffer(&self.accumulation)
+        } else {
+            self.read_sources(self.pages.iter().map(|page| (&page.accumulation, page.pixels)), false)
         }
-        let failure_offset = pixel_bytes * if self.options.adaptive.is_some() { 2 } else { 1 };
-        encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, failure_offset, FAILURE_BYTES);
-        let submission = context.queue.submit([encoder.finish()]);
-        checked(scopes)?;
-        let slice = self.readback.slice(..);
+    }
+
+    fn read_linear_buffer(&self, source: &wgpu::Buffer) -> Result<Vec<[f32; 4]>> {
+        self.read_sources(std::iter::once((source, self.request.width * self.request.height)), false)
+    }
+
+    fn read_checkpoint(&self) -> Result<Vec<[f32; 4]>> {
+        self.read_sources(self.pages.iter().map(|page| (&page.accumulation, page.pixels)), self.options.adaptive.is_some())
+    }
+
+    fn read_sources<'a>(&self, sources: impl Iterator<Item = (&'a wgpu::Buffer, u32)>, adaptive_preview: bool) -> Result<Vec<[f32; 4]>> {
+        self.cancel.check()?;
+        let expected_pixels = self.request.width * self.request.height;
+        let mut values = scene::reserved(expected_pixels as usize)?;
+        let pilot = adaptive_preview && self.options.adaptive.is_some_and(|options| self.sample <= options.pilot_samples);
+        let mut preview_paths = 0_u64;
+        for (source, count) in sources {
+            let pixel_bytes = u64::from(count) * 16;
+            let read_bytes = pixel_bytes * if adaptive_preview && !pilot { 2 } else { 1 };
+            let source_bytes = pixel_bytes * if adaptive_preview { 3 } else { 1 };
+            if source_bytes > source.size() {
+                return Err(gpu("GPU image page is missing its admitted film planes"));
+            }
+            self.readback_data(
+                read_bytes,
+                |encoder| {
+                    encoder.copy_buffer_to_buffer(source, if pilot { pixel_bytes } else { 0 }, &self.readback, 0, pixel_bytes);
+                    if adaptive_preview && !pilot {
+                        encoder.copy_buffer_to_buffer(source, pixel_bytes * 2, &self.readback, pixel_bytes, pixel_bytes);
+                    }
+                    Ok(())
+                },
+                |data| {
+                    let pixels = data.get(..pixel_bytes as usize).ok_or_else(|| gpu("missing image page readback"))?;
+                    let budgets = if adaptive_preview && !pilot {
+                        Some(data.get(pixel_bytes as usize..).ok_or_else(|| gpu("missing adaptive preview budgets"))?)
+                    } else {
+                        None
+                    };
+                    if adaptive_preview {
+                        preview_paths = preview_paths
+                            .checked_add(adaptive::preview_paths(self, u64::from(count), budgets)?)
+                            .ok_or_else(|| gpu("adaptive preview path count overflow"))?;
+                    }
+                    for (index, pixel) in pixels.as_chunks::<16>().0.iter().enumerate() {
+                        if index % 4096 == 0 {
+                            self.cancel.check()?;
+                        }
+                        let divisor = if adaptive_preview {
+                            adaptive::preview_divisor(&self.options, self.sample, budgets.and_then(|bytes| bytes.get(index * 16..index * 16 + 4)))?
+                        } else {
+                            self.normalization_samples() as f32
+                        };
+                        let mut value = [0.0; 4];
+                        for (v, bytes) in value.iter_mut().zip(pixel.as_chunks::<4>().0) {
+                            *v = f32::from_le_bytes(*bytes) / divisor;
+                            if !v.is_finite() || *v < 0.0 {
+                                return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative path radiance"));
+                            }
+                        }
+                        values.push(value);
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        if values.len() != expected_pixels as usize {
+            return Err(gpu("GPU image readback does not cover the complete trace grid"));
+        }
+        self.validate_failures(adaptive_preview.then_some(preview_paths))?;
+        Ok(values)
+    }
+
+    /// Map only the current page/window, and always release the mapping before
+    /// another copy or a caller error. No full-image staging buffer is required.
+    fn readback_data<T>(
+        &self,
+        bytes: u64,
+        encode: impl FnOnce(&mut wgpu::CommandEncoder) -> Result<()>,
+        read: impl FnOnce(&[u8]) -> Result<T>,
+    ) -> Result<T> {
+        self.cancel.check()?;
+        self.context.ensure_available()?;
+        if bytes == 0 || bytes > self.readback.size() {
+            return Err(gpu("GPU readback range exceeds its admitted page capacity"));
+        }
+        let context = &self.context;
+        let submission = checked_creation(&context.device, || {
+            let mut encoder = context.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("path page readback") });
+            encode(&mut encoder)?;
+            Ok(context.queue.submit([encoder.finish()]))
+        })?;
+        let slice = self.readback.slice(..bytes);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
         context.wait(submission, TIMEOUT)?;
         rx.try_recv().map_err(gpu)?.map_err(gpu)?;
-        let data = slice.get_mapped_range().map_err(gpu)?;
-        let result = (|| {
-            let pixels = data.get(..pixel_bytes as usize).ok_or_else(|| gpu("missing image readback"))?;
-            let failures = data.get(failure_offset as usize..).ok_or_else(|| gpu("missing failure readback"))?;
-            let budgets = if adaptive_preview && !pilot {
-                Some(data.get(pixel_bytes as usize..(pixel_bytes * 2) as usize).ok_or_else(|| gpu("missing adaptive preview budgets"))?)
-            } else {
-                None
-            };
-            let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
-            if word(7) & 16 != 0 {
-                return Err(JobError::new(ErrorCode::InvalidScene, "rough optical response exceeds GPU arithmetic precision"));
-            }
-            if word(7) & 8 != 0 {
-                return Err(JobError::new(ErrorCode::InvalidScene, "optical light-event count exceeds the admitted camera depth"));
-            }
-            if word(7) & 4 != 0 {
-                return Err(JobError::new(ErrorCode::InvalidScene, "caustic photon medium origin or transition is ambiguous"));
-            }
-            if word(7) & 2 != 0 {
-                return Err(JobError::new(ErrorCode::InvalidScene, "positive-thickness index-matched sheet has no finite grazing optical path"));
-            }
-            if word(7) != 0 {
-                return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative pilot/production path radiance"));
-            }
-            self.punctual_diagnostics.set(solidcraft_render::job::PunctualDiagnostics {
-                near_source: u64::from(word(8)) | (u64::from(word(9)) << 32),
-                radiance_limit: u64::from(word(10)) | (u64::from(word(11)) << 32),
-                shadow_offset_crossed: u64::from(word(12)) | (u64::from(word(13)) << 32),
-            });
-            let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
-            if failed > 0 {
-                let pixels = u64::from(self.request.width) * u64::from(self.request.height);
-                let paths = if adaptive_preview {
-                    adaptive::preview_paths(self, budgets)?
-                } else {
-                    self.sampling_report.as_ref().map_or(
-                        pixels * u64::from(self.sample.max(1)) * u64::from(self.options.transmission_samples),
-                        |report| {
-                            report.production_samples * u64::from(report.transmission_strata) + pixels * u64::from(report.pilot_samples_per_pixel)
-                        },
-                    )
-                };
-                let detail =
-                    format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
-                if !medium_failures_tolerated(failed, paths) {
-                    return Err(JobError::new(
-                        ErrorCode::InvalidScene,
-                        format!(
-                            "inconsistent glass medium paths ({detail}): ambiguous boundary origin or invalid containment; overlapping solids or more than 16 nested media are unsupported"
-                        ),
-                    ));
-                }
-                log::warn!("gpu-path ended {detail} at an unclassifiable glass medium");
-            }
-            let mut values = scene::reserved((self.request.width * self.request.height) as usize)?;
-            for (index, pixel) in pixels.as_chunks::<16>().0.iter().enumerate() {
-                if index % 4096 == 0 {
-                    self.cancel.check()?;
-                }
-                let divisor = if adaptive_preview {
-                    adaptive::preview_divisor(&self.options, self.sample, budgets.and_then(|values| values.get(index * 16..index * 16 + 4)))?
-                } else {
-                    self.normalization_samples() as f32
-                };
-                let mut value = [0.0; 4];
-                for (v, bytes) in value.iter_mut().zip(pixel.as_chunks::<4>().0) {
-                    *v = f32::from_le_bytes(*bytes) / divisor;
-                    if !v.is_finite() || *v < 0.0 {
-                        return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative path radiance"));
-                    }
-                }
-                values.push(value);
-            }
-            Ok(values)
-        })();
-        drop(data);
+        let result = match slice.get_mapped_range() {
+            Ok(data) => read(&data),
+            Err(error) => Err(gpu(error)),
+        };
         self.readback.unmap();
         self.cancel.check()?;
         result
+    }
+
+    /// Gather a global row window without changing the film. A window may cross
+    /// any number of pages; each source plane keeps its own page-local stride.
+    fn copy_film_range(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        start: u32,
+        pixels: u32,
+        plane: u32,
+        destination: &wgpu::Buffer,
+        destination_offset: u64,
+    ) -> Result<()> {
+        let end = start.checked_add(pixels).ok_or_else(|| gpu("GPU film gather range overflow"))?;
+        let destination_end = destination_offset.checked_add(u64::from(pixels) * 16).ok_or_else(|| gpu("GPU film gather byte overflow"))?;
+        if pixels == 0 || end > self.request.width * self.request.height || plane >= self.page_layout.planes || destination_end > destination.size() {
+            return Err(gpu("GPU film gather exceeds its admitted source or destination"));
+        }
+        let mut copied = 0_u32;
+        for page in &self.pages {
+            self.cancel.check()?;
+            let page_end = page.start.checked_add(page.pixels).ok_or_else(|| gpu("GPU film page range overflow"))?;
+            let first = start.max(page.start);
+            let last = end.min(page_end);
+            if first >= last {
+                continue;
+            }
+            let source = (u64::from(plane) * u64::from(page.pixels) + u64::from(first - page.start)) * 16;
+            let destination_start = destination_offset + u64::from(first - start) * 16;
+            let bytes = u64::from(last - first) * 16;
+            encoder.copy_buffer_to_buffer(&page.accumulation, source, destination, destination_start, bytes);
+            copied = copied.checked_add(last - first).ok_or_else(|| gpu("GPU film gather pixel count overflow"))?;
+        }
+        if copied != pixels {
+            return Err(gpu("GPU film gather does not cover the requested window"));
+        }
+        Ok(())
+    }
+
+    fn validate_failures(&self, preview_paths: Option<u64>) -> Result<()> {
+        self.readback_data(
+            FAILURE_BYTES,
+            |encoder| {
+                encoder.copy_buffer_to_buffer(&self.failures, 0, &self.readback, 0, FAILURE_BYTES);
+                Ok(())
+            },
+            |failures| {
+                let word = |i: usize| failures.as_chunks::<4>().0.get(i).map_or(0, |w| u32::from_le_bytes(*w));
+                if word(7) & 16 != 0 {
+                    return Err(JobError::new(ErrorCode::InvalidScene, "rough optical response exceeds GPU arithmetic precision"));
+                }
+                if word(7) & 8 != 0 {
+                    return Err(JobError::new(ErrorCode::InvalidScene, "optical light-event count exceeds the admitted camera depth"));
+                }
+                if word(7) & 4 != 0 {
+                    return Err(JobError::new(ErrorCode::InvalidScene, "caustic photon medium origin or transition is ambiguous"));
+                }
+                if word(7) & 2 != 0 {
+                    return Err(JobError::new(ErrorCode::InvalidScene, "positive-thickness index-matched sheet has no finite grazing optical path"));
+                }
+                if word(7) != 0 {
+                    return Err(JobError::new(ErrorCode::Internal, "nonfinite or negative pilot/production path radiance"));
+                }
+                self.punctual_diagnostics.set(solidcraft_render::job::PunctualDiagnostics {
+                    near_source: u64::from(word(8)) | (u64::from(word(9)) << 32),
+                    radiance_limit: u64::from(word(10)) | (u64::from(word(11)) << 32),
+                    shadow_offset_crossed: u64::from(word(12)) | (u64::from(word(13)) << 32),
+                });
+                let failed = u64::from(word(0)) | (u64::from(word(5)) << 32);
+                if failed > 0 {
+                    let pixels = u64::from(self.request.width) * u64::from(self.request.height);
+                    let paths = preview_paths.unwrap_or_else(|| {
+                        self.sampling_report.as_ref().map_or(
+                            pixels * u64::from(self.sample.max(1)) * u64::from(self.options.transmission_samples),
+                            |report| {
+                                report.production_samples * u64::from(report.transmission_strata)
+                                    + pixels * u64::from(report.pilot_samples_per_pixel)
+                            },
+                        )
+                    });
+                    let detail =
+                        format!("{failed} of {paths} paths, first at pixel {}, bounce {}, sample {}, code {}", word(1), word(2), word(3), word(4));
+                    if !medium_failures_tolerated(failed, paths) {
+                        return Err(JobError::new(
+                            ErrorCode::InvalidScene,
+                            format!(
+                                "inconsistent glass medium paths ({detail}): ambiguous boundary origin or invalid containment; overlapping solids or more than 16 nested media are unsupported"
+                            ),
+                        ));
+                    }
+                    log::warn!("gpu-path ended {detail} at an unclassifiable glass medium");
+                }
+                Ok(())
+            },
+        )
     }
 }
 use solidcraft_render::job::presentation::Display;
@@ -1620,12 +1766,7 @@ impl Task {
             // Diagnose the raw path buffer before filtering: never hide invalid media
             // or nonfinite radiance by replacing a pixel with neighbouring values.
             drop(linear);
-            if self.encoding_preview && self.options.adaptive.is_some() {
-                denoiser.run_adaptive_preview(self)?;
-            } else {
-                denoiser.run(self)?;
-            }
-            linear = self.resolve_output(self.read_linear_buffer(denoiser.output(self.options.denoise_settings.passes))?)?;
+            linear = self.resolve_output(denoiser.read_filtered(self, self.encoding_preview && self.options.adaptive.is_some())?)?;
         }
         if let Some(options) = self.options.finishing.bloom.filter(|options| options.active()) {
             self.bloom_work = Some(solidcraft_render::job::bloom::BloomTask::new(

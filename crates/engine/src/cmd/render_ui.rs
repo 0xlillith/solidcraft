@@ -65,7 +65,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("settings")
         .noundo()
         .doc_only()
-        .params("width, height: 1..8192, at most 33554432 output pixels; custom?: bool. Validated Render output draft request; headless echo only, no design edits or job."),
+        .params("width, height: 1..16384; custom?: bool. Validated Render output draft request; headless echo only, no design edits or job. The UI separately limits new selections to 8192 per side, 33554432 output pixels and the selected rendering profile."),
     CommandSpec::new("render.result.view", "View Render Image", result_view)
         .icon("render_image")
         .noundo()
@@ -259,7 +259,9 @@ struct OutputSize {
 }
 fn output_size(_: &mut Session, params: &Value) -> Result<Value> {
     let input: OutputSize = serde_json::from_value(params.clone()).map_err(|e| bad("render.output.size", e.to_string()))?;
-    solidcraft_render::job::supersampled_dimensions(input.width, input.height, 1).map_err(|error| bad("render.output.size", error.to_string()))?;
+    if !(1..=16384).contains(&input.width) || !(1..=16384).contains(&input.height) {
+        return Err(bad("render.output.size", "dimensions must be in 1..16384"));
+    }
     let mut reply = json!({"width":input.width,"height":input.height});
     if input.custom {
         reply["custom"] = json!(true);
@@ -305,7 +307,16 @@ fn output_viewer_requests_are_validated_headless_echoes() {
     let mut s = Session::default();
     let document = s.doc.clone();
     let before = (s.revision, s.undo.len(), s.evaluations);
-    for size in [json!({"width":1280,"height":720}), json!({"width":1920,"height":1080})] {
+    // Headless requests keep the established per-side range. They allocate no
+    // image; the UI and actual renderer independently enforce their envelopes.
+    for size in [
+        json!({"width":1280,"height":720}),
+        json!({"width":1920,"height":1080}),
+        json!({"width":7680,"height":4320}),
+        json!({"width":16384,"height":1}),
+        json!({"width":1,"height":16384}),
+        json!({"width":16384,"height":16384}),
+    ] {
         assert_eq!(s.execute("render.output.size", &size).unwrap(), size);
     }
     let custom = json!({"width":1920,"height":1080,"custom":true});
@@ -316,13 +327,17 @@ fn output_viewer_requests_are_validated_headless_echoes() {
         assert_eq!(s.execute("render.result.view", &request).unwrap(), request);
     }
     assert!(s.execute("render.result.view", &json!({"view":"denoise_mask"})).is_err());
-    assert_eq!(s.execute("render.output.size", &json!({"width":7680,"height":4320})).unwrap(), json!({"width":7680,"height":4320}));
-    assert!(s.execute("render.output.size", &json!({"width":8193,"height":1})).is_err());
-    assert!(s.execute("render.output.size", &json!({"width":8192,"height":8192})).is_err());
     assert_eq!(s.execute("render.result.close", &json!({})).unwrap(), json!({"view":"model"}));
-    for request in
-        [json!(null), json!({}), json!({"width":0,"height":1}), json!({"width":u64::MAX,"height":1}), json!({"width":1,"height":1,"extra":true})]
-    {
+    for request in [
+        json!(null),
+        json!({}),
+        json!({"width":0,"height":1}),
+        json!({"width":1,"height":0}),
+        json!({"width":16385,"height":1}),
+        json!({"width":1,"height":16385}),
+        json!({"width":u64::MAX,"height":1}),
+        json!({"width":1,"height":1,"extra":true}),
+    ] {
         assert!(s.execute("render.output.size", &request).is_err());
     }
     for request in [json!(null), json!({"view":"unknown"}), json!({"view":"image","extra":true})] {

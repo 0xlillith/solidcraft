@@ -11,8 +11,14 @@ manifold fan. `s off` and different groups keep hard boundaries. Vertex welding 
 not merge corner normals. OBJ UV coordinates remain outside the current saved
 procedural material mapping contract.
 
-Files without normals or smoothing groups retain flat shading. For a separate
-fixture copy, explicitly request a crease policy when importing its source:
+Files without normals or smoothing groups retain flat shading. Honoring OBJ
+normals and smoothing groups changes newly imported annotated files. To restore
+the previous flat shading, insert with `crease_angle_degrees: 0`. This explicit
+selection clears imported corner-normal metadata after validation and preserves
+the original flat display and saved-storage paths.
+
+For a separate fixture copy, explicitly request a positive crease policy when
+importing its source:
 
 ```json
 {"command":"file.insert_mesh","params":{"path":"/absolute/path/curved-part.obj","crease_angle_degrees":30}}
@@ -25,6 +31,9 @@ angle is within the requested angle. It also handles exact duplicate vertices in
 STL-style sources. Boundary edges, nonmanifold edges and disconnected fans stay
 separate. Normals use corner-angle weights, making a fan less sensitive to triangle
 areas. A canceled normal sum falls back to that triangle's geometric normal.
+Faces without usable geometric normals do not join or weight neighboring fans.
+Their corner metadata uses a finite unit fallback; the existing mesh-body rules
+still discard repeated-index triangles.
 
 For an already embedded mesh, the Rust document API
 `MeshData::generate_crease_normals(angle_degrees)` performs the same explicit edit

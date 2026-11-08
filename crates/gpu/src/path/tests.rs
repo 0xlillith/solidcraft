@@ -1112,7 +1112,7 @@ fn rough_volume_photon_kernels_and_hg_delta_connection_match_independent_measure
     assert_eq!(actual[6], actual[5], "K=1 retains the exact deterministic direct contribution");
     // A finite-radius packet outside a source's omission sphere must not leak
     // into a receiver inside that sphere. Source metadata remains one packed word.
-    let minimum_offset = PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 16 + 28;
+    let minimum_offset = PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 32 + 28;
     context.queue.write_buffer(&task.uniform, minimum_offset as u64, &0.3_f32.to_le_bytes());
     let mut encoder = context.device.create_command_encoder(&Default::default());
     {
@@ -6602,7 +6602,9 @@ fn gpu_hard_directional_uniform_layout_and_admission_keep_the_positive_zero_abi(
     let naga::TypeInner::Struct { members, .. } = &params.inner else { panic!("Params") };
     let offset = members.iter().find(|m| m.name.as_deref() == Some("directional_lights")).unwrap().offset as usize;
     let barrier = members.iter().find(|m| m.name.as_deref() == Some("studio_weights")).unwrap().offset as usize + 12;
-    assert_eq!(barrier, PARAMETER_BYTES - 4);
+    let page = members.iter().find(|m| m.name.as_deref() == Some("page")).unwrap().offset as usize;
+    assert_eq!(barrier, PARAMETER_BYTES - 20);
+    assert_eq!(page, barrier + 4);
     let mut lights = [DirectionalLightOptions { direction: [0.0, 0.0, 2.0], color: [0.25, 0.5, 1.0], intensity: 2.0 }; 8];
     lights[7].direction = [f64::MIN_POSITIVE, 0.0, 0.0];
     let options = JobOptions {
@@ -6611,11 +6613,14 @@ fn gpu_hard_directional_uniform_layout_and_admission_keep_the_positive_zero_abi(
     };
     let task = Task::new(executor.context.clone(), directional_receiver(), request(1), options, CancelToken::default()).unwrap();
     let bytes = task.parameters(1).unwrap();
+    assert_eq!(bytes.len(), PARAMETER_BYTES);
     let f = |i| f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
     assert_eq!([f(offset), f(offset + 4), f(offset + 8), f(offset + 12)], [0.0, 0.0, 1.0, 2.0]);
     assert_eq!([f(offset + 16), f(offset + 20), f(offset + 24), f(offset + 28)], [0.25, 0.5, 1.0, 0.0]);
     assert_eq!([f(offset + 7 * 32), f(offset + 7 * 32 + 4), f(offset + 7 * 32 + 8)], [1.0, 0.0, 0.0]);
-    assert_eq!(&bytes[barrier..], &0u32.to_le_bytes());
+    assert_eq!(&bytes[barrier..barrier + 4], &0u32.to_le_bytes());
+    let word = |i| u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap());
+    assert_eq!([word(page), word(page + 4), word(page + 8), word(page + 12)], [0, 1, 0, 0]);
     assert_eq!(DIRECTIONAL_PARAMETER_BYTES, 256);
     let admitted = admission(&directional_receiver(), &request(1), options).unwrap();
     assert!(admitted.preparation_bytes >= 1_048_576 + 2 * DIRECTIONAL_PARAMETER_BYTES);
@@ -6754,7 +6759,7 @@ fn gpu_point_and_spot_real_primary_rays_match_inverse_square_rgb_cone_and_endpoi
     }
 }
 #[test]
-fn gpu_punctual_uniform_high_low_precision_and_admission_are_exact_and_keep_barrier_last() {
+fn gpu_punctual_uniform_high_low_precision_and_admission_keep_studio_barrier_before_page_metadata() {
     use solidcraft_render::job::PunctualLightOptions;
     shader_validates_without_a_device();
     main_inlines_few_bvh_walks();
@@ -6772,8 +6777,10 @@ fn gpu_punctual_uniform_high_low_precision_and_admission_are_exact_and_keep_barr
     assert_eq!(*span as usize, PARAMETER_BYTES);
     let offset = members.iter().find(|m| m.name.as_deref() == Some("punctual_lights")).unwrap().offset;
     let barrier = members.iter().find(|m| m.name.as_deref() == Some("studio_weights")).unwrap().offset + 12;
-    assert_eq!(offset as usize, PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 16);
-    assert_eq!(barrier as usize, PARAMETER_BYTES - 4);
+    assert_eq!(offset as usize, PARAMETER_BYTES - PUNCTUAL_PARAMETER_BYTES as usize - 32);
+    assert_eq!(barrier as usize, PARAMETER_BYTES - 20);
+    let page = members.iter().find(|m| m.name.as_deref() == Some("page")).unwrap().offset;
+    assert_eq!(page as usize, PARAMETER_BYTES - 16);
     assert_eq!(FAILURE_BYTES, 32 + PUNCTUAL_COUNTER_BYTES);
     let a = admission(&directional_receiver(), &request(1), JobOptions::default()).unwrap();
     let b = admission(&directional_receiver(), &request(1), punctual_options(&[light; 8], 1, 1)).unwrap();
@@ -7614,58 +7621,262 @@ fn device_limits_use_adapter_capacity_with_a_finite_host_ceiling() {
     }
 }
 
-#[test]
-fn eight_k_x2_admission_includes_raw_master_and_refuses_insufficient_device_buffers_without_allocating() {
-    let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
-    let mut image = request(1);
-    image.width = 7680;
-    image.height = 4320;
-    let options = JobOptions { samples: 128, supersampling: 2, linear_exr: true, ..Default::default() };
-    let admitted = admission(&scene, &image, options).unwrap();
-    assert_eq!(admitted.estimated_total_bytes, 9_556_272_432);
-    let previews = 2 * (admitted.encoded_limit + 2048) + 2048;
-    assert_eq!(admitted.estimated_total_bytes + previews, 10_087_251_248);
-    assert!(admitted.estimated_total_bytes + previews < GPU_PATH_LIMITS.max_scratch_bytes);
-    let trace = trace_request(&image, options).unwrap();
-    let mut hardware = wgpu::Limits::downlevel_defaults();
-    hardware.max_storage_buffers_per_shader_stage = 8;
-    hardware.max_storage_buffer_binding_size = 4_294_967_295;
-    hardware.max_buffer_size = 4_294_967_292;
-    let limits = device_limits(hardware.clone()).unwrap();
-    admit_device_resources(&scene, &trace, options, &admitted, &limits).unwrap();
-    hardware.max_storage_buffer_binding_size = 1 << 30;
-    let insufficient = admit_device_resources(&scene, &trace, options, &admitted, &device_limits(hardware).unwrap()).unwrap_err();
-    assert_eq!(insufficient.code, ErrorCode::LimitExceeded);
-    assert!(insufficient.message.contains("accumulation") && insufficient.message.contains("2123366400"));
-    let too_large = admission(&scene, &image, JobOptions { denoise: true, ..options }).unwrap_err();
-    assert_eq!(too_large.code, ErrorCode::LimitExceeded);
-    assert!(too_large.message.contains("bounded GPU host limit"));
-    for (width, height, supersampling) in [(7680, 4320, 1), (3840, 2160, 2)] {
-        image.width = width;
-        image.height = height;
-        let options = JobOptions { denoise: true, supersampling, ..options };
-        let admitted = admission(&scene, &image, options).unwrap();
-        let trace = trace_request(&image, options).unwrap();
-        admit_device_resources(&scene, &trace, options, &admitted, &limits).unwrap();
+fn maximum_paged_image_options(adaptive_photons: bool) -> JobOptions {
+    use solidcraft_render::job::{
+        CausticOptions, DenoiseSettings,
+        adaptive::{AdaptiveSampling, MAX_PILOT_SAMPLES},
+        bloom::Bloom,
+        finishing::Finishing,
+        photographic::{Flare, Photographic},
+    };
+    JobOptions {
+        samples: 16_384,
+        max_depth: 64,
+        supersampling: 2,
+        transmission_samples: 4,
+        texture_filtering: true,
+        metal_energy_compensation: true,
+        denoise: true,
+        denoise_settings: DenoiseSettings { passes: 3, strength: 1.0, firefly_suppression: true },
+        denoise_diagnostics: true,
+        linear_exr: true,
+        adaptive: adaptive_photons.then_some(AdaptiveSampling { pilot_samples: MAX_PILOT_SAMPLES, min_samples: 16_384, ..Default::default() }),
+        caustics: adaptive_photons.then_some(CausticOptions {
+            photons: 1_048_576,
+            max_depth: 64,
+            area_lights: true,
+            environment: true,
+            guided_emission: true,
+            refresh_per_pass: true,
+            power_weighted_sources: true,
+            ..Default::default()
+        }),
+        finishing: Finishing {
+            bloom: Some(Bloom { strength: 2.0, threshold: 1e6, radius: 64 }),
+            photographic: Photographic {
+                flare: Flare { strength: 2.0, threshold: 1e6, ghosts: 4, halo: 2.0, streak: 2.0 },
+                chromatic_pixels: 12.0,
+                radial_distortion: 0.3,
+                soft_focus: 1.0,
+                sharpening: 1.0,
+                grain: 0.15,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
     }
 }
 
 #[test]
-fn real_adapter_eight_k_x2_preflight_and_host_preview_accounting_allocate_no_image_buffers() {
+fn eight_k_x2_maximum_controls_use_bounded_pages_without_allocating_images() {
+    let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
+    let image = ImageRequest { width: 7680, height: 4320, ..request(1) };
+    for storage in [128 << 20, 1 << 30, 4_294_967_295] {
+        let mut hardware = wgpu::Limits::downlevel_defaults();
+        hardware.max_storage_buffers_per_shader_stage = 8;
+        hardware.max_storage_buffer_binding_size = storage;
+        hardware.max_buffer_size = 4_294_967_292;
+        let limits = device_limits(hardware).unwrap();
+        for adaptive_photons in [false, true] {
+            let options = maximum_paged_image_options(adaptive_photons);
+            let admitted = admission_with_device_limits(&scene, &image, options, &limits).unwrap();
+            let trace = trace_request(&image, options).unwrap();
+            admit_device_resources(&scene, &trace, options, &admitted, &limits).unwrap();
+            let pages = image_pages::Layout::new(trace.width, trace.height, options, 0, &limits).unwrap();
+            assert!(pages.is_paged());
+            assert_eq!(pages.halo, 14);
+            assert!(pages.buffer_bytes(pages.max_core_pixels()).unwrap() <= storage.min(image_pages::TARGET_BUFFER_BYTES));
+            assert!(u64::from(pages.max_window_pixels()) * denoise::GUIDE_BYTES_PER_PIXEL <= storage.min(image_pages::TARGET_BUFFER_BYTES));
+            assert!(pages.readback_bytes().unwrap() <= limits.max_buffer_size);
+            assert!(admitted.estimated_total_bytes < GPU_PATH_LIMITS.max_scratch_bytes);
+            assert!(admitted.pixel_scratch_bytes >= pages.filter_scratch_bytes().unwrap());
+            assert_eq!(admitted.caustic_work.map(|work| work.maps), adaptive_photons.then_some(options.preview_target().unwrap()));
+            let mut next = 0;
+            for window in pages.windows() {
+                assert_eq!(window.core_start, next);
+                assert_eq!(window.start, window.core_start.saturating_sub(14 * trace.width));
+                assert_eq!(window.start + window.pixels, (window.core_start + window.core_pixels + 14 * trace.width).min(trace.width * trace.height));
+                assert!((window.core_start / trace.width).is_multiple_of(2));
+                assert!((window.core_pixels / trace.width).is_multiple_of(2));
+                next += window.core_pixels;
+            }
+            assert_eq!(next, trace.width * trace.height);
+            println!(
+                "nonallocating 8K X2 16384spp depth64 filter3 full-strength fireflies diagnostics raw bloom photographic texture-filtering metal-compensation: storage={storage} adaptive_photons={adaptive_photons} estimated={} pages={} core_rows={} halo_rows={} max_window_pixels={} readback={}",
+                admitted.estimated_total_bytes,
+                pages.page_count(),
+                pages.rows,
+                pages.halo,
+                pages.max_window_pixels(),
+                pages.readback_bytes().unwrap(),
+            );
+        }
+    }
+}
+
+#[test]
+fn image_page_capacity_prepays_optical_and_adaptive_planes_and_rejects_only_infeasible_rows() {
+    let options = maximum_paged_image_options(true);
+    let mut limits = wgpu::Limits::downlevel_defaults();
+    limits.max_storage_buffer_binding_size = 128 << 20;
+    limits.max_buffer_size = 256 << 20;
+    let optical = u64::from(dispatch::MAX_PATHS) * 128;
+    let layout = image_pages::Layout::new(15360, 8640, options, optical, &limits).unwrap();
+    assert_eq!(layout.planes, 3);
+    assert_eq!(layout.buffer_bytes(layout.max_core_pixels()).unwrap(), u64::from(layout.max_core_pixels()) * 48 + optical);
+    assert_eq!(layout.optical_scratch_bytes().unwrap(), optical * u64::from(layout.page_count()));
+    assert_eq!(layout.filter_scratch_bytes().unwrap(), u64::from(layout.max_window_pixels()) * (128 + 16 + 48));
+    assert!(layout.readback_bytes().unwrap() >= u64::from(layout.max_core_pixels()) * 32 + FAILURE_BYTES);
+    for window in layout.windows() {
+        assert!(layout.buffer_bytes(window.core_pixels).unwrap() <= limits.max_storage_buffer_binding_size);
+    }
+    let ordinary = JobOptions { denoise: false, denoise_diagnostics: false, ..options };
+    let no_filter = image_pages::Layout::new(15360, 8640, ordinary, optical, &limits).unwrap();
+    assert!(no_filter.buffer_bytes(no_filter.max_core_pixels()).unwrap() <= limits.max_storage_buffer_binding_size);
+    assert_eq!(no_filter.rows, (((limits.max_storage_buffer_binding_size - optical) / (15360 * 48)) as u32) / 2 * 2);
+    limits.max_storage_buffer_binding_size = 1 << 20;
+    assert_eq!(image_pages::Layout::new(15360, 8640, options, optical, &limits).unwrap_err().code, ErrorCode::LimitExceeded);
+    for (width, height) in [(0, 1), (1, 0), (u32::MAX, 1), (16384, 16384)] {
+        assert!(image_pages::Layout::new(width, height, options, optical, &limits).is_err());
+    }
+    limits.max_storage_buffer_binding_size = 128 << 20;
+    assert!(image_pages::Layout::new(16, 16, options, u64::MAX, &limits).is_err());
+    limits.max_buffer_size = FAILURE_BYTES - 1;
+    assert!(image_pages::Layout::new(16, 16, options, 0, &limits).is_err());
+}
+
+#[test]
+fn real_adapter_eight_k_x2_maximum_control_preflight_and_preview_accounting_allocate_no_images() {
     let Some(executor) = executor() else { return };
     let limits = executor.context.device.limits();
+    let host = ImageHost::with_executor(Arc::new(Executor { context: executor.context.clone() })).unwrap();
     let scene = ProductScene { meshes: Vec::new(), bounds: Aabb3::EMPTY };
-    let mut image = request(1);
-    image.width = 7680;
-    image.height = 4320;
-    let options = JobOptions { samples: 128, supersampling: 2, linear_exr: true, ..Default::default() };
-    let host = ImageHost::with_executor(Arc::new(executor)).unwrap();
-    let result = host.admit(&scene, &image, options);
-    let accumulation = 2_123_366_400_u64;
-    if limits.max_storage_buffer_binding_size >= accumulation && limits.max_buffer_size >= accumulation + FAILURE_BYTES {
-        assert_eq!(result.unwrap().estimated_total_bytes, 10_087_251_248);
-    } else {
-        assert_eq!(result.unwrap_err().code, ErrorCode::LimitExceeded);
+    let image = ImageRequest { width: 7680, height: 4320, ..request(1) };
+    for adaptive_photons in [false, true] {
+        if adaptive_photons && limits.max_storage_buffers_per_shader_stage < 7 {
+            continue;
+        }
+        let options = maximum_paged_image_options(adaptive_photons);
+        let direct = executor.admit(&scene, &image, options).unwrap();
+        let trace = trace_request(&image, options).unwrap();
+        let pages = image_pages::Layout::new(trace.width, trace.height, options, 0, &limits).unwrap();
+        println!(
+            "actual adapter nonallocating maximum receipt: binding={} buffer={} storage_slots={} adaptive_photons={adaptive_photons} photographic=true filtering=true metal_compensation=true estimated={} pages={} core_rows={} halo_rows={} max_window_pixels={} readback={}",
+            limits.max_storage_buffer_binding_size,
+            limits.max_buffer_size,
+            limits.max_storage_buffers_per_shader_stage,
+            direct.estimated_total_bytes,
+            pages.page_count(),
+            pages.rows,
+            pages.halo,
+            pages.max_window_pixels(),
+            pages.readback_bytes().unwrap(),
+        );
+        match host.admit(&scene, &image, options) {
+            Ok(admitted) => {
+                assert!(admitted.estimated_total_bytes >= direct.estimated_total_bytes + 2 * direct.encoded_limit);
+                let memory = admitted.host_memory.expect("native maximum admission must include its actual RAM receipt");
+                assert!(memory.required_bytes <= memory.available_bytes);
+                println!(
+                    "actual host maximum including retained previews: adaptive_photons={adaptive_photons} estimated={} memory={memory:?}",
+                    admitted.estimated_total_bytes,
+                );
+            }
+            Err(error) => {
+                assert_eq!(error.code, ErrorCode::LimitExceeded, "{error:?}");
+                assert!(
+                    error.message.contains("native render memory needs"),
+                    "only actual host RAM capacity may refuse this admitted layout: {error:?}"
+                );
+                println!("actual host capacity refusal without allocation: adaptive_photons={adaptive_photons} {error}");
+            }
+        }
+        assert_eq!(host.admitted_bytes(), 0, "preflight must never reserve image buffers or enqueue transport");
     }
-    assert_eq!(host.admitted_bytes(), 0, "preflight must never reserve image buffers or enqueue transport");
+}
+
+#[test]
+fn gpu_paged_optical_scratch_and_refreshed_photons_keep_global_sample_identity() {
+    use solidcraft_render::job::{CausticOptions, DenoiseGuideClass, DenoiseSettings, DirectionalLightOptions, DirectionalLights, StudioLighting};
+    let Some(executor) = executor() else { return };
+    if executor.context.device.limits().max_storage_buffers_per_shader_stage < 7 {
+        return;
+    }
+    let mut scene = photon_receiver_fixture(0.0);
+    scene.meshes[0].surface = Some(OpaqueSurface::new(Vec3::ZERO, 0.0, 0.1, 1.5).unwrap());
+    scene.meshes[0].transmission = Some(
+        clear_glass()
+            .with_shadow_transmission(false)
+            .with_model(solidcraft_render::glass_model::GlassModel { roughness: 0.4, ..Default::default() })
+            .unwrap(),
+    );
+    assert!(needs_glass_lighting(&scene));
+    let image = ImageRequest { width: 8, height: 16, ..request(8) };
+    let optical_bytes = glass_tile_bytes(&scene, &image);
+    assert!(optical_bytes > 0);
+    let options = JobOptions {
+        samples: 3,
+        max_depth: 4,
+        transmission_samples: 2,
+        seed: 17,
+        denoise: true,
+        denoise_settings: DenoiseSettings { passes: 3, strength: 1.0, firefly_suppression: true },
+        denoise_diagnostics: true,
+        lighting: Some(StudioLighting {
+            directional_lights: DirectionalLights::new(&[DirectionalLightOptions { direction: [0.0, 0.0, 1.0], color: [1.0; 3], intensity: 1.0 }])
+                .unwrap(),
+            ..Default::default()
+        }),
+        caustics: Some(CausticOptions { photons: 512, radius_mm: 3.0, max_depth: 4, refresh_per_pass: true, ..Default::default() }),
+        ..Default::default()
+    };
+    let render = |rows| {
+        let mut task =
+            Task::new_with_page_rows(executor.context.clone(), scene.clone(), image.clone(), options, CancelToken::default(), rows).unwrap();
+        assert!(task.optical_resolve.is_some());
+        assert_eq!(task.page_layout.optical_bytes, optical_bytes);
+        assert_eq!(task.page_layout.optical_scratch_bytes().unwrap(), optical_bytes * task.pages.len() as u64);
+        for page in &task.pages {
+            assert_eq!(page.accumulation.size(), u64::from(page.pixels) * 16 + optical_bytes, "each page owns a complete optical dispatch suffix");
+        }
+        let mut maps = Vec::new();
+        let mut films = Vec::new();
+        for pass in 0..3 {
+            task.complete_sample().unwrap();
+            let resources = task.photons.as_ref().unwrap();
+            assert_eq!(resources.test_epoch(), pass);
+            let records = resources.test_records(&task.context);
+            assert!(records.iter().any(|record| record[11] != 0), "the fixture must store actual caustic photons");
+            maps.push(records);
+            films.push(task.read_linear().unwrap());
+        }
+        assert_ne!(maps[0], maps[1], "refreshed maps must use independent indexed paths");
+        let filter = task.denoiser.as_ref().unwrap();
+        let filtered = filter.read_filtered(&task, false).unwrap();
+        let diagnostics = filter.diagnostics(&task).unwrap();
+        // Rough glass has no supported surface correspondence. Selecting
+        // denoising must retain the established bypass, not invent smooth guides.
+        assert_eq!(diagnostics.0.pixels(DenoiseGuideClass::UnsupportedMaterial), u64::from(image.width) * u64::from(image.height));
+        assert_eq!(&filtered, films.last().unwrap(), "unsupported rough primary rays retain raw radiance");
+        (maps, films, filtered, diagnostics)
+    };
+    let whole = render(None);
+    let paged = render(Some(4));
+    assert_eq!(whole.0, paged.0, "page boundaries cannot alter indexed photon records or refresh epochs");
+    assert_eq!(whole.3, paged.3, "guide categories and masks remain exact");
+    let mut maximum_difference = 0.0_f32;
+    // Independent photon maps can link identical indexed records in different
+    // atomic insertion orders. Only their floating-point gather sums allow the
+    // same small tolerance as the existing rough-photon transport fixtures.
+    for (a, b) in whole.1.iter().flatten().chain(&whole.2).zip(paged.1.iter().flatten().chain(&paged.2)) {
+        assert_eq!(a[3].to_bits(), b[3].to_bits(), "coverage stays exact");
+        for (a, b) in a[..3].iter().zip(&b[..3]) {
+            assert!(a.is_finite() && b.is_finite());
+            let difference = (a - b).abs();
+            maximum_difference = maximum_difference.max(difference);
+            assert!(difference <= 3e-6 * a.abs().max(b.abs()).max(1.0), "independent photon gather rounding: {a} versus {b}");
+        }
+    }
+    println!("paged rough optical/photon parity: indexed records and masks exact; maximum independent-gather difference={maximum_difference}");
 }

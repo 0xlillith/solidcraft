@@ -25,6 +25,7 @@ mod denoise_diagnostics;
 pub(crate) mod encoding;
 pub mod finishing;
 mod host;
+mod host_memory;
 pub(crate) mod image;
 pub mod led_strip;
 mod lens;
@@ -60,6 +61,7 @@ pub use host::{
     CaptureLease, CaptureProfile, CpuHost, DenoiseMaskInfo, HostKind, ImageHost, JobEnvironmentInfo, JobHandle, JobStatus, LinearAlphaConvention,
     LinearColourEncoding, LinearMasterInfo, PreparedSubmission, PreviewInfo, RenderFrame, RenderPreview, RetainedMetadata,
 };
+pub use host_memory::{HostMemoryAdmission, HostMemorySource};
 pub use image::{Admission, ImageTask, TaskPoll, admit, admit_geometry, admit_geometry_with_limits};
 pub use lens::ThinLens;
 pub use lighting::{AreaLight, AreaLights, DirectionalLights, MAX_AREA_LIGHTS, MAX_DIRECTIONAL_LIGHTS, StudioLighting, Sun, ToneMap};
@@ -67,14 +69,14 @@ pub use png::PngTask;
 pub use presentation::OutputOptions;
 pub use punctual::{MAX_PUNCTUAL_LIGHTS, MIN_GPU_SPOT_COSINE_GAP, PunctualDiagnostics, PunctualLightOptions, PunctualLights, SpotConeOptions};
 pub use quality::{
-    DenoiseSettings, MAX_CPU_THREADS, MAX_OUTPUT_DIMENSION, MAX_OUTPUT_PIXELS, MAX_TRACE_DIMENSION, MAX_TRACE_PIXELS, resolve_supersampling,
-    single_supersample, supersampled_dimensions,
+    DenoiseSettings, MAX_CPU_THREADS, MAX_OUTPUT_DIMENSION, MAX_OUTPUT_PIXELS, MAX_TRACE_DIMENSION, MAX_TRACE_PIXELS, MAX_UI_SAMPLES,
+    resolve_supersampling, single_supersample, supersampled_dimensions,
 };
 
 /// Native path-tracing ceilings, further restricted by the actual device.
 /// Kept in the device-independent layer so saved intent and UI agree with execution.
 pub const GPU_PATH_LIMITS: crate::RenderLimits =
-    crate::RenderLimits { max_dimension: 8192, max_pixels: 33_554_432, max_scratch_bytes: 12 * 1024 * 1024 * 1024 };
+    crate::RenderLimits { max_dimension: 8192, max_pixels: 33_554_432, max_scratch_bytes: 128 * 1024 * 1024 * 1024 };
 pub const MAX_GPU_PATH_TRIANGLES: u64 = 8_000_000;
 pub const MAX_GPU_PATH_BODIES: usize = 65_536;
 /// Optical target count is independent of simultaneous containment and ray depth.
@@ -862,11 +864,12 @@ pub fn cpu_camera_sampling(
 /// Filtering runs on the internal trace grid, before supersample reconstruction.
 /// Its storage and work still have to fit the explicitly selected CPU profile.
 pub fn validate_cpu_denoise_image(width: u32, height: u32) -> Result<()> {
+    let pixels = u64::from(width).checked_mul(u64::from(height));
     if width == 0
         || height == 0
         || width > MAX_TRACE_DIMENSION
         || height > MAX_TRACE_DIMENSION
-        || u64::from(width) * u64::from(height) > MAX_TRACE_PIXELS
+        || pixels.is_none_or(|pixels| pixels > MAX_TRACE_PIXELS)
     {
         return Err(JobError::new(ErrorCode::InvalidRequest, "CPU denoising requires 1..16384 internal sides and at most 134217728 pixels"));
     }

@@ -59,6 +59,33 @@ fn crease_normals_respect_angles_groups_and_duplicate_vertex_seams() {
 }
 
 #[test]
+fn crease_normals_skip_degenerate_faces_without_breaking_valid_fans() {
+    let theta = 30f64.to_radians();
+    let mut mesh = Mesh {
+        positions: vec![Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::new(0., -theta.cos(), theta.sin())],
+        triangles: vec![[0, 1, 2], [1, 0, 3]],
+        ..Default::default()
+    };
+    let expected = mesh.crease_corner_normals(40f64.to_radians(), None).unwrap();
+    // Repeated indices, coincident vertices and distinct collinear vertices all
+    // touch the healthy pair's shared edge. None may break that smoothing fan.
+    mesh.positions.extend([Vec3::X, Vec3::X * 2.]);
+    mesh.triangles.extend([[0, 1, 1], [0, 1, 4], [0, 1, 5]]);
+    let groups = vec![7; mesh.triangles.len()];
+    for groups in [None, Some(groups.as_slice())] {
+        let normals = mesh.crease_corner_normals(40f64.to_radians(), groups).unwrap();
+        assert_eq!(&normals[..2], expected.as_slice());
+        assert_eq!(&normals[2..], &[[Vec3::Z; 3]; 3]);
+        assert!(normals.iter().flatten().all(|n| n.is_finite() && (n.len() - 1.).abs() < 1e-12));
+    }
+    mesh.triangles.push([0, 1, u32::MAX]);
+    assert!(mesh.crease_corner_normals(1., None).unwrap_err().contains("index is missing"));
+    mesh.triangles.pop();
+    mesh.positions[0] = Vec3::new(f64::INFINITY, 0., 0.);
+    assert!(mesh.crease_corner_normals(1., None).unwrap_err().contains("non-finite"));
+}
+
+#[test]
 fn display_edge_masks_keep_identity_and_break_only_certified_sharp_patches() {
     let mut mesh =
         Mesh { edges: vec![vec![Vec3::ZERO, Vec3::Z]; 2], edge_faces: vec![vec![0, 1], vec![1, 2]], seams: vec![true, true], ..Mesh::default() };

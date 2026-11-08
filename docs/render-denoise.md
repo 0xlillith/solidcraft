@@ -4,8 +4,10 @@ CPU ray-traced requests accept `raytrace.denoise: true`; saved CPU jobs store
 `job.options.denoise`. GPU path requests keep their existing `denoise` flag and
 saved GPU field. Shared `denoise_settings` select 1..3 passes, finite 0..1
 per-pass strength and optional isolated-firefly suppression. Omission preserves
-the original three-pass/full-strength policy. Explicit `false` preserves the raw
-image path; optional `denoise_diagnostics` can still capture guides independently.
+the original three-pass/full-strength opaque filter, with firefly suppression off.
+Enabling suppression adds high-contrast tap attenuation and an isolated-outlier cap.
+Setting `denoise: false` preserves the raw image path; optional
+`denoise_diagnostics` can still capture guides independently.
 See [quality controls and diagnostics](render-quality-controls.md). CPU filtering uses only the native
 Rust renderer: no GPU device, WGSL runtime or software-GPU fallback is involved.
 Raster cannot consume raytrace options. Offline editing does not imply that an
@@ -80,13 +82,19 @@ kernels: one visit per internal image pixel for each selected filter pass. Guide
 retain the existing incremental BVH node/triangle charges, using the same
 cumulative job budget without resetting it between output and transport.
 
-GPU admission keeps 128 additional bytes per pixel for six guide vec4s and two
-colour buffers. Adaptive intermediate normalization has its separate admitted
-input. Current GPU job/storage-binding limits apply before allocation. GPU
-guides reuse production intersections and material evaluation; cancellation is
-checked between bounded dispatch tiles. The completed guide buffer is reused
-across checkpoints within the same job. CPU and GPU filters share the numerical
-policy, not bit-identical transport or a common device pipeline.
+GPU admission keeps 128 bytes per filter-window pixel for six guide vec4s and two
+colour buffers, plus separately admitted adaptive normalization and gathered film
+input when needed. Large films use bounded row pages, and the reusable filter
+window includes the complete dependency halo: fourteen rows on each side for
+three passes. Global image coordinates and footprints remain unchanged. Only the
+core contributes to output and diagnostic counts. The total film remains resident;
+current GPU job, storage-binding and native RAM limits apply before allocation.
+GPU guides reuse production intersections and material evaluation; cancellation
+is checked between bounded dispatch tiles. An unpaged job can reuse its completed
+guides across checkpoints; paged jobs regenerate each window in the same bounded
+allocation. CPU and GPU filters share the numerical policy, not bit-identical
+transport or a common device pipeline. See the
+[GPU production envelope](render-gpu-production-envelope.md) for storage accounting.
 
 Preflight names the enabled method, selected passes/settings, guide/bypass policy,
 work convention and limitations. Saved settings preserve the explicit controls.

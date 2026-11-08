@@ -512,7 +512,7 @@ fn output_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::catalog_scope(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for (key, label, size) in choices {
-                    let allowed = size.filter(|&(w, h)| cpu::image_limits(app).fit(w, h, None) == Some((w, h)));
+                    let allowed = size.filter(|&(w, h)| cpu::size_selection_limits(app).fit(w, h, None) == Some((w, h)));
                     let mark = size_mark(app, label, *size);
                     let response = ui
                         .add_enabled_ui(allowed.is_some(), |ui| {
@@ -892,7 +892,7 @@ fn renderer_status(app: &mut SolveApp, ui: &mut egui::Ui) {
 }
 /// Fit an oversized same-aspect candidate, since fit deliberately never upscales.
 pub(super) fn largest_output(app: &SolveApp) -> Option<(u64, u64)> {
-    let limits = cpu::image_limits(app);
+    let limits = cpu::size_selection_limits(app);
     let draft = &app.render_workspace.view.draft;
     limits.fit(u64::from(draft.width).checked_mul(limits.max_dimension)?, u64::from(draft.height).checked_mul(limits.max_dimension)?, None)
 }
@@ -1159,8 +1159,8 @@ fn choose_size(app: &mut SolveApp, size: Option<(u32, u32)>) {
     }
 }
 fn apply_size(app: &mut SolveApp, width: u32, height: u32, custom: bool) -> Result<(), String> {
-    if cpu::image_limits(app).fit(u64::from(width), u64::from(height), None) != Some((u64::from(width), u64::from(height))) {
-        return Err(size_limit_reason(app, width, height));
+    if cpu::size_selection_limits(app).fit(u64::from(width), u64::from(height), None) != Some((u64::from(width), u64::from(height))) {
+        return Err(size_selection_limit_reason(app, width, height));
     }
     let name = app.render_workspace.view.name.clone();
     let mut patch = json!({"width":width,"height":height});
@@ -1180,7 +1180,23 @@ fn apply_size(app: &mut SolveApp, width: u32, height: u32, custom: bool) -> Resu
     Ok(())
 }
 pub(super) fn size_limit_reason(app: &SolveApp, width: u32, height: u32) -> String {
-    let limits = cpu::image_limits(app);
+    size_limit_reason_with(app, width, height, cpu::image_limits(app), cpu::profile_for_size(app, u64::from(width), u64::from(height)))
+}
+
+fn size_selection_limit_reason(app: &SolveApp, width: u32, height: u32) -> String {
+    let profile = solidcraft_engine::render::job::supersampled_dimensions(width, height, 1)
+        .ok()
+        .and_then(|_| cpu::profile_for_size(app, u64::from(width), u64::from(height)));
+    size_limit_reason_with(app, width, height, cpu::size_selection_limits(app), profile)
+}
+
+fn size_limit_reason_with(
+    app: &SolveApp,
+    width: u32,
+    height: u32,
+    limits: solidcraft_engine::render::RenderLimits,
+    profile: Option<solidcraft_engine::render::job::CpuBudget>,
+) -> String {
     let (w, h) = limits.fit(u64::from(width), u64::from(height), None).unwrap_or((0, 0));
     let reason = crate::i18n::format(
         "render.output_size_limit",
@@ -1192,7 +1208,7 @@ pub(super) fn size_limit_reason(app: &SolveApp, width: u32, height: u32) -> Stri
             ("height", &h.to_string()),
         ],
     );
-    let Some(profile) = cpu::profile_for_size(app, u64::from(width), u64::from(height)) else {
+    let Some(profile) = profile else {
         return reason;
     };
     let (profile, method) = (cpu::budget_name(app, profile), app.tr(ImageMethod::CpuRaytrace.label()));
@@ -1207,6 +1223,8 @@ pub(super) fn size_limit_reason(app: &SolveApp, width: u32, height: u32) -> Stri
 /// narrow size lists; the reason in its tooltip says what to choose, method included.
 pub(super) fn size_mark(app: &SolveApp, text: &str, size: Option<(u64, u64)>) -> Option<String> {
     let (width, height) = size?;
+    // A profile hint must not advertise a size that no new UI selection accepts.
+    solidcraft_engine::render::job::supersampled_dimensions(u32::try_from(width).ok()?, u32::try_from(height).ok()?, 1).ok()?;
     let profile = cpu::budget_name(app, cpu::profile_for_size(app, width, height)?);
     Some(crate::i18n::format("render.size_needs_profile", &[("size", text), ("profile", profile)]))
 }
@@ -1218,7 +1236,7 @@ pub(super) fn size_presets(app: &mut SolveApp, ui: &mut egui::Ui) {
             let summary = size.map_or_else(String::new, |(w, h)| format!("{w} × {h}"));
             let summary = size_mark(app, &summary, size.map(|(w, h)| (u64::from(w), u64::from(h)))).unwrap_or(summary);
             let enabled =
-                size.is_none_or(|(w, h)| cpu::image_limits(app).fit(u64::from(w), u64::from(h), None) == Some((u64::from(w), u64::from(h))));
+                size.is_none_or(|(w, h)| cpu::size_selection_limits(app).fit(u64::from(w), u64::from(h), None) == Some((u64::from(w), u64::from(h))));
             let response = ui
                 .add_enabled_ui(enabled, |ui| {
                     ui_kit::settings_choice_row(
@@ -1247,7 +1265,7 @@ pub(super) fn stage_tools(app: &mut SolveApp, ui: &mut egui::Ui) {
     let dropdown = ui_kit::compact_dropdown_menu(ui, "render_stage_size", &size, |ui| {
         for (key, label, size) in SIZE_PRESETS {
             let enabled =
-                size.is_none_or(|(w, h)| cpu::image_limits(app).fit(u64::from(w), u64::from(h), None) == Some((u64::from(w), u64::from(h))));
+                size.is_none_or(|(w, h)| cpu::size_selection_limits(app).fit(u64::from(w), u64::from(h), None) == Some((u64::from(w), u64::from(h))));
             let mark = size_mark(app, app.tr(label), size.map(|(w, h)| (u64::from(w), u64::from(h))));
             let response = ui.add_enabled_ui(enabled, |ui| ui_kit::list_picker(ui, key, mark.as_deref().unwrap_or(app.tr(label)), false)).inner;
             crate::scenario::publish_target(&format!("render:stage:size:{key}"), response.rect);

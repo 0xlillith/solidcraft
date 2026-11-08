@@ -10,8 +10,6 @@ CPU Sampling can explicitly enable **Indirect lighting**. Runtime intent is `ray
 
 The mode requires progressive camera sampling, `primary_samples: 1` and traced shadows. It evaluates the complete existing isotropic opaque BRDF, including its existing clear-coat approximation, and uses an exactly matched cosine/visible-GGX/coat mixture. Null proposals retain their probability mass. Secondary hits preserve captured body/face appearance and existing surface effects; visible surface emission can illuminate diffuse neighbors through actual path continuation. Small mesh emitters have no next-event sampling and may remain noisy.
 
-After the fourth event, an opaque continuation uses throughput-weighted Russian roulette, as on the GPU. Surviving paths divide their weight by their survival probability. Direct light at the current hit is already accounted for, and glass boundaries and volume collisions retain their existing continuation policies.
-
 Directional and point/spot sources retain their delta direct estimates. Rectangles become intersectable one-sided emitters. Rectangular and HDR/constant environment estimates use light/BSDF power weights with the actual direct sample counts, previous-scatter density/position and no nonexistent continuation competitor at the depth endpoint. Geometry wins equal-distance emitter ties. Finite shadow intervals exclude their sampled source; other rectangles occlude both strategies consistently. Uniform-solid-angle HDR sampling preserves the existing explicit sRGB/D65 policy; no importance-distribution quality claim is made.
 
 A primary miss remains the separate unexposed display background. Complete paths add scene-linear radiance to the existing primary film exactly once. Existing every-pass publication, presentation, raw final EXR, final ownership and exact export routes remain authoritative. A partial path cannot advance film coverage/SPP or publish a completed result. Guided noise reduction and transparent PNG coverage compose with this opaque
@@ -28,14 +26,43 @@ sampling are implemented and included in the published test suites. Active
 Atmosphere cannot combine with Glass/SSS or surface Denoise. Active selected-medium
 scattering also requires disabled surface Denoise. Optional [Glass material models](render-glass-material-models.md)
 add GGX rough transmission, three-band dispersion, one lossless coherent film and
-finite-radius hard-source photon caustics. Emissive-mesh next-event sampling and
-multithreading remain separate work. Every request still
+finite-radius hard-source photon caustics. Emissive-mesh next-event sampling remains
+separate work. Native [CPU workers](render-quality-controls.md) support parallel
+camera and photon transport. Every request still
 has its own geometry, memory, work and compatibility admission.
 The CPU Sampling control and CPU Glass transport entry point require explicit
 progressive adoption for saved fixed choices. Disabling path lighting preserves
 existing settings and returns to the original sheet/box or opaque transports.
 
-Memory is one exact-capacity fallible path continuation, prepaid in CPU job admission. There is no second film, ray queue, worker, host pool or raised cap. Sampler/source/emitter scans, traversal, shading and the final film commit are separate bounded work continuations sharing the original cumulative budget and cancel token. The unchanged fixed host metadata/task-state bounds remain integration gates.
+The serial path owns one exact-capacity fallible continuation, prepaid in CPU
+job admission. Native camera and photon workers add bounded continuations,
+stacks and scratch for their admitted count while sharing the scene, BVH and
+film. Auto selects available parallelism once, capped at 64, and records it in
+the admission receipt's `cpu_workers` field. Execution keeps that count even if
+host parallelism changes before pool creation. Single creates no parallel pool;
+explicit counts from 2 through 64 remain exact. Browser execution supports Auto
+and Single only and preserves an unsupported saved custom count on refusal.
+
+Sampler/source/emitter scans, traversal, shading and the final film commit remain
+bounded continuations sharing one cumulative work budget and cancellation token.
+Workstation's image/preparation admission envelope is 128 GiB. Its limits are
+2^43 total camera samples and 2^60 work units; Compact and Studio keep their
+smaller envelopes. BVH preparation retains its separate 12 GiB cap. The fixed
+host metadata/task-state size guards still apply.
+
+Native CPU and registered GPU hosts share a process-wide available-RAM snapshot
+and reservation ledger. CPU hosts also retain a finite 256 GiB software pool.
+Retained request and resource metadata are charged in addition to the
+image/preparation estimate, against both this pool and the shared RAM ledger.
+Working buffers, previews and final artifacts also hold leases;
+split/transfer/shrink/cancel/drop preserve their total debit. The snapshot refreshes
+only when no render lease remains, avoiding a second debit for already resident
+render buffers. Native preflight reports required, admitted and available bytes,
+including whether the query used the bounded 512 MiB fallback. The snapshot
+accounts for current system and Linux cgroup capacity, not future allocations by
+unrelated processes. A refusal does not lower samples, output size or workers.
+See [CPU resource profiles](render-cpu-resource-profiles.md) for the full envelopes
+and [quality controls](render-quality-controls.md) for the shared UI contract.
 
 Executed renderer regressions cover analytic Lambert density/furnace, full coat PDF consistency, projected-solid-angle rectangle means, real diffuse red bounce and blocker, every-prefix/quanta/raw-master invariants, exact admission delta and cancellation/work exhaustion. Published document, engine and workspace tests also cover saved/runtime capture and Sampling click/Undo/reopen. These test results do not qualify a native Glass image or complete image-quality acceptance.
 

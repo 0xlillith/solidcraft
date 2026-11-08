@@ -39,7 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("file.insert_mesh", "Insert Mesh", insert_mesh)
         .at("SOLID", "INSERT")
         .icon("import")
-        .params("path: .3mf, .stl, .obj, .ply (with faces), .glb or .gltf file (its meshes join the design as mesh bodies in a new component named after the file → component, component_name, occurrence; a glTF file's node tree becomes nested components held as one rigid group until component.unlock, a mesh placed again another occurrence, its materials the bodies' appearances, and its metres millimetres); name?; up?: z|y for a glTF file (default y: glTF has Y up, so the import's component is turned a quarter turn about X, Y becoming Z → stand_up: its occurrence; z: the file's axes are kept); units?: mm|cm|m|in|ft for an STL or OBJ file, or a PLY file with faces (default mm): the unit its coordinates are in, scaled to millimetres as the file is read (a 3MF or glTF file states its own). The design keeps the millimetre mesh and not the unit, so insert the file again to try another; origin?: bool (default false: the mesh keeps its file's coordinates; true: once read, scaled and stood up, the import's occurrence is moved so the box around its bodies is centred on X and Y of the active component with its lowest point on Z = 0 → moved_to_origin: [x, y, z], the shift made); crease_angle_degrees?: 0..180 (explicitly regenerate angle-weighted shading normals across manifold edges below this crease angle; omitted keeps authored OBJ normals/smoothing groups, or flat shading when absent; geometry stays unchanged)"),
+        .params("path: .3mf, .stl, .obj, .ply (with faces), .glb or .gltf file (its meshes join the design as mesh bodies in a new component named after the file → component, component_name, occurrence; a glTF file's node tree becomes nested components held as one rigid group until component.unlock, a mesh placed again another occurrence, its materials the bodies' appearances, and its metres millimetres); name?; up?: z|y for a glTF file (default y: glTF has Y up, so the import's component is turned a quarter turn about X, Y becoming Z → stand_up: its occurrence; z: the file's axes are kept); units?: mm|cm|m|in|ft for an STL or OBJ file, or a PLY file with faces (default mm): the unit its coordinates are in, scaled to millimetres as the file is read (a 3MF or glTF file states its own). The design keeps the millimetre mesh and not the unit, so insert the file again to try another; origin?: bool (default false: the mesh keeps its file's coordinates; true: once read, scaled and stood up, the import's occurrence is moved so the box around its bodies is centred on X and Y of the active component with its lowest point on Z = 0 → moved_to_origin: [x, y, z], the shift made); crease_angle_degrees?: 0..180 (0 clears imported shading normals for the previous flat-shading behavior; positive angles regenerate angle-weighted normals across manifold edges below this crease angle; omitted keeps authored OBJ normals/smoothing groups, or flat shading when absent; geometry stays unchanged)"),
     CommandSpec::new("file.save", "Save", save)
         .icon("save")
         .key("Ctrl+S")
@@ -290,7 +290,13 @@ fn add_mesh(
         && let solidcraft_doc::FeatureKind::MeshImport { meshes, .. } = &mut mf.kind
     {
         for mesh in meshes {
-            mesh.generate_crease_normals(angle).map_err(|e| bad("file.insert_mesh", e.to_string()))?;
+            if angle == 0.0 {
+                // Keep the original flat display path, including its normalization
+                // and storage behavior, when the caller opts out of imported shading.
+                mesh.corner_normals = Default::default();
+            } else {
+                mesh.generate_crease_normals(angle).map_err(|e| bad("file.insert_mesh", e.to_string()))?;
+            }
         }
     }
     let fname = name.filter(|n| !n.trim().is_empty()).unwrap_or(&mf.name).to_string();
@@ -2040,6 +2046,60 @@ mod tests {
         let doc = solidcraft_io::read_design(&bytes).unwrap();
         let cold = Session::new(doc);
         assert_eq!(normals(&cold), expected);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mesh_import_zero_crease_restores_legacy_flat_shading_and_survives_reopen() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-obj-flat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vertices = "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 -0.8660254037844386 0.5\n";
+        let faces = "f 1 2 3\nf 2 1 4\n";
+        let reference_path = dir.join("reference.obj");
+        std::fs::write(&reference_path, format!("{vertices}{faces}")).unwrap();
+        let mut reference = Session::default();
+        reference.execute("file.insert_mesh", &json!({"path":reference_path})).unwrap();
+        let display = |s: &Session| {
+            let mesh = s.model.state().bodies[0].mesh();
+            (mesh.positions.clone(), mesh.triangles.clone(), mesh.normals.clone())
+        };
+        let expected = display(&reference);
+        for (name, source) in
+            [("groups", format!("{vertices}s 1\n{faces}")), ("authored", format!("{vertices}vn 0 1 1\nf 1//1 2//1 3//1\nf 2//1 1//1 4//1\n"))]
+        {
+            let path = dir.join(format!("{name}.obj"));
+            std::fs::write(&path, source).unwrap();
+            let mut annotated = Session::default();
+            annotated.execute("file.insert_mesh", &json!({"path":path})).unwrap();
+            assert_ne!(display(&annotated).2, expected.2, "{name} must exercise imported shading");
+            let mut session = Session::default();
+            session.execute("file.insert_mesh", &json!({"path":path, "crease_angle_degrees":0})).unwrap();
+            assert_eq!(display(&session), expected, "{name} uses the exact former flat display path");
+            let meshes = session
+                .doc
+                .features
+                .iter()
+                .find_map(|f| match &f.kind {
+                    solidcraft_doc::FeatureKind::MeshImport { meshes, .. } => Some(meshes),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(meshes.iter().all(|mesh| mesh.corner_normals.is_empty()));
+            session.execute("edit.undo", &json!({})).unwrap();
+            assert!(session.model.state().bodies.is_empty());
+            session.execute("edit.redo", &json!({})).unwrap();
+            assert_eq!(display(&session), expected);
+            let bytes = session.design_container(solidcraft_io::DesignCompression::Fast, false, true).unwrap();
+            let cached = solidcraft_io::read_design_geometry(&bytes).unwrap();
+            assert!(cached.bodies[0].body.triangle_corner_normals().unwrap().is_empty());
+            let saved_path = dir.join(format!("{name}.sc"));
+            std::fs::write(&saved_path, &bytes).unwrap();
+            let mut reopened = Session::default();
+            reopened.execute("doc.open", &json!({"path":saved_path})).unwrap();
+            assert_eq!(display(&reopened), expected);
+            let cold = Session::new(solidcraft_io::read_design(&bytes).unwrap());
+            assert_eq!(display(&cold), expected);
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

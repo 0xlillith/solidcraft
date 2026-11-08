@@ -326,6 +326,8 @@ impl Mesh {
     /// Generate angle-weighted corner normals without changing positions or connectivity.
     /// Only opposite, two-face manifold edges join a smoothing fan. A group of zero
     /// stays flat; different groups, boundaries and creases never share a normal.
+    /// Degenerate faces do not join or weight a fan; their corner metadata uses
+    /// a unit fallback so mesh-body validation can discard repeated-index faces.
     /// `groups == None` is an explicitly requested crease policy for unannotated meshes.
     pub fn crease_corner_normals(&self, angle: f64, groups: Option<&[u32]>) -> Result<Vec<[Vec3; 3]>, String> {
         if !angle.is_finite() || !(0.0..=std::f64::consts::PI).contains(&angle) || groups.is_some_and(|g| g.len() != self.triangles.len()) {
@@ -354,7 +356,16 @@ impl Mesh {
         for (i, t) in self.triangles.iter().enumerate() {
             let [a, b, c] = t.map(|v| self.positions.get(v as usize).copied());
             let (Some(a), Some(b), Some(c)) = (a, b, c) else { return Err("mesh smoothing index is missing".into()) };
-            let n = (b - a).cross(c - a).normalized().filter(|n| n.is_finite()).ok_or("mesh smoothing has a degenerate triangle")?;
+            let n = (b - a)
+                .cross(c - a)
+                .normalized()
+                .filter(|n| n.is_finite() && [b - a, c - b, a - c].iter().all(|edge| edge.normalized().is_some_and(|v| v.is_finite())));
+            let Some(n) = n else {
+                // An unusable face must not turn its neighbours' shared edge into
+                // a non-manifold edge or contribute a fabricated fan direction.
+                normals.push(Vec3::ZERO);
+                continue;
+            };
             normals.push(n);
             for k in 0..3 {
                 let (a, b) = (canonical[t[k] as usize], canonical[t[(k + 1) % 3] as usize]);
@@ -397,6 +408,9 @@ impl Mesh {
         sums.try_reserve_exact(corners).map_err(|_| "could not reserve mesh smoothing sums")?;
         sums.resize(corners, Vec3::ZERO);
         for (i, t) in self.triangles.iter().enumerate() {
+            if normals[i] == Vec3::ZERO {
+                continue;
+            }
             for k in 0..3 {
                 let p = self.positions[t[k] as usize];
                 let a = (self.positions[t[(k + 1) % 3] as usize] - p).normalized().ok_or("degenerate smoothing corner")?;
@@ -409,6 +423,10 @@ impl Mesh {
         let mut out = Vec::new();
         out.try_reserve_exact(self.triangles.len()).map_err(|_| "could not reserve mesh shading result")?;
         for (i, n) in normals.into_iter().enumerate() {
+            if n == Vec3::ZERO {
+                out.push([Vec3::Z; 3]);
+                continue;
+            }
             out.push(std::array::from_fn(|k| {
                 let r = root(&mut parent, i * 3 + k);
                 sums[r].normalized().filter(|v| v.dot(n) > 0.0).unwrap_or(n)

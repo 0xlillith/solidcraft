@@ -9,6 +9,29 @@ use solidcraft_render::job::{
     photographic::{Flare, Photographic},
 };
 
+// Validate each live receipt before comparing deterministic accounting. RAM
+// snapshots and other retained leases can change between otherwise equal checks.
+fn preflight_without_memory_observations(mut reply: serde_json::Value) -> serde_json::Value {
+    let total = reply["admission"]["estimated_total_bytes"].as_u64().unwrap();
+    let memory = reply["admission"]["host_memory"].as_object_mut().expect("native preflight reports its RAM admission");
+    let required = memory["required_bytes"].as_u64().unwrap();
+    let admitted = memory["admitted_bytes"].as_u64().unwrap();
+    let available = memory["available_bytes"].as_u64().unwrap();
+    let capacity = memory["capacity_bytes"].as_u64().unwrap();
+    assert_eq!(required, total, "native debit includes the complete public admission");
+    assert!(required <= available, "accepted native debit fits its available RAM: {memory:?}");
+    assert_eq!(admitted.checked_add(available), Some(capacity), "native ledger accounts for the entire capacity snapshot");
+    assert!(
+        matches!(memory["source"].as_str(), Some("system_available" | "system_and_cgroup" | "conservative_fallback")),
+        "native receipt identifies its capacity source"
+    );
+    // Keep required_bytes and every non-observation field in the exact comparison.
+    for field in ["admitted_bytes", "available_bytes", "capacity_bytes", "source"] {
+        memory.remove(field).unwrap();
+    }
+    reply
+}
+
 #[test]
 fn saved_targeted_aging_reaches_preflight_and_start_after_cold_reopen() {
     let Some(executor) = executor() else { return };
@@ -48,7 +71,10 @@ fn saved_targeted_aging_reaches_preflight_and_start_after_cold_reopen() {
     assert_eq!(runtime_target["body_name"], "Target panel");
     assert_ne!(runtime_target["body_index"], original["options"]["aging"][0]["target"]["body_index"]);
     let saved = session.doc.render.setups["Aging"].clone();
-    assert_eq!(checked, session.execute("render.preflight", &json!({"settings":saved})).unwrap());
+    assert_eq!(
+        preflight_without_memory_observations(checked.clone()),
+        preflight_without_memory_observations(session.execute("render.preflight", &json!({"settings":saved})).unwrap())
+    );
     assert_eq!(host.admitted_bytes(), 0);
 
     let started = session.execute("render.start", &json!({"setup":"Aging"})).unwrap();
@@ -294,7 +320,10 @@ fn saved_aging_identity_reaches_real_gpu_after_cold_reopen() {
     assert_ne!(first["options"]["aging"][0]["target"]["body_index"], checked["options"]["aging"][0]["target"]["body_index"]);
     assert_eq!(checked["options"]["aging"][0]["target"]["body_name"], "Target panel");
     let saved = session.doc.render.setups["Aging"].clone();
-    assert_eq!(checked, session.execute("render.preflight", &json!({"settings":saved})).unwrap());
+    assert_eq!(
+        preflight_without_memory_observations(checked.clone()),
+        preflight_without_memory_observations(session.execute("render.preflight", &json!({"settings":saved})).unwrap())
+    );
     let physical = session.execute("component.properties", &json!({})).unwrap();
     let before = session.doc.clone();
     let history = (session.revision, session.undo.len(), session.redo.len());
@@ -594,7 +623,12 @@ fn scratch_geometry_reference(@builtin(global_invocation_id) gid:vec3<u32>){
                     let carry = f32::from_le_bytes(parameters[carry_offset..carry_offset + 4].try_into().unwrap());
                     let expected = stack.gpu_layers([target.x, target.y, target.z]).unwrap()[0][11];
                     assert_eq!(carry.to_bits(), expected.to_bits());
-                    assert_eq!(&parameters[parameters.len() - 4..], &[0; 4], "the determinant materialization lane remains positive zero");
+                    // studio_weights.w precedes the sixteen-byte page metadata.
+                    assert_eq!(
+                        &parameters[parameters.len() - 20..parameters.len() - 16],
+                        &[0; 4],
+                        "the determinant materialization lane remains positive zero"
+                    );
                     context.queue.write_buffer(&task.uniform, 0, &parameters);
                     let mut encoder = context.device.create_command_encoder(&Default::default());
                     {
@@ -823,7 +857,10 @@ fn saved_coat_gpu_capture_reopen_and_actual_render_match_independent_normal_inci
     let mut plain = saved.clone();
     plain.coats = Default::default();
     let baseline_check = session.execute("render.preflight", &json!({"settings":plain})).unwrap();
-    assert_eq!(checked["admission"], baseline_check["admission"]);
+    assert_eq!(
+        preflight_without_memory_observations(checked.clone())["admission"],
+        preflight_without_memory_observations(baseline_check.clone())["admission"]
+    );
     assert_eq!(checked["retained_options_bytes"], baseline_check["retained_options_bytes"]);
     let mut zero = saved;
     let row = zero.coats.iter().next().unwrap().clone();
