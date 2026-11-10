@@ -46,6 +46,16 @@ jobs:
               if len(data) != obj['size'] or hashlib.sha256(data).hexdigest() != expected_sha256:
                   raise ValueError('Transport checksum mismatch')
               return data
+          def asset(payload, prefix, maximum):
+              parts = payload[prefix+'_chunks']
+              if not isinstance(parts, list) or not 1 <= len(parts) <= 32:
+                  raise ValueError('Invalid transport chunk count')
+              data = bytearray()
+              for part in parts:
+                  data.extend(blob(part['blob'], part['sha256'], maximum-len(data)))
+              if hashlib.sha256(data).hexdigest() != hexid(payload[prefix+'_sha256'], 64):
+                  raise ValueError('Assembled transport checksum mismatch')
+              return bytes(data)
           contents = api('repos/'+REPO+'/contents/transport/pr14097.json?ref='+hexid(os.environ['TRANSPORT_COMMIT'], 40))
           payload = json.loads(base64.b64decode(contents['content']))
           if payload['base'] != BASE:
@@ -58,7 +68,7 @@ jobs:
           run('git', 'init', str(repository))
           run('git', 'fetch', '--no-tags', '--depth=1', 'https://github.com/tangency-labs/solidcraft.git', BASE, cwd=repository)
           bundle = workspace/'source.bundle'
-          bundle.write_bytes(blob(payload['bundle_blob'], payload['bundle_sha256'], 2000000))
+          bundle.write_bytes(asset(payload, 'bundle', 2000000))
           run('git', 'bundle', 'verify', str(bundle), cwd=repository)
           run('git', 'fetch', str(bundle), 'HEAD', cwd=repository)
           if run('git', 'rev-parse', 'FETCH_HEAD', cwd=repository) != commit:
@@ -85,8 +95,8 @@ jobs:
           run('git', 'push', 'origin', commit+':refs/heads/'+STAGING, cwd=repository)
           print('Imported verified commit: '+commit)
           print('Verified source tree: '+tree)
-          if payload.get('evidence_blob'):
-              archive = blob(payload['evidence_blob'], payload['evidence_sha256'], 20000000)
+          if payload.get('evidence_chunks'):
+              archive = asset(payload, 'evidence', 20000000)
               folder = workspace/'evidence'
               folder.mkdir()
               files = []
