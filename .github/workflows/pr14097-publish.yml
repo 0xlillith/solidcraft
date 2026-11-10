@@ -1,0 +1,110 @@
+name: Import verified Galactica PR 14097 commit
+
+# Temporary transport in the contributor fork, never part of the product PR.
+# No repository code or payload script is executed. The PR ref is moved separately
+# through the authenticated connector with an expected-head lease.
+on:
+  push:
+    branches: [automation/pr14097-publish-20261110]
+    paths: [transport/pr14097.json]
+permissions:
+  contents: write
+jobs:
+  import:
+    if: github.repository == '0xlillith/solidcraft'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TRANSPORT_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Verify and import the exact Git bundle; attach public-safe evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, io, json, os, pathlib, re, subprocess, tempfile, zipfile
+          REPO = '0xlillith/solidcraft'
+          BASE = '52ea418a2a7e229dc408d03a281e4d2fa66dcc35'
+          STAGING = 'automation/pr14097-import-20261110'
+          TAG = 'pr14097-backend-ui-evidence-20261110'
+          def run(*args, cwd=None):
+              return subprocess.check_output(list(args), cwd=cwd, text=True).strip()
+          def api(path):
+              return json.loads(run('gh', 'api', path))
+          def hexid(value, length):
+              if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{'+str(length)+'}', value):
+                  raise ValueError('Invalid object identity')
+              return value
+          def blob(sha, expected_sha256, maximum):
+              sha = hexid(sha, 40)
+              expected_sha256 = hexid(expected_sha256, 64)
+              obj = api('repos/'+REPO+'/git/blobs/'+sha)
+              if obj['encoding'] != 'base64' or obj['size'] > maximum or obj['sha'] != sha:
+                  raise ValueError('Invalid or oversized blob')
+              data = base64.b64decode(obj['content'])
+              if len(data) != obj['size'] or hashlib.sha256(data).hexdigest() != expected_sha256:
+                  raise ValueError('Transport checksum mismatch')
+              return data
+          contents = api('repos/'+REPO+'/contents/transport/pr14097.json?ref='+hexid(os.environ['TRANSPORT_COMMIT'], 40))
+          payload = json.loads(base64.b64decode(contents['content']))
+          if payload['base'] != BASE:
+              raise ValueError('Unexpected integration base')
+          commit = hexid(payload['commit'], 40)
+          tree = hexid(payload['tree'], 40)
+          workspace = pathlib.Path(tempfile.mkdtemp(prefix='pr14097-'))
+          repository = workspace/'repository'
+          repository.mkdir()
+          run('git', 'init', str(repository))
+          run('git', 'fetch', '--no-tags', '--depth=1', 'https://github.com/tangency-labs/solidcraft.git', BASE, cwd=repository)
+          bundle = workspace/'source.bundle'
+          bundle.write_bytes(blob(payload['bundle_blob'], payload['bundle_sha256'], 2000000))
+          run('git', 'bundle', 'verify', str(bundle), cwd=repository)
+          run('git', 'fetch', str(bundle), 'HEAD', cwd=repository)
+          if run('git', 'rev-parse', 'FETCH_HEAD', cwd=repository) != commit:
+              raise ValueError('Imported commit mismatch')
+          if run('git', 'rev-parse', commit+'^{tree}', cwd=repository) != tree:
+              raise ValueError('Imported tree mismatch')
+          if run('git', 'show', '-s', '--format=%P', commit, cwd=repository) != BASE:
+              raise ValueError('Expected exactly one source commit on the reviewed main')
+          paths = set(run('git', 'diff', '--name-only', BASE, commit, cwd=repository).splitlines())
+          allowed = {
+              'apps/solidcraft/src/main.rs', 'apps/solidcraft/src/startup.rs',
+              'assets/locales/pending/graphics-backend.json', 'crates/gpu/src/path/mod.rs',
+              'crates/ui-egui/src/lib.rs', 'crates/ui-egui/src/prefs.rs',
+              'crates/ui-egui/src/prefs/graphics.rs', 'crates/ui-egui/src/render_workspace.rs',
+              'crates/ui-egui/src/render_workspace_output.rs', 'crates/ui-egui/src/render_workspace_tests.rs',
+              'crates/ui-egui/src/update.rs', 'crates/ui-egui/src/update/tests.rs',
+              'docs/book/src/guide/troubleshooting.md', 'docs/control-protocol.md', 'docs/render-path.md',
+          }
+          if not paths or not paths.issubset(allowed):
+              raise ValueError('Source commit escaped the reviewed backend scope')
+          run('git', 'diff', '--check', BASE, commit, cwd=repository)
+          run('git', 'config', 'credential.helper', '!gh auth git-credential', cwd=repository)
+          run('git', 'remote', 'add', 'origin', 'https://github.com/'+REPO+'.git', cwd=repository)
+          run('git', 'push', 'origin', commit+':refs/heads/'+STAGING, cwd=repository)
+          print('Imported verified commit: '+commit)
+          print('Verified source tree: '+tree)
+          if payload.get('evidence_blob'):
+              archive = blob(payload['evidence_blob'], payload['evidence_sha256'], 20000000)
+              folder = workspace/'evidence'
+              folder.mkdir()
+              files = []
+              with zipfile.ZipFile(io.BytesIO(archive)) as z:
+                  if sum(item.file_size for item in z.infolist()) > 30000000:
+                      raise ValueError('Evidence exceeds its uncompressed size bound')
+                  for item in z.infolist():
+                      name = item.filename
+                      if not re.fullmatch(r'pr14097-[a-zA-Z0-9_.-]+\.(webp|png|json|md|txt)', name):
+                          raise ValueError('Unexpected evidence filename')
+                      target = folder/name
+                      target.write_bytes(z.read(item))
+                      files.append(str(target))
+              found = subprocess.run(['gh', 'release', 'view', TAG, '--repo', REPO], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+              if found.returncode:
+                  run('gh', 'release', 'create', TAG, '--repo', REPO, '--target', commit, '--prerelease', '--title', 'PR 14097: Graphics API selection and safe restart evidence', '--notes', 'Review evidence only; not a SolidCraft application release. Captured and tested on Galactica. See the validation report for exact source identities and platform limitations.')
+              run('gh', 'release', 'upload', TAG, '--repo', REPO, '--clobber', *files)
+              print('Evidence release: https://github.com/'+REPO+'/releases/tag/'+TAG)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('Verified local commit: `'+commit+'`\n\nSource tree: `'+tree+'`\n\nThe product PR branch has NOT been changed by this workflow.\n')
+          PY
